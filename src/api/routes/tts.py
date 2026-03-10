@@ -1,8 +1,8 @@
 import base64
 import time
 import uuid
-import uuid as uuid_mod
 
+from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.database import get_async_session
 from src.models.schemas import (
+    BatchStatusResponse,
     BatchTaskInfo,
     BatchTTSRequest,
     BatchTTSResponse,
@@ -55,13 +56,16 @@ async def tts_synthesize(req: SynthesizeRequest):
         )
 
     start = time.monotonic()
-    result = engine.synthesize(
+    kwargs = dict(
         text=req.text,
         voice=req.voice,
         speed=req.speed,
         sample_rate=req.sample_rate,
         reference_audio=req.reference_audio,
     )
+    if req.reference_text is not None:
+        kwargs["reference_text"] = req.reference_text
+    result = engine.synthesize(**kwargs)
     elapsed = time.monotonic() - start
     rtf = round(elapsed / max(result.duration_seconds, 0.01), 4) or 0.01
 
@@ -92,7 +96,7 @@ async def tts_batch(
     session: AsyncSession = Depends(get_async_session),
 ):
     """Dispatch multiple TTS tasks for multi-character scenarios."""
-    batch_id = f"batch_{uuid_mod.uuid4().hex[:12]}"
+    batch_id = f"batch_{uuid.uuid4().hex[:12]}"
     tasks = []
 
     for i, segment in enumerate(req.segments):
@@ -111,3 +115,39 @@ async def tts_batch(
         tasks.append(BatchTaskInfo(index=i, task_id=task.id))
 
     return BatchTTSResponse(batch_id=batch_id, tasks=tasks)
+
+
+@router.get("/batch/{batch_id}", response_model=BatchStatusResponse)
+async def tts_batch_status(batch_id: str):
+    """Query status of a batch TTS job by checking Celery task results."""
+    from src.workers.celery_app import celery_app
+
+    # Discover task IDs by probing batch_id_{0..N} pattern
+    tasks = []
+    for i in range(100):  # reasonable upper bound
+        task_id = f"{batch_id}_{i}"
+        result = AsyncResult(task_id, app=celery_app)
+        if result.state == "PENDING" and result.result is None and i > 0:
+            # No more tasks in this batch
+            break
+        tasks.append({
+            "index": i,
+            "task_id": task_id,
+            "status": result.state.lower(),
+            "result": result.result if result.ready() else None,
+        })
+
+    if not tasks:
+        raise HTTPException(404, detail=f"Batch not found: {batch_id}")
+
+    statuses = {t["status"] for t in tasks}
+    if all(s == "success" for s in statuses):
+        overall = "completed"
+    elif "failure" in statuses:
+        overall = "failed"
+    elif "success" in statuses:
+        overall = "partial"
+    else:
+        overall = "pending"
+
+    return BatchStatusResponse(batch_id=batch_id, status=overall, tasks=tasks)

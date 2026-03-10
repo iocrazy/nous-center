@@ -1,27 +1,10 @@
-import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from httpx import ASGITransport, AsyncClient
 
-from src.api.main import create_app
 from src.workers.tts_engines.base import TTSResult
 
 FAKE_WAV = b"RIFF" + b"\x00" * 100
 
 
-@pytest.fixture
-def app():
-    return create_app()
-
-
-@pytest.fixture
-async def client(app):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as c:
-        yield c
-
-
-@pytest.mark.asyncio
 async def test_tts_generate_returns_task_id(client):
     with patch("src.api.routes.tts.generate_tts_task") as mock_task:
         mock_task.delay = MagicMock()
@@ -37,7 +20,6 @@ async def test_tts_generate_returns_task_id(client):
         mock_task.delay.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_synthesize_returns_audio(client):
     fake_result = TTSResult(
         audio_bytes=FAKE_WAV,
@@ -63,7 +45,6 @@ async def test_synthesize_returns_audio(client):
     assert data["rtf"] > 0
 
 
-@pytest.mark.asyncio
 async def test_synthesize_engine_not_loaded(client):
     with patch("src.api.routes.tts._get_loaded_engine", return_value=None):
         resp = await client.post(
@@ -73,7 +54,6 @@ async def test_synthesize_engine_not_loaded(client):
     assert resp.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_batch_tts(client):
     mock_delay = MagicMock(return_value=MagicMock(id="fake-id"))
     mock_resolve = AsyncMock(
@@ -99,3 +79,36 @@ async def test_batch_tts(client):
     assert "batch_id" in data
     assert len(data["tasks"]) == 2
     assert data["tasks"][0]["index"] == 0
+
+
+async def test_batch_status(client):
+    mock_result_0 = MagicMock()
+    mock_result_0.state = "SUCCESS"
+    mock_result_0.result = {"audio": "base64data"}
+    mock_result_0.ready.return_value = True
+
+    mock_result_1 = MagicMock()
+    mock_result_1.state = "SUCCESS"
+    mock_result_1.result = {"audio": "base64data2"}
+    mock_result_1.ready.return_value = True
+
+    # Third probe returns PENDING with no result → signals end of batch
+    mock_result_end = MagicMock()
+    mock_result_end.state = "PENDING"
+    mock_result_end.result = None
+
+    def mock_async_result(task_id, app=None):
+        if task_id == "batch_abc123_0":
+            return mock_result_0
+        elif task_id == "batch_abc123_1":
+            return mock_result_1
+        return mock_result_end
+
+    with patch("src.api.routes.tts.AsyncResult", side_effect=mock_async_result):
+        resp = await client.get("/api/v1/tts/batch/batch_abc123")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["batch_id"] == "batch_abc123"
+    assert data["status"] == "completed"
+    assert len(data["tasks"]) == 2

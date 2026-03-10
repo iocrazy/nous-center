@@ -1,3 +1,4 @@
+import asyncio
 import time
 from pathlib import Path
 
@@ -49,7 +50,7 @@ async def load_engine(name: str):
     start = time.monotonic()
     engine = get_engine(name, model_path=model_path, device=device)
     if not engine.is_loaded:
-        engine.load()
+        await asyncio.to_thread(engine.load)
     elapsed = round(time.monotonic() - start, 2)
 
     return EngineLoadResponse(name=name, status="loaded", load_time_seconds=elapsed)

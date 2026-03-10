@@ -146,6 +146,23 @@ class VoicePresetOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# --- Voice Preset Groups ---
+
+class VoicePresetGroupCreate(BaseModel):
+    name: str
+    presets: list[str] = []  # list of preset names
+
+
+class VoicePresetGroupOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    presets: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 # --- Audio Upload ---
 
 class AudioUploadResponse(BaseModel):

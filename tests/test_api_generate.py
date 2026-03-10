@@ -1,24 +1,6 @@
-import pytest
 from unittest.mock import patch, MagicMock
-from httpx import ASGITransport, AsyncClient
-
-from src.api.main import create_app
 
 
-@pytest.fixture
-def app():
-    return create_app()
-
-
-@pytest.fixture
-async def client(app):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as c:
-        yield c
-
-
-@pytest.mark.asyncio
 async def test_generate_image_returns_task_id(client):
     with patch("src.api.routes.generate.dispatch_task") as mock:
         mock.return_value = "fake-task-id"
@@ -32,7 +14,6 @@ async def test_generate_image_returns_task_id(client):
         assert data["status"] == "pending"
 
 
-@pytest.mark.asyncio
 async def test_generate_video_returns_task_id(client):
     with patch("src.api.routes.generate.dispatch_task") as mock:
         mock.return_value = "fake-task-id"
