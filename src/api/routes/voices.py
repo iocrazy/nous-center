@@ -1,5 +1,3 @@
-from uuid import UUID
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +56,7 @@ async def create_group(
 
 @router.delete("/groups/{group_id}", status_code=204)
 async def delete_group(
-    group_id: UUID,
+    group_id: int,
     session: AsyncSession = Depends(get_async_session),
 ):
     group = await session.get(VoicePresetGroup, group_id)
@@ -73,7 +71,7 @@ async def delete_group(
 
 @router.get("/{preset_id}", response_model=VoicePresetOut)
 async def get_preset(
-    preset_id: UUID,
+    preset_id: int,
     session: AsyncSession = Depends(get_async_session),
 ):
     preset = await session.get(VoicePreset, preset_id)
@@ -84,7 +82,7 @@ async def get_preset(
 
 @router.put("/{preset_id}", response_model=VoicePresetOut)
 async def update_preset(
-    preset_id: UUID,
+    preset_id: int,
     data: VoicePresetUpdate,
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -100,7 +98,7 @@ async def update_preset(
 
 @router.delete("/{preset_id}", status_code=204)
 async def delete_preset(
-    preset_id: UUID,
+    preset_id: int,
     session: AsyncSession = Depends(get_async_session),
 ):
     preset = await session.get(VoicePreset, preset_id)

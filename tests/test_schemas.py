@@ -39,7 +39,8 @@ def test_image_understand_request():
 
 
 def test_task_response():
-    tid = uuid.uuid4()
+    from src.utils.snowflake import snowflake_id
+    tid = snowflake_id()
     resp = TaskResponse(
         id=tid,
         task_type="image",

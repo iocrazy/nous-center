@@ -34,7 +34,7 @@ async def test_create_and_list_presets(db_client):
 
 
 async def test_get_nonexistent_preset(db_client):
-    resp = await db_client.get("/api/v1/voices/00000000-0000-0000-0000-000000000000")
+    resp = await db_client.get("/api/v1/voices/9999999999999")
     assert resp.status_code == 404
 
 

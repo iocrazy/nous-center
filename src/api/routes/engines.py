@@ -5,10 +5,17 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from src.config import load_model_configs, get_settings
+from src.gpu.detector import get_device_for_engine, gpu_summary
 from src.models.schemas import EngineInfo, EngineLoadResponse
 from src.workers.tts_engines.registry import get_engine
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
+
+
+@router.get("/gpus")
+async def list_gpus():
+    """Return detected GPU information."""
+    return gpu_summary()
 
 
 def _is_engine_loaded(name: str) -> bool:
@@ -45,7 +52,7 @@ async def load_engine(name: str):
     cfg = configs[name]
     settings = get_settings()
     model_path = Path(settings.LOCAL_MODELS_PATH) / cfg["local_path"]
-    device = f"cuda:{cfg.get('gpu', 1)}"
+    device = get_device_for_engine(cfg)
 
     start = time.monotonic()
     engine = get_engine(name, model_path=model_path, device=device)

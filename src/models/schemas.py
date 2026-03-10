@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Literal
@@ -58,7 +57,7 @@ class ImageUnderstandRequest(BaseModel):
 # --- Responses ---
 
 class TaskResponse(BaseModel):
-    id: uuid.UUID
+    id: int
     task_type: str
     status: TaskStatus
     progress: int = 0
@@ -133,7 +132,7 @@ class VoicePresetUpdate(BaseModel):
 
 
 class VoicePresetOut(BaseModel):
-    id: uuid.UUID
+    id: int
     name: str
     engine: str
     params: dict
@@ -154,7 +153,7 @@ class VoicePresetGroupCreate(BaseModel):
 
 
 class VoicePresetGroupOut(BaseModel):
-    id: uuid.UUID
+    id: int
     name: str
     presets: list[str]
     created_at: datetime

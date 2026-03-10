@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
-    DATABASE_URL: str = "postgresql+asyncpg://mind:mind@localhost:5432/mind_center"
+    DATABASE_URL: str = "postgresql+asyncpg://mindcenter:mindcenter@localhost:5432/mindcenter"
 
     NAS_MODELS_PATH: str = "/mnt/nas/models"
     NAS_OUTPUTS_PATH: str = "/mnt/nas/outputs"
