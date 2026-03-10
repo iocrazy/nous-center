@@ -110,3 +110,45 @@ class SynthesizeResponse(BaseModel):
     engine: str
     rtf: float
     format: str = "wav"
+
+
+# --- Voice Presets ---
+
+class VoicePresetCreate(BaseModel):
+    name: str
+    engine: str
+    params: dict = {}
+    reference_audio_path: str | None = None
+    reference_text: str | None = None
+    tags: list[str] = []
+
+
+class VoicePresetUpdate(BaseModel):
+    name: str | None = None
+    engine: str | None = None
+    params: dict | None = None
+    reference_audio_path: str | None = None
+    reference_text: str | None = None
+    tags: list[str] | None = None
+
+
+class VoicePresetOut(BaseModel):
+    id: str
+    name: str
+    engine: str
+    params: dict
+    reference_audio_path: str | None
+    reference_text: str | None
+    tags: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# --- Audio Upload ---
+
+class AudioUploadResponse(BaseModel):
+    id: str
+    path: str
+    duration_seconds: float | None = None
