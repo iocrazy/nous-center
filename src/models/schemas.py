@@ -133,7 +133,7 @@ class VoicePresetUpdate(BaseModel):
 
 
 class VoicePresetOut(BaseModel):
-    id: str
+    id: uuid.UUID
     name: str
     engine: str
     params: dict

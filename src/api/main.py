@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices
 from src.api.websocket import ws_manager
 
 
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(tts.router)
     app.include_router(engines.router)
     app.include_router(audio.router)
+    app.include_router(voices.router)
 
     @app.websocket("/ws/tasks/{task_id}")
     async def websocket_task(websocket: WebSocket, task_id: str):
