@@ -11,6 +11,10 @@ class Settings(BaseSettings):
 
     NAS_MODELS_PATH: str = "/mnt/nas/models"
     NAS_OUTPUTS_PATH: str = "/mnt/nas/outputs"
+    LOCAL_MODELS_PATH: str = "/media/heygo/Program/models"
+
+    COSYVOICE_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/CosyVoice"
+    INDEXTTS_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/index-tts"
 
     VLLM_BASE_URL: str = "http://localhost:8100"
 

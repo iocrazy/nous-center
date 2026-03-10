@@ -12,13 +12,47 @@ models:
     gpu: 1
     vram_gb: 3
     resident: true
+    local_path: "tts/cosyvoice2-0.5b"
 
-  qwen_tts:
-    name: "Qwen-TTS"
+  indextts2:
+    name: "IndexTTS-2"
     type: tts
     gpu: 1
-    vram_gb: 3
-    resident: true
+    vram_gb: 4
+    resident: false
+    local_path: "tts/indextts-2"
+
+  qwen3_tts_base:
+    name: "Qwen3-TTS-12Hz-1.7B-Base"
+    type: tts
+    gpu: 1
+    vram_gb: 4
+    resident: false
+    local_path: "tts/qwen3-tts-1.7b-base"
+
+  qwen3_tts_customvoice:
+    name: "Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    type: tts
+    gpu: 1
+    vram_gb: 4
+    resident: false
+    local_path: "tts/qwen3-tts-1.7b-customvoice"
+
+  qwen3_tts_voicedesign:
+    name: "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+    type: tts
+    gpu: 1
+    vram_gb: 4
+    resident: false
+    local_path: "tts/qwen3-tts-1.7b-voicedesign"
+
+  moss_tts:
+    name: "MOSS-TTS"
+    type: tts
+    gpu: 1
+    vram_gb: 8
+    resident: false
+    local_path: "tts/moss-tts"
 
   qwen25_vl:
     name: "Qwen/Qwen2.5-VL-7B-Instruct"
