@@ -1,0 +1,37 @@
+models:
+  sdxl:
+    name: "stabilityai/stable-diffusion-xl-base-1.0"
+    type: image
+    gpu: 0
+    vram_gb: 10
+    resident: true
+
+  cosyvoice2:
+    name: "CosyVoice2-0.5B"
+    type: tts
+    gpu: 1
+    vram_gb: 3
+    resident: true
+
+  qwen_tts:
+    name: "Qwen-TTS"
+    type: tts
+    gpu: 1
+    vram_gb: 3
+    resident: true
+
+  qwen25_vl:
+    name: "Qwen/Qwen2.5-VL-7B-Instruct"
+    type: understand
+    engine: vllm
+    gpu: 1
+    vram_gb: 16
+    resident: false
+
+  wan21:
+    name: "Wan2.1"
+    type: video
+    gpu: [0, 1]
+    vram_gb: 40
+    resident: false
+    exclusive: true
