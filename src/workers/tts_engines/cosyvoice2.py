@@ -36,16 +36,37 @@ class CosyVoice2Engine(TTSEngine):
     ENGINE_NAME = "cosyvoice2"
 
     def load(self) -> None:
-        logger.info("Loading CosyVoice2-0.5B from %s", self.model_path)
+        logger.info("Loading CosyVoice2-0.5B from %s (device=%s)", self.model_path, self.device)
         _ensure_cosyvoice_path()
-        from cosyvoice.cli.cosyvoice import CosyVoice2
 
-        self._model = CosyVoice2(
-            str(self.model_path),
-            load_jit=False,
-            load_trt=False,
-            fp16=torch.cuda.is_available(),
-        )
+        # CosyVoice2Model.__init__ hardcodes self.device = torch.device('cuda')
+        # which always resolves to cuda:0. We patch __init__ to override
+        # self.device to our target AFTER the original runs but BEFORE .load()
+        # moves weights. We also rebuild the CUDA stream on the correct device.
+        target_device = torch.device(self.device)
+        from cosyvoice.cli.model import CosyVoice2Model
+        _orig_init = CosyVoice2Model.__init__
+
+        def _patched_init(self_model, llm, flow, hift, fp16):
+            _orig_init(self_model, llm, flow, hift, fp16)
+            # Override device and rebuild CUDA stream on target GPU
+            self_model.device = target_device
+            if torch.cuda.is_available():
+                self_model.llm_context = torch.cuda.stream(
+                    torch.cuda.Stream(target_device)
+                )
+
+        CosyVoice2Model.__init__ = _patched_init
+        try:
+            from cosyvoice.cli.cosyvoice import CosyVoice2
+            self._model = CosyVoice2(
+                str(self.model_path),
+                load_jit=False,
+                load_trt=False,
+                fp16=torch.cuda.is_available(),
+            )
+        finally:
+            CosyVoice2Model.__init__ = _orig_init
         logger.info(
             "CosyVoice2-0.5B loaded, sample_rate=%d", self._model.sample_rate
         )
