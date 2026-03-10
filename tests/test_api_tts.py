@@ -3,6 +3,9 @@ from unittest.mock import patch, MagicMock
 from httpx import ASGITransport, AsyncClient
 
 from src.api.main import create_app
+from src.workers.tts_engines.base import TTSResult
+
+FAKE_WAV = b"RIFF" + b"\x00" * 100
 
 
 @pytest.fixture
@@ -32,3 +35,39 @@ async def test_tts_generate_returns_task_id(client):
         assert data["type"] == "tts"
         assert "task_id" in data
         mock_task.delay.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_synthesize_returns_audio(client):
+    fake_result = TTSResult(
+        audio_bytes=FAKE_WAV,
+        sample_rate=24000,
+        duration_seconds=1.5,
+        format="wav",
+    )
+    mock_engine = MagicMock()
+    mock_engine.is_loaded = True
+    mock_engine.synthesize.return_value = fake_result
+
+    with patch("src.api.routes.tts._get_loaded_engine", return_value=mock_engine):
+        resp = await client.post(
+            "/api/v1/tts/synthesize",
+            json={"engine": "cosyvoice2", "text": "hello"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "audio_base64" in data
+    assert data["engine"] == "cosyvoice2"
+    assert data["duration_seconds"] == 1.5
+    assert data["rtf"] > 0
+
+
+@pytest.mark.asyncio
+async def test_synthesize_engine_not_loaded(client):
+    with patch("src.api.routes.tts._get_loaded_engine", return_value=None):
+        resp = await client.post(
+            "/api/v1/tts/synthesize",
+            json={"engine": "cosyvoice2", "text": "hello"},
+        )
+    assert resp.status_code == 409

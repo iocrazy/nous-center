@@ -86,3 +86,27 @@ class EngineLoadResponse(BaseModel):
     name: str
     status: Literal["loaded", "unloaded"]
     load_time_seconds: float | None = None
+
+
+# --- Synchronous TTS (debug) ---
+
+class SynthesizeRequest(BaseModel):
+    engine: Literal[
+        "cosyvoice2", "indextts2", "qwen3_tts_base",
+        "qwen3_tts_customvoice", "qwen3_tts_voicedesign", "moss_tts",
+    ]
+    text: str
+    voice: str = "default"
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    sample_rate: int = Field(default=24000, ge=8000, le=48000)
+    reference_audio: str | None = None
+    reference_text: str | None = None
+
+
+class SynthesizeResponse(BaseModel):
+    audio_base64: str
+    sample_rate: int
+    duration_seconds: float
+    engine: str
+    rtf: float
+    format: str = "wav"
