@@ -6,10 +6,8 @@ from fastapi.responses import JSONResponse
 from src.models.schemas import (
     ImageGenerateRequest,
     VideoGenerateRequest,
-    TTSRequest,
 )
 from src.workers.image_worker import generate_image_task
-from src.workers.tts_worker import generate_tts_task
 from src.workers.video_worker import generate_video_task
 
 router = APIRouter(prefix="/api/v1/generate")
@@ -17,7 +15,6 @@ router = APIRouter(prefix="/api/v1/generate")
 TASK_MAP = {
     "image": generate_image_task,
     "video": generate_video_task,
-    "tts": generate_tts_task,
 }
 
 
@@ -47,10 +44,3 @@ async def generate_video(req: VideoGenerateRequest):
     )
 
 
-@router.post("/tts", status_code=202)
-async def generate_tts(req: TTSRequest):
-    task_id = dispatch_task("tts", req.model_dump())
-    return JSONResponse(
-        status_code=202,
-        content={"task_id": task_id, "status": "pending", "type": "tts"},
-    )

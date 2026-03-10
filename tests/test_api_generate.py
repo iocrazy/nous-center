@@ -33,17 +33,6 @@ async def test_generate_image_returns_task_id(client):
 
 
 @pytest.mark.asyncio
-async def test_generate_tts_returns_task_id(client):
-    with patch("src.api.routes.generate.dispatch_task") as mock:
-        mock.return_value = "fake-task-id"
-        resp = await client.post(
-            "/api/v1/generate/tts",
-            json={"text": "hello world"},
-        )
-        assert resp.status_code == 202
-
-
-@pytest.mark.asyncio
 async def test_generate_video_returns_task_id(client):
     with patch("src.api.routes.generate.dispatch_task") as mock:
         mock.return_value = "fake-task-id"
