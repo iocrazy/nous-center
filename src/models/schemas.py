@@ -152,3 +152,30 @@ class AudioUploadResponse(BaseModel):
     id: str
     path: str
     duration_seconds: float | None = None
+
+
+# --- Batch TTS ---
+
+class BatchSegment(BaseModel):
+    voice_preset: str  # preset name or ID
+    text: str
+
+
+class BatchTTSRequest(BaseModel):
+    segments: list[BatchSegment]
+
+
+class BatchTaskInfo(BaseModel):
+    index: int
+    task_id: str
+
+
+class BatchTTSResponse(BaseModel):
+    batch_id: str
+    tasks: list[BatchTaskInfo]
+
+
+class BatchStatusResponse(BaseModel):
+    batch_id: str
+    status: Literal["pending", "partial", "completed", "failed"]
+    tasks: list[dict]

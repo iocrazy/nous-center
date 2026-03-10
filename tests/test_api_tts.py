@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from httpx import ASGITransport, AsyncClient
 
 from src.api.main import create_app
@@ -71,3 +71,31 @@ async def test_synthesize_engine_not_loaded(client):
             json={"engine": "cosyvoice2", "text": "hello"},
         )
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_batch_tts(client):
+    mock_delay = MagicMock(return_value=MagicMock(id="fake-id"))
+    mock_resolve = AsyncMock(
+        return_value={"engine": "cosyvoice2", "params": {"voice": "default"}}
+    )
+
+    with (
+        patch("src.api.routes.tts.generate_tts_task.delay", mock_delay),
+        patch("src.api.routes.tts._resolve_preset", mock_resolve),
+    ):
+        resp = await client.post(
+            "/api/v1/tts/batch",
+            json={
+                "segments": [
+                    {"voice_preset": "host", "text": "Hello"},
+                    {"voice_preset": "guest", "text": "Hi"},
+                ]
+            },
+        )
+
+    assert resp.status_code == 202
+    data = resp.json()
+    assert "batch_id" in data
+    assert len(data["tasks"]) == 2
+    assert data["tasks"][0]["index"] == 0
