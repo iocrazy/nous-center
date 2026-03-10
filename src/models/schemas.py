@@ -36,9 +36,18 @@ class VideoGenerateRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
-    engine: Literal["cosyvoice2", "qwen_tts"] = "cosyvoice2"
+    engine: Literal[
+        "cosyvoice2",
+        "indextts2",
+        "qwen3_tts_base",
+        "qwen3_tts_customvoice",
+        "qwen3_tts_voicedesign",
+        "moss_tts",
+    ] = "cosyvoice2"
     voice: str = "default"
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    sample_rate: int = Field(default=24000, ge=8000, le=48000)
+    reference_audio: str | None = None  # for voice cloning engines
 
 
 class ImageUnderstandRequest(BaseModel):
@@ -59,3 +68,21 @@ class TaskResponse(BaseModel):
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+# --- Engine Management ---
+
+class EngineInfo(BaseModel):
+    name: str
+    display_name: str
+    type: str
+    status: Literal["loaded", "unloaded"]
+    gpu: int
+    vram_gb: float
+    resident: bool
+
+
+class EngineLoadResponse(BaseModel):
+    name: str
+    status: Literal["loaded", "unloaded"]
+    load_time_seconds: float | None = None
