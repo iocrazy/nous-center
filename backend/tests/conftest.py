@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from src.models.database import Base, get_async_session
 from src.api.main import create_app
 import src.models.voice_preset  # noqa: F401 — ensure models registered with Base
+import src.models.tts_usage  # noqa: F401 — register model
 
 
 @pytest.fixture
@@ -39,5 +40,20 @@ async def db_client(tmp_path):
     transport = ASGITransport(app=test_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+    await engine.dispose()
+
+
+@pytest.fixture
+async def db_session(tmp_path):
+    """Raw async session with all tables created (no app)."""
+    db_path = tmp_path / "test.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
 
     await engine.dispose()
