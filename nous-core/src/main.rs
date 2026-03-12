@@ -21,6 +21,8 @@ async fn main() {
         .route("/audio/info", post(audio::audio_info))
         .route("/audio/resample", post(audio::audio_resample))
         .route("/audio/concat", post(audio::audio_concat))
+        .route("/audio/split", post(audio::audio_split))
+        .route("/audio/convert", post(audio::audio_convert))
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8001")

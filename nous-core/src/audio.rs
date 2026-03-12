@@ -267,3 +267,108 @@ pub async fn audio_concat(Json(req): Json<ConcatRequest>) -> Result<Json<ConcatR
         file_count: req.input_paths.len(),
     }))
 }
+
+#[derive(Deserialize)]
+pub struct SplitRequest {
+    pub input_path: String,
+    pub output_dir: String,
+    pub split_points_ms: Vec<u64>,
+}
+
+#[derive(Serialize)]
+pub struct SplitResponse {
+    pub output_paths: Vec<String>,
+    pub durations_ms: Vec<u64>,
+}
+
+pub async fn audio_split(Json(req): Json<SplitRequest>) -> Result<Json<SplitResponse>, (axum::http::StatusCode, Json<AudioErrorResponse>)> {
+    let reader = WavReader::open(&req.input_path).map_err(|e| (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(AudioErrorResponse { error: format!("Cannot read WAV: {e}") }),
+    ))?;
+    let spec = reader.spec();
+    let samples_per_ms = (spec.sample_rate as u64 * spec.channels as u64) / 1000;
+    let all_samples: Vec<i16> = reader.into_samples::<i16>().filter_map(|s| s.ok()).collect();
+
+    std::fs::create_dir_all(&req.output_dir).map_err(|e| (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(AudioErrorResponse { error: format!("Cannot create dir: {e}") }),
+    ))?;
+
+    let mut boundaries: Vec<usize> = vec![0];
+    for &ms in &req.split_points_ms {
+        boundaries.push((ms * samples_per_ms) as usize);
+    }
+    boundaries.push(all_samples.len());
+
+    let mut output_paths = Vec::new();
+    let mut durations_ms = Vec::new();
+
+    for i in 0..boundaries.len() - 1 {
+        let start = boundaries[i].min(all_samples.len());
+        let end = boundaries[i + 1].min(all_samples.len());
+        let chunk = &all_samples[start..end];
+
+        let out_path = format!("{}/part_{:03}.wav", req.output_dir, i);
+        let mut writer = WavWriter::create(&out_path, spec).map_err(|e| (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AudioErrorResponse { error: format!("Write error: {e}") }),
+        ))?;
+        for s in chunk {
+            writer.write_sample(*s).map_err(|e| (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AudioErrorResponse { error: format!("Write error: {e}") }),
+            ))?;
+        }
+        writer.finalize().map_err(|e| (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AudioErrorResponse { error: format!("Finalize error: {e}") }),
+        ))?;
+
+        let dur = if samples_per_ms > 0 { chunk.len() as u64 / samples_per_ms } else { 0 };
+        output_paths.push(out_path);
+        durations_ms.push(dur);
+    }
+
+    Ok(Json(SplitResponse { output_paths, durations_ms }))
+}
+
+#[derive(Deserialize)]
+pub struct ConvertRequest {
+    pub input_path: String,
+    pub output_path: String,
+    pub target_format: String,
+}
+
+#[derive(Serialize)]
+pub struct ConvertResponse {
+    pub output_path: String,
+    pub format: String,
+}
+
+pub async fn audio_convert(Json(req): Json<ConvertRequest>) -> Result<Json<ConvertResponse>, (axum::http::StatusCode, Json<AudioErrorResponse>)> {
+    if req.target_format != "wav" {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(AudioErrorResponse { error: format!("Unsupported target format: {}. Currently only 'wav' is supported.", req.target_format) }),
+        ));
+    }
+
+    let input = Path::new(&req.input_path);
+    if !input.exists() {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(AudioErrorResponse { error: format!("Input not found: {}", req.input_path) }),
+        ));
+    }
+
+    std::fs::copy(input, &req.output_path).map_err(|e| (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(AudioErrorResponse { error: format!("Copy error: {e}") }),
+    ))?;
+
+    Ok(Json(ConvertResponse {
+        output_path: req.output_path,
+        format: req.target_format,
+    }))
+}
