@@ -1,11 +1,25 @@
+import sys
+from types import ModuleType
+from unittest.mock import MagicMock
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
+# Stub out heavy GPU dependencies so tests run without torch/torchaudio/etc.
+for mod_name in [
+    "torch", "torch.nn", "torch.nn.functional", "torch.cuda",
+    "torchaudio", "torchaudio.transforms",
+    "modelscope", "cosyvoice",
+]:
+    if mod_name not in sys.modules:
+        sys.modules[mod_name] = MagicMock()
 
 from src.models.database import Base, get_async_session
 from src.api.main import create_app
 import src.models.voice_preset  # noqa: F401 — ensure models registered with Base
 import src.models.tts_usage  # noqa: F401 — register model
+import src.models.preset_api_key  # noqa: F401 — register model
 
 
 @pytest.fixture

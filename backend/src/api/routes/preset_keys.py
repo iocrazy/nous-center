@@ -60,9 +60,9 @@ async def create_key(
         await session.commit()
 
     # Return full key only in creation response
-    out = PresetApiKeyCreated.model_validate(api_key)
-    out.key = full_key
-    return out
+    data_dict = PresetApiKeyOut.model_validate(api_key).model_dump()
+    data_dict["key"] = full_key
+    return PresetApiKeyCreated(**data_dict)
 
 
 @router.get("/{preset_id}/keys", response_model=list[PresetApiKeyOut])
