@@ -78,6 +78,8 @@ class Qwen3TTSBaseEngine(Qwen3TTSBase):
         speed: float = 1.0,
         sample_rate: int = 24000,
         reference_audio: str | None = None,
+        reference_text: str | None = None,
+        emotion: str | None = None,
     ) -> TTSResult:
         if not self.is_loaded:
             raise RuntimeError(f"{self.ENGINE_NAME} not loaded. Call load() first.")
@@ -133,6 +135,8 @@ class Qwen3TTSCustomVoiceEngine(Qwen3TTSBase):
         speed: float = 1.0,
         sample_rate: int = 24000,
         reference_audio: str | None = None,
+        reference_text: str | None = None,
+        emotion: str | None = None,
     ) -> TTSResult:
         if not self.is_loaded:
             raise RuntimeError(f"{self.ENGINE_NAME} not loaded. Call load() first.")
@@ -179,6 +183,8 @@ class Qwen3TTSVoiceDesignEngine(Qwen3TTSBase):
         speed: float = 1.0,
         sample_rate: int = 24000,
         reference_audio: str | None = None,
+        reference_text: str | None = None,
+        emotion: str | None = None,
     ) -> TTSResult:
         if not self.is_loaded:
             raise RuntimeError(f"{self.ENGINE_NAME} not loaded. Call load() first.")

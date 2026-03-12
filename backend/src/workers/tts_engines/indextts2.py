@@ -47,6 +47,8 @@ class IndexTTS2Engine(TTSEngine):
         speed: float = 1.0,
         sample_rate: int = 24000,
         reference_audio: str | None = None,
+        reference_text: str | None = None,
+        emotion: str | None = None,
     ) -> TTSResult:
         if not self.is_loaded:
             raise RuntimeError("IndexTTS-2 model not loaded. Call load() first.")

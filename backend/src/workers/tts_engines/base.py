@@ -36,6 +36,7 @@ class TTSEngine(ABC):
         sample_rate: int = 24000,
         reference_audio: str | None = None,
         reference_text: str | None = None,
+        emotion: str | None = None,
     ) -> TTSResult:
         """Synthesize speech from text. Returns audio bytes."""
 

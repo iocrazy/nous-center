@@ -150,6 +150,8 @@ async def tts_stream(req: StreamRequest):
             )
             if req.reference_text is not None:
                 kwargs["reference_text"] = req.reference_text
+            if req.emotion is not None:
+                kwargs["emotion"] = req.emotion
 
             result = engine.synthesize(**kwargs)
             elapsed = time.monotonic() - start
