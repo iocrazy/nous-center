@@ -354,27 +354,27 @@ async def resample(file_path: str, target_sr: int) -> str:
 6. 后端现有 API 测试补全
 
 ### Phase 2：TTS 增强（火山引擎借鉴）
-6. 结果缓存 — Redis hash + `X-Cache`
-7. 用量统计 — 合成记录 + 数据模型
-8. SSE 流式合成 `/tts/stream`
-9. 情感控制 `emotion` 字段
-10. 批量合成 Round 模型 + 单轮重试
-11. WebSocket 会话级连接复用 `/ws/tts`
+7. 结果缓存 — Redis hash + `X-Cache`
+8. 用量统计 — 合成记录 + `tts_usage` 数据模型
+9. SSE 流式合成 `/tts/stream`（含 `StreamRequest` schema，包含 `emotion` 字段）
+10. 情感控制 `emotion` 字段 — 添加到 `TTSRequest`、`SynthesizeRequest`
+11. 批量合成 Round 模型 — `segments` → `rounds` schema 重命名 + 单轮重试
+12. WebSocket 会话级连接复用 `/ws/tts`
 
 ### Phase 3：nous-core 扩展
-12. `/audio/info` — 音频元信息
-13. `/audio/resample` — 重采样
-14. `/audio/convert` — 格式转换
-15. `/audio/concat` — 拼接
-16. `/audio/split` — 切割
-17. backend 封装 `audio_io` 服务层
+13. `/audio/info` — 音频元信息
+14. `/audio/resample` — 重采样
+15. `/audio/convert` — 格式转换
+16. `/audio/concat` — 拼接
+17. `/audio/split` — 切割
+18. backend 封装 `audio_io` 服务层
 
 ### Phase 4：前端补完
-18. 节点执行引擎 — 拓扑排序 + 按序执行
-19. 流式播放 — WavePlayer 对接 SSE
-20. WS 连接复用 — websocket.ts 改造
-21. Round 进度面板 + 重试按钮
-22. 情感控制 UI
-23. 缓存指示器
-24. 用量 Dashboard
-25. 系统监控面板
+19. 节点执行引擎 — 拓扑排序 + 按序执行
+20. 流式播放 — WavePlayer 对接 SSE
+21. WS 连接复用 — websocket.ts 改造
+22. Round 进度面板 + 重试按钮
+23. 情感控制 UI
+24. 缓存指示器
+25. 用量 Dashboard
+26. 系统监控面板
