@@ -1,4 +1,4 @@
-import hashlib
+from unittest.mock import AsyncMock
 
 from src.services.tts_cache import make_cache_key, TTSCacheService
 
@@ -15,8 +15,6 @@ def test_make_cache_key_differs_on_text():
     key2 = make_cache_key(text="world", engine="cosyvoice2", voice="default", speed=1.0, sample_rate=24000)
     assert key1 != key2
 
-
-from unittest.mock import AsyncMock
 
 
 async def test_cache_service_get_miss():
