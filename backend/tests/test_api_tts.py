@@ -133,3 +133,23 @@ async def test_synthesize_accepts_emotion_field(client):
     })
     # Engine not loaded, but 409 means request parsing succeeded (not 422)
     assert resp.status_code == 409
+
+
+async def test_stream_endpoint_exists(client):
+    """POST /tts/stream should exist and return 409 when engine not loaded."""
+    resp = await client.post("/api/v1/tts/stream", json={
+        "engine": "cosyvoice2",
+        "text": "hello",
+    })
+    # Engine not loaded → 409, not 404 (endpoint exists)
+    assert resp.status_code == 409
+
+
+async def test_stream_validates_request(client):
+    """POST /tts/stream should reject invalid speed."""
+    resp = await client.post("/api/v1/tts/stream", json={
+        "engine": "cosyvoice2",
+        "text": "hello",
+        "speed": 999,
+    })
+    assert resp.status_code == 422

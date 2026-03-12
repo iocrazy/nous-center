@@ -1,10 +1,11 @@
 import base64
+import json as json_module
 import time
 import uuid
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,7 @@ from src.models.schemas import (
     BatchTaskInfo,
     BatchTTSRequest,
     BatchTTSResponse,
+    StreamRequest,
     SynthesizeRequest,
     SynthesizeResponse,
     TTSRequest,
@@ -119,6 +121,55 @@ async def tts_synthesize(req: SynthesizeRequest):
         duration_seconds=result.duration_seconds, engine=req.engine,
         rtf=rtf, format=result.format, cached=False,
     )
+
+
+@router.post("/stream")
+async def tts_stream(req: StreamRequest):
+    """SSE streaming TTS synthesis.
+
+    Note: Currently single-chunk (engine.synthesize returns complete audio).
+    The SSE format enables future true streaming when engines support
+    synthesize_stream() yielding multiple chunks.
+    """
+    engine = _get_loaded_engine(req.engine)
+    if engine is None:
+        raise HTTPException(
+            409,
+            detail=f"Engine {req.engine} not loaded. POST /api/v1/engines/{req.engine}/load first.",
+        )
+
+    async def event_generator():
+        try:
+            start = time.monotonic()
+            kwargs = dict(
+                text=req.text,
+                voice=req.voice,
+                speed=req.speed,
+                sample_rate=req.sample_rate,
+                reference_audio=req.reference_audio,
+            )
+            if req.reference_text is not None:
+                kwargs["reference_text"] = req.reference_text
+
+            result = engine.synthesize(**kwargs)
+            elapsed = time.monotonic() - start
+            rtf = round(elapsed / max(result.duration_seconds, 0.01), 4)
+
+            audio_b64 = base64.b64encode(result.audio_bytes).decode()
+            chunk = json_module.dumps({"seq": 1, "audio": audio_b64, "format": result.format})
+            yield f"event: audio\ndata: {chunk}\n\n"
+
+            done = json_module.dumps({
+                "total_chunks": 1,
+                "duration_ms": int(result.duration_seconds * 1000),
+                "usage": {"characters": len(req.text), "rtf": rtf},
+            })
+            yield f"event: done\ndata: {done}\n\n"
+        except Exception as exc:
+            error = json_module.dumps({"code": "ENGINE_ERROR", "message": str(exc)})
+            yield f"event: error\ndata: {error}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 async def _resolve_preset(name: str, session: AsyncSession) -> dict | None:
