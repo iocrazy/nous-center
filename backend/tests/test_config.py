@@ -1,4 +1,7 @@
-from src.config import Settings, load_model_configs
+import os
+from pathlib import Path
+
+from src.config import Settings, load_model_configs, _resolve_path
 
 
 def test_settings_defaults():
@@ -16,3 +19,16 @@ def test_load_model_configs():
     assert "sdxl" in configs
     assert configs["sdxl"]["type"] == "image"
     assert configs["wan21"]["exclusive"] is True
+
+
+def test_resolve_path_is_relative_to_backend():
+    """Paths must resolve relative to backend/ dir, not cwd."""
+    resolved = _resolve_path("configs/models.yaml")
+    assert "backend" in str(resolved), f"Expected path relative to backend/, got {resolved}"
+
+
+def test_load_model_configs_from_any_cwd(tmp_path, monkeypatch):
+    """load_model_configs works even when cwd is not backend/."""
+    monkeypatch.chdir(tmp_path)
+    configs = load_model_configs()
+    assert isinstance(configs, dict)
