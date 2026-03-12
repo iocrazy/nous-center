@@ -20,6 +20,7 @@ async fn main() {
         .route("/sys/models", get(files::list_models))
         .route("/audio/info", post(audio::audio_info))
         .route("/audio/resample", post(audio::audio_resample))
+        .route("/audio/concat", post(audio::audio_concat))
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8001")

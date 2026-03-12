@@ -188,3 +188,82 @@ pub async fn audio_resample(Json(req): Json<ResampleRequest>) -> Result<Json<Res
         duration_ms,
     }))
 }
+
+#[derive(Deserialize)]
+pub struct ConcatRequest {
+    pub input_paths: Vec<String>,
+    pub output_path: String,
+}
+
+#[derive(Serialize)]
+pub struct ConcatResponse {
+    pub output_path: String,
+    pub total_duration_ms: u64,
+    pub file_count: usize,
+}
+
+pub async fn audio_concat(Json(req): Json<ConcatRequest>) -> Result<Json<ConcatResponse>, (axum::http::StatusCode, Json<AudioErrorResponse>)> {
+    if req.input_paths.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(AudioErrorResponse { error: "No input files provided".into() }),
+        ));
+    }
+
+    let first_reader = WavReader::open(&req.input_paths[0]).map_err(|e| (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(AudioErrorResponse { error: format!("Cannot read first WAV: {e}") }),
+    ))?;
+    let spec = first_reader.spec();
+
+    let mut all_samples: Vec<i16> = first_reader.into_samples::<i16>().filter_map(|s| s.ok()).collect();
+
+    for path in &req.input_paths[1..] {
+        let reader = WavReader::open(path).map_err(|e| (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(AudioErrorResponse { error: format!("Cannot read {path}: {e}") }),
+        ))?;
+        let file_spec = reader.spec();
+        if file_spec.sample_rate != spec.sample_rate || file_spec.channels != spec.channels {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(AudioErrorResponse {
+                    error: format!(
+                        "Sample rate/channel mismatch: expected {}Hz/{}ch, got {}Hz/{}ch in {path}",
+                        spec.sample_rate, spec.channels, file_spec.sample_rate, file_spec.channels
+                    ),
+                }),
+            ));
+        }
+        let samples: Vec<i16> = reader.into_samples::<i16>().filter_map(|s| s.ok()).collect();
+        all_samples.extend(samples);
+    }
+
+    let mut writer = WavWriter::create(&req.output_path, spec).map_err(|e| (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(AudioErrorResponse { error: format!("Cannot create output: {e}") }),
+    ))?;
+
+    for s in &all_samples {
+        writer.write_sample(*s).map_err(|e| (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AudioErrorResponse { error: format!("Write error: {e}") }),
+        ))?;
+    }
+    writer.finalize().map_err(|e| (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(AudioErrorResponse { error: format!("Finalize error: {e}") }),
+    ))?;
+
+    let total_duration_ms = if spec.sample_rate > 0 && spec.channels > 0 {
+        (all_samples.len() as u64 * 1000) / (spec.sample_rate as u64 * spec.channels as u64)
+    } else {
+        0
+    };
+
+    Ok(Json(ConcatResponse {
+        output_path: req.output_path,
+        total_duration_ms,
+        file_count: req.input_paths.len(),
+    }))
+}
