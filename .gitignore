@@ -39,3 +39,6 @@ checkpoints/
 
 # Worktrees
 .worktrees/
+
+# Runtime config
+settings.yaml
