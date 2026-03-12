@@ -1,4 +1,5 @@
 use axum::Json;
+use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use symphonia::core::formats::FormatOptions;
@@ -91,5 +92,99 @@ pub async fn audio_info(Json(req): Json<AudioInfoRequest>) -> Result<Json<AudioI
         duration_ms,
         format: ext,
         file_size_bytes: file_size,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ResampleRequest {
+    pub input_path: String,
+    pub output_path: String,
+    pub target_sample_rate: u32,
+}
+
+#[derive(Serialize)]
+pub struct ResampleResponse {
+    pub output_path: String,
+    pub original_sample_rate: u32,
+    pub target_sample_rate: u32,
+    pub duration_ms: u64,
+}
+
+pub async fn audio_resample(Json(req): Json<ResampleRequest>) -> Result<Json<ResampleResponse>, (axum::http::StatusCode, Json<AudioErrorResponse>)> {
+    let input = Path::new(&req.input_path);
+    if !input.exists() {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(AudioErrorResponse { error: format!("Input not found: {}", req.input_path) }),
+        ));
+    }
+
+    let reader = WavReader::open(input).map_err(|e| (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(AudioErrorResponse { error: format!("Cannot read WAV: {e}") }),
+    ))?;
+
+    let spec = reader.spec();
+    let original_sr = spec.sample_rate;
+    let channels = spec.channels;
+
+    let samples: Vec<f32> = match spec.sample_format {
+        SampleFormat::Float => reader.into_samples::<f32>().filter_map(|s| s.ok()).collect(),
+        SampleFormat::Int => reader.into_samples::<i16>().filter_map(|s| s.ok()).map(|s| s as f32 / 32768.0).collect(),
+    };
+
+    let ch = channels as usize;
+    let frames_in = samples.len() / ch;
+    let frames_out = (frames_in as f64 * req.target_sample_rate as f64 / original_sr as f64) as usize;
+    let mut resampled = Vec::with_capacity(frames_out * ch);
+
+    for i in 0..frames_out {
+        let src_frame = i as f64 * original_sr as f64 / req.target_sample_rate as f64;
+        let f0 = src_frame.floor() as usize;
+        let f1 = (f0 + 1).min(frames_in - 1);
+        let frac = (src_frame - f0 as f64) as f32;
+        for c in 0..ch {
+            let s0 = samples[f0 * ch + c];
+            let s1 = samples[f1 * ch + c];
+            resampled.push(s0 * (1.0 - frac) + s1 * frac);
+        }
+    }
+
+    let out_spec = WavSpec {
+        channels,
+        sample_rate: req.target_sample_rate,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+
+    let mut writer = WavWriter::create(&req.output_path, out_spec).map_err(|e| (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(AudioErrorResponse { error: format!("Cannot create output: {e}") }),
+    ))?;
+
+    for s in &resampled {
+        let val = (*s * 32767.0).clamp(-32768.0, 32767.0) as i16;
+        writer.write_sample(val).map_err(|e| (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AudioErrorResponse { error: format!("Write error: {e}") }),
+        ))?;
+    }
+
+    writer.finalize().map_err(|e| (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(AudioErrorResponse { error: format!("Finalize error: {e}") }),
+    ))?;
+
+    let duration_ms = if req.target_sample_rate > 0 && channels > 0 {
+        (resampled.len() as u64 * 1000) / (req.target_sample_rate as u64 * channels as u64)
+    } else {
+        0
+    };
+
+    Ok(Json(ResampleResponse {
+        output_path: req.output_path,
+        original_sample_rate: original_sr,
+        target_sample_rate: req.target_sample_rate,
+        duration_ms,
     }))
 }
