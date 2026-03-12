@@ -191,28 +191,23 @@ class AudioUploadResponse(BaseModel):
     duration_seconds: float | None = None
 
 
-# --- Batch TTS ---
+# --- Batch TTS (Round model) ---
 
-class BatchSegment(BaseModel):
-    voice_preset: str  # preset name or ID
+class BatchRound(BaseModel):
+    round_id: int
+    voice_preset: str  # preset name
     text: str
+    emotion: str | None = None
 
 
 class BatchTTSRequest(BaseModel):
-    segments: list[BatchSegment]
-
-
-class BatchTaskInfo(BaseModel):
-    index: int
-    task_id: str
+    rounds: list[BatchRound]
 
 
 class BatchTTSResponse(BaseModel):
     batch_id: str
-    tasks: list[BatchTaskInfo]
+    total_rounds: int
 
 
-class BatchStatusResponse(BaseModel):
-    batch_id: str
-    status: Literal["pending", "partial", "completed", "failed"]
-    tasks: list[dict]
+class BatchRetryRequest(BaseModel):
+    round_ids: list[int]

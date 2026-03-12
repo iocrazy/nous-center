@@ -11,8 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.database import get_async_session
 from src.models.schemas import (
-    BatchStatusResponse,
-    BatchTaskInfo,
+    BatchRetryRequest,
     BatchTTSRequest,
     BatchTTSResponse,
     StreamRequest,

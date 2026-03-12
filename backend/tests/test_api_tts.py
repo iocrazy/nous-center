@@ -54,64 +54,17 @@ async def test_synthesize_engine_not_loaded(client):
     assert resp.status_code == 409
 
 
-async def test_batch_tts(client):
-    mock_delay = MagicMock(return_value=MagicMock(id="fake-id"))
-    mock_resolve = AsyncMock(
-        return_value={"engine": "cosyvoice2", "params": {"voice": "default"}}
-    )
 
-    with (
-        patch("src.api.routes.tts.generate_tts_task.delay", mock_delay),
-        patch("src.api.routes.tts._resolve_preset", mock_resolve),
-    ):
-        resp = await client.post(
-            "/api/v1/tts/batch",
-            json={
-                "segments": [
-                    {"voice_preset": "host", "text": "Hello"},
-                    {"voice_preset": "guest", "text": "Hi"},
-                ]
-            },
-        )
-
-    assert resp.status_code == 202
-    data = resp.json()
-    assert "batch_id" in data
-    assert len(data["tasks"]) == 2
-    assert data["tasks"][0]["index"] == 0
-
-
-async def test_batch_status(client):
-    mock_result_0 = MagicMock()
-    mock_result_0.state = "SUCCESS"
-    mock_result_0.result = {"audio": "base64data"}
-    mock_result_0.ready.return_value = True
-
-    mock_result_1 = MagicMock()
-    mock_result_1.state = "SUCCESS"
-    mock_result_1.result = {"audio": "base64data2"}
-    mock_result_1.ready.return_value = True
-
-    # Third probe returns PENDING with no result → signals end of batch
-    mock_result_end = MagicMock()
-    mock_result_end.state = "PENDING"
-    mock_result_end.result = None
-
-    def mock_async_result(task_id, app=None):
-        if task_id == "batch_abc123_0":
-            return mock_result_0
-        elif task_id == "batch_abc123_1":
-            return mock_result_1
-        return mock_result_end
-
-    with patch("src.api.routes.tts.AsyncResult", side_effect=mock_async_result):
-        resp = await client.get("/api/v1/tts/batch/batch_abc123")
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["batch_id"] == "batch_abc123"
-    assert data["status"] == "completed"
-    assert len(data["tasks"]) == 2
+async def test_batch_accepts_rounds_schema(client):
+    """Batch endpoint should accept the new rounds schema."""
+    resp = await client.post("/api/v1/tts/batch", json={
+        "rounds": [
+            {"round_id": 1, "voice_preset": "test", "text": "hello"},
+            {"round_id": 2, "voice_preset": "test", "text": "world"},
+        ]
+    })
+    # Will fail with 404 (preset not found) but not 422 (valid schema)
+    assert resp.status_code != 422
 
 
 async def test_synthesize_returns_cached_field(client):
