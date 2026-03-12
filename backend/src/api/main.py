@@ -1,12 +1,13 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio, voices
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings
 from src.api.websocket import ws_manager
+from src.api.ws_tts import handle_tts_websocket
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Mind Center", version="0.1.0")
+    app = FastAPI(title="Nous Center", version="0.1.0")
 
     app.add_middleware(
         CORSMiddleware,
@@ -27,6 +28,8 @@ def create_app() -> FastAPI:
     app.include_router(engines.router)
     app.include_router(audio.router)
     app.include_router(voices.router)
+    app.include_router(openai_compat.router)
+    app.include_router(settings.router)
 
     @app.websocket("/ws/tasks/{task_id}")
     async def websocket_task(websocket: WebSocket, task_id: str):
@@ -36,6 +39,10 @@ def create_app() -> FastAPI:
                 await websocket.receive_text()
         except WebSocketDisconnect:
             ws_manager.disconnect(task_id, websocket)
+
+    @app.websocket("/ws/tts")
+    async def websocket_tts(websocket: WebSocket):
+        await handle_tts_websocket(websocket)
 
     return app
 
