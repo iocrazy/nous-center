@@ -28,6 +28,39 @@
 
 Phase 1 is already partially done (files renamed in git staging). These tasks complete it.
 
+### Task 0: Commit already-staged monorepo renames
+
+The git status shows dozens of staged file renames (`src/ → backend/src/`, `.env.example → backend/.env.example`, etc.) that must be committed before proceeding.
+
+**Files:**
+- All staged renames in git index
+
+- [ ] **Step 1: Review staged changes**
+
+```bash
+git status
+```
+Expected: many `R` (renamed) files from root to `backend/` subdirectory.
+
+- [ ] **Step 2: Commit the monorepo restructure**
+
+```bash
+git commit -m "$(cat <<'EOF'
+chore: restructure project as monorepo with backend/ subdirectory
+
+Move all Python source, configs, tests, and scripts into backend/.
+This is the first step of the monorepo restructure.
+EOF
+)"
+```
+
+- [ ] **Step 3: Verify clean state**
+
+```bash
+git status
+```
+Expected: remaining untracked files (`assets/`, `frontend/`, `nous-center-sys/`, docs).
+
 ### Task 1: Rename nous-center-sys to nous-core
 
 **Files:**
@@ -238,6 +271,12 @@ git commit -m "backend: fix config.py relative paths to resolve from backend/ di
 - Create: `scripts/dev.sh`
 
 - [ ] **Step 1: Create scripts directory and dev.sh**
+
+```bash
+mkdir -p scripts
+```
+
+Then create `scripts/dev.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -980,7 +1019,21 @@ if req.emotion is not None:
     kwargs["emotion"] = req.emotion
 ```
 
-Apply the same pattern in `tts_stream`.
+In `tts_stream`'s `event_generator`, update the kwargs similarly:
+
+```python
+kwargs = dict(
+    text=req.text,
+    voice=req.voice,
+    speed=req.speed,
+    sample_rate=req.sample_rate,
+    reference_audio=req.reference_audio,
+)
+if req.reference_text is not None:
+    kwargs["reference_text"] = req.reference_text
+if req.emotion is not None:
+    kwargs["emotion"] = req.emotion
+```
 
 - [ ] **Step 2b: Update all concrete engine synthesize() signatures**
 
@@ -1598,18 +1651,22 @@ pub async fn audio_resample(Json(req): Json<ResampleRequest>) -> Result<Json<Res
         SampleFormat::Int => reader.into_samples::<i16>().filter_map(|s| s.ok()).map(|s| s as f32 / 32768.0).collect(),
     };
 
-    // Simple linear interpolation resample
-    let ratio = req.target_sample_rate as f64 / original_sr as f64;
-    let new_len = (samples.len() as f64 * ratio) as usize;
-    let mut resampled = Vec::with_capacity(new_len);
+    // Simple linear interpolation resample (per-channel to handle stereo correctly)
+    let ch = channels as usize;
+    let frames_in = samples.len() / ch;
+    let frames_out = (frames_in as f64 * req.target_sample_rate as f64 / original_sr as f64) as usize;
+    let mut resampled = Vec::with_capacity(frames_out * ch);
 
-    for i in 0..new_len {
-        let src_idx = i as f64 / ratio;
-        let idx0 = src_idx.floor() as usize;
-        let idx1 = (idx0 + 1).min(samples.len() - 1);
-        let frac = (src_idx - idx0 as f64) as f32;
-        let sample = samples[idx0] * (1.0 - frac) + samples[idx1] * frac;
-        resampled.push(sample);
+    for i in 0..frames_out {
+        let src_frame = i as f64 * original_sr as f64 / req.target_sample_rate as f64;
+        let f0 = src_frame.floor() as usize;
+        let f1 = (f0 + 1).min(frames_in - 1);
+        let frac = (src_frame - f0 as f64) as f32;
+        for c in 0..ch {
+            let s0 = samples[f0 * ch + c];
+            let s1 = samples[f1 * ch + c];
+            resampled.push(s0 * (1.0 - frac) + s1 * frac);
+        }
     }
 
     // Write output WAV
@@ -1714,6 +1771,8 @@ pub async fn audio_concat(Json(req): Json<ConcatRequest>) -> Result<Json<ConcatR
     ))?;
     let spec = first_reader.spec();
 
+    // Note: reads as i16. TTS output is always 16-bit WAV. If 32-bit float input
+    // support is needed later, add sample_format branching like resample does.
     let mut all_samples: Vec<i16> = first_reader.into_samples::<i16>().filter_map(|s| s.ok()).collect();
 
     // Read and append remaining files
@@ -1849,9 +1908,15 @@ pub async fn audio_split(Json(req): Json<SplitRequest>) -> Result<Json<SplitResp
             Json(AudioErrorResponse { error: format!("Write error: {e}") }),
         ))?;
         for s in chunk {
-            writer.write_sample(*s).unwrap();
+            writer.write_sample(*s).map_err(|e| (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AudioErrorResponse { error: format!("Write error: {e}") }),
+            ))?;
         }
-        writer.finalize().unwrap();
+        writer.finalize().map_err(|e| (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(AudioErrorResponse { error: format!("Finalize error: {e}") }),
+        ))?;
 
         let dur = if samples_per_ms > 0 { chunk.len() as u64 / samples_per_ms } else { 0 };
         output_paths.push(out_path);
@@ -1969,55 +2034,56 @@ import httpx
 
 
 class AudioIOClient:
-    """Async HTTP client wrapping nous-core /audio/* endpoints."""
+    """Async HTTP client wrapping nous-core /audio/* endpoints.
+
+    Reuses a single httpx.AsyncClient for connection pooling.
+    """
 
     def __init__(self, base_url: str = "http://localhost:8001"):
-        self._base = base_url
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=30.0)
 
     async def info(self, path: str) -> dict:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self._base}/audio/info", json={"path": path})
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._client.post("/audio/info", json={"path": path})
+        resp.raise_for_status()
+        return resp.json()
 
     async def resample(self, input_path: str, output_path: str, target_sample_rate: int) -> dict:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self._base}/audio/resample", json={
-                "input_path": input_path,
-                "output_path": output_path,
-                "target_sample_rate": target_sample_rate,
-            })
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._client.post("/audio/resample", json={
+            "input_path": input_path,
+            "output_path": output_path,
+            "target_sample_rate": target_sample_rate,
+        })
+        resp.raise_for_status()
+        return resp.json()
 
     async def concat(self, input_paths: list[str], output_path: str) -> dict:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self._base}/audio/concat", json={
-                "input_paths": input_paths,
-                "output_path": output_path,
-            })
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._client.post("/audio/concat", json={
+            "input_paths": input_paths,
+            "output_path": output_path,
+        })
+        resp.raise_for_status()
+        return resp.json()
 
     async def split(self, input_path: str, output_dir: str, split_points_ms: list[int]) -> dict:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self._base}/audio/split", json={
-                "input_path": input_path,
-                "output_dir": output_dir,
-                "split_points_ms": split_points_ms,
-            })
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._client.post("/audio/split", json={
+            "input_path": input_path,
+            "output_dir": output_dir,
+            "split_points_ms": split_points_ms,
+        })
+        resp.raise_for_status()
+        return resp.json()
 
     async def convert(self, input_path: str, output_path: str, target_format: str = "wav") -> dict:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self._base}/audio/convert", json={
-                "input_path": input_path,
-                "output_path": output_path,
-                "target_format": target_format,
-            })
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._client.post("/audio/convert", json={
+            "input_path": input_path,
+            "output_path": output_path,
+            "target_format": target_format,
+        })
+        resp.raise_for_status()
+        return resp.json()
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
 
 # Default singleton
