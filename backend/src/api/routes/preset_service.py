@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_auth import verify_preset_key
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/v1/preset", tags=["preset-service"])
 
 
 class PresetSynthesizeRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=10000)
     emotion: str | None = None
 
 

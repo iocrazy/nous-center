@@ -9,6 +9,9 @@ from src.models.database import get_async_session
 from src.models.preset_api_key import PresetApiKey
 from src.models.voice_preset import VoicePreset
 
+# Pre-computed dummy hash for constant-time rejection (prevents timing attacks)
+_DUMMY_HASH = bcrypt.hashpw(b"dummy", bcrypt.gensalt()).decode()
+
 
 async def verify_preset_key(
     preset_id: int,
@@ -30,9 +33,12 @@ async def verify_preset_key(
     if preset.status != "active":
         raise HTTPException(403, detail="Preset is inactive")
 
+    # Use key_prefix to narrow candidates before bcrypt (O(1) instead of O(n))
+    key_prefix = token[:10]
     result = await session.execute(
         select(PresetApiKey).where(
             PresetApiKey.preset_id == preset_id,
+            PresetApiKey.key_prefix == key_prefix,
             PresetApiKey.is_active == True,  # noqa: E712
         )
     )
@@ -41,5 +47,8 @@ async def verify_preset_key(
     for key in keys:
         if bcrypt.checkpw(token.encode(), key.key_hash.encode()):
             return preset, key
+
+    # Always do one bcrypt round to prevent timing-based probing
+    bcrypt.checkpw(token.encode(), _DUMMY_HASH.encode())
 
     raise HTTPException(401, detail="Invalid API key")
