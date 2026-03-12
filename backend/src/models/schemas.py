@@ -47,6 +47,7 @@ class TTSRequest(BaseModel):
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     sample_rate: int = Field(default=24000, ge=8000, le=48000)
     reference_audio: str | None = None  # for voice cloning engines
+    emotion: str | None = None
 
 
 class ImageUnderstandRequest(BaseModel):
@@ -100,6 +101,8 @@ class SynthesizeRequest(BaseModel):
     sample_rate: int = Field(default=24000, ge=8000, le=48000)
     reference_audio: str | None = None
     reference_text: str | None = None
+    emotion: str | None = None
+    cache: bool = True
 
 
 class SynthesizeResponse(BaseModel):
@@ -109,6 +112,7 @@ class SynthesizeResponse(BaseModel):
     engine: str
     rtf: float
     format: str = "wav"
+    cached: bool = False
 
 
 # --- Voice Presets ---

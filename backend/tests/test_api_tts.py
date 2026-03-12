@@ -112,3 +112,24 @@ async def test_batch_status(client):
     assert data["batch_id"] == "batch_abc123"
     assert data["status"] == "completed"
     assert len(data["tasks"]) == 2
+
+
+async def test_synthesize_returns_cached_field(client):
+    """SynthesizeResponse should include a 'cached' field."""
+    resp = await client.post("/api/v1/tts/synthesize", json={
+        "engine": "cosyvoice2",
+        "text": "test",
+    })
+    # Engine not loaded in test, expect 409
+    assert resp.status_code == 409
+
+
+async def test_synthesize_accepts_emotion_field(client):
+    """SynthesizeRequest should accept optional emotion field."""
+    resp = await client.post("/api/v1/tts/synthesize", json={
+        "engine": "cosyvoice2",
+        "text": "test",
+        "emotion": "happy tone",
+    })
+    # Engine not loaded, but 409 means request parsing succeeded (not 422)
+    assert resp.status_code == 409

@@ -20,8 +20,27 @@ from src.models.schemas import (
 )
 from src.models.voice_preset import VoicePreset
 from src.workers.tts_worker import generate_tts_task
+import redis.asyncio as aioredis
+from src.services.tts_cache import make_cache_key, TTSCacheService
 
 router = APIRouter(prefix="/api/v1/tts", tags=["tts"])
+
+
+# Module-level lazy Redis + cache
+_redis_client = None
+_cache_service = None
+
+def _get_cache_service() -> TTSCacheService | None:
+    global _redis_client, _cache_service
+    if _cache_service is not None:
+        return _cache_service
+    try:
+        from src.config import get_settings
+        _redis_client = aioredis.from_url(get_settings().REDIS_URL)
+        _cache_service = TTSCacheService(_redis_client)
+        return _cache_service
+    except Exception:
+        return None
 
 
 @router.post("/generate", status_code=202)
@@ -55,27 +74,50 @@ async def tts_synthesize(req: SynthesizeRequest):
             detail=f"Engine {req.engine} not loaded. POST /api/v1/engines/{req.engine}/load first.",
         )
 
+    # --- Cache check ---
+    cache_key = None
+    cache_svc = _get_cache_service() if req.cache else None
+    if cache_svc:
+        cache_key = make_cache_key(
+            text=req.text, engine=req.engine, voice=req.voice,
+            speed=req.speed, sample_rate=req.sample_rate, emotion=req.emotion,
+        )
+        cached = await cache_svc.get(cache_key)
+        if cached:
+            return SynthesizeResponse(
+                audio_base64=cached, sample_rate=req.sample_rate,
+                duration_seconds=0, engine=req.engine, rtf=0, cached=True,
+            )
+
+    # --- Synthesize ---
     start = time.monotonic()
-    kwargs = dict(
-        text=req.text,
-        voice=req.voice,
-        speed=req.speed,
-        sample_rate=req.sample_rate,
-        reference_audio=req.reference_audio,
-    )
+    kwargs = dict(text=req.text, voice=req.voice, speed=req.speed,
+                  sample_rate=req.sample_rate, reference_audio=req.reference_audio)
     if req.reference_text is not None:
         kwargs["reference_text"] = req.reference_text
+    if req.emotion is not None:
+        kwargs["emotion"] = req.emotion
+
     result = engine.synthesize(**kwargs)
     elapsed = time.monotonic() - start
-    rtf = round(elapsed / max(result.duration_seconds, 0.01), 4) or 0.01
+    rtf = round(elapsed / max(result.duration_seconds, 0.01), 4)
+    audio_b64 = base64.b64encode(result.audio_bytes).decode()
+
+    # --- Cache store ---
+    if cache_svc and cache_key:
+        try:
+            await cache_svc.set(cache_key, audio_b64)
+        except Exception:
+            pass  # cache write failure is non-fatal
+
+    # --- Usage recording (fire-and-forget) ---
+    # Usage is recorded in Task 8's usage_recorder via background task
+    # (actual wiring added after Task 8)
 
     return SynthesizeResponse(
-        audio_base64=base64.b64encode(result.audio_bytes).decode(),
-        sample_rate=result.sample_rate,
-        duration_seconds=result.duration_seconds,
-        engine=req.engine,
-        rtf=rtf,
-        format=result.format,
+        audio_base64=audio_b64, sample_rate=result.sample_rate,
+        duration_seconds=result.duration_seconds, engine=req.engine,
+        rtf=rtf, format=result.format, cached=False,
     )
 
 
