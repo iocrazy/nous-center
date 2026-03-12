@@ -160,6 +160,8 @@ class VoicePresetOut(BaseModel):
     reference_audio_path: str | None
     reference_text: str | None
     tags: list[str]
+    status: str = "active"
+    endpoint_path: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -211,3 +213,32 @@ class BatchTTSResponse(BaseModel):
 
 class BatchRetryRequest(BaseModel):
     round_ids: list[int]
+
+
+# --- Preset API Keys ---
+
+class PresetApiKeyCreate(BaseModel):
+    label: str
+
+
+class PresetApiKeyOut(BaseModel):
+    id: int
+    preset_id: int
+    label: str
+    key_prefix: str
+    is_active: bool
+    usage_calls: int
+    usage_chars: int
+    last_used_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PresetApiKeyCreated(PresetApiKeyOut):
+    """Returned only on creation — includes the full key."""
+    key: str
+
+
+class PresetStatusUpdate(BaseModel):
+    status: Literal["active", "inactive"]
