@@ -115,6 +115,23 @@ class SynthesizeResponse(BaseModel):
     cached: bool = False
 
 
+# --- SSE Streaming TTS ---
+
+class StreamRequest(BaseModel):
+    text: str
+    engine: Literal[
+        "cosyvoice2", "indextts2", "qwen3_tts_base",
+        "qwen3_tts_customvoice", "qwen3_tts_voicedesign", "moss_tts",
+    ] = "cosyvoice2"
+    voice: str = "default"
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    sample_rate: int = Field(default=24000, ge=8000, le=48000)
+    reference_audio: str | None = None
+    reference_text: str | None = None
+    emotion: str | None = None
+    cache: bool = True
+
+
 # --- Voice Presets ---
 
 class VoicePresetCreate(BaseModel):
