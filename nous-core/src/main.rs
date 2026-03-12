@@ -1,8 +1,9 @@
+mod audio;
 mod gpu;
 mod system;
 mod files;
 
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router};
 use tower_http::cors::{Any, CorsLayer};
 
 #[tokio::main]
@@ -17,6 +18,7 @@ async fn main() {
         .route("/sys/stats", get(system::get_stats))
         .route("/sys/processes", get(system::get_processes))
         .route("/sys/models", get(files::list_models))
+        .route("/audio/info", post(audio::audio_info))
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8001")
