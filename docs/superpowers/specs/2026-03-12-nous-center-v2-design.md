@@ -72,6 +72,8 @@ nous-center/
    (队列+缓存) (持久化)  (Celery)
 ```
 
+**部署拓扑：** V2 简化为单机部署（Ubuntu 双 3090），所有服务运行在同一台机器上，通过 localhost 通信。Redis 和 PostgreSQL 也运行在本机（与 V1 设计中 Mac 协调层 + Ubuntu 推理层的分离式部署不同）。
+
 **调用关系：**
 - 前端 → backend：所有业务 API（TTS、图像、任务管理、Voice Preset）
 - 前端 → nous-core：系统监控（GPU 状态、磁盘、进程）— 轻量直连
@@ -86,7 +88,16 @@ nous-center/
 新增端点，引擎逐句生成，每句立即推送，前端边生成边播放：
 
 ```
-GET /api/v1/tts/stream?text=...&engine=...&voice_preset=...
+POST /api/v1/tts/stream
+Content-Type: application/json
+
+{
+  "text": "要合成的文本",
+  "engine": "cosyvoice2",
+  "voice_preset": "default_zh",
+  "emotion": null,
+  "cache": true
+}
 
 Response: text/event-stream
   event: audio
@@ -97,10 +108,16 @@ Response: text/event-stream
 
   event: done
   data: {"total_chunks": 2, "duration_ms": 3200, "usage": {"characters": 42, "rtf": 0.8}}
+
+  event: error  (异常时)
+  data: {"code": "ENGINE_ERROR", "message": "引擎加载失败"}
 ```
 
+- 使用 POST 而非 GET：避免 URL 长度限制，防止文本泄露到日志
+- 前端使用 `fetch` + `ReadableStream` 消费 SSE
 - 最后 `done` 事件附带用量统计（借鉴火山 UsageResponse）
 - 不支持流式的引擎降级为单次返回
+- 异常时发送 `error` 事件，前端可区分网络断开和服务端错误
 
 **来源：** 火山 HTTP 流式 TTS (Chunked/SSE)
 
@@ -126,13 +143,21 @@ WS /ws/tts
 
 - 一个 WS 连接复用多个串行会话
 - 每个 session 独立配置引擎和音色
+- 同一 session 内 `synthesize` 消息串行处理：上一条合成完成后才接受下一条
 - 适合前端节点编辑器连续调试场景
+
+**错误事件：**
+```json
+{"type": "error", "session_id": "s1", "code": "ENGINE_ERROR", "message": "引擎未加载"}
+```
 
 **来源：** 火山连接/会话两级生命周期
 
 ### 4.3 批量合成 Round 模型
 
-将批量合成从 N 个独立任务改为 Round 事件模型：
+将批量合成从 N 个独立任务改为 Round 事件模型。
+
+**迁移说明：** 当前 `/tts/batch` 使用 `segments[]` + 独立 Celery 任务模式，V2 将原地替换为 Round 模型（V1 未对外发布，无兼容性顾虑）。原 `segments` 字段重命名为 `rounds`，`BatchTTSRequest` schema 同步更新。
 
 ```
 POST /api/v1/tts/batch
@@ -144,13 +169,15 @@ POST /api/v1/tts/batch
   ]
 }
 → 返回 batch_id
+```
 
-WS 推送：
-  {"type": "round_start", "batch_id": "...", "round_id": 1}
-  {"type": "round_audio", "round_id": 1, "audio": "..."}
-  {"type": "round_end",   "round_id": 1}
-  ...
-  {"type": "batch_done",  "batch_id": "...", "total_rounds": 3}
+**进度推送：** 通过 `/ws/tts` 会话连接推送（复用 4.2 的 WS，不再使用 `/ws/tasks/{id}`）：
+```json
+{"type": "round_start", "batch_id": "...", "round_id": 1}
+{"type": "round_audio", "round_id": 1, "audio": "..."}
+{"type": "round_end",   "round_id": 1}
+{"type": "round_error", "batch_id": "...", "round_id": 2, "code": "SYNTHESIS_FAILED", "message": "..."}
+{"type": "batch_done",  "batch_id": "...", "total_rounds": 3, "failed_rounds": [2]}
 ```
 
 **单轮重试：**
@@ -186,23 +213,38 @@ POST /api/v1/tts/batch/{batch_id}/retry
 
 - `emotion` 为自然语言字符串，透传给支持情感控制的引擎
 - 不支持的引擎忽略此字段
+- 作为可选顶层字段添加到 `TTSRequest`、`SynthesizeRequest`、`StreamRequest`：`emotion: str | None = None`
 
 **来源：** 火山 TTS 2.0 context_texts
 
 ### 4.6 用量统计
 
-每次合成记录到 PostgreSQL：
-- 输入字符数
-- 输出音频时长（秒）
-- RTF（实时率 = 合成耗时 / 音频时长）
-- 使用的引擎
-- 时间戳
+新增 `tts_usage` 表记录每次合成：
 
-前端 Dashboard overlay 展示图表。
+```sql
+CREATE TABLE tts_usage (
+    id          BIGINT PRIMARY KEY,       -- Snowflake ID
+    engine      VARCHAR(64) NOT NULL,
+    characters  INTEGER NOT NULL,         -- 输入字符数
+    duration_ms INTEGER,                  -- 输出音频时长
+    rtf         FLOAT,                    -- 实时率 = 合成耗时 / 音频时长
+    cached      BOOLEAN DEFAULT FALSE,    -- 是否命中缓存
+    created_at  TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_tts_usage_created ON tts_usage (created_at);
+CREATE INDEX idx_tts_usage_engine  ON tts_usage (engine);
+```
+
+对应 SQLAlchemy 模型添加到 `backend/src/models/` 中。不引入 Alembic，通过 `metadata.create_all()` 自动建表（与现有 voice_preset 一致）。
+
+前端 Dashboard overlay 展示图表（按时间/引擎聚合）。
 
 **来源：** 火山 UsageResponse
 
 ## 5. nous-core 职责
+
+> **注意：** 当前代码库中此服务名为 `nous-center-sys/`。重命名为 `nous-core/` 在 Phase 1 步骤 2 中完成。本文档统一使用新名称。
 
 ### 5.1 现有功能
 
@@ -223,7 +265,7 @@ POST /audio/concat          多段音频拼接
 POST /audio/split           按时间点切割
 ```
 
-**技术依赖：** `symphonia`（解码）+ `hound`（WAV 编码），已在 Cargo.toml 中。
+**技术依赖：** `symphonia`（解码）+ `hound`（WAV 编码），已声明在 Cargo.toml 中但尚未使用。Phase 3 添加音频 IO 路由时实现。
 
 **选择 Rust 的理由：**
 - 比 Python `pydub`/`soundfile` 快 5-10x
@@ -307,8 +349,9 @@ async def resample(file_path: str, target_sr: int) -> str:
 1. 完成 monorepo 重构，提交所有 rename
 2. `nous-center-sys` → `nous-core` 重命名
 3. 全局 `.gitignore` 统一
-4. `scripts/dev.sh` 一键启动
-5. 后端现有 API 测试补全
+4. 修复 `config.py` 中的相对路径（`settings.yaml`、`configs/models.yaml`），改为基于 `__file__` 的相对路径，确保从任意 cwd 启动都能正确解析
+5. `scripts/dev.sh` 一键启动
+6. 后端现有 API 测试补全
 
 ### Phase 2：TTS 增强（火山引擎借鉴）
 6. 结果缓存 — Redis hash + `X-Cache`
