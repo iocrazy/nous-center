@@ -3,7 +3,6 @@ import json as json_module
 import time
 import uuid
 
-from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
@@ -173,6 +172,10 @@ async def tts_stream(req: StreamRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+# In-memory batch state (production would use Redis)
+_batch_store: dict[str, dict] = {}
+
+
 async def _resolve_preset(name: str, session: AsyncSession) -> dict | None:
     """Look up voice preset by name. Returns dict with engine + params or None."""
     result = await session.execute(
@@ -189,59 +192,53 @@ async def tts_batch(
     req: BatchTTSRequest,
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Dispatch multiple TTS tasks for multi-character scenarios."""
+    """Dispatch batch TTS with round model. Progress pushed via /ws/tts."""
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
-    tasks = []
 
-    for i, segment in enumerate(req.segments):
-        preset = await _resolve_preset(segment.voice_preset, session)
+    rounds_state = {}
+    for r in req.rounds:
+        preset = await _resolve_preset(r.voice_preset, session)
         if preset is None:
-            raise HTTPException(
-                404, detail=f"Voice preset not found: {segment.voice_preset}"
-            )
-
-        params = {
-            **preset["params"],
-            "text": segment.text,
+            raise HTTPException(404, detail=f"Voice preset not found: {r.voice_preset}")
+        rounds_state[r.round_id] = {
+            "text": r.text,
+            "emotion": r.emotion,
             "engine": preset["engine"],
+            "params": preset["params"],
+            "status": "pending",
+            "task_id": None,
         }
-        task = generate_tts_task.delay(f"{batch_id}_{i}", params)
-        tasks.append(BatchTaskInfo(index=i, task_id=task.id))
 
-    return BatchTTSResponse(batch_id=batch_id, tasks=tasks)
+    _batch_store[batch_id] = {"rounds": rounds_state, "total": len(req.rounds)}
+
+    # Dispatch each round as a Celery task
+    for round_id, state in rounds_state.items():
+        params = {**state["params"], "text": state["text"], "engine": state["engine"]}
+        task = generate_tts_task.delay(f"{batch_id}_r{round_id}", params)
+        state["task_id"] = task.id
+
+    return BatchTTSResponse(batch_id=batch_id, total_rounds=len(req.rounds))
 
 
-@router.get("/batch/{batch_id}", response_model=BatchStatusResponse)
-async def tts_batch_status(batch_id: str):
-    """Query status of a batch TTS job by checking Celery task results."""
-    from src.workers.celery_app import celery_app
-
-    # Discover task IDs by probing batch_id_{0..N} pattern
-    tasks = []
-    for i in range(100):  # reasonable upper bound
-        task_id = f"{batch_id}_{i}"
-        result = AsyncResult(task_id, app=celery_app)
-        if result.state == "PENDING" and result.result is None and i > 0:
-            # No more tasks in this batch
-            break
-        tasks.append({
-            "index": i,
-            "task_id": task_id,
-            "status": result.state.lower(),
-            "result": result.result if result.ready() else None,
-        })
-
-    if not tasks:
+@router.post("/batch/{batch_id}/retry")
+async def tts_batch_retry(
+    batch_id: str,
+    req: BatchRetryRequest,
+):
+    """Retry specific rounds in a batch."""
+    batch = _batch_store.get(batch_id)
+    if batch is None:
         raise HTTPException(404, detail=f"Batch not found: {batch_id}")
 
-    statuses = {t["status"] for t in tasks}
-    if all(s == "success" for s in statuses):
-        overall = "completed"
-    elif "failure" in statuses:
-        overall = "failed"
-    elif "success" in statuses:
-        overall = "partial"
-    else:
-        overall = "pending"
+    retried = []
+    for round_id in req.round_ids:
+        state = batch["rounds"].get(round_id)
+        if state is None:
+            continue
+        state["status"] = "pending"
+        params = {**state["params"], "text": state["text"], "engine": state["engine"]}
+        task = generate_tts_task.delay(f"{batch_id}_r{round_id}_retry", params)
+        state["task_id"] = task.id
+        retried.append(round_id)
 
-    return BatchStatusResponse(batch_id=batch_id, status=overall, tasks=tasks)
+    return {"batch_id": batch_id, "retried_rounds": retried}
