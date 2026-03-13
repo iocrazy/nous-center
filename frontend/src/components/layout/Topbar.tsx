@@ -70,7 +70,14 @@ export default function Topbar() {
     >
       {activeOverlay && (
         <button
-          onClick={() => setOverlay(null)}
+          onClick={() => {
+            // From instance-detail, go back to preset-detail instead of closing
+            if (activeOverlay === 'instance-detail') {
+              setOverlay('preset-detail')
+            } else {
+              setOverlay(null)
+            }
+          }}
           className="flex items-center justify-center"
           style={{
             padding: '4px 8px',
