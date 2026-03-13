@@ -5,7 +5,6 @@ import {
   GitBranch,
   Settings,
   SlidersHorizontal,
-  Package,
   Link,
   Sun,
   Moon,
@@ -18,13 +17,12 @@ const PANEL_ITEMS: { id: PanelId; icon: typeof CircuitBoard; label: string }[] =
   { id: 'nodes', icon: CircuitBoard, label: 'Nodes' },
   { id: 'workflows', icon: GitBranch, label: 'Workflows' },
   { id: 'presets', icon: Settings, label: 'Presets' },
-  { id: 'collections', icon: Package, label: 'Collections' },
-  { id: 'api', icon: Link, label: 'API Nodes' },
 ]
 
 const OVERLAY_ITEMS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { id: 'models', icon: Layers, label: 'Models' },
+  { id: 'api-management', icon: Link, label: 'API Management' },
 ]
 
 export default function IconRail() {
