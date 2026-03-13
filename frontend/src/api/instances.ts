@@ -3,7 +3,9 @@ import { apiFetch } from './client'
 
 export interface ServiceInstance {
   id: string
-  preset_id: string
+  source_type: string
+  source_id: string
+  source_name: string
   name: string
   type: string
   status: string
@@ -31,16 +33,15 @@ export interface InstanceApiKeyCreated extends InstanceApiKey {
 
 // --- Instance CRUD ---
 
-export function useInstances(presetId: string | null) {
+export function useInstances(type?: string) {
   return useQuery({
-    queryKey: ['instances', presetId],
+    queryKey: ['instances', type],
     queryFn: () =>
       apiFetch<ServiceInstance[]>(
-        presetId
-          ? `/api/v1/instances?preset_id=${presetId}`
+        type
+          ? `/api/v1/instances?type=${type}`
           : '/api/v1/instances',
       ),
-    enabled: !!presetId,
     refetchOnWindowFocus: false,
     retry: false,
   })
@@ -59,13 +60,13 @@ export function useInstance(instanceId: string | null) {
 export function useCreateInstance() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: { preset_id: string; name: string; params_override?: Record<string, unknown> }) =>
+    mutationFn: (data: { source_type: string; source_id: string; name: string; params_override?: Record<string, unknown> }) =>
       apiFetch<ServiceInstance>('/api/v1/instances', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    onSuccess: (_, vars) => {
-      qc.invalidateQueries({ queryKey: ['instances', vars.preset_id] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['instances'] })
     },
   })
 }
