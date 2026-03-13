@@ -7,12 +7,12 @@ from src.config import get_settings, load_model_configs
 from src.storage.nas import StorageService
 from src.workers.celery_app import celery_app
 
-# Import engine modules to trigger registration
-import src.workers.tts_engines.cosyvoice2  # noqa: F401
-import src.workers.tts_engines.indextts2  # noqa: F401
-import src.workers.tts_engines.qwen3_tts  # noqa: F401
-import src.workers.tts_engines.moss_tts  # noqa: F401
-from src.workers.tts_engines import get_engine
+def _ensure_engines_registered():
+    """Lazily import engine modules to trigger registration (requires torch)."""
+    import src.workers.tts_engines.cosyvoice2  # noqa: F401
+    import src.workers.tts_engines.indextts2  # noqa: F401
+    import src.workers.tts_engines.qwen3_tts  # noqa: F401
+    import src.workers.tts_engines.moss_tts  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,8 @@ def generate_tts_task(self, task_id: str, params: dict):
     try:
         # 1. Get or create engine, load model if needed
         self.update_state(state="RUNNING", meta={"progress": 10, "step": "loading_model"})
+        _ensure_engines_registered()
+        from src.workers.tts_engines import get_engine
         model_path = _resolve_model_path(engine_name)
         engine = get_engine(engine_name, model_path=model_path, device="cuda")
 

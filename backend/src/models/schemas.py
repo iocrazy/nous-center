@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 
 class TaskStatus(str, Enum):
@@ -68,6 +68,10 @@ class TaskResponse(BaseModel):
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("id")
+    def serialize_id(self, v: int) -> str:
+        return str(v)
 
 
 # --- Engine Management ---
@@ -165,6 +169,10 @@ class VoicePresetOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_serializer("id")
+    def serialize_id(self, v: int) -> str:
+        return str(v)
+
 
 # --- Voice Preset Groups ---
 
@@ -181,6 +189,10 @@ class VoicePresetGroupOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("id")
+    def serialize_id(self, v: int) -> str:
+        return str(v)
 
 
 # --- Audio Upload ---
@@ -221,6 +233,11 @@ class ServiceInstanceCreate(BaseModel):
     type: str = "tts"
     params_override: dict = {}
 
+    @field_validator("preset_id", mode="before")
+    @classmethod
+    def coerce_preset_id(cls, v: int | str) -> int:
+        return int(v)
+
 
 class ServiceInstanceUpdate(BaseModel):
     name: str | None = None
@@ -239,6 +256,10 @@ class ServiceInstanceOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("id", "preset_id")
+    def serialize_ids(self, v: int) -> str:
+        return str(v)
 
 
 class InstanceStatusUpdate(BaseModel):
@@ -263,6 +284,10 @@ class InstanceApiKeyOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("id", "instance_id")
+    def serialize_ids(self, v: int) -> str:
+        return str(v)
 
 
 class InstanceApiKeyCreated(InstanceApiKeyOut):
