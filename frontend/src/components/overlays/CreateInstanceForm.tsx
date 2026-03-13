@@ -31,6 +31,7 @@ export default function CreateInstanceForm({ defaultOptions, onCreated, onCancel
       source_type: sourceType,
       source_id: sourceId,
       name: name.trim(),
+      type: instanceType,
     })
     onCreated(result.id)
   }

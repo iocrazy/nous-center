@@ -86,10 +86,19 @@ async def list_instances(
     result = await session.execute(query)
     instances = result.scalars().all()
 
+    # Batch-resolve source names to avoid N+1
+    preset_ids = {inst.source_id for inst in instances if inst.source_type == "preset"}
+    source_names: dict[int, str] = {}
+    if preset_ids:
+        preset_result = await session.execute(
+            select(VoicePreset.id, VoicePreset.name).where(VoicePreset.id.in_(preset_ids))
+        )
+        source_names = dict(preset_result.all())
+
     out = []
     for inst in instances:
-        source_name = await _resolve_source_name(session, inst.source_type, inst.source_id)
-        out.append(_instance_to_out(inst, source_name))
+        name = source_names.get(inst.source_id) if inst.source_type == "preset" else None
+        out.append(_instance_to_out(inst, name))
     return out
 
 

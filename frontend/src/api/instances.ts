@@ -60,7 +60,7 @@ export function useInstance(instanceId: string | null) {
 export function useCreateInstance() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: { source_type: string; source_id: string; name: string; params_override?: Record<string, unknown> }) =>
+    mutationFn: (data: { source_type: string; source_id: string; name: string; type?: string; params_override?: Record<string, unknown> }) =>
       apiFetch<ServiceInstance>('/api/v1/instances', {
         method: 'POST',
         body: JSON.stringify(data),
