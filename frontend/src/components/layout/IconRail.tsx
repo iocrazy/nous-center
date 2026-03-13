@@ -1,0 +1,208 @@
+import {
+  LayoutDashboard,
+  Layers,
+  CircuitBoard,
+  GitBranch,
+  Settings,
+  SlidersHorizontal,
+  Package,
+  Link,
+  Sun,
+  Moon,
+  Monitor,
+} from 'lucide-react'
+import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
+import { useThemeStore } from '../../stores/theme'
+
+const PANEL_ITEMS: { id: PanelId; icon: typeof CircuitBoard; label: string }[] = [
+  { id: 'nodes', icon: CircuitBoard, label: 'Nodes' },
+  { id: 'workflows', icon: GitBranch, label: 'Workflows' },
+  { id: 'presets', icon: Settings, label: 'Presets' },
+  { id: 'collections', icon: Package, label: 'Collections' },
+  { id: 'api', icon: Link, label: 'API Nodes' },
+]
+
+const OVERLAY_ITEMS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[] = [
+  { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { id: 'models', icon: Layers, label: 'Models' },
+]
+
+export default function IconRail() {
+  const { activePanel, activeOverlay, togglePanel, toggleOverlay } = usePanelStore()
+  const { mode, setMode } = useThemeStore()
+
+  return (
+    <div
+      className="flex flex-col items-center shrink-0 z-20"
+      style={{
+        width: 48,
+        background: 'var(--bg-accent)',
+        borderRight: '1px solid var(--border)',
+        padding: '8px 0',
+      }}
+    >
+      {/* Logo */}
+      <div
+        className="flex items-center justify-center font-extrabold text-white text-[13px] mb-3"
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: 6,
+          background: 'var(--accent)',
+        }}
+      >
+        N
+      </div>
+
+      {/* Overlay buttons (Dashboard, Models) */}
+      {OVERLAY_ITEMS.map(({ id, icon: Icon, label }) => (
+        <RailButton
+          key={id}
+          active={activeOverlay === id}
+          onClick={() => toggleOverlay(id)}
+          label={label}
+        >
+          <Icon size={18} />
+        </RailButton>
+      ))}
+
+      {/* Separator */}
+      <div
+        className="my-1.5"
+        style={{ width: 24, height: 1, background: 'var(--border)' }}
+      />
+
+      {/* Panel buttons */}
+      {PANEL_ITEMS.map(({ id, icon: Icon, label }) => (
+        <RailButton
+          key={id}
+          active={activePanel === id && !activeOverlay}
+          onClick={() => togglePanel(id)}
+          label={label}
+        >
+          <Icon size={18} />
+        </RailButton>
+      ))}
+
+      {/* Bottom section */}
+      <div className="mt-auto flex flex-col items-center gap-1">
+        <RailButton
+          active={activeOverlay === 'settings'}
+          onClick={() => toggleOverlay('settings')}
+          label="Settings"
+        >
+          <SlidersHorizontal size={18} />
+        </RailButton>
+
+        <div className="my-1" style={{ width: 24, height: 1, background: 'var(--border)' }} />
+
+        <ThemeButton active={mode === 'light'} onClick={() => setMode('light')}>
+          <Sun size={12} />
+        </ThemeButton>
+        <ThemeButton active={mode === 'dark'} onClick={() => setMode('dark')}>
+          <Moon size={12} />
+        </ThemeButton>
+        <ThemeButton active={mode === 'auto'} onClick={() => setMode('auto')}>
+          <Monitor size={12} />
+        </ThemeButton>
+        <div className="flex items-center gap-1 mt-1" style={{ fontSize: 8, color: 'var(--muted)' }}>
+          <span
+            className="inline-block rounded-full"
+            style={{ width: 5, height: 5, background: 'var(--ok)' }}
+          />
+          GPU
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RailButton({
+  active,
+  onClick,
+  label,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="group relative flex items-center justify-center mb-0.5"
+      style={{
+        width: 36,
+        height: 36,
+        borderRadius: 6,
+        border: 'none',
+        background: active ? 'var(--accent-subtle)' : 'transparent',
+        color: active ? 'var(--accent)' : 'var(--muted)',
+        cursor: 'pointer',
+        transition: 'all 0.12s',
+      }}
+      onMouseEnter={(e) => {
+        if (!active) {
+          e.currentTarget.style.background = 'var(--bg-hover)'
+          e.currentTarget.style.color = 'var(--text)'
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!active) {
+          e.currentTarget.style.background = 'transparent'
+          e.currentTarget.style.color = 'var(--muted)'
+        }
+      }}
+    >
+      {children}
+      <span
+        className="hidden group-hover:block absolute pointer-events-none"
+        style={{
+          left: 44,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          padding: '3px 8px',
+          fontSize: 10,
+          whiteSpace: 'nowrap',
+          color: 'var(--text)',
+          zIndex: 100,
+        }}
+      >
+        {label}
+      </span>
+    </button>
+  )
+}
+
+function ThemeButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center justify-center"
+      style={{
+        width: 32,
+        height: 28,
+        borderRadius: 4,
+        border: '1px solid var(--border)',
+        background: active ? 'var(--bg-elevated)' : 'transparent',
+        color: active ? 'var(--text-strong)' : 'var(--muted)',
+        cursor: 'pointer',
+        fontSize: 11,
+      }}
+    >
+      {children}
+    </button>
+  )
+}

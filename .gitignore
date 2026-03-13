@@ -40,5 +40,8 @@ checkpoints/
 # Worktrees
 .worktrees/
 
+# Superpowers brainstorm sessions
+.superpowers/
+
 # Runtime config
 settings.yaml

@@ -1,0 +1,171 @@
+/* OpenClaw Theme System */
+
+:root[data-theme="dark"] {
+  --bg: #12141a;
+  --bg-accent: #14161d;
+  --bg-elevated: #1a1d25;
+  --bg-hover: #262a35;
+  --card: #181b22;
+  --card-hl: rgba(255, 255, 255, 0.03);
+  --text: #e4e4e7;
+  --text-strong: #fafafa;
+  --muted: #71717a;
+  --muted-strong: #52525b;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --accent: #ff5c5c;
+  --accent-hover: #ff7070;
+  --accent-subtle: rgba(255, 92, 92, 0.15);
+  --accent-glow: rgba(255, 92, 92, 0.25);
+  --accent-2: #14b8a6;
+  --accent-2-subtle: rgba(20, 184, 166, 0.15);
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --info: #3b82f6;
+  --purple: #a855f7;
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.35);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+:root[data-theme="light"] {
+  --bg: #fafafa;
+  --bg-accent: #f4f4f5;
+  --bg-elevated: #ffffff;
+  --bg-hover: #e4e4e7;
+  --card: #ffffff;
+  --card-hl: rgba(0, 0, 0, 0.02);
+  --text: #27272a;
+  --text-strong: #09090b;
+  --muted: #71717a;
+  --muted-strong: #a1a1aa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --accent: #dc2626;
+  --accent-hover: #ef4444;
+  --accent-subtle: rgba(220, 38, 38, 0.1);
+  --accent-glow: rgba(220, 38, 38, 0.15);
+  --accent-2: #0d9488;
+  --accent-2-subtle: rgba(13, 148, 136, 0.1);
+  --ok: #16a34a;
+  --warn: #d97706;
+  --info: #2563eb;
+  --purple: #9333ea;
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* Base styles */
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* React Flow overrides for theme integration */
+.react-flow__background {
+  background: var(--bg) !important;
+}
+
+.react-flow__controls button {
+  background: var(--card) !important;
+  border-color: var(--border) !important;
+  fill: var(--muted) !important;
+}
+
+.react-flow__controls button:hover {
+  background: var(--bg-hover) !important;
+  fill: var(--text) !important;
+}
+
+.react-flow__minimap {
+  background: var(--bg-accent) !important;
+}
+
+.react-flow__edge-path {
+  stroke: var(--muted-strong) !important;
+}
+
+/* Style native select dropdown options */
+select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 4px 8px;
+}
+
+/* Hide number input spinners globally */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Remove default white background on node wrapper */
+.react-flow__node {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+/* Node slider — ElevenLabs style range input */
+.node-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--bg);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.node-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--bg);
+  border-radius: 2px;
+}
+
+.node-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+  margin-top: -4px;
+}
+
+.node-slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  background: var(--text-strong);
+}
+
+.node-slider::-moz-range-track {
+  height: 4px;
+  background: var(--bg);
+  border-radius: 2px;
+  border: none;
+}
+
+.node-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+  border: none;
+}
+
+.node-slider::-moz-range-thumb:active {
+  cursor: grabbing;
+  background: var(--text-strong);
+}
