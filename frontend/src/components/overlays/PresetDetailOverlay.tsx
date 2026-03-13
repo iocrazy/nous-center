@@ -1,4 +1,4 @@
-import { Copy, Rocket } from 'lucide-react'
+import { Rocket } from 'lucide-react'
 import { usePanelStore } from '../../stores/panel'
 import { useVoicePresets } from '../../api/voices'
 
@@ -110,7 +110,7 @@ export default function PresetDetailOverlay() {
             {/* Deploy button */}
             <button
               onClick={() =>
-                openApiManagement({ source_type: 'preset', source_id: presetId! })
+                openApiManagement({ presetId: presetId! })
               }
               className="flex items-center gap-1"
               style={{

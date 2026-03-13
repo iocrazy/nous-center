@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { Search, Plus, Key, Activity, Copy, Check, ChevronDown, ChevronUp, Trash2 } from 'lucide-react'
-import { usePanelStore, type ApiManagementOptions } from '../../stores/panel'
+import { usePanelStore } from '../../stores/panel'
 import { useSettingsStore } from '../../stores/settings'
 import {
   useInstances,
@@ -25,7 +25,7 @@ export default function ApiManagementOverlay() {
   const { data: allInstances, isLoading } = useInstances()
 
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null)
-  const [showCreateForm, setShowCreateForm] = useState(!!apiManagementOptions?.source_type)
+  const [showCreateForm, setShowCreateForm] = useState(!!apiManagementOptions?.presetId)
   const [searchQuery, setSearchQuery] = useState('')
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 

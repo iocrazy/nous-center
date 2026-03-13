@@ -14,16 +14,16 @@ export default function CreateInstanceForm({ defaultOptions, onCreated, onCancel
   const createInstance = useCreateInstance()
 
   const [sourceType] = useState<'preset'>('preset') // Only preset for now
-  const [sourceId, setSourceId] = useState(defaultOptions?.source_id ?? '')
+  const [sourceId, setSourceId] = useState(defaultOptions?.presetId ?? '')
   const [name, setName] = useState('')
   const [instanceType, setInstanceType] = useState('tts')
 
   // Pre-fill source_id from options
   useEffect(() => {
-    if (defaultOptions?.source_id) {
-      setSourceId(defaultOptions.source_id)
+    if (defaultOptions?.presetId) {
+      setSourceId(defaultOptions.presetId)
     }
-  }, [defaultOptions?.source_id])
+  }, [defaultOptions?.presetId])
 
   const handleSubmit = async () => {
     if (!name.trim() || !sourceId) return
@@ -31,7 +31,6 @@ export default function CreateInstanceForm({ defaultOptions, onCreated, onCancel
       source_type: sourceType,
       source_id: sourceId,
       name: name.trim(),
-      type: instanceType,
     })
     onCreated(result.id)
   }
