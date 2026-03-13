@@ -23,13 +23,11 @@ import { NODE_DEFS, type NodeType, type PortType } from '../../models/workflow'
 import NodeLibraryPanel from '../panels/NodeLibraryPanel'
 import WorkflowsPanel from '../panels/WorkflowsPanel'
 import PresetsPanel from '../panels/PresetsPanel'
-import CollectionsPanel from '../panels/CollectionsPanel'
-import ApiNodesPanel from '../panels/ApiNodesPanel'
 import DashboardOverlay from '../overlays/DashboardOverlay'
 import ModelsOverlay from '../overlays/ModelsOverlay'
 import SettingsOverlay from '../overlays/SettingsOverlay'
 import PresetDetailOverlay from '../overlays/PresetDetailOverlay'
-import InstanceDetailOverlay from '../overlays/InstanceDetailOverlay'
+import ApiManagementOverlay from '../overlays/ApiManagementOverlay'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
   const def = NODE_DEFS[nodeType as NodeType]
@@ -43,8 +41,6 @@ const PANEL_MAP: Record<string, React.FC> = {
   nodes: NodeLibraryPanel,
   workflows: WorkflowsPanel,
   presets: PresetsPanel,
-  collections: CollectionsPanel,
-  api: ApiNodesPanel,
 }
 
 export default function NodeEditor() {
@@ -221,7 +217,7 @@ export default function NodeEditor() {
       {activeOverlay === 'models' && <ModelsOverlay />}
       {activeOverlay === 'settings' && <SettingsOverlay />}
       {activeOverlay === 'preset-detail' && <PresetDetailOverlay />}
-      {activeOverlay === 'instance-detail' && <InstanceDetailOverlay />}
+      {activeOverlay === 'api-management' && <ApiManagementOverlay />}
     </div>
   )
 }
