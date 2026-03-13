@@ -236,7 +236,15 @@ After:  'dashboard' | 'models' | 'settings' | 'preset-detail' | 'api-management'
 
 ---
 
-## 7. Out of Scope
+## 7. Implementation Notes
+
+- **Database migration**: Existing `service_instances` rows have `preset_id`. Migration must copy `preset_id` → `source_id`, set `source_type='preset'`, then drop the `preset_id` column.
+- **`source_name` resolution**: `ServiceInstanceOut` should include a computed `source_name` field, resolved by joining against presets or workflows based on `source_type`. For now, only `source_type='preset'` needs resolution; workflow resolution is deferred.
+- **`source_type='workflow'` validation**: Since workflows are not yet persisted entities, the create endpoint should only accept `source_type='preset'` initially. Workflow support is added when workflow persistence is implemented.
+
+---
+
+## 8. Out of Scope
 
 - Workflow composite node implementation (multi-voice node) — separate spec
 - Workflow deployment as instance — requires workflow persistence, separate spec
