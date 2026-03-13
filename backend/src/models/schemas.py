@@ -228,14 +228,15 @@ class BatchRetryRequest(BaseModel):
 # --- Service Instances ---
 
 class ServiceInstanceCreate(BaseModel):
-    preset_id: int
+    source_type: Literal["preset"] = "preset"
+    source_id: int
     name: str
     type: str = "tts"
     params_override: dict = {}
 
-    @field_validator("preset_id", mode="before")
+    @field_validator("source_id", mode="before")
     @classmethod
-    def coerce_preset_id(cls, v: int | str) -> int:
+    def coerce_source_id(cls, v: int | str) -> int:
         return int(v)
 
 
@@ -246,7 +247,9 @@ class ServiceInstanceUpdate(BaseModel):
 
 class ServiceInstanceOut(BaseModel):
     id: int
-    preset_id: int
+    source_type: str
+    source_id: int
+    source_name: str | None = None
     name: str
     type: str
     status: str
@@ -257,7 +260,7 @@ class ServiceInstanceOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
-    @field_serializer("id", "preset_id")
+    @field_serializer("id", "source_id")
     def serialize_ids(self, v: int) -> str:
         return str(v)
 
