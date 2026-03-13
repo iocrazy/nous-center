@@ -1,4 +1,4 @@
-"""External preset service endpoints (Bearer Token auth required)."""
+"""External instance service endpoints (Bearer Token auth required)."""
 
 import base64
 import time
@@ -8,26 +8,32 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps_auth import verify_preset_key
+from src.api.deps_auth import verify_instance_key
 from src.models.database import get_async_session
-from src.models.preset_api_key import PresetApiKey
+from src.models.instance_api_key import InstanceApiKey
+from src.models.service_instance import ServiceInstance
 from src.models.voice_preset import VoicePreset
 
-router = APIRouter(prefix="/v1/preset", tags=["preset-service"])
+router = APIRouter(prefix="/v1/instances", tags=["instance-service"])
 
 
-class PresetSynthesizeRequest(BaseModel):
+class InstanceSynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000)
     emotion: str | None = None
 
 
-@router.post("/{preset_id}/synthesize")
-async def preset_synthesize(
-    req: PresetSynthesizeRequest,
-    auth: tuple[VoicePreset, PresetApiKey] = Depends(verify_preset_key),
+@router.post("/{instance_id}/synthesize")
+async def instance_synthesize(
+    req: InstanceSynthesizeRequest,
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_instance_key),
     session: AsyncSession = Depends(get_async_session),
 ):
-    preset, api_key = auth
+    instance, api_key = auth
+
+    # Load preset to get engine config
+    preset = await session.get(VoicePreset, instance.preset_id)
+    if not preset:
+        raise HTTPException(500, detail="Linked preset not found")
 
     # Resolve engine
     from src.workers.tts_engines import registry
@@ -40,8 +46,8 @@ async def preset_synthesize(
             detail=f"Engine {engine_name} not loaded. Load it via the management API first.",
         )
 
-    # Build synthesis kwargs from preset params
-    params = preset.params or {}
+    # Merge preset params with instance overrides
+    params = {**(preset.params or {}), **(instance.params_override or {})}
     kwargs = {
         "text": req.text,
         "voice": params.get("voice", "default"),

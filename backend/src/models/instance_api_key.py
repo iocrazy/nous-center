@@ -6,13 +6,13 @@ from src.models.database import Base
 from src.utils.snowflake import snowflake_id
 
 
-class PresetApiKey(Base):
-    __tablename__ = "preset_api_keys"
+class InstanceApiKey(Base):
+    __tablename__ = "instance_api_keys"
 
     id = Column(BigInteger, primary_key=True, default=snowflake_id)
-    preset_id = Column(
+    instance_id = Column(
         BigInteger,
-        ForeignKey("voice_presets.id", ondelete="CASCADE"),
+        ForeignKey("service_instances.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

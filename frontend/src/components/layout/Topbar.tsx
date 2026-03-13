@@ -16,7 +16,7 @@ export default function Topbar() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
 
-  const overlayTitle = activeOverlay === 'dashboard' ? 'Dashboard' : activeOverlay === 'models' ? 'Models' : activeOverlay === 'settings' ? '设置' : activeOverlay === 'preset-detail' ? 'Preset 详情' : null
+  const overlayTitle = activeOverlay === 'dashboard' ? 'Dashboard' : activeOverlay === 'models' ? 'Models' : activeOverlay === 'settings' ? '设置' : activeOverlay === 'preset-detail' ? '预设详情' : activeOverlay === 'instance-detail' ? '实例详情' : null
 
   const handleRun = async () => {
     if (isRunning) return

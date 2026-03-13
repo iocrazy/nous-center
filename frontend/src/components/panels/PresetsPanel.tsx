@@ -51,19 +51,6 @@ export default function PresetsPanel() {
             <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}>
               {p.name}
             </span>
-            {p.status && (
-              <span
-                style={{
-                  fontSize: 9,
-                  padding: '1px 5px',
-                  borderRadius: 8,
-                  background: p.status === 'active' ? '#2a5a3a' : '#5a2a2a',
-                  color: p.status === 'active' ? '#4ade80' : '#f87171',
-                }}
-              >
-                {p.status}
-              </span>
-            )}
           </div>
           <div style={{ fontSize: 10, color: 'var(--accent-2)', marginBottom: 3 }}>
             {p.engine}

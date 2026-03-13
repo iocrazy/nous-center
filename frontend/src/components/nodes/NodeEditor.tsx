@@ -29,6 +29,7 @@ import DashboardOverlay from '../overlays/DashboardOverlay'
 import ModelsOverlay from '../overlays/ModelsOverlay'
 import SettingsOverlay from '../overlays/SettingsOverlay'
 import PresetDetailOverlay from '../overlays/PresetDetailOverlay'
+import InstanceDetailOverlay from '../overlays/InstanceDetailOverlay'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
   const def = NODE_DEFS[nodeType as NodeType]
@@ -220,6 +221,7 @@ export default function NodeEditor() {
       {activeOverlay === 'models' && <ModelsOverlay />}
       {activeOverlay === 'settings' && <SettingsOverlay />}
       {activeOverlay === 'preset-detail' && <PresetDetailOverlay />}
+      {activeOverlay === 'instance-detail' && <InstanceDetailOverlay />}
     </div>
   )
 }

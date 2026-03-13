@@ -160,8 +160,6 @@ class VoicePresetOut(BaseModel):
     reference_audio_path: str | None
     reference_text: str | None
     tags: list[str]
-    status: str = "active"
-    endpoint_path: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -215,15 +213,47 @@ class BatchRetryRequest(BaseModel):
     round_ids: list[int]
 
 
-# --- Preset API Keys ---
+# --- Service Instances ---
 
-class PresetApiKeyCreate(BaseModel):
+class ServiceInstanceCreate(BaseModel):
+    preset_id: int
+    name: str
+    type: str = "tts"
+    params_override: dict = {}
+
+
+class ServiceInstanceUpdate(BaseModel):
+    name: str | None = None
+    params_override: dict | None = None
+
+
+class ServiceInstanceOut(BaseModel):
+    id: int
+    preset_id: int
+    name: str
+    type: str
+    status: str
+    endpoint_path: str | None
+    params_override: dict
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class InstanceStatusUpdate(BaseModel):
+    status: Literal["active", "inactive"]
+
+
+# --- Instance API Keys ---
+
+class InstanceApiKeyCreate(BaseModel):
     label: str
 
 
-class PresetApiKeyOut(BaseModel):
+class InstanceApiKeyOut(BaseModel):
     id: int
-    preset_id: int
+    instance_id: int
     label: str
     key_prefix: str
     is_active: bool
@@ -235,10 +265,6 @@ class PresetApiKeyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class PresetApiKeyCreated(PresetApiKeyOut):
+class InstanceApiKeyCreated(InstanceApiKeyOut):
     """Returned only on creation — includes the full key."""
     key: str
-
-
-class PresetStatusUpdate(BaseModel):
-    status: Literal["active", "inactive"]

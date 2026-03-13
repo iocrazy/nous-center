@@ -19,7 +19,8 @@ from src.models.database import Base, get_async_session
 from src.api.main import create_app
 import src.models.voice_preset  # noqa: F401 — ensure models registered with Base
 import src.models.tts_usage  # noqa: F401 — register model
-import src.models.preset_api_key  # noqa: F401 — register model
+import src.models.service_instance  # noqa: F401 — register model
+import src.models.instance_api_key  # noqa: F401 — register model
 
 
 @pytest.fixture

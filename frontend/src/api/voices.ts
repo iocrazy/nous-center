@@ -9,8 +9,6 @@ export interface VoicePreset {
   reference_audio_path: string | null
   reference_text: string | null
   tags: string[]
-  status: string
-  endpoint_path: string | null
 }
 
 export function useVoicePresets() {

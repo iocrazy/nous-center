@@ -16,8 +16,6 @@ class VoicePreset(Base):
     reference_audio_path = Column(String(500), nullable=True)
     reference_text = Column(String(1000), nullable=True)
     tags = Column(JSON, default=list)
-    status = Column(String(20), default="active", nullable=False)
-    endpoint_path = Column(String(200), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
