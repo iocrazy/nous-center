@@ -1,20 +1,25 @@
 import { create } from 'zustand'
 
-export type PanelId = 'nodes' | 'workflows' | 'presets' | 'collections' | 'api'
-export type OverlayId = 'dashboard' | 'models' | 'settings' | 'preset-detail' | 'instance-detail'
+export type PanelId = 'nodes' | 'workflows' | 'presets'
+export type OverlayId = 'dashboard' | 'models' | 'settings' | 'preset-detail' | 'api-management'
+
+export interface ApiManagementOptions {
+  presetId?: string
+  instanceId?: string
+}
 
 interface PanelState {
   activePanel: PanelId | null
   activeOverlay: OverlayId | null
   selectedPresetId: string | null
-  selectedInstanceId: string | null
+  apiManagementOptions: ApiManagementOptions | null
   panelWidth: number
   setPanel: (id: PanelId | null) => void
   togglePanel: (id: PanelId) => void
   setOverlay: (id: OverlayId | null) => void
   toggleOverlay: (id: OverlayId) => void
   openPresetDetail: (presetId: string) => void
-  openInstanceDetail: (instanceId: string) => void
+  openApiManagement: (options?: ApiManagementOptions) => void
   setPanelWidth: (width: number) => void
 }
 
@@ -22,7 +27,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   activePanel: 'nodes',
   activeOverlay: null,
   selectedPresetId: null,
-  selectedInstanceId: null,
+  apiManagementOptions: null,
   panelWidth: 260,
 
   setPanel: (id) => set({ activePanel: id, activeOverlay: null }),
@@ -48,8 +53,8 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   openPresetDetail: (presetId) =>
     set({ activeOverlay: 'preset-detail', activePanel: null, selectedPresetId: presetId }),
 
-  openInstanceDetail: (instanceId) =>
-    set({ activeOverlay: 'instance-detail', activePanel: null, selectedInstanceId: instanceId }),
+  openApiManagement: (options) =>
+    set({ activeOverlay: 'api-management', activePanel: null, apiManagementOptions: options ?? null }),
 
   setPanelWidth: (width) => set({ panelWidth: Math.max(200, Math.min(400, width)) }),
 }))

@@ -13,7 +13,8 @@ async def _create_preset_and_instance(db_client):
     preset_id = resp.json()["id"]
 
     resp = await db_client.post("/api/v1/instances", json={
-        "preset_id": preset_id,
+        "source_type": "preset",
+        "source_id": preset_id,
         "name": "test-instance",
     })
     assert resp.status_code == 201
@@ -23,7 +24,9 @@ async def _create_preset_and_instance(db_client):
 
 async def test_create_instance(db_client):
     preset_id, instance = await _create_preset_and_instance(db_client)
-    assert instance["preset_id"] == preset_id
+    assert instance["source_type"] == "preset"
+    assert instance["source_id"] == preset_id
+    assert instance["source_name"] == "testvoice"
     assert instance["name"] == "test-instance"
     assert instance["type"] == "tts"
     assert instance["status"] == "active"
@@ -31,18 +34,24 @@ async def test_create_instance(db_client):
     assert instance["params_override"] == {}
 
 
-async def test_list_instances_by_preset(db_client):
+async def test_list_instances_by_type(db_client):
     preset_id, _ = await _create_preset_and_instance(db_client)
 
-    # Create a second instance
     await db_client.post("/api/v1/instances", json={
-        "preset_id": preset_id,
+        "source_type": "preset",
+        "source_id": preset_id,
         "name": "second-instance",
     })
 
-    resp = await db_client.get(f"/api/v1/instances?preset_id={preset_id}")
+    # Filter by type
+    resp = await db_client.get("/api/v1/instances?type=tts")
     assert resp.status_code == 200
     assert len(resp.json()) == 2
+
+    # No image instances
+    resp = await db_client.get("/api/v1/instances?type=image")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 0
 
 
 async def test_instance_status_toggle(db_client):
@@ -218,17 +227,70 @@ async def test_instance_params_override(db_client):
     preset_id = resp.json()["id"]
 
     resp = await db_client.post("/api/v1/instances", json={
-        "preset_id": preset_id,
+        "source_type": "preset",
+        "source_id": preset_id,
         "name": "fast-instance",
         "params_override": {"speed": 1.5},
     })
     assert resp.status_code == 201
     assert resp.json()["params_override"] == {"speed": 1.5}
 
-    # Update override
     instance_id = resp.json()["id"]
     resp = await db_client.patch(f"/api/v1/instances/{instance_id}", json={
         "params_override": {"speed": 2.0, "voice": "narrator"},
     })
     assert resp.status_code == 200
     assert resp.json()["params_override"] == {"speed": 2.0, "voice": "narrator"}
+
+
+async def test_create_instance_with_source_type(db_client):
+    """Instance creation uses source_type + source_id instead of preset_id."""
+    resp = await db_client.post("/api/v1/voices", json={
+        "name": "source-type-test",
+        "engine": "cosyvoice2",
+        "params": {"voice": "default"},
+        "tags": [],
+    })
+    assert resp.status_code == 201
+    preset_id = resp.json()["id"]
+
+    resp = await db_client.post("/api/v1/instances", json={
+        "source_type": "preset",
+        "source_id": preset_id,
+        "name": "new-style-instance",
+        "type": "tts",
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["source_type"] == "preset"
+    assert data["source_id"] == preset_id
+    assert data["name"] == "new-style-instance"
+    assert "preset_id" not in data
+
+
+async def test_create_instance_invalid_source_type(db_client):
+    """source_type='workflow' should be rejected (not yet supported)."""
+    resp = await db_client.post("/api/v1/instances", json={
+        "source_type": "workflow",
+        "source_id": 12345,
+        "name": "workflow-instance",
+    })
+    assert resp.status_code == 422  # Literal["preset"] validation
+
+
+async def test_create_instance_nonexistent_source(db_client):
+    """Non-existent source_id should 404."""
+    resp = await db_client.post("/api/v1/instances", json={
+        "source_type": "preset",
+        "source_id": 9999999999999,
+        "name": "ghost-instance",
+    })
+    assert resp.status_code == 404
+
+
+async def test_list_all_instances(db_client):
+    """List without type filter returns all instances."""
+    preset_id, _ = await _create_preset_and_instance(db_client)
+    resp = await db_client.get("/api/v1/instances")
+    assert resp.status_code == 200
+    assert len(resp.json()) >= 1

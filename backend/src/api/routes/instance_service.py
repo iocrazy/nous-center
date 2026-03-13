@@ -30,8 +30,10 @@ async def instance_synthesize(
 ):
     instance, api_key = auth
 
-    # Load preset to get engine config
-    preset = await session.get(VoicePreset, instance.preset_id)
+    # Load preset to get engine config (resolve from source_type)
+    if instance.source_type != "preset":
+        raise HTTPException(501, detail="Only preset-based instances support synthesis currently")
+    preset = await session.get(VoicePreset, instance.source_id)
     if not preset:
         raise HTTPException(500, detail="Linked preset not found")
 

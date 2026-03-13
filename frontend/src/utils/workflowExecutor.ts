@@ -1,6 +1,5 @@
 import type { Workflow, WorkflowNode, WorkflowEdge, NodeType } from '../models/workflow'
 import { apiFetch } from '../api/client'
-import { streamTTS } from '../api/tts'
 import type { SynthesizeResponse } from '../api/tts'
 
 export interface ExecutionResult {
@@ -123,7 +122,7 @@ const nodeExecutors: Record<NodeType, (node: WorkflowNode, inputs: NodeOutput) =
     }
   },
 
-  resample: async (node, inputs) => {
+  resample: async (_node, inputs) => {
     // TODO: call nous-core /audio/resample when available
     // For now, passthrough
     return { audioBase64: inputs.audioBase64, sampleRate: inputs.sampleRate }

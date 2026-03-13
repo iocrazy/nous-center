@@ -47,7 +47,7 @@ export default function SettingsOverlay() {
     for (const section of SECTIONS) {
       for (const f of section.fields) {
         if (f.serverKey && f.serverKey in serverSettings) {
-          merged[f.key] = (serverSettings as Record<string, string | number>)[f.serverKey]
+          merged[f.key] = (serverSettings as unknown as Record<string, string | number>)[f.serverKey]
         }
       }
     }
