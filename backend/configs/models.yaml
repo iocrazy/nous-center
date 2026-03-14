@@ -5,6 +5,8 @@ models:
     gpu: 0
     vram_gb: 10
     resident: true
+    modelscope_id: "AI-ModelScope/stable-diffusion-xl-base-1.0"
+    hf_id: "stabilityai/stable-diffusion-xl-base-1.0"
 
   cosyvoice2:
     name: "CosyVoice2-0.5B"
@@ -13,6 +15,8 @@ models:
     vram_gb: 3
     resident: true
     local_path: "tts/cosyvoice2-0.5b"
+    modelscope_id: "iic/CosyVoice2-0.5B"
+    hf_id: "FunAudioLLM/CosyVoice2-0.5B"
 
   indextts2:
     name: "IndexTTS-2"
@@ -21,6 +25,8 @@ models:
     vram_gb: 4
     resident: false
     local_path: "tts/indextts-2"
+    modelscope_id: "IndexTeam/IndexTTS-2"
+    hf_id: "IndexTeam/IndexTTS-2"
 
   qwen3_tts_base:
     name: "Qwen3-TTS-12Hz-1.7B-Base"
@@ -29,6 +35,8 @@ models:
     vram_gb: 4
     resident: false
     local_path: "tts/qwen3-tts-1.7b-base"
+    modelscope_id: "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    hf_id: "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
   qwen3_tts_customvoice:
     name: "Qwen3-TTS-12Hz-1.7B-CustomVoice"
@@ -37,6 +45,8 @@ models:
     vram_gb: 4
     resident: false
     local_path: "tts/qwen3-tts-1.7b-customvoice"
+    modelscope_id: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    hf_id: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 
   qwen3_tts_voicedesign:
     name: "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
@@ -45,6 +55,8 @@ models:
     vram_gb: 4
     resident: false
     local_path: "tts/qwen3-tts-1.7b-voicedesign"
+    modelscope_id: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+    hf_id: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 
   moss_tts:
     name: "MOSS-TTS"
@@ -53,6 +65,8 @@ models:
     vram_gb: 8
     resident: false
     local_path: "tts/moss-tts"
+    modelscope_id: "openmoss/MOSS-TTS"
+    hf_id: "openmoss/MOSS-TTS"
 
   qwen25_vl:
     name: "Qwen/Qwen2.5-VL-7B-Instruct"
@@ -61,6 +75,8 @@ models:
     gpu: 1
     vram_gb: 16
     resident: false
+    modelscope_id: "Qwen/Qwen2.5-VL-7B-Instruct"
+    hf_id: "Qwen/Qwen2.5-VL-7B-Instruct"
 
   wan21:
     name: "Wan2.1"
@@ -69,3 +85,5 @@ models:
     vram_gb: 40
     resident: false
     exclusive: true
+    modelscope_id: "Wan-AI/Wan2.1-T2V-14B"
+    hf_id: "Wan-AI/Wan2.1-T2V-14B"

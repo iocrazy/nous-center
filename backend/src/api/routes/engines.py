@@ -2,11 +2,17 @@ import asyncio
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import load_model_configs, get_settings
 from src.gpu.detector import get_device_for_engine, gpu_summary
+from src.models.database import get_async_session
 from src.models.schemas import EngineInfo, EngineLoadResponse
+from src.services.model_metadata_service import (
+    get_all_metadata, sync_metadata, refresh_metadata, scan_local_models,
+    _format_size,
+)
 from src.workers.tts_engines.registry import get_engine
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
@@ -24,23 +30,70 @@ def _is_engine_loaded(name: str) -> bool:
     return engine is not None and engine.is_loaded
 
 
+def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str]) -> EngineInfo:
+    local_path = cfg.get("local_path")
+    local_exists = local_path in local_dirs if local_path else False
+    info = EngineInfo(
+        name=key,
+        display_name=cfg["name"],
+        type=cfg["type"],
+        status="loaded" if _is_engine_loaded(key) else "unloaded",
+        gpu=cfg.get("gpu", 1),
+        vram_gb=cfg.get("vram_gb", 0),
+        resident=cfg.get("resident", False),
+        local_path=local_path,
+        local_exists=local_exists,
+    )
+    if meta:
+        info.organization = meta.organization
+        info.model_size = _format_size(meta.model_size_bytes)
+        info.frameworks = meta.frameworks
+        info.libraries = meta.libraries
+        info.license = meta.license
+        info.languages = meta.languages
+        info.tags = meta.tags
+        info.tensor_types = meta.tensor_types
+        info.description = meta.description
+        info.has_metadata = True
+    return info
+
+
 @router.get("", response_model=list[EngineInfo])
-async def list_all_engines():
+async def list_all_engines(
+    type: str | None = None,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """List all engines with metadata. Optionally filter by type."""
     configs = load_model_configs()
+    metadata = await get_all_metadata(session)
+    local_dirs = scan_local_models()
     result = []
     for key, cfg in configs.items():
-        if cfg.get("type") != "tts":
+        if type and cfg.get("type") != type:
             continue
-        result.append(EngineInfo(
-            name=key,
-            display_name=cfg["name"],
-            type=cfg["type"],
-            status="loaded" if _is_engine_loaded(key) else "unloaded",
-            gpu=cfg.get("gpu", 1),
-            vram_gb=cfg.get("vram_gb", 0),
-            resident=cfg.get("resident", False),
-        ))
+        result.append(_build_engine_info(key, cfg, metadata.get(key), local_dirs))
     return result
+
+
+@router.post("/sync-metadata")
+async def sync_all_metadata(session: AsyncSession = Depends(get_async_session)):
+    """Fetch metadata for any engine not yet in DB."""
+    metadata = await sync_metadata(session)
+    return {"synced": len(metadata)}
+
+
+@router.post("/{name}/refresh-metadata", response_model=EngineInfo)
+async def refresh_engine_metadata(
+    name: str,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Force re-fetch metadata for a specific engine."""
+    configs = load_model_configs()
+    if name not in configs:
+        raise HTTPException(404, detail=f"Unknown engine: {name}")
+    meta = await refresh_metadata(session, name)
+    local_dirs = scan_local_models()
+    return _build_engine_info(name, configs[name], meta, local_dirs)
 
 
 @router.post("/{name}/load", response_model=EngineLoadResponse)

@@ -81,9 +81,22 @@ class EngineInfo(BaseModel):
     display_name: str
     type: str
     status: Literal["loaded", "unloaded"]
-    gpu: int
+    gpu: int | list[int]
     vram_gb: float
     resident: bool
+    local_path: str | None = None
+    local_exists: bool = False
+    # Remote metadata (from ModelScope / HuggingFace)
+    organization: str | None = None
+    model_size: str | None = None  # formatted: "494MB", "4.85GB"
+    frameworks: list[str] | None = None
+    libraries: list[str] | None = None
+    license: str | None = None
+    languages: list[str] | None = None
+    tags: list[str] | None = None
+    tensor_types: list[str] | None = None
+    description: str | None = None
+    has_metadata: bool = False
 
 
 class EngineLoadResponse(BaseModel):

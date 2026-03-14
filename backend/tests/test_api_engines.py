@@ -1,8 +1,8 @@
 from unittest.mock import patch, MagicMock
 
 
-async def test_list_engines(client):
-    resp = await client.get("/api/v1/engines")
+async def test_list_engines(db_client):
+    resp = await db_client.get("/api/v1/engines")
     assert resp.status_code == 200
     engines = resp.json()
     assert isinstance(engines, list)
@@ -13,12 +13,32 @@ async def test_list_engines(client):
     assert engine["status"] in ("loaded", "unloaded")
 
 
-async def test_list_engines_contains_all_tts(client):
-    resp = await client.get("/api/v1/engines")
+async def test_list_engines_contains_all_tts(db_client):
+    resp = await db_client.get("/api/v1/engines")
     names = {e["name"] for e in resp.json()}
     assert "cosyvoice2" in names
     assert "indextts2" in names
     assert "moss_tts" in names
+
+
+async def test_list_engines_returns_metadata_fields(db_client):
+    resp = await db_client.get("/api/v1/engines")
+    engine = resp.json()[0]
+    # New fields should be present even if null
+    assert "has_metadata" in engine
+    assert "local_exists" in engine
+    assert "model_size" in engine
+    assert "frameworks" in engine
+
+
+async def test_list_engines_filter_by_type(db_client):
+    resp = await db_client.get("/api/v1/engines?type=tts")
+    engines = resp.json()
+    assert all(e["type"] == "tts" for e in engines)
+
+    resp2 = await db_client.get("/api/v1/engines?type=image")
+    engines2 = resp2.json()
+    assert all(e["type"] == "image" for e in engines2)
 
 
 async def test_load_unknown_engine(client):

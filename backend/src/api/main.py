@@ -20,12 +20,25 @@ async def lifespan(app: FastAPI):
     import src.models.tts_usage  # noqa: F401
     import src.models.service_instance  # noqa: F401
     import src.models.instance_api_key  # noqa: F401
+    import src.models.model_metadata  # noqa: F401
 
     engine = create_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await engine.dispose()
     logger.info("Database tables ensured")
+
+    # Auto-sync model metadata for any new engines
+    from src.models.database import create_session_factory
+    from src.services.model_metadata_service import sync_metadata
+    try:
+        sf = create_session_factory()
+        async with sf() as session:
+            await sync_metadata(session)
+        logger.info("Model metadata synced")
+    except Exception as e:
+        logger.warning("Model metadata sync failed (non-fatal): %s", e)
+
     yield
 
 

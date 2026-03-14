@@ -21,6 +21,7 @@ import src.models.voice_preset  # noqa: F401 — ensure models registered with B
 import src.models.tts_usage  # noqa: F401 — register model
 import src.models.service_instance  # noqa: F401 — register model
 import src.models.instance_api_key  # noqa: F401 — register model
+import src.models.model_metadata  # noqa: F401 — register model
 
 
 @pytest.fixture

@@ -1,14 +1,23 @@
-import { useEngines, useLoadEngine, useUnloadEngine, type EngineInfo } from '../../api/engines'
+import { useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata, type EngineInfo } from '../../api/engines'
+
+const TYPE_LABELS: Record<string, string> = {
+  tts: '语音合成 TTS',
+  image: '图像生成 Image',
+  video: '视频生成 Video',
+  understand: '多模态理解 VL',
+}
+
+const TYPE_ORDER = ['tts', 'image', 'video', 'understand']
 
 export default function ModelsOverlay() {
   const { data: engines, isLoading, isError } = useEngines()
   const loadEngine = useLoadEngine()
   const unloadEngine = useUnloadEngine()
+  const syncMeta = useSyncMetadata()
 
-  // Group engines by display_name prefix (e.g. "CosyVoice2-0.5B" → "CosyVoice2")
+  // Group by type
   const groups = (engines ?? []).reduce<Record<string, EngineInfo[]>>((acc, e) => {
-    const group = e.display_name.replace(/-[^-]+$/, '').replace(/ .*$/, '')
-    ;(acc[group] ??= []).push(e)
+    ;(acc[e.type] ??= []).push(e)
     return acc
   }, {})
 
@@ -20,12 +29,38 @@ export default function ModelsOverlay() {
     }
   }
 
+  const hasAnyMissing = (engines ?? []).some((e) => !e.has_metadata)
+
   return (
     <div
       className="absolute inset-0 overflow-y-auto z-[16]"
       style={{ background: 'var(--bg)' }}
     >
       <div style={{ padding: 16 }}>
+        {/* Header with sync button */}
+        {hasAnyMissing && (
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              onClick={() => syncMeta.mutate()}
+              disabled={syncMeta.isPending}
+              style={{
+                padding: '4px 12px',
+                fontSize: 10,
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'var(--accent)',
+                color: '#fff',
+                cursor: syncMeta.isPending ? 'wait' : 'pointer',
+                opacity: syncMeta.isPending ? 0.6 : 1,
+              }}
+            >
+              {syncMeta.isPending ? '同步中...' : '拉取模型信息'}
+            </button>
+            <span style={{ fontSize: 9, color: 'var(--muted)' }}>
+              从 ModelScope / HuggingFace 获取元数据
+            </span>
+          </div>
+        )}
 
         {isLoading && (
           <div style={{ fontSize: 11, color: 'var(--muted)' }}>加载中...</div>
@@ -37,72 +72,164 @@ export default function ModelsOverlay() {
           </div>
         )}
 
-        {Object.entries(groups).map(([groupName, models]) => (
-          <div key={groupName} className="mb-4">
+        {TYPE_ORDER.filter((t) => groups[t]).map((type) => (
+          <div key={type} className="mb-5">
             <div
+              className="flex items-center gap-2 mb-2"
               style={{
-                fontSize: 11,
+                fontSize: 10,
                 fontWeight: 600,
                 color: 'var(--accent-2)',
-                marginBottom: 8,
                 textTransform: 'uppercase',
                 letterSpacing: '0.05em',
               }}
             >
-              {groupName}
+              {TYPE_LABELS[type] ?? type}
+              <span
+                style={{
+                  fontSize: 9,
+                  color: 'var(--muted)',
+                  background: 'var(--card)',
+                  padding: '1px 6px',
+                  borderRadius: 8,
+                }}
+              >
+                {groups[type].length}
+              </span>
             </div>
 
-            {models.map((model) => {
-              const busy =
-                (loadEngine.isPending && loadEngine.variables === model.name) ||
-                (unloadEngine.isPending && unloadEngine.variables === model.name)
-
-              return (
-                <div
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
+                gap: 8,
+              }}
+            >
+              {groups[type].map((model) => (
+                <ModelCard
                   key={model.name}
-                  className="flex items-center gap-3 rounded-md mb-1.5"
-                  style={{
-                    background: 'var(--card)',
-                    border: '1px solid var(--border)',
-                    padding: '10px 12px',
-                  }}
-                >
-                  <div className="flex-1">
-                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}>
-                      {model.display_name}
-                    </div>
-                    <div className="flex gap-3 mt-1" style={{ fontSize: 10, color: 'var(--muted)' }}>
-                      <span>{model.vram_gb} GB</span>
-                      <span>GPU {model.gpu}</span>
-                      {model.resident && <span style={{ color: 'var(--warn)' }}>resident</span>}
-                    </div>
-                  </div>
-
-                  <StatusBadge status={model.status} />
-
-                  <button
-                    disabled={busy}
-                    onClick={() => handleToggle(model)}
-                    style={{
-                      padding: '4px 10px',
-                      fontSize: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--border)',
-                      background: model.status === 'loaded' ? 'none' : 'var(--accent)',
-                      color: model.status === 'loaded' ? 'var(--muted)' : '#fff',
-                      cursor: busy ? 'wait' : 'pointer',
-                      opacity: busy ? 0.6 : 1,
-                    }}
-                  >
-                    {busy ? '...' : model.status === 'loaded' ? 'Unload' : 'Load'}
-                  </button>
-                </div>
-              )
-            })}
+                  model={model}
+                  busy={
+                    (loadEngine.isPending && loadEngine.variables === model.name) ||
+                    (unloadEngine.isPending && unloadEngine.variables === model.name)
+                  }
+                  onToggle={() => handleToggle(model)}
+                />
+              ))}
+            </div>
           </div>
         ))}
       </div>
     </div>
+  )
+}
+
+function ModelCard({
+  model,
+  busy,
+  onToggle,
+}: {
+  model: EngineInfo
+  busy: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div
+      className="rounded-md"
+      style={{
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        padding: '10px 12px',
+      }}
+    >
+      {/* Row 1: Name + status + toggle */}
+      <div className="flex items-center gap-2 mb-1">
+        <span
+          style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}
+          className="truncate flex-1"
+        >
+          {model.organization ? `${model.organization}/` : ''}
+          {model.display_name}
+        </span>
+        <StatusBadge status={model.status} />
+        <button
+          disabled={busy || model.type !== 'tts'}
+          onClick={onToggle}
+          style={{
+            padding: '2px 8px',
+            fontSize: 9,
+            borderRadius: 3,
+            border: '1px solid var(--border)',
+            background: model.status === 'loaded' ? 'none' : 'var(--accent)',
+            color: model.status === 'loaded' ? 'var(--muted)' : '#fff',
+            cursor: busy ? 'wait' : 'pointer',
+            opacity: busy || model.type !== 'tts' ? 0.4 : 1,
+            flexShrink: 0,
+          }}
+        >
+          {busy ? '...' : model.status === 'loaded' ? 'Unload' : 'Load'}
+        </button>
+      </div>
+
+      {/* Row 2: Tags line */}
+      <div className="flex flex-wrap items-center gap-1.5" style={{ fontSize: 9, color: 'var(--muted)' }}>
+        <Tag color="var(--accent-2)">{TYPE_LABELS[model.type]?.split(' ')[0] ?? model.type}</Tag>
+        {model.model_size && <Tag icon="📦">{model.model_size}</Tag>}
+        {model.frameworks?.map((f) => (
+          <Tag key={f} icon="⚙">{f}</Tag>
+        ))}
+        {model.license && <Tag icon="📄">{model.license}</Tag>}
+        {model.languages && model.languages.length > 0 && (
+          model.languages.length <= 3
+            ? model.languages.map((l) => <Tag key={l}>{l.toUpperCase()}</Tag>)
+            : <Tag>{model.languages.length} languages</Tag>
+        )}
+        {model.tags?.slice(0, 3).map((t) => (
+          <span key={t} style={{ color: 'var(--muted)' }}>• {t}</span>
+        ))}
+      </div>
+
+      {/* Row 3: Local info */}
+      <div className="flex items-center gap-3 mt-1" style={{ fontSize: 9, color: 'var(--muted)' }}>
+        <span>{model.vram_gb}GB VRAM</span>
+        <span>GPU {Array.isArray(model.gpu) ? model.gpu.join(',') : model.gpu}</span>
+        {model.resident && <span style={{ color: 'var(--warn)' }}>resident</span>}
+        {model.local_path && (
+          <span style={{ color: model.local_exists ? 'var(--ok)' : 'var(--warn)' }}>
+            {model.local_exists ? '✓ 本地' : '✗ 未下载'}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Tag({
+  children,
+  icon,
+  color,
+}: {
+  children: React.ReactNode
+  icon?: string
+  color?: string
+}) {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 2,
+        padding: '1px 5px',
+        borderRadius: 3,
+        background: color ? `color-mix(in srgb, ${color} 12%, transparent)` : 'var(--bg)',
+        color: color ?? 'var(--muted)',
+        fontSize: 9,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {icon && <span>{icon}</span>}
+      {children}
+    </span>
   )
 }
 
@@ -111,7 +238,7 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span
       className="flex items-center gap-1"
-      style={{ fontSize: 10, color: isLoaded ? 'var(--ok)' : 'var(--muted-strong)' }}
+      style={{ fontSize: 9, color: isLoaded ? 'var(--ok)' : 'var(--muted-strong)', flexShrink: 0 }}
     >
       <span
         className="inline-block rounded-full"
