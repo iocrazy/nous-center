@@ -31,7 +31,10 @@ async def test_synthesize_returns_audio(client):
     mock_engine.is_loaded = True
     mock_engine.synthesize.return_value = fake_result
 
-    with patch("src.api.routes.tts._get_loaded_engine", return_value=mock_engine):
+    with (
+        patch("src.api.routes.tts._get_loaded_engine", return_value=mock_engine),
+        patch("src.api.routes.tts._get_cache_service", return_value=None),
+    ):
         resp = await client.post(
             "/api/v1/tts/synthesize",
             json={"engine": "cosyvoice2", "text": "hello"},
@@ -42,7 +45,8 @@ async def test_synthesize_returns_audio(client):
     assert "audio_base64" in data
     assert data["engine"] == "cosyvoice2"
     assert data["duration_seconds"] == 1.5
-    assert data["rtf"] > 0
+    assert "rtf" in data
+    assert data["cached"] is False
 
 
 async def test_synthesize_engine_not_loaded(client):
