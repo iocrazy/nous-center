@@ -75,7 +75,7 @@ CRUD:
     → 停止服务、释放资源
 
 运行:
-  POST   /api/v1/services/{instance_id}/run  — 调用已发布的 workflow
+  POST   /api/v1/instances/{instance_id}/run  — 调用已发布的 workflow
     → 请求体根据 workflow 的输入节点自动推导
     → 返回输出节点的结果
 ```
@@ -88,10 +88,48 @@ CRUD:
 - Topbar 加"发布"按钮 → 调 publish API
 - 发布状态在 tab 上显示（draft/published 徽章）
 
+### Voice Preset 迁移
+
+现有 `voice_presets` 表保留不删除，渐进式迁移：
+
+1. 为每个现有 preset 自动生成一个 workflow（text_input → tts_engine[preset params] → output）
+2. `is_template = true`，名称沿用 preset 名
+3. `ServiceInstance` 的 `source_type="preset"` 继续支持，新发布的用 `source_type="workflow"`
+4. 前端预设面板切换为 workflow 列表，旧 preset 作为只读兼容项
+
+### 后端 DAG 执行器
+
+```
+POST /api/v1/instances/{id}/run
+  → 加载 workflow 定义（发布时快照，不随编辑变化）
+  → 拓扑排序节点
+  → 按依赖序逐节点执行
+  → 返回输出节点结果
+```
+
+**执行模型：**
+- 异步执行（FastAPI async），长任务通过 WebSocket 推送进度
+- 每个节点执行器注册在 `node_executors: dict[str, Callable]`
+- 节点输出缓存在内存 dict 中，按 edge 传递给下游节点
+
+**错误处理：**
+- 节点执行失败 → 标记该节点 error → 停止整个 workflow → 返回错误详情
+- 超时：每个节点可配 timeout（默认 60s，LLM/视频节点更长）
+
+**发布快照：**
+- publish 时将当前 workflow 的 nodes/edges 快照存入 `ServiceInstance.params_override`
+- 编辑 workflow 不影响已发布的服务
+- 重新 publish = 更新快照（原子替换，无停机）
+
+**并发：**
+- 单用户本地使用，暂不考虑高并发
+- GPU 资源由现有的 vram_tracker 管理
+
 ### 执行层
 
-- 已发布的 workflow 执行从前端移到**后端**（Python DAG 执行器）
+- 已发布的 workflow 执行在**后端**（Python DAG 执行器）
 - 未发布的 workflow 仍在前端执行（调试/预览用）
+- 执行进度通过 WebSocket `/ws/workflow/{instance_id}` 推送
 
 ---
 
@@ -142,28 +180,24 @@ requires:
 
 ### 数据模型
 
-```sql
--- agents 表
-id            BIGINT PRIMARY KEY
-name          VARCHAR(100) UNIQUE
-display_name  VARCHAR(100)
-workspace_path VARCHAR(500)   -- ~/.nous-center/agents/{name}/
-model_config  JSON            -- { provider, model, base_url, api_key_ref }
-skills        JSON            -- ["web-search", "tts-synthesis"] 白名单
-tools_policy  JSON            -- 工具权限策略
-status        VARCHAR(20)     -- active / inactive
-created_at    TIMESTAMP
-updated_at    TIMESTAMP
+**文件系统是唯一数据源**，数据库不存 agent/skill 配置。启动时扫描 `~/.nous-center/` 目录加载。
 
--- skills 表（索引，内容在 MD 文件中）
-id            BIGINT PRIMARY KEY
-name          VARCHAR(100) UNIQUE
-description   TEXT
-file_path     VARCHAR(500)
-requires      JSON            -- { models, env }
-is_builtin    BOOLEAN
-created_at    TIMESTAMP
+Agent 配置存在各目录下的 `config.json` 中：
+
+```json
+// ~/.nous-center/agents/podcast-host/config.json
+{
+  "display_name": "播客主播",
+  "model": { "engine_key": "qwen3_tts_base", "fallback_api": null },
+  "skills": ["tts-synthesis", "web-search"],
+  "tools_policy": {},
+  "status": "active"
+}
 ```
+
+Skills 的元数据在 `SKILL.md` 的 YAML frontmatter 中，不需要额外数据库表。
+
+`requires.models` 在 Agent 激活时校验：检查 models.yaml 中对应模型是否存在且本地已下载。
 
 ### API 端点
 
@@ -329,3 +363,17 @@ Agent 的 Skills/Prompts 在独立的 Agent 管理页面编辑，不在画布上
 | 部署粒度 | workflow 级别发布 | 单节点部署无实际场景 |
 | 已发布 workflow 执行 | 后端 Python DAG 执行器 | 常驻服务需要后端运行 |
 | 云端 API | 可选 fallback | 本地显存不够时使用 |
+| Agent/Skill 存储 | 文件系统为唯一数据源 | 避免双源同步问题，MD 文件可外部编辑 |
+| 发布快照 | publish 时冻结 workflow 定义 | 编辑不影响已发布服务 |
+| 执行进度 | WebSocket 推送 | LLM+TTS+视频可能耗时数分钟 |
+| 并发 | 单用户，暂不考虑 | 本地工具，非云服务 |
+
+---
+
+## 非目标
+
+- 多用户/多租户
+- 云端部署
+- Workflow 版本历史（Git 管理即可）
+- 实时协作编辑
+- 模型训练/微调
