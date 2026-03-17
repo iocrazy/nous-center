@@ -309,3 +309,39 @@ class InstanceApiKeyOut(BaseModel):
 class InstanceApiKeyCreated(InstanceApiKeyOut):
     """Returned only on creation — includes the full key."""
     key: str
+
+
+# --- Workflows ---
+
+class WorkflowCreate(BaseModel):
+    name: str
+    description: str | None = None
+    nodes: list = []
+    edges: list = []
+    is_template: bool = False
+
+
+class WorkflowUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    nodes: list | None = None
+    edges: list | None = None
+    is_template: bool | None = None
+
+
+class WorkflowOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    name: str
+    description: str | None
+    nodes: list
+    edges: list
+    is_template: bool
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("id")
+    def serialize_id(self, v: int) -> str:
+        return str(v)
