@@ -1,0 +1,84 @@
+import pytest
+from src.services.workflow_executor import WorkflowExecutor, ExecutionError
+
+
+def _simple_workflow():
+    """text_input -> output"""
+    return {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "audio"},
+        ],
+    }
+
+
+def _tts_workflow():
+    """text_input -> tts_engine -> output"""
+    return {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "你好"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "tts_engine", "data": {"engine": "cosyvoice2", "speed": 1.0, "voice": "default", "sample_rate": 24000}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "audio", "target": "n3", "targetHandle": "audio"},
+        ],
+    }
+
+
+def test_topological_sort():
+    wf = _simple_workflow()
+    executor = WorkflowExecutor(wf)
+    order = executor._topological_sort()
+    assert order.index("n1") < order.index("n2")
+
+
+def test_topological_sort_tts():
+    wf = _tts_workflow()
+    executor = WorkflowExecutor(wf)
+    order = executor._topological_sort()
+    assert order.index("n1") < order.index("n2")
+    assert order.index("n2") < order.index("n3")
+
+
+def test_cycle_detection():
+    wf = {
+        "nodes": [
+            {"id": "a", "type": "text_input", "data": {}, "position": {"x": 0, "y": 0}},
+            {"id": "b", "type": "output", "data": {}, "position": {"x": 0, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "a", "sourceHandle": "text", "target": "b", "targetHandle": "audio"},
+            {"id": "e2", "source": "b", "sourceHandle": "audio", "target": "a", "targetHandle": "text"},
+        ],
+    }
+    executor = WorkflowExecutor(wf)
+    with pytest.raises(ExecutionError, match="循环依赖"):
+        executor._topological_sort()
+
+
+def test_empty_workflow():
+    executor = WorkflowExecutor({"nodes": [], "edges": []})
+    with pytest.raises(ExecutionError, match="空"):
+        executor._topological_sort()
+
+
+@pytest.mark.asyncio
+async def test_execute_text_passthrough():
+    wf = _simple_workflow()
+    executor = WorkflowExecutor(wf)
+    result = await executor.execute()
+    assert result["outputs"]["n1"]["text"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_get_inputs():
+    wf = _tts_workflow()
+    executor = WorkflowExecutor(wf)
+    executor._outputs["n1"] = {"text": "你好"}
+    inputs = executor._get_inputs("n2")
+    assert inputs["text"] == "你好"
