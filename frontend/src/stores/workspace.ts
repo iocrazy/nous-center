@@ -200,25 +200,50 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     })),
 
   markDirty: () => {
-    const tab = get().tabs.find((t) => t.id === get().activeTabId)
+    const activeTabId = get().activeTabId
+    const tab = get().tabs.find((t) => t.id === activeTabId)
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId ? { ...t, isDirty: true } : t
       ),
     }))
 
-    if (tab?.dbId) {
-      if (saveTimer) clearTimeout(saveTimer)
-      const dbId = tab.dbId
-      saveTimer = setTimeout(() => {
-        const current = get().tabs.find((t) => t.id === get().activeTabId)
-        if (current?.workflow && current.dbId === dbId) {
-          apiFetch(`/api/v1/workflows/${dbId}`, {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(async () => {
+      const current = get().tabs.find((t) => t.id === activeTabId)
+      if (!current?.workflow) return
+
+      try {
+        if (current.dbId) {
+          // Existing workflow — PATCH
+          await apiFetch(`/api/v1/workflows/${current.dbId}`, {
             method: 'PATCH',
             body: JSON.stringify({ nodes: current.workflow.nodes, edges: current.workflow.edges }),
-          }).catch(console.error)
+          })
+          set((s) => ({
+            tabs: s.tabs.map((t) =>
+              t.id === activeTabId ? { ...t, isDirty: false } : t
+            ),
+          }))
+        } else {
+          // New workflow — POST to create, then store dbId
+          const created = await apiFetch<{ id: string }>('/api/v1/workflows', {
+            method: 'POST',
+            body: JSON.stringify({
+              name: current.workflow.name || current.name,
+              nodes: current.workflow.nodes,
+              edges: current.workflow.edges,
+            }),
+          })
+          set((s) => ({
+            tabs: s.tabs.map((t) =>
+              t.id === activeTabId ? { ...t, dbId: created.id, isDirty: false } : t
+            ),
+          }))
         }
-      }, 2000)
-    }
+      } catch (err) {
+        console.error('Auto-save failed', err)
+      }
+    }, 2000)
   },
 }))

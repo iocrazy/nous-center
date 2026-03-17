@@ -99,6 +99,21 @@ export default function Topbar() {
           <span style={{ fontSize: 11, color: 'var(--muted)' }}>
             · {activeTab.name}
           </span>
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: activeTab.isDirty
+                ? '#ff9f0a'
+                : activeTab.dbId
+                  ? '#34c759'
+                  : 'transparent',
+              display: 'inline-block',
+              marginLeft: 2,
+            }}
+            title={activeTab.isDirty ? '未保存' : activeTab.dbId ? '已保存' : ''}
+          />
           {activeTab.dbId && (
             <span
               style={{

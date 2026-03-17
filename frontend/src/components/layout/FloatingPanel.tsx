@@ -6,9 +6,10 @@ interface FloatingPanelProps {
   children: React.ReactNode
   searchPlaceholder?: string
   onSearch?: (query: string) => void
+  actions?: React.ReactNode
 }
 
-export default function FloatingPanel({ title, children, searchPlaceholder, onSearch }: FloatingPanelProps) {
+export default function FloatingPanel({ title, children, searchPlaceholder, onSearch, actions }: FloatingPanelProps) {
   const { panelWidth, setPanelWidth } = usePanelStore()
   const resizing = useRef(false)
   const startX = useRef(0)
@@ -61,7 +62,8 @@ export default function FloatingPanel({ title, children, searchPlaceholder, onSe
           color: 'var(--text-strong)',
         }}
       >
-        {title}
+        <span>{title}</span>
+        {actions && <div className="ml-auto">{actions}</div>}
       </div>
 
       {/* Search */}
