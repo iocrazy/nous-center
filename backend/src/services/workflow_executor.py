@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict, deque
 from typing import Any
+
+from src.services.llm_service import call_llm
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +155,59 @@ async def _exec_passthrough(data: dict, inputs: dict) -> dict:
     return inputs
 
 
+async def _exec_llm(data: dict, inputs: dict) -> dict:
+    """Call LLM via OpenAI-compatible API."""
+    prompt = inputs.get("prompt") or inputs.get("text", "")
+    if not prompt:
+        raise ExecutionError("LLM 节点缺少 prompt 输入")
+    result = await call_llm(
+        prompt=prompt,
+        base_url=data.get("base_url", "http://localhost:8100"),
+        model=data.get("model", ""),
+        system=data.get("system"),
+        api_key=data.get("api_key"),
+        temperature=data.get("temperature", 0.7),
+        max_tokens=data.get("max_tokens", 2048),
+    )
+    return {"text": result}
+
+
+async def _exec_prompt_template(data: dict, inputs: dict) -> dict:
+    """Replace {variable} placeholders in a template with input values."""
+    template = data.get("template", "")
+    result = template
+    for key, value in inputs.items():
+        result = result.replace(f"{{{key}}}", str(value))
+    return {"text": result}
+
+
+async def _exec_agent(data: dict, inputs: dict) -> dict:
+    """Placeholder agent executor — full implementation deferred."""
+    agent_name = data.get("agent_name", "unknown")
+    input_text = inputs.get("text", "")
+    return {"text": f"[Agent:{agent_name}] {input_text}"}
+
+
+async def _exec_if_else(data: dict, inputs: dict) -> dict:
+    """Conditional branching based on match_type."""
+    condition = data.get("condition", "")
+    match_type = data.get("match_type", "contains")
+    text = inputs.get("text", "")
+
+    if match_type == "contains":
+        matched = condition in text
+    elif match_type == "equals":
+        matched = text == condition
+    elif match_type == "regex":
+        matched = bool(re.search(condition, text))
+    elif match_type == "not_empty":
+        matched = bool(text.strip())
+    else:
+        matched = False
+
+    return {"true": text if matched else "", "false": text if not matched else ""}
+
+
 _NODE_EXECUTORS = {
     "text_input": _exec_text_input,
     "ref_audio": _exec_ref_audio,
@@ -161,4 +217,8 @@ _NODE_EXECUTORS = {
     "mixer": _exec_passthrough,
     "concat": _exec_passthrough,
     "bgm_mix": _exec_passthrough,
+    "llm": _exec_llm,
+    "prompt_template": _exec_prompt_template,
+    "agent": _exec_agent,
+    "if_else": _exec_if_else,
 }

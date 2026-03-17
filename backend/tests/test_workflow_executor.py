@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from src.services.workflow_executor import WorkflowExecutor, ExecutionError
 
@@ -82,3 +84,96 @@ async def test_get_inputs():
     executor._outputs["n1"] = {"text": "你好"}
     inputs = executor._get_inputs("n2")
     assert inputs["text"] == "你好"
+
+
+# --- prompt_template tests ---
+
+
+@pytest.mark.asyncio
+async def test_prompt_template_substitution():
+    """text_input -> prompt_template -> output"""
+    wf = {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "Python"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "prompt_template", "data": {"template": "Write a {text} tutorial"}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "text", "target": "n3", "targetHandle": "text"},
+        ],
+    }
+    executor = WorkflowExecutor(wf)
+    result = await executor.execute()
+    assert result["outputs"]["n2"]["text"] == "Write a Python tutorial"
+
+
+# --- llm tests ---
+
+
+@pytest.mark.asyncio
+async def test_llm_node():
+    """text_input -> llm -> output, mock call_llm."""
+    wf = {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "llm", "data": {"model": "test-model", "base_url": "http://test:8100"}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "text", "target": "n3", "targetHandle": "text"},
+        ],
+    }
+    with patch("src.services.workflow_executor.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = "LLM reply"
+        executor = WorkflowExecutor(wf)
+        result = await executor.execute()
+
+    assert result["outputs"]["n2"]["text"] == "LLM reply"
+    mock_llm.assert_called_once()
+    assert mock_llm.call_args.kwargs["prompt"] == "hello"
+    assert mock_llm.call_args.kwargs["model"] == "test-model"
+
+
+# --- if_else tests ---
+
+
+@pytest.mark.asyncio
+async def test_if_else_true_branch():
+    """Input contains condition string -> true branch gets text."""
+    wf = {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "hello world"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "if_else", "data": {"condition": "hello", "match_type": "contains"}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "true", "target": "n3", "targetHandle": "text"},
+        ],
+    }
+    executor = WorkflowExecutor(wf)
+    result = await executor.execute()
+    assert result["outputs"]["n2"]["true"] == "hello world"
+    assert result["outputs"]["n2"]["false"] == ""
+
+
+@pytest.mark.asyncio
+async def test_if_else_false_branch():
+    """Input does NOT contain condition string -> false branch gets text."""
+    wf = {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "goodbye"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "if_else", "data": {"condition": "hello", "match_type": "contains"}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "false", "target": "n3", "targetHandle": "text"},
+        ],
+    }
+    executor = WorkflowExecutor(wf)
+    result = await executor.execute()
+    assert result["outputs"]["n2"]["true"] == ""
+    assert result["outputs"]["n2"]["false"] == "goodbye"
