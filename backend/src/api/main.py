@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 
@@ -74,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(instance_service.router)
     app.include_router(workflows.router)
     app.include_router(agents.router)
+    app.include_router(skills.router)
 
     @app.websocket("/ws/tasks/{task_id}")
     async def websocket_task(websocket: WebSocket, task_id: str):
