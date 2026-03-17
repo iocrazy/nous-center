@@ -5,6 +5,7 @@ import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
 import { executeWorkflow } from '../../utils/workflowExecutor'
 import { useToastStore } from '../../stores/toast'
+import { usePublishWorkflow, useUnpublishWorkflow } from '../../api/workflows'
 
 export default function Topbar() {
   const { tabs, activeTabId } = useWorkspaceStore()
@@ -13,8 +14,11 @@ export default function Topbar() {
   const { activeOverlay, setOverlay } = usePanelStore()
   const { isRunning, start, succeed, fail } = useExecutionStore()
   const toast = useToastStore((s) => s.add)
+  const publishWf = usePublishWorkflow()
+  const unpublishWf = useUnpublishWorkflow()
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
+  const isPublished = activeTab?.workflow?.status === 'published'
 
   const overlayTitle = activeOverlay === 'dashboard' ? 'Dashboard' : activeOverlay === 'models' ? 'Models' : activeOverlay === 'settings' ? '设置' : activeOverlay === 'preset-detail' ? '预设详情' : activeOverlay === 'api-management' ? 'API 管理' : null
 
@@ -91,9 +95,25 @@ export default function Topbar() {
       </span>
 
       {!activeOverlay && activeTab && (
-        <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-          · {activeTab.name}
-        </span>
+        <>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+            · {activeTab.name}
+          </span>
+          {activeTab.dbId && (
+            <span
+              style={{
+                fontSize: 9,
+                padding: '1px 6px',
+                borderRadius: 3,
+                background: isPublished ? 'rgba(52,199,89,0.15)' : 'rgba(255,255,255,0.06)',
+                color: isPublished ? '#34c759' : 'var(--muted)',
+                border: `1px solid ${isPublished ? 'rgba(52,199,89,0.3)' : 'var(--border)'}`,
+              }}
+            >
+              {isPublished ? 'published' : 'draft'}
+            </span>
+          )}
+        </>
       )}
 
       <div className="ml-auto flex gap-1.5">
@@ -104,6 +124,30 @@ export default function Topbar() {
             <TopbarButton primary onClick={handleRun} disabled={isRunning}>
               {isRunning ? '⏳ Running...' : '▶ Run'}
             </TopbarButton>
+            {activeTab?.dbId && (
+              <button
+                onClick={() => {
+                  if (isPublished) {
+                    unpublishWf.mutate(activeTab.dbId!)
+                  } else {
+                    publishWf.mutate(activeTab.dbId!)
+                  }
+                }}
+                disabled={publishWf.isPending || unpublishWf.isPending}
+                style={{
+                  padding: '4px 12px',
+                  fontSize: 11,
+                  borderRadius: 4,
+                  border: '1px solid var(--border)',
+                  background: isPublished ? 'none' : 'var(--ok)',
+                  color: isPublished ? 'var(--muted)' : '#fff',
+                  cursor: publishWf.isPending || unpublishWf.isPending ? 'wait' : 'pointer',
+                  opacity: publishWf.isPending || unpublishWf.isPending ? 0.6 : 1,
+                }}
+              >
+                {isPublished ? '下线' : '发布'}
+              </button>
+            )}
           </>
         )}
       </div>
