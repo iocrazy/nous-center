@@ -7,6 +7,7 @@ import re
 from collections import defaultdict, deque
 from typing import Any
 
+from src.services import agent_manager
 from src.services.llm_service import call_llm
 
 logger = logging.getLogger(__name__)
@@ -182,10 +183,44 @@ async def _exec_prompt_template(data: dict, inputs: dict) -> dict:
 
 
 async def _exec_agent(data: dict, inputs: dict) -> dict:
-    """Placeholder agent executor — full implementation deferred."""
-    agent_name = data.get("agent_name", "unknown")
+    """Execute a pre-configured agent: load config, assemble prompts, call LLM."""
+    from src.config import get_settings
+
+    agent_name = data.get("agent_name", "")
     input_text = inputs.get("text", "")
-    return {"text": f"[Agent:{agent_name}] {input_text}"}
+    if not agent_name:
+        raise ExecutionError("Agent 节点未选择 Agent")
+    if not input_text:
+        raise ExecutionError("Agent 节点缺少输入")
+
+    agent = agent_manager.get_agent(agent_name)
+    if not agent:
+        raise ExecutionError(f"Agent '{agent_name}' 不存在")
+
+    # Assemble system prompt from MD files
+    prompts = agent.get("prompts", {})
+    system_parts = []
+    for fname in ["IDENTITY.md", "SOUL.md", "AGENT.md"]:
+        content = prompts.get(fname, "").strip()
+        if content:
+            system_parts.append(content)
+    system_prompt = "\n\n".join(system_parts) if system_parts else None
+
+    # Get LLM config
+    model_config = agent.get("model", {})
+    settings = get_settings()
+    base_url = model_config.get("base_url") or settings.VLLM_BASE_URL
+    model = model_config.get("model") or model_config.get("engine_key") or ""
+    api_key = model_config.get("api_key") or model_config.get("fallback_api")
+
+    result = await call_llm(
+        prompt=input_text,
+        base_url=base_url,
+        model=model,
+        system=system_prompt,
+        api_key=api_key,
+    )
+    return {"text": result}
 
 
 async def _exec_if_else(data: dict, inputs: dict) -> dict:

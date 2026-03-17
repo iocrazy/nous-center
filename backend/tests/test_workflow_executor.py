@@ -177,3 +177,45 @@ async def test_if_else_false_branch():
     result = await executor.execute()
     assert result["outputs"]["n2"]["true"] == ""
     assert result["outputs"]["n2"]["false"] == "goodbye"
+
+
+# --- agent tests ---
+
+
+@pytest.mark.asyncio
+async def test_exec_agent_full():
+    """Agent node loads config, assembles prompts, calls LLM."""
+    mock_agent = {
+        "name": "test-agent",
+        "display_name": "Test",
+        "model": {"engine_key": "test-model", "base_url": "http://localhost:8100"},
+        "skills": [],
+        "prompts": {
+            "IDENTITY.md": "你是助手",
+            "SOUL.md": "友好且专业",
+            "AGENT.md": "回答用户问题",
+        },
+    }
+    wf = {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "你好"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "agent", "data": {"agent_name": "test-agent"}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "text", "target": "n3", "targetHandle": "text"},
+        ],
+    }
+    with patch("src.services.workflow_executor.agent_manager") as mock_am, \
+         patch("src.services.workflow_executor.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_am.get_agent.return_value = mock_agent
+        mock_llm.return_value = "你好！有什么可以帮你的？"
+        executor = WorkflowExecutor(wf)
+        result = await executor.execute()
+
+    assert result["outputs"]["n2"]["text"] == "你好！有什么可以帮你的？"
+    # Verify system prompt was assembled from MD files
+    call_args = mock_llm.call_args
+    assert "你是助手" in call_args.kwargs.get("system", "")
+    assert "友好且专业" in call_args.kwargs.get("system", "")
