@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     NAS_MODELS_PATH: str = "/mnt/nas/models"
     NAS_OUTPUTS_PATH: str = "/mnt/nas/outputs"
-    LOCAL_MODELS_PATH: str = "/media/heygo/Program/models"
+    LOCAL_MODELS_PATH: str = "/media/heygo/Program/models/nous"
 
     COSYVOICE_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/CosyVoice"
     INDEXTTS_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/index-tts"
@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     GPU_VIDEO: str = "0,1"
 
     CACHE_TTL_SECONDS: int = 3600  # TTS cache TTL (1 hour)
+
+    NOUS_CENTER_HOME: str = "~/.nous-center"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
