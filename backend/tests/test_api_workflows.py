@@ -137,3 +137,51 @@ async def test_run_published_workflow(db_client):
     assert resp.status_code == 200
     data = resp.json()
     assert "outputs" in data
+
+
+async def test_workflow_full_lifecycle(db_client):
+    """Create -> Update -> Publish -> Run -> Unpublish -> Delete"""
+    # Create
+    resp = await db_client.post("/api/v1/workflows", json={
+        "name": "lifecycle",
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "test"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+        ],
+    })
+    assert resp.status_code == 201
+    wf_id = resp.json()["id"]
+
+    # Update
+    resp = await db_client.patch(f"/api/v1/workflows/{wf_id}", json={"name": "updated"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "updated"
+
+    # Publish
+    resp = await db_client.post(f"/api/v1/workflows/{wf_id}/publish")
+    assert resp.status_code == 200
+    instance_id = resp.json()["instance_id"]
+
+    # Verify published status
+    resp = await db_client.get(f"/api/v1/workflows/{wf_id}")
+    assert resp.json()["status"] == "published"
+
+    # Verify instance was created
+    resp = await db_client.get(f"/api/v1/instances/{instance_id}")
+    assert resp.status_code == 200
+    assert resp.json()["source_type"] == "workflow"
+
+    # Unpublish
+    resp = await db_client.post(f"/api/v1/workflows/{wf_id}/unpublish")
+    assert resp.status_code == 200
+
+    # Verify draft status
+    resp = await db_client.get(f"/api/v1/workflows/{wf_id}")
+    assert resp.json()["status"] == "draft"
+
+    # Delete
+    resp = await db_client.delete(f"/api/v1/workflows/{wf_id}")
+    assert resp.status_code == 204
