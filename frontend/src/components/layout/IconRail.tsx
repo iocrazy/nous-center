@@ -6,6 +6,7 @@ import {
   Settings,
   SlidersHorizontal,
   Link,
+  Bot,
   Sun,
   Moon,
   Monitor,
@@ -23,6 +24,7 @@ const OVERLAY_ITEMS: { id: OverlayId; icon: typeof LayoutDashboard; label: strin
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { id: 'models', icon: Layers, label: 'Models' },
   { id: 'api-management', icon: Link, label: 'API Management' },
+  { id: 'agents', icon: Bot, label: 'Agents' },
 ]
 
 export default function IconRail() {
