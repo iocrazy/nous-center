@@ -1,4 +1,4 @@
-export type PortType = 'text' | 'audio'
+export type PortType = 'text' | 'audio' | 'message' | 'data' | 'any'
 
 export type NodeType =
   | 'text_input'
@@ -9,6 +9,10 @@ export type NodeType =
   | 'concat'
   | 'bgm_mix'
   | 'output'
+  | 'llm'
+  | 'prompt_template'
+  | 'agent'
+  | 'if_else'
 
 export interface PortDef {
   id: string
@@ -83,6 +87,33 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     label: '输出播放',
     inputs: [{ id: 'audio', type: 'audio', label: '音频' }],
     outputs: [],
+  },
+  llm: {
+    type: 'llm',
+    label: 'LLM',
+    inputs: [{ id: 'prompt', type: 'text', label: '提示' }],
+    outputs: [{ id: 'text', type: 'text', label: '输出' }],
+  },
+  prompt_template: {
+    type: 'prompt_template',
+    label: '提示模板',
+    inputs: [{ id: 'text', type: 'text', label: '输入' }],
+    outputs: [{ id: 'text', type: 'text', label: '输出' }],
+  },
+  agent: {
+    type: 'agent',
+    label: 'Agent',
+    inputs: [{ id: 'text', type: 'text', label: '输入' }],
+    outputs: [{ id: 'text', type: 'text', label: '文本' }],
+  },
+  if_else: {
+    type: 'if_else',
+    label: '条件分支',
+    inputs: [{ id: 'input', type: 'text', label: '输入' }],
+    outputs: [
+      { id: 'true', type: 'text', label: '真' },
+      { id: 'false', type: 'text', label: '假' },
+    ],
   },
 }
 

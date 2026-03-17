@@ -7,8 +7,10 @@ import ResampleNode from './ResampleNode'
 import ConcatNode from './ConcatNode'
 import MixerNode from './MixerNode'
 import BgmMixNode from './BgmMixNode'
+import DeclarativeNode from './DeclarativeNode'
+import { DECLARATIVE_NODES } from '../../models/nodeRegistry'
 
-export const nodeTypes: NodeTypes = {
+const handwrittenTypes: NodeTypes = {
   text_input: TextInputNode,
   ref_audio: RefAudioNode,
   tts_engine: TTSEngineNode,
@@ -18,3 +20,9 @@ export const nodeTypes: NodeTypes = {
   mixer: MixerNode,
   bgm_mix: BgmMixNode,
 }
+
+const declarativeTypes = Object.fromEntries(
+  Object.keys(DECLARATIVE_NODES).map((type) => [type, DeclarativeNode])
+)
+
+export const nodeTypes: NodeTypes = { ...handwrittenTypes, ...declarativeTypes }

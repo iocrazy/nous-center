@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import FloatingPanel from '../layout/FloatingPanel'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
+import { NODE_CATEGORIES } from '../../models/nodeRegistry'
 
 interface NodeCategory {
   name: string
@@ -10,6 +11,11 @@ interface NodeCategory {
 }
 
 const CATEGORIES: NodeCategory[] = [
+  ...NODE_CATEGORIES.map((c) => ({
+    name: c.name,
+    color: c.color,
+    nodes: c.nodes,
+  })),
   {
     name: 'tts',
     color: 'var(--accent)',
