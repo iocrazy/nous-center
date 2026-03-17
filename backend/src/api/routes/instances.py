@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.database import get_async_session
 from src.models.service_instance import ServiceInstance
 from src.models.voice_preset import VoicePreset
+from src.models.workflow import Workflow
 from src.models.schemas import (
     ServiceInstanceCreate,
     ServiceInstanceOut,
@@ -22,6 +23,9 @@ async def _resolve_source_name(session: AsyncSession, source_type: str, source_i
     if source_type == "preset":
         preset = await session.get(VoicePreset, source_id)
         return preset.name if preset else None
+    if source_type == "workflow":
+        wf = await session.get(Workflow, source_id)
+        return wf.name if wf else None
     return None
 
 
@@ -53,6 +57,11 @@ async def create_instance(
         if not preset:
             raise HTTPException(404, detail="Source preset not found")
         source_name = preset.name
+    elif data.source_type == "workflow":
+        wf = await session.get(Workflow, data.source_id)
+        if not wf:
+            raise HTTPException(404, detail="Source workflow not found")
+        source_name = wf.name
     else:
         raise HTTPException(400, detail=f"Unsupported source_type: {data.source_type}")
 
@@ -88,16 +97,29 @@ async def list_instances(
 
     # Batch-resolve source names to avoid N+1
     preset_ids = {inst.source_id for inst in instances if inst.source_type == "preset"}
-    source_names: dict[int, str] = {}
+    source_names: dict[int, str | None] = {}
     if preset_ids:
         preset_result = await session.execute(
             select(VoicePreset.id, VoicePreset.name).where(VoicePreset.id.in_(preset_ids))
         )
-        source_names = dict(preset_result.all())
+        preset_map = dict(preset_result.all())
+        for inst in instances:
+            if inst.source_type == "preset":
+                source_names[inst.id] = preset_map.get(inst.source_id)
+
+    wf_ids = [i.source_id for i in instances if i.source_type == "workflow"]
+    if wf_ids:
+        wf_result = await session.execute(
+            select(Workflow.id, Workflow.name).where(Workflow.id.in_(wf_ids))
+        )
+        wf_map = dict(wf_result.all())
+        for inst in instances:
+            if inst.source_type == "workflow":
+                source_names[inst.id] = wf_map.get(inst.source_id)
 
     out = []
     for inst in instances:
-        name = source_names.get(inst.source_id) if inst.source_type == "preset" else None
+        name = source_names.get(inst.id)
         out.append(_instance_to_out(inst, name))
     return out
 

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.database import get_async_session
 from src.models.schemas import WorkflowCreate, WorkflowUpdate, WorkflowOut
+from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
@@ -72,3 +73,67 @@ async def delete_workflow(
         raise HTTPException(404, "Workflow not found")
     await session.delete(wf)
     await session.commit()
+
+
+@router.post("/{workflow_id}/publish")
+async def publish_workflow(
+    workflow_id: int,
+    session: AsyncSession = Depends(get_async_session),
+):
+    wf = await session.get(Workflow, workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    stmt = select(ServiceInstance).where(
+        ServiceInstance.source_type == "workflow",
+        ServiceInstance.source_id == workflow_id,
+    )
+    result = await session.execute(stmt)
+    instance = result.scalar_one_or_none()
+
+    if instance:
+        instance.params_override = {"nodes": wf.nodes, "edges": wf.edges}
+        instance.status = "active"
+    else:
+        instance = ServiceInstance(
+            source_type="workflow",
+            source_id=wf.id,
+            name=wf.name,
+            type="workflow",
+            params_override={"nodes": wf.nodes, "edges": wf.edges},
+        )
+        session.add(instance)
+        await session.flush()
+        instance.endpoint_path = f"/v1/instances/{instance.id}/run"
+
+    wf.status = "published"
+    await session.commit()
+    await session.refresh(instance)
+
+    return {
+        "instance_id": str(instance.id),
+        "endpoint": instance.endpoint_path,
+    }
+
+
+@router.post("/{workflow_id}/unpublish")
+async def unpublish_workflow(
+    workflow_id: int,
+    session: AsyncSession = Depends(get_async_session),
+):
+    wf = await session.get(Workflow, workflow_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    stmt = select(ServiceInstance).where(
+        ServiceInstance.source_type == "workflow",
+        ServiceInstance.source_id == workflow_id,
+    )
+    result = await session.execute(stmt)
+    instance = result.scalar_one_or_none()
+    if instance:
+        instance.status = "inactive"
+
+    wf.status = "draft"
+    await session.commit()
+    return {"status": "unpublished"}

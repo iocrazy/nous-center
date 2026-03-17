@@ -241,7 +241,7 @@ class BatchRetryRequest(BaseModel):
 # --- Service Instances ---
 
 class ServiceInstanceCreate(BaseModel):
-    source_type: Literal["preset"] = "preset"
+    source_type: Literal["preset", "workflow"] = "preset"
     source_id: int
     name: str
     type: str = "tts"

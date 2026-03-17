@@ -72,3 +72,39 @@ async def test_delete_workflow(db_client):
     assert resp.status_code == 204
     resp2 = await db_client.get(f"/api/v1/workflows/{wf_id}")
     assert resp2.status_code == 404
+
+
+async def test_publish_workflow(db_client):
+    create = await db_client.post("/api/v1/workflows", json={
+        "name": "发布测试",
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [{"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "audio"}],
+    })
+    wf_id = create.json()["id"]
+    resp = await db_client.post(f"/api/v1/workflows/{wf_id}/publish")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["instance_id"] is not None
+    assert data["endpoint"] is not None
+
+    wf = await db_client.get(f"/api/v1/workflows/{wf_id}")
+    assert wf.json()["status"] == "published"
+
+
+async def test_publish_not_found(db_client):
+    resp = await db_client.post("/api/v1/workflows/999999/publish")
+    assert resp.status_code == 404
+
+
+async def test_unpublish_workflow(db_client):
+    create = await db_client.post("/api/v1/workflows", json={"name": "w1"})
+    wf_id = create.json()["id"]
+    await db_client.post(f"/api/v1/workflows/{wf_id}/publish")
+    resp = await db_client.post(f"/api/v1/workflows/{wf_id}/unpublish")
+    assert resp.status_code == 200
+
+    wf = await db_client.get(f"/api/v1/workflows/{wf_id}")
+    assert wf.json()["status"] == "draft"

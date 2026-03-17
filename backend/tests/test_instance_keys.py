@@ -269,13 +269,13 @@ async def test_create_instance_with_source_type(db_client):
 
 
 async def test_create_instance_invalid_source_type(db_client):
-    """source_type='workflow' should be rejected (not yet supported)."""
+    """Unknown source_type should be rejected by Literal validation."""
     resp = await db_client.post("/api/v1/instances", json={
-        "source_type": "workflow",
+        "source_type": "unknown",
         "source_id": 12345,
-        "name": "workflow-instance",
+        "name": "bad-instance",
     })
-    assert resp.status_code == 422  # Literal["preset"] validation
+    assert resp.status_code == 422  # Literal["preset", "workflow"] validation
 
 
 async def test_create_instance_nonexistent_source(db_client):
