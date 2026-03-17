@@ -1,12 +1,17 @@
 import { create } from 'zustand'
 import type { Workflow, WorkflowNode, WorkflowEdge } from '../models/workflow'
 import { uid } from '../utils/uid'
+import { apiFetch } from '../api/client'
+import type { WorkflowFull } from '../api/workflows'
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 export interface WorkflowTab {
   id: string
   name: string
   workflow: Workflow
   isDirty: boolean
+  dbId: string | null
 }
 
 function createDefaultWorkflow(name: string): Workflow {
@@ -38,6 +43,9 @@ interface WorkspaceState {
   setActiveTab: (id: string) => void
   renameTab: (id: string, name: string) => void
 
+  // DB integration
+  loadFromDb: (workflow: WorkflowFull) => void
+
   // Workflow mutations (on active tab)
   getActiveWorkflow: () => Workflow
   setWorkflow: (wf: Workflow) => void
@@ -54,6 +62,7 @@ const initialTab: WorkflowTab = {
   name: '基础合成',
   workflow: createDefaultWorkflow('基础合成'),
   isDirty: false,
+  dbId: null,
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -67,6 +76,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       name: tabName,
       workflow: createDefaultWorkflow(tabName),
       isDirty: false,
+      dbId: null,
     }
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }))
   },
@@ -88,6 +98,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === id ? { ...t, name } : t)),
     })),
+
+  loadFromDb: (wf: WorkflowFull) => {
+    const tab: WorkflowTab = {
+      id: uid(),
+      name: wf.name,
+      workflow: {
+        id: wf.id,
+        name: wf.name,
+        description: wf.description ?? undefined,
+        nodes: wf.nodes,
+        edges: wf.edges,
+        is_template: wf.is_template,
+        status: wf.status as 'draft' | 'published',
+      },
+      isDirty: false,
+      dbId: wf.id,
+    }
+    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }))
+  },
 
   getActiveWorkflow: () => {
     const { tabs, activeTabId } = get()
@@ -170,10 +199,26 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ),
     })),
 
-  markDirty: () =>
+  markDirty: () => {
+    const tab = get().tabs.find((t) => t.id === get().activeTabId)
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId ? { ...t, isDirty: true } : t
       ),
-    })),
+    }))
+
+    if (tab?.dbId) {
+      if (saveTimer) clearTimeout(saveTimer)
+      const dbId = tab.dbId
+      saveTimer = setTimeout(() => {
+        const current = get().tabs.find((t) => t.id === get().activeTabId)
+        if (current?.workflow && current.dbId === dbId) {
+          apiFetch(`/api/v1/workflows/${dbId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ nodes: current.workflow.nodes, edges: current.workflow.edges }),
+          }).catch(console.error)
+        }
+      }, 2000)
+    }
+  },
 }))

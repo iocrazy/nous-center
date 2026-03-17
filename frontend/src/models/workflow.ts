@@ -104,6 +104,9 @@ export interface WorkflowEdge {
 export interface Workflow {
   id: string
   name: string
+  description?: string
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
+  is_template?: boolean
+  status?: 'draft' | 'published'
 }
