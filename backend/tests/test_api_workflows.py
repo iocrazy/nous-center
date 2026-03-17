@@ -108,3 +108,32 @@ async def test_unpublish_workflow(db_client):
 
     wf = await db_client.get(f"/api/v1/workflows/{wf_id}")
     assert wf.json()["status"] == "draft"
+
+
+async def test_run_published_workflow(db_client):
+    """POST /v1/instances/{id}/run executes a published workflow."""
+    create = await db_client.post("/api/v1/workflows", json={
+        "name": "run-test",
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+        ],
+    })
+    wf_id = create.json()["id"]
+    pub = await db_client.post(f"/api/v1/workflows/{wf_id}/publish")
+    instance_id = pub.json()["instance_id"]
+
+    key_resp = await db_client.post(f"/api/v1/instances/{instance_id}/keys", json={"label": "test"})
+    api_key = key_resp.json()["key"]
+
+    resp = await db_client.post(
+        f"/v1/instances/{instance_id}/run",
+        json={},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "outputs" in data

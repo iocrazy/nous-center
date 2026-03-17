@@ -84,3 +84,43 @@ async def instance_synthesize(
         "rtf": rtf,
         "format": result.format,
     }
+
+
+class InstanceRunRequest(BaseModel):
+    inputs: dict | None = None
+
+
+@router.post("/{instance_id}/run")
+async def instance_run(
+    req: InstanceRunRequest,
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_instance_key),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Execute a published workflow instance."""
+    from src.services.workflow_executor import WorkflowExecutor, ExecutionError
+
+    instance, api_key = auth
+
+    if instance.source_type != "workflow":
+        raise HTTPException(
+            400, detail="Only workflow-based instances support /run"
+        )
+
+    # The workflow DAG is stored in params_override at publish time
+    workflow_data = instance.params_override or {}
+    if not workflow_data.get("nodes"):
+        raise HTTPException(400, detail="Workflow has no nodes")
+
+    executor = WorkflowExecutor(workflow_data)
+
+    try:
+        result = await executor.execute()
+    except ExecutionError as e:
+        raise HTTPException(422, detail=str(e))
+
+    # Update usage counters
+    api_key.usage_calls += 1
+    api_key.last_used_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    return result
