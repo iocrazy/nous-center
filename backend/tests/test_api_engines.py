@@ -14,14 +14,19 @@ async def test_list_engines(db_client):
     assert engine["status"] in ("loaded", "unloaded")
 
 
-async def test_list_engines_only_local(db_client):
-    """Only engines with local_path present in local dirs are returned."""
+async def test_list_engines_includes_all(db_client):
+    """All engines are returned regardless of local availability."""
     with patch("src.api.routes.engines.scan_local_models", return_value={"tts/cosyvoice2-0.5b"}):
         resp = await db_client.get("/api/v1/engines")
-    names = {e["name"] for e in resp.json()}
+    engines = resp.json()
+    names = {e["name"] for e in engines}
     assert "cosyvoice2" in names
-    # sdxl has no local_path, should not appear
-    assert "sdxl" not in names
+    # sdxl also appears now (with local_exists=False)
+    assert "sdxl" in names
+    # cosyvoice2 has local_exists=True, sdxl has local_exists=False
+    by_name = {e["name"]: e for e in engines}
+    assert by_name["cosyvoice2"]["local_exists"] is True
+    assert by_name["sdxl"]["local_exists"] is False
 
 
 async def test_list_engines_returns_metadata_fields(db_client):

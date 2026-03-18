@@ -1,8 +1,11 @@
 import type { NodeProps } from '@xyflow/react'
+import { useQuery } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
 import { DECLARATIVE_NODES, type WidgetDef } from '../../models/nodeRegistry'
 import { useAgents } from '../../api/agents'
+import { apiFetch } from '../../api/client'
+import type { EngineInfo } from '../../api/engines'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
 
 function AgentSelectWidget({
@@ -20,6 +23,33 @@ function AgentSelectWidget({
       {agents?.map((a) => (
         <option key={a.name} value={a.name}>
           {a.display_name || a.name}
+        </option>
+      ))}
+    </NodeSelect>
+  )
+}
+
+function ModelSelectWidget({
+  value,
+  onChange,
+  filter,
+}: {
+  value: string
+  onChange: (v: string) => void
+  filter?: string
+}) {
+  const params = filter ? `?type=${filter}` : ''
+  const { data: engines } = useQuery({
+    queryKey: ['engines', filter],
+    queryFn: () => apiFetch<EngineInfo[]>(`/api/v1/engines${params}`),
+  })
+
+  return (
+    <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">选择模型...</option>
+      {(engines ?? []).map((e) => (
+        <option key={e.name} value={e.name} disabled={!e.local_exists}>
+          {e.display_name} {e.local_exists ? '' : '(未下载)'}
         </option>
       ))}
     </NodeSelect>
@@ -77,6 +107,14 @@ function WidgetRenderer({
         <AgentSelectWidget
           value={(value as string) ?? ''}
           onChange={(v) => onChange(v)}
+        />
+      )
+    case 'model_select':
+      return (
+        <ModelSelectWidget
+          value={(value as string) ?? ''}
+          onChange={(v) => onChange(v)}
+          filter={widget.filter}
         />
       )
     default:

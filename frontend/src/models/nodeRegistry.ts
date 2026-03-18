@@ -1,6 +1,6 @@
 import type { NodeType } from './workflow'
 
-export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'agent_select'
+export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'agent_select' | 'model_select'
 
 export interface WidgetDef {
   name: string
@@ -13,6 +13,7 @@ export interface WidgetDef {
   precision?: number
   rows?: number
   default?: unknown
+  filter?: string
 }
 
 export interface DeclarativeNodeDef {
@@ -33,9 +34,7 @@ export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
     badgeColor: 'var(--purple)',
     widgets: [
       { name: 'system', label: '系统提示', widget: 'textarea', rows: 3 },
-      { name: 'model', label: '模型', widget: 'input' },
-      { name: 'base_url', label: 'Base URL', widget: 'input', default: 'http://localhost:8100' },
-      { name: 'api_key', label: 'API Key', widget: 'input' },
+      { name: 'model_key', label: '模型', widget: 'model_select', filter: 'llm' },
       { name: 'temperature', label: '温度', widget: 'slider', min: 0, max: 2, step: 0.1, precision: 1 },
       { name: 'max_tokens', label: '最大 Token', widget: 'slider', min: 1, max: 8192, step: 1, precision: 0 },
     ],

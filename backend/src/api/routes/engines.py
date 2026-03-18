@@ -79,10 +79,6 @@ async def list_all_engines(
     for key, cfg in configs.items():
         if type and cfg.get("type") != type:
             continue
-        local_path = cfg.get("local_path")
-        # Only show models that exist locally
-        if not local_path or local_path not in local_dirs:
-            continue
         result.append(_build_engine_info(key, cfg, metadata.get(key), local_dirs))
     return result
 
