@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
+import { useToastStore } from '../stores/toast'
 
 export interface EngineInfo {
   name: string
@@ -39,7 +40,13 @@ export function useLoadEngine() {
   return useMutation({
     mutationFn: (name: string) =>
       apiFetch(`/api/v1/engines/${name}/load`, { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['engines'] }),
+    onSuccess: (_, name) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add(`${name} 加载成功`, 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`加载失败: ${error.message}`, 'error')
+    },
   })
 }
 
@@ -48,7 +55,13 @@ export function useUnloadEngine() {
   return useMutation({
     mutationFn: (name: string) =>
       apiFetch(`/api/v1/engines/${name}/unload`, { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['engines'] }),
+    onSuccess: (_, name) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add(`${name} 已卸载`, 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`卸载失败: ${error.message}`, 'error')
+    },
   })
 }
 
