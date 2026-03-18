@@ -9,6 +9,7 @@ from src.config import load_model_configs, get_settings
 from src.gpu.detector import get_device_for_engine, gpu_summary
 from src.models.database import get_async_session
 from src.models.schemas import EngineInfo, EngineLoadResponse
+from src.services import model_scheduler
 from src.services.model_metadata_service import (
     get_all_metadata, sync_metadata, refresh_metadata, scan_local_models,
     _format_size,
@@ -25,9 +26,16 @@ async def list_gpus():
 
 
 def _is_engine_loaded(name: str) -> bool:
-    from src.workers.tts_engines import registry
-    engine = registry._ENGINE_INSTANCES.get(name)
-    return engine is not None and engine.is_loaded
+    from src.workers.tts_engines import registry as tts_registry
+    from src.workers.llm_engines import registry as llm_registry
+
+    engine = tts_registry._ENGINE_INSTANCES.get(name)
+    if engine is not None:
+        return engine.is_loaded
+    engine = llm_registry._ENGINE_INSTANCES.get(name)
+    if engine is not None:
+        return engine.is_loaded
+    return False
 
 
 def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str]) -> EngineInfo:
@@ -71,6 +79,10 @@ async def list_all_engines(
     for key, cfg in configs.items():
         if type and cfg.get("type") != type:
             continue
+        local_path = cfg.get("local_path")
+        # Only show models that exist locally
+        if not local_path or local_path not in local_dirs:
+            continue
         result.append(_build_engine_info(key, cfg, metadata.get(key), local_dirs))
     return result
 
@@ -99,18 +111,11 @@ async def refresh_engine_metadata(
 @router.post("/{name}/load", response_model=EngineLoadResponse)
 async def load_engine(name: str):
     configs = load_model_configs()
-    if name not in configs or configs[name].get("type") != "tts":
+    if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
-    cfg = configs[name]
-    settings = get_settings()
-    model_path = Path(settings.LOCAL_MODELS_PATH) / cfg["local_path"]
-    device = get_device_for_engine(cfg)
-
     start = time.monotonic()
-    engine = get_engine(name, model_path=model_path, device=device)
-    if not engine.is_loaded:
-        await asyncio.to_thread(engine.load)
+    await model_scheduler.load_model(name)
     elapsed = round(time.monotonic() - start, 2)
 
     return EngineLoadResponse(name=name, status="loaded", load_time_seconds=elapsed)
@@ -119,16 +124,19 @@ async def load_engine(name: str):
 @router.post("/{name}/unload", response_model=EngineLoadResponse)
 async def unload_engine(name: str, force: bool = False):
     configs = load_model_configs()
-    if name not in configs or configs[name].get("type") != "tts":
+    if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
     cfg = configs[name]
     if cfg.get("resident", False) and not force:
         raise HTTPException(409, detail=f"Engine {name} is resident. Use force=true to unload.")
 
-    from src.workers.tts_engines import registry
-    engine = registry._ENGINE_INSTANCES.get(name)
-    if engine and engine.is_loaded:
-        engine.unload()
+    await model_scheduler.unload_model(name, force=force)
 
     return EngineLoadResponse(name=name, status="unloaded")
+
+
+@router.get("/scheduler/status")
+async def scheduler_status():
+    """Return current model scheduler status."""
+    return model_scheduler.get_status()

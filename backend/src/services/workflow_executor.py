@@ -158,12 +158,35 @@ async def _exec_passthrough(data: dict, inputs: dict) -> dict:
 
 async def _exec_llm(data: dict, inputs: dict) -> dict:
     """Call LLM via OpenAI-compatible API."""
+    from src.services import model_scheduler
+
     prompt = inputs.get("prompt") or inputs.get("text", "")
     if not prompt:
         raise ExecutionError("LLM 节点缺少 prompt 输入")
+
+    model_key = data.get("model_key", "")
+    base_url = data.get("base_url", "")
+
+    # If model_key specified, use scheduler to get base_url
+    if model_key:
+        url = model_scheduler.get_llm_base_url(model_key)
+        if url:
+            base_url = url
+        else:
+            # Try to load on demand
+            await model_scheduler.load_model(model_key)
+            url = model_scheduler.get_llm_base_url(model_key)
+            if url:
+                base_url = url
+            else:
+                raise ExecutionError(f"模型 {model_key} 未加载")
+
+    if not base_url:
+        base_url = "http://localhost:8100"
+
     result = await call_llm(
         prompt=prompt,
-        base_url=data.get("base_url", "http://localhost:8100"),
+        base_url=base_url,
         model=data.get("model", ""),
         system=data.get("system"),
         api_key=data.get("api_key"),

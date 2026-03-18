@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from contextlib import asynccontextmanager
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
+from src.services import model_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,17 @@ async def lifespan(app: FastAPI):
         logger.info("Model metadata synced")
     except Exception as e:
         logger.warning("Model metadata sync failed (non-fatal): %s", e)
+
+    # Start idle model checker background task
+    async def idle_checker():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await model_scheduler.check_idle_models()
+            except Exception as e:
+                logger.warning("Idle model check failed: %s", e)
+
+    asyncio.create_task(idle_checker())
 
     yield
 

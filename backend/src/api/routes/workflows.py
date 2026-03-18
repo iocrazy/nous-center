@@ -8,6 +8,7 @@ from src.models.database import get_async_session
 from src.models.schemas import WorkflowCreate, WorkflowUpdate, WorkflowOut
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
+from src.services import model_scheduler
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
 
@@ -106,6 +107,17 @@ async def publish_workflow(
         await session.flush()
         instance.endpoint_path = f"/v1/instances/{instance.id}/run"
 
+    # Auto-load model dependencies
+    deps = model_scheduler.get_model_dependencies(
+        {"nodes": wf.nodes, "edges": wf.edges}
+    )
+    for dep in deps:
+        try:
+            await model_scheduler.load_model(dep["key"])
+            model_scheduler.add_reference(dep["key"], str(wf.id))
+        except Exception as e:
+            raise HTTPException(503, f"无法加载模型 {dep['key']}: {e}")
+
     wf.status = "published"
     await session.commit()
     await session.refresh(instance)
@@ -133,6 +145,14 @@ async def unpublish_workflow(
     instance = result.scalar_one_or_none()
     if instance:
         instance.status = "inactive"
+
+    # Remove model references and attempt unload
+    deps = model_scheduler.get_model_dependencies(
+        {"nodes": wf.nodes, "edges": wf.edges}
+    )
+    for dep in deps:
+        model_scheduler.remove_reference(dep["key"], str(wf.id))
+        await model_scheduler.unload_model(dep["key"])
 
     wf.status = "draft"
     await session.commit()
