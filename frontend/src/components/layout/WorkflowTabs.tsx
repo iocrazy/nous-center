@@ -1,14 +1,15 @@
 import { X, Plus } from 'lucide-react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
-import { usePanelStore } from '../../stores/panel'
 
 export default function WorkflowTabs() {
   const { tabs, activeTabId, setActiveTab, addTab, removeTab } = useWorkspaceStore()
-  const { setOverlay } = usePanelStore()
+  const navigate = useNavigate()
+  const location = useLocation()
 
   const handleTabClick = (id: string) => {
     setActiveTab(id)
-    setOverlay(null)
+    if (location.pathname !== '/') navigate('/')
   }
 
   return (

@@ -11,8 +11,18 @@ import {
   Moon,
   Monitor,
 } from 'lucide-react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
 import { useThemeStore } from '../../stores/theme'
+
+const OVERLAY_ROUTES: Record<OverlayId, string> = {
+  dashboard: '/dashboard',
+  models: '/models',
+  'api-management': '/api',
+  agents: '/agents',
+  settings: '/settings',
+  'preset-detail': '/', // no dedicated route
+}
 
 const PANEL_ITEMS: { id: PanelId; icon: typeof CircuitBoard; label: string }[] = [
   { id: 'nodes', icon: CircuitBoard, label: 'Nodes' },
@@ -28,8 +38,20 @@ const OVERLAY_ITEMS: { id: OverlayId; icon: typeof LayoutDashboard; label: strin
 ]
 
 export default function IconRail() {
-  const { activePanel, activeOverlay, togglePanel, toggleOverlay } = usePanelStore()
+  const { activePanel, activeOverlay, togglePanel } = usePanelStore()
   const { mode, setMode } = useThemeStore()
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const navigateOverlay = (id: OverlayId) => {
+    const target = OVERLAY_ROUTES[id]
+    // Toggle: if already on that route, go home
+    if (activeOverlay === id || location.pathname === target) {
+      navigate('/')
+    } else {
+      navigate(target)
+    }
+  }
 
   return (
     <div
@@ -59,7 +81,7 @@ export default function IconRail() {
         <RailButton
           key={id}
           active={activeOverlay === id}
-          onClick={() => toggleOverlay(id)}
+          onClick={() => navigateOverlay(id)}
           label={label}
         >
           <Icon size={18} />
@@ -77,7 +99,10 @@ export default function IconRail() {
         <RailButton
           key={id}
           active={activePanel === id && !activeOverlay}
-          onClick={() => togglePanel(id)}
+          onClick={() => {
+            if (location.pathname !== '/') navigate('/')
+            togglePanel(id)
+          }}
           label={label}
         >
           <Icon size={18} />
@@ -88,7 +113,7 @@ export default function IconRail() {
       <div className="mt-auto flex flex-col items-center gap-1">
         <RailButton
           active={activeOverlay === 'settings'}
-          onClick={() => toggleOverlay('settings')}
+          onClick={() => navigateOverlay('settings')}
           label="Settings"
         >
           <SlidersHorizontal size={18} />

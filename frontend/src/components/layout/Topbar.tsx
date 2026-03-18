@@ -1,5 +1,6 @@
 import { useEffect, useCallback } from 'react'
 import { ArrowLeft } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
@@ -11,7 +12,8 @@ export default function Topbar() {
   const { tabs, activeTabId } = useWorkspaceStore()
   const getActiveWorkflow = useWorkspaceStore((s) => s.getActiveWorkflow)
   const updateNode = useWorkspaceStore((s) => s.updateNode)
-  const { activeOverlay, setOverlay } = usePanelStore()
+  const { activeOverlay } = usePanelStore()
+  const navigate = useNavigate()
   const { isRunning, start, succeed, fail } = useExecutionStore()
   const toast = useToastStore((s) => s.add)
   const publishWf = usePublishWorkflow()
@@ -74,7 +76,7 @@ export default function Topbar() {
     >
       {activeOverlay && (
         <button
-          onClick={() => setOverlay(null)}
+          onClick={() => navigate('/')}
           className="flex items-center justify-center"
           style={{
             padding: '4px 8px',
