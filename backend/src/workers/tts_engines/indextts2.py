@@ -12,7 +12,8 @@ from src.workers.tts_engines.registry import register_engine
 logger = logging.getLogger(__name__)
 
 # Default reference audio (same as CosyVoice2 default)
-_DEFAULT_VOICE_WAV = "assets/voices/default_zh_female.wav"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_DEFAULT_VOICE_WAV = str(_PROJECT_ROOT.parent / "assets" / "voices" / "default_zh_female.wav")
 
 
 def _ensure_indextts_path():

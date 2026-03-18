@@ -1,5 +1,6 @@
 import io
 import logging
+from pathlib import Path
 
 import torch
 
@@ -9,7 +10,8 @@ from src.workers.tts_engines.registry import register_engine
 logger = logging.getLogger(__name__)
 
 # Default reference audio for voice cloning
-_DEFAULT_VOICE_WAV = "assets/voices/default_zh_female.wav"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_DEFAULT_VOICE_WAV = str(_PROJECT_ROOT.parent / "assets" / "voices" / "default_zh_female.wav")
 
 
 @register_engine

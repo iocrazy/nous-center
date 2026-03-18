@@ -13,9 +13,10 @@ from src.workers.tts_engines.registry import register_engine
 logger = logging.getLogger(__name__)
 
 # Default reference audio for zero-shot when no reference is provided
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # backend/
 _DEFAULT_VOICES = {
     "default": {
-        "wav": "assets/voices/default_zh_female.wav",
+        "wav": str(_PROJECT_ROOT.parent / "assets" / "voices" / "default_zh_female.wav"),
         "prompt_text": "希望你以后能够做的比我还好呦。",
     },
 }
