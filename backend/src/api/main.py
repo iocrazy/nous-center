@@ -13,6 +13,9 @@ from src.services import model_scheduler
 
 logger = logging.getLogger(__name__)
 
+# Active WebSocket connections for workflow progress updates, keyed by instance_id
+_ws_connections: dict[str, list[WebSocket]] = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -101,6 +104,18 @@ def create_app() -> FastAPI:
     @app.websocket("/ws/tts")
     async def websocket_tts(websocket: WebSocket):
         await handle_tts_websocket(websocket)
+
+    @app.websocket("/ws/workflow/{instance_id}")
+    async def workflow_progress_ws(websocket: WebSocket, instance_id: str):
+        await websocket.accept()
+        if instance_id not in _ws_connections:
+            _ws_connections[instance_id] = []
+        _ws_connections[instance_id].append(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            _ws_connections[instance_id].remove(websocket)
 
     return app
 

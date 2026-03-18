@@ -111,12 +111,22 @@ async def instance_run(
     if not workflow_data.get("nodes"):
         raise HTTPException(400, detail="Workflow has no nodes")
 
-    executor = WorkflowExecutor(workflow_data)
+    async def broadcast_progress(data: dict):
+        from src.api.main import _ws_connections
+        for ws in _ws_connections.get(str(instance.id), []):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                pass
+
+    executor = WorkflowExecutor(workflow_data, on_progress=broadcast_progress)
 
     try:
         result = await executor.execute()
     except ExecutionError as e:
         raise HTTPException(422, detail=str(e))
+
+    await broadcast_progress({"type": "complete", "progress": 100})
 
     # Update usage counters
     api_key.usage_calls += 1

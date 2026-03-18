@@ -20,11 +20,12 @@ class ExecutionError(Exception):
 class WorkflowExecutor:
     """Execute a workflow DAG (topological sort + per-node execution)."""
 
-    def __init__(self, workflow: dict):
+    def __init__(self, workflow: dict, on_progress=None):
         self.nodes: list[dict] = workflow.get("nodes", [])
         self.edges: list[dict] = workflow.get("edges", [])
         self._node_map: dict[str, dict] = {n["id"]: n for n in self.nodes}
         self._outputs: dict[str, dict[str, Any]] = {}
+        self._on_progress = on_progress  # async callback(data: dict)
 
     def _topological_sort(self) -> list[str]:
         if not self.nodes:
@@ -74,17 +75,44 @@ class WorkflowExecutor:
     async def execute(self) -> dict[str, Any]:
         """Execute the workflow and return all node outputs."""
         order = self._topological_sort()
+        total = len(order)
 
-        for node_id in order:
+        for i, node_id in enumerate(order):
             node = self._node_map[node_id]
             inputs = self._get_inputs(node_id)
+
+            if self._on_progress:
+                await self._on_progress({
+                    "type": "node_start",
+                    "node_id": node_id,
+                    "node_type": node["type"],
+                    "step": i + 1,
+                    "total": total,
+                    "progress": round((i / total) * 100),
+                })
+
             try:
                 output = await self._execute_node(node, inputs)
                 self._outputs[node_id] = output
             except Exception as e:
+                if self._on_progress:
+                    await self._on_progress({
+                        "type": "node_error",
+                        "node_id": node_id,
+                        "error": str(e),
+                    })
                 raise ExecutionError(
                     f"节点 {node_id} ({node['type']}) 执行失败: {e}"
                 ) from e
+
+            if self._on_progress:
+                await self._on_progress({
+                    "type": "node_complete",
+                    "node_id": node_id,
+                    "step": i + 1,
+                    "total": total,
+                    "progress": round(((i + 1) / total) * 100),
+                })
 
         return {"outputs": self._outputs}
 
