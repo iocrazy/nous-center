@@ -111,7 +111,10 @@ async def load_engine(name: str):
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
     start = time.monotonic()
-    await model_scheduler.load_model(name)
+    try:
+        await model_scheduler.load_model(name)
+    except Exception as e:
+        raise HTTPException(503, detail=f"加载失败: {e}")
     elapsed = round(time.monotonic() - start, 2)
 
     return EngineLoadResponse(name=name, status="loaded", load_time_seconds=elapsed)

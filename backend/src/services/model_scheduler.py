@@ -65,6 +65,11 @@ async def load_model(model_key: str) -> None:
     device = get_device_for_engine(cfg)
 
     if model_type == "tts":
+        # Ensure engine classes are registered
+        import src.workers.tts_engines.cosyvoice2  # noqa: F401
+        import src.workers.tts_engines.indextts2  # noqa: F401
+        import src.workers.tts_engines.qwen3_tts  # noqa: F401
+        import src.workers.tts_engines.moss_tts  # noqa: F401
         from src.workers.tts_engines.registry import get_engine
 
         local_path = cfg.get("local_path", "")
