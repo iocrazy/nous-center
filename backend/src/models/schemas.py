@@ -97,6 +97,7 @@ class EngineInfo(BaseModel):
     tensor_types: list[str] | None = None
     description: str | None = None
     has_metadata: bool = False
+    auto_detected: bool = False
 
 
 class EngineLoadResponse(BaseModel):

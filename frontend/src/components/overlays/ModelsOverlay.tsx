@@ -1,19 +1,21 @@
-import { useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata, useSetResident, type EngineInfo } from '../../api/engines'
+import { useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata, useScanModels, useSetResident, type EngineInfo } from '../../api/engines'
 
 const TYPE_LABELS: Record<string, string> = {
+  llm: '语言模型 LLM',
   tts: '语音合成 TTS',
   image: '图像生成 Image',
   video: '视频生成 Video',
   understand: '多模态理解 VL',
 }
 
-const TYPE_ORDER = ['tts', 'image', 'video', 'understand']
+const TYPE_ORDER = ['llm', 'tts', 'image', 'video', 'understand']
 
 export default function ModelsOverlay() {
   const { data: engines, isLoading, isError } = useEngines()
   const loadEngine = useLoadEngine()
   const unloadEngine = useUnloadEngine()
   const syncMeta = useSyncMetadata()
+  const scanModels = useScanModels()
   const setResident = useSetResident()
 
   // Group by type
@@ -38,9 +40,25 @@ export default function ModelsOverlay() {
       style={{ background: 'var(--bg)' }}
     >
       <div style={{ padding: 16 }}>
-        {/* Header with sync button */}
-        {hasAnyMissing && (
-          <div className="flex items-center gap-2 mb-3">
+        {/* Header with scan + sync buttons */}
+        <div className="flex items-center gap-2 mb-3">
+          <button
+            onClick={() => scanModels.mutate()}
+            disabled={scanModels.isPending}
+            style={{
+              padding: '4px 12px',
+              fontSize: 10,
+              borderRadius: 4,
+              border: '1px solid var(--border)',
+              background: 'var(--accent-2)',
+              color: '#fff',
+              cursor: scanModels.isPending ? 'wait' : 'pointer',
+              opacity: scanModels.isPending ? 0.6 : 1,
+            }}
+          >
+            {scanModels.isPending ? '扫描中...' : '扫描模型'}
+          </button>
+          {hasAnyMissing && (
             <button
               onClick={() => syncMeta.mutate()}
               disabled={syncMeta.isPending}
@@ -57,11 +75,11 @@ export default function ModelsOverlay() {
             >
               {syncMeta.isPending ? '同步中...' : '拉取模型信息'}
             </button>
-            <span style={{ fontSize: 9, color: 'var(--muted)' }}>
-              从 ModelScope / HuggingFace 获取元数据
-            </span>
-          </div>
-        )}
+          )}
+          <span style={{ fontSize: 9, color: 'var(--muted)' }}>
+            扫描本地目录自动检测模型
+          </span>
+        </div>
 
         {isLoading && (
           <div style={{ fontSize: 11, color: 'var(--muted)' }}>加载中...</div>
@@ -137,6 +155,9 @@ function ModelCard({
   onToggle: () => void
   onResidentToggle: (resident: boolean) => void
 }) {
+  const notDownloaded = model.local_path != null && !model.local_exists
+  const canLoad = model.type === 'tts' && !notDownloaded
+
   return (
     <div
       className="rounded-md"
@@ -144,9 +165,10 @@ function ModelCard({
         background: 'var(--card)',
         border: '1px solid var(--border)',
         padding: '10px 12px',
+        opacity: notDownloaded ? 0.6 : 1,
       }}
     >
-      {/* Row 1: Name + status + toggle */}
+      {/* Row 1: Name + badges + status + toggle */}
       <div className="flex items-center gap-2 mb-1">
         <span
           style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}
@@ -155,10 +177,25 @@ function ModelCard({
           {model.organization ? `${model.organization}/` : ''}
           {model.display_name}
         </span>
+        {model.auto_detected && (
+          <span
+            style={{
+              fontSize: 8,
+              padding: '1px 5px',
+              borderRadius: 3,
+              background: 'color-mix(in srgb, var(--accent-2) 18%, transparent)',
+              color: 'var(--accent-2)',
+              flexShrink: 0,
+            }}
+          >
+            自动检测
+          </span>
+        )}
         <StatusBadge status={model.status} />
         <button
-          disabled={busy || model.type !== 'tts'}
+          disabled={busy || !canLoad}
           onClick={onToggle}
+          title={notDownloaded ? '未下载' : undefined}
           style={{
             padding: '2px 8px',
             fontSize: 9,
@@ -167,7 +204,7 @@ function ModelCard({
             background: model.status === 'loaded' ? 'none' : 'var(--accent)',
             color: model.status === 'loaded' ? 'var(--muted)' : '#fff',
             cursor: busy ? 'wait' : 'pointer',
-            opacity: busy || model.type !== 'tts' ? 0.4 : 1,
+            opacity: busy || !canLoad ? 0.4 : 1,
             flexShrink: 0,
           }}
         >

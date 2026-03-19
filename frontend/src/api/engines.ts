@@ -23,6 +23,7 @@ export interface EngineInfo {
   tensor_types: string[] | null
   description: string | null
   has_metadata: boolean
+  auto_detected: boolean
 }
 
 export function useEngines() {
@@ -82,6 +83,21 @@ export function useSetResident() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['engines'] }),
     onError: (error: Error) => {
       useToastStore.getState().add(`设置失败: ${error.message}`, 'error')
+    },
+  })
+}
+
+export function useScanModels() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ count: number; models: string[] }>('/api/v1/engines/scan', { method: 'POST' }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add(`扫描完成，共 ${data.count} 个模型`, 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`扫描失败: ${error.message}`, 'error')
     },
   })
 }

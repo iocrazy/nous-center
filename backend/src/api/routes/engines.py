@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import load_model_configs, get_settings
+from src.services.model_scanner import scan_models
 from src.gpu.detector import get_device_for_engine, gpu_summary
 from src.models.database import get_async_session
 from src.models.schemas import EngineInfo, EngineLoadResponse
@@ -51,6 +52,7 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str]) -> Engin
         resident=cfg.get("resident", False),
         local_path=local_path,
         local_exists=local_exists,
+        auto_detected=cfg.get("auto_detected", False),
     )
     if meta:
         info.organization = meta.organization
@@ -72,7 +74,7 @@ async def list_all_engines(
     session: AsyncSession = Depends(get_async_session),
 ):
     """List all engines with metadata. Optionally filter by type."""
-    configs = load_model_configs()
+    configs = scan_models()
     metadata = await get_all_metadata(session)
     local_dirs = scan_local_models()
     result = []
@@ -81,6 +83,13 @@ async def list_all_engines(
             continue
         result.append(_build_engine_info(key, cfg, metadata.get(key), local_dirs))
     return result
+
+
+@router.post("/scan")
+async def scan_models_endpoint():
+    """Re-scan models directory for new models."""
+    configs = scan_models()
+    return {"count": len(configs), "models": list(configs.keys())}
 
 
 @router.post("/sync-metadata")
@@ -96,7 +105,7 @@ async def refresh_engine_metadata(
     session: AsyncSession = Depends(get_async_session),
 ):
     """Force re-fetch metadata for a specific engine."""
-    configs = load_model_configs()
+    configs = scan_models()
     if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
     meta = await refresh_metadata(session, name)
@@ -106,7 +115,7 @@ async def refresh_engine_metadata(
 
 @router.post("/{name}/load", response_model=EngineLoadResponse)
 async def load_engine(name: str):
-    configs = load_model_configs()
+    configs = scan_models()
     if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
@@ -122,7 +131,7 @@ async def load_engine(name: str):
 
 @router.post("/{name}/unload", response_model=EngineLoadResponse)
 async def unload_engine(name: str, force: bool = False):
-    configs = load_model_configs()
+    configs = scan_models()
     if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
