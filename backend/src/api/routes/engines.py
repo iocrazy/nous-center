@@ -153,7 +153,7 @@ async def set_resident(name: str, resident: bool = True):
     """Toggle auto-load on startup for an engine."""
     import yaml
 
-    configs_path = Path(__file__).resolve().parent.parent.parent / "configs" / "models.yaml"
+    configs_path = Path(__file__).resolve().parent.parent.parent.parent / "configs" / "models.yaml"
 
     with open(configs_path) as f:
         data = yaml.safe_load(f)
@@ -174,7 +174,7 @@ async def set_gpu(name: str, gpu: int = 0):
     """Change GPU assignment for an engine."""
     import yaml
 
-    configs_path = Path(__file__).resolve().parent.parent.parent / "configs" / "models.yaml"
+    configs_path = Path(__file__).resolve().parent.parent.parent.parent / "configs" / "models.yaml"
 
     with open(configs_path) as f:
         data = yaml.safe_load(f)
