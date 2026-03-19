@@ -56,6 +56,11 @@ function ModelSelectWidget({
   )
 }
 
+function resolveValue(value: unknown, widget: WidgetDef): unknown {
+  if (value !== undefined && value !== null) return value
+  return widget.default
+}
+
 function WidgetRenderer({
   widget,
   value,
@@ -65,25 +70,28 @@ function WidgetRenderer({
   value: unknown
   onChange: (v: unknown) => void
 }) {
+  const resolved = resolveValue(value, widget)
+
   switch (widget.widget) {
     case 'input':
       return (
         <NodeInput
-          value={(value as string) ?? (widget.default as string) ?? ''}
+          value={String(resolved ?? '')}
           onChange={(e) => onChange(e.target.value)}
+          placeholder={widget.label}
         />
       )
     case 'textarea':
       return (
         <NodeTextarea
-          value={(value as string) ?? ''}
+          value={String(resolved ?? '')}
           onChange={(e) => onChange(e.target.value)}
           style={widget.rows ? { height: widget.rows * 16 } : undefined}
         />
       )
     case 'select':
       return (
-        <NodeSelect value={(value as string) ?? ''} onChange={(e) => onChange(e.target.value)}>
+        <NodeSelect value={String(resolved ?? '')} onChange={(e) => onChange(e.target.value)}>
           {widget.options?.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
@@ -94,7 +102,7 @@ function WidgetRenderer({
     case 'slider':
       return (
         <NodeNumberDrag
-          value={(value as number) ?? widget.min ?? 0}
+          value={Number(resolved ?? widget.min ?? 0)}
           onChange={onChange}
           min={widget.min}
           max={widget.max}
@@ -102,17 +110,36 @@ function WidgetRenderer({
           precision={widget.precision}
         />
       )
+    case 'checkbox':
+      return (
+        <div
+          onClick={() => onChange(!resolved)}
+          className="nodrag"
+          style={{
+            width: 32, height: 16, borderRadius: 8, cursor: 'pointer',
+            background: resolved ? 'var(--accent)' : 'var(--bg)',
+            border: '1px solid var(--border)',
+            position: 'relative', transition: 'background 0.2s',
+          }}
+        >
+          <div style={{
+            width: 12, height: 12, borderRadius: 6,
+            background: '#fff', position: 'absolute', top: 1,
+            left: resolved ? 17 : 1, transition: 'left 0.2s',
+          }} />
+        </div>
+      )
     case 'agent_select':
       return (
         <AgentSelectWidget
-          value={(value as string) ?? ''}
+          value={String(resolved ?? '')}
           onChange={(v) => onChange(v)}
         />
       )
     case 'model_select':
       return (
         <ModelSelectWidget
-          value={(value as string) ?? ''}
+          value={String(resolved ?? '')}
           onChange={(v) => onChange(v)}
           filter={widget.filter}
         />
