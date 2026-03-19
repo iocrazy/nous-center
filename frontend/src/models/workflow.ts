@@ -1,6 +1,10 @@
 export type PortType = 'text' | 'audio' | 'message' | 'data' | 'any'
 
-export type NodeType =
+/** Node type identifier. Built-in types are listed below; plugin packages can add more at runtime. */
+export type NodeType = string
+
+/** Built-in node types (for reference / type narrowing). */
+export type BuiltinNodeType =
   | 'text_input'
   | 'ref_audio'
   | 'tts_engine'

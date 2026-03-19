@@ -122,6 +122,11 @@ class WorkflowExecutor:
         data = node.get("data", {})
         executor = _NODE_EXECUTORS.get(node_type)
         if executor is None:
+            # Check plugin executors from node packages
+            from nodes import get_all_executors
+            plugin_executors = get_all_executors()
+            executor = plugin_executors.get(node_type)
+        if executor is None:
             raise ExecutionError(f"未知节点类型: {node_type}")
         return await executor(data, inputs)
 

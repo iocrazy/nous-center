@@ -1,4 +1,4 @@
-import type { NodeType } from './workflow'
+import { NODE_DEFS, type PortDef, type NodeType } from './workflow'
 
 export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'agent_select' | 'model_select'
 
@@ -109,3 +109,94 @@ export const NODE_CATEGORIES: NodeCategoryDef[] = [
     ],
   },
 ]
+
+/** Plugin categories added dynamically from API */
+export const PLUGIN_CATEGORIES: NodeCategoryDef[] = []
+
+// Callbacks to notify nodeTypes.ts when plugin defs are loaded
+const _onPluginLoadCallbacks: Array<() => void> = []
+export function onPluginDefsLoaded(cb: () => void) {
+  _onPluginLoadCallbacks.push(cb)
+}
+
+/** Category color mapping for plugin nodes */
+const CATEGORY_COLORS: Record<string, string> = {
+  tts: 'var(--warn)',
+  ai: 'var(--purple)',
+  audio: 'var(--info)',
+  control: 'var(--accent)',
+}
+
+interface PluginNodeDef {
+  label: string
+  category: string
+  badge: string
+  badgeColor: string
+  inputs?: PortDef[]
+  outputs?: PortDef[]
+  widgets?: WidgetDef[]
+  _package?: string
+}
+
+/**
+ * Called on app startup to merge plugin node definitions from the backend API.
+ * Registers definitions in DECLARATIVE_NODES, port definitions in NODE_DEFS,
+ * and categories in PLUGIN_CATEGORIES.
+ */
+export async function loadPluginDefinitions(): Promise<void> {
+  try {
+    const resp = await fetch('/api/v1/nodes/definitions')
+    if (!resp.ok) return
+    const defs: Record<string, PluginNodeDef> = await resp.json()
+
+    // Track which categories we need to add
+    const categoryMap: Record<string, { type: NodeType; dotColor: string }[]> = {}
+
+    for (const [nodeType, def] of Object.entries(defs)) {
+      // Skip if already hardcoded
+      if (DECLARATIVE_NODES[nodeType]) continue
+
+      // Register as declarative node
+      DECLARATIVE_NODES[nodeType] = {
+        type: nodeType,
+        label: def.label,
+        category: def.category,
+        badge: def.badge,
+        badgeColor: def.badgeColor,
+        widgets: (def.widgets ?? []) as WidgetDef[],
+      }
+
+      // Register port definitions in NODE_DEFS
+      NODE_DEFS[nodeType] = {
+        type: nodeType,
+        label: def.label,
+        inputs: (def.inputs ?? []) as PortDef[],
+        outputs: (def.outputs ?? []) as PortDef[],
+      }
+
+      // Collect category entries
+      const cat = def.category || 'other'
+      if (!categoryMap[cat]) categoryMap[cat] = []
+      categoryMap[cat].push({
+        type: nodeType,
+        dotColor: def.badgeColor || CATEGORY_COLORS[cat] || 'var(--muted)',
+      })
+    }
+
+    // Build plugin categories
+    PLUGIN_CATEGORIES.length = 0
+    for (const [catName, nodes] of Object.entries(categoryMap)) {
+      PLUGIN_CATEGORIES.push({
+        name: `plugin:${catName}`,
+        label: catName.toUpperCase(),
+        color: CATEGORY_COLORS[catName] || 'var(--warn)',
+        nodes,
+      })
+    }
+
+    // Notify subscribers
+    for (const cb of _onPluginLoadCallbacks) cb()
+  } catch (e) {
+    console.warn('Failed to load plugin node definitions:', e)
+  }
+}

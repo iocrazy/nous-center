@@ -1,0 +1,56 @@
+name: qwen3-tts
+version: "1.0"
+description: "Qwen3-TTS 语音合成节点包"
+author: "flybirdxx (ComfyUI) / nous-center"
+
+nodes:
+  qwen3_voice_clone:
+    label: "Qwen3 语音克隆"
+    category: tts
+    badge: TTS
+    badgeColor: "var(--warn)"
+    inputs:
+      - { id: text, type: text, label: 文本 }
+      - { id: ref_audio, type: audio, label: 参考音频 }
+    outputs:
+      - { id: audio, type: audio, label: 音频 }
+    widgets:
+      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
+      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}], default: auto }
+      - { name: ref_text, label: 参考文本, widget: textarea, rows: 2 }
+      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }
+      - { name: seed, label: 种子, widget: slider, min: 0, max: 999999999, step: 1, default: 0 }
+
+  qwen3_custom_voice:
+    label: "Qwen3 预置音色"
+    category: tts
+    badge: TTS
+    badgeColor: "var(--warn)"
+    inputs:
+      - { id: text, type: text, label: 文本 }
+    outputs:
+      - { id: audio, type: audio, label: 音频 }
+    widgets:
+      - { name: speaker, label: 音色, widget: select, options: [{label: Aiden, value: aiden}, {label: Dylan, value: dylan}, {label: Eric, value: eric}, {label: Serena, value: serena}, {label: Vivian, value: vivian}, {label: Ryan, value: ryan}, {label: Uncle_Fu, value: uncle_fu}, {label: Ono_Anna, value: ono_anna}, {label: Sohee, value: sohee}], default: ryan }
+      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
+      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}], default: auto }
+      - { name: instruct, label: 风格指令, widget: textarea, rows: 2 }
+      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }
+
+  qwen3_voice_design:
+    label: "Qwen3 音色设计"
+    category: tts
+    badge: TTS
+    badgeColor: "var(--warn)"
+    inputs:
+      - { id: text, type: text, label: 文本 }
+    outputs:
+      - { id: audio, type: audio, label: 音频 }
+    widgets:
+      - { name: instruct, label: 音色描述, widget: textarea, rows: 3, default: "A young female voice, energetic and bright." }
+      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "1.7B", value: "1.7B"}], default: "1.7B" }
+      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}], default: auto }
+      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }

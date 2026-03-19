@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import FloatingPanel from '../layout/FloatingPanel'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
-import { NODE_CATEGORIES } from '../../models/nodeRegistry'
+import { NODE_CATEGORIES, PLUGIN_CATEGORIES } from '../../models/nodeRegistry'
 
 interface NodeCategory {
   name: string
@@ -10,7 +10,7 @@ interface NodeCategory {
   nodes: { type: NodeType; dotColor: string }[]
 }
 
-const CATEGORIES: NodeCategory[] = [
+const BUILTIN_CATEGORIES: NodeCategory[] = [
   ...NODE_CATEGORIES.map((c) => ({
     name: c.name,
     color: c.color,
@@ -53,10 +53,12 @@ export default function NodeLibraryPanel() {
       searchPlaceholder="Search Nodes..."
       onSearch={setSearch}
     >
-      {CATEGORIES.map((cat) => {
-        const filteredNodes = cat.nodes.filter((n) =>
-          !search || NODE_DEFS[n.type].label.toLowerCase().includes(search.toLowerCase())
-        )
+      {[...BUILTIN_CATEGORIES, ...PLUGIN_CATEGORIES].map((cat) => {
+        const filteredNodes = cat.nodes.filter((n) => {
+          const def = NODE_DEFS[n.type]
+          if (!def) return false
+          return !search || def.label.toLowerCase().includes(search.toLowerCase())
+        })
         if (filteredNodes.length === 0 && search) return null
         const isCollapsed = collapsed[cat.name]
 
@@ -111,7 +113,7 @@ export default function NodeLibraryPanel() {
                     className="shrink-0 rounded-full"
                     style={{ width: 6, height: 6, background: dotColor }}
                   />
-                  {NODE_DEFS[type].label}
+                  {NODE_DEFS[type]?.label ?? type}
                 </div>
               ))}
           </div>

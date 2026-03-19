@@ -8,7 +8,7 @@ import ConcatNode from './ConcatNode'
 import MixerNode from './MixerNode'
 import BgmMixNode from './BgmMixNode'
 import DeclarativeNode from './DeclarativeNode'
-import { DECLARATIVE_NODES } from '../../models/nodeRegistry'
+import { DECLARATIVE_NODES, onPluginDefsLoaded } from '../../models/nodeRegistry'
 
 const handwrittenTypes: NodeTypes = {
   text_input: TextInputNode,
@@ -21,8 +21,20 @@ const handwrittenTypes: NodeTypes = {
   bgm_mix: BgmMixNode,
 }
 
-const declarativeTypes = Object.fromEntries(
-  Object.keys(DECLARATIVE_NODES).map((type) => [type, DeclarativeNode])
-)
+function buildNodeTypes(): NodeTypes {
+  const declarativeTypes = Object.fromEntries(
+    Object.keys(DECLARATIVE_NODES).map((type) => [type, DeclarativeNode])
+  )
+  return { ...handwrittenTypes, ...declarativeTypes }
+}
 
-export const nodeTypes: NodeTypes = { ...handwrittenTypes, ...declarativeTypes }
+export let nodeTypes: NodeTypes = buildNodeTypes()
+
+// When plugin definitions are loaded, rebuild the nodeTypes map
+onPluginDefsLoaded(() => {
+  const rebuilt = buildNodeTypes()
+  // Mutate in place so existing references pick up changes
+  for (const key of Object.keys(rebuilt)) {
+    nodeTypes[key] = rebuilt[key]
+  }
+})
