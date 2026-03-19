@@ -1,9 +1,37 @@
 name: qwen3-tts
-version: "1.0"
-description: "Qwen3-TTS 语音合成节点包"
+version: "1.1"
+description: "Qwen3-TTS 语音合成节点包 — 移植自 ComfyUI-Qwen-TTS"
 author: "flybirdxx (ComfyUI) / nous-center"
 
 nodes:
+  qwen3_custom_voice:
+    label: "Qwen3 预置音色"
+    category: tts
+    badge: TTS
+    badgeColor: "var(--warn)"
+    inputs:
+      - { id: text, type: text, label: 文本 }
+      - { id: config, type: data, label: 配置 }
+    outputs:
+      - { id: audio, type: audio, label: 音频 }
+    widgets:
+      - { name: speaker, label: 音色, widget: select, options: [{label: Aiden, value: aiden}, {label: Dylan, value: dylan}, {label: Eric, value: eric}, {label: Serena, value: serena}, {label: Vivian, value: vivian}, {label: Ryan, value: ryan}, {label: Uncle_Fu, value: uncle_fu}, {label: Ono_Anna, value: ono_anna}, {label: Sohee, value: sohee}], default: ryan }
+      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
+      - { name: device, label: 设备, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
+      - { name: precision, label: 精度, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
+      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}, {label: 韩文, value: korean}, {label: 法文, value: french}, {label: 德文, value: german}, {label: 西班牙文, value: spanish}, {label: 葡萄牙文, value: portuguese}, {label: 俄文, value: russian}, {label: 意大利文, value: italian}], default: auto }
+      - { name: seed, label: 种子, widget: slider, min: 0, max: 999999999, step: 1, default: 0 }
+      - { name: instruct, label: 风格指令, widget: textarea, rows: 2 }
+      - { name: max_new_tokens, label: 最大生成Token, widget: slider, min: 512, max: 4096, step: 256, default: 2048 }
+      - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }
+      - { name: top_k, label: top_k, widget: slider, min: 0, max: 100, step: 1, default: 20 }
+      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: repetition_penalty, label: 重复惩罚, widget: slider, min: 1.0, max: 2.0, step: 0.05, default: 1.05 }
+      - { name: attention, label: 注意力机制, widget: select, options: [{label: auto, value: auto}, {label: sage_attn, value: sage_attn}, {label: flash_attn, value: flash_attn}, {label: sdpa, value: sdpa}, {label: eager, value: eager}], default: auto }
+      - { name: unload_after, label: 生成后卸载模型, widget: checkbox, default: false }
+      - { name: custom_model_path, label: 自定义模型路径, widget: input }
+      - { name: custom_speaker_name, label: 自定义角色名, widget: input }
+
   qwen3_voice_clone:
     label: "Qwen3 语音克隆"
     category: tts
@@ -12,32 +40,26 @@ nodes:
     inputs:
       - { id: text, type: text, label: 文本 }
       - { id: ref_audio, type: audio, label: 参考音频 }
+      - { id: voice_clone_prompt, type: data, label: 克隆特征 }
+      - { id: config, type: data, label: 配置 }
     outputs:
       - { id: audio, type: audio, label: 音频 }
     widgets:
-      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
-      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}], default: auto }
+      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "0.6B" }
+      - { name: device, label: 设备, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
+      - { name: precision, label: 精度, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
+      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}, {label: 韩文, value: korean}, {label: 法文, value: french}, {label: 德文, value: german}, {label: 西班牙文, value: spanish}, {label: 葡萄牙文, value: portuguese}, {label: 俄文, value: russian}, {label: 意大利文, value: italian}], default: auto }
       - { name: ref_text, label: 参考文本, widget: textarea, rows: 2 }
-      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
-      - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }
       - { name: seed, label: 种子, widget: slider, min: 0, max: 999999999, step: 1, default: 0 }
-
-  qwen3_custom_voice:
-    label: "Qwen3 预置音色"
-    category: tts
-    badge: TTS
-    badgeColor: "var(--warn)"
-    inputs:
-      - { id: text, type: text, label: 文本 }
-    outputs:
-      - { id: audio, type: audio, label: 音频 }
-    widgets:
-      - { name: speaker, label: 音色, widget: select, options: [{label: Aiden, value: aiden}, {label: Dylan, value: dylan}, {label: Eric, value: eric}, {label: Serena, value: serena}, {label: Vivian, value: vivian}, {label: Ryan, value: ryan}, {label: Uncle_Fu, value: uncle_fu}, {label: Ono_Anna, value: ono_anna}, {label: Sohee, value: sohee}], default: ryan }
-      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
-      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}], default: auto }
-      - { name: instruct, label: 风格指令, widget: textarea, rows: 2 }
-      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: max_new_tokens, label: 最大生成Token, widget: slider, min: 512, max: 4096, step: 256, default: 2048 }
       - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }
+      - { name: top_k, label: top_k, widget: slider, min: 0, max: 100, step: 1, default: 20 }
+      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: repetition_penalty, label: 重复惩罚, widget: slider, min: 1.0, max: 2.0, step: 0.05, default: 1.05 }
+      - { name: x_vector_only, label: 仅提取音色向量, widget: checkbox, default: false }
+      - { name: attention, label: 注意力机制, widget: select, options: [{label: auto, value: auto}, {label: sage_attn, value: sage_attn}, {label: flash_attn, value: flash_attn}, {label: sdpa, value: sdpa}, {label: eager, value: eager}], default: auto }
+      - { name: unload_after, label: 生成后卸载模型, widget: checkbox, default: false }
+      - { name: custom_model_path, label: 自定义模型路径, widget: input }
 
   qwen3_voice_design:
     label: "Qwen3 音色设计"
@@ -46,11 +68,110 @@ nodes:
     badgeColor: "var(--warn)"
     inputs:
       - { id: text, type: text, label: 文本 }
+      - { id: config, type: data, label: 配置 }
     outputs:
       - { id: audio, type: audio, label: 音频 }
     widgets:
       - { name: instruct, label: 音色描述, widget: textarea, rows: 3, default: "A young female voice, energetic and bright." }
       - { name: model_choice, label: 模型大小, widget: select, options: [{label: "1.7B", value: "1.7B"}], default: "1.7B" }
-      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}], default: auto }
-      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: device, label: 设备, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
+      - { name: precision, label: 精度, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
+      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}, {label: 韩文, value: korean}], default: auto }
+      - { name: seed, label: 种子, widget: slider, min: 0, max: 999999999, step: 1, default: 0 }
+      - { name: max_new_tokens, label: 最大生成Token, widget: slider, min: 512, max: 4096, step: 256, default: 2048 }
       - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }
+      - { name: top_k, label: top_k, widget: slider, min: 0, max: 100, step: 1, default: 20 }
+      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: repetition_penalty, label: 重复惩罚, widget: slider, min: 1.0, max: 2.0, step: 0.05, default: 1.05 }
+      - { name: attention, label: 注意力机制, widget: select, options: [{label: auto, value: auto}, {label: sage_attn, value: sage_attn}, {label: flash_attn, value: flash_attn}, {label: sdpa, value: sdpa}, {label: eager, value: eager}], default: auto }
+      - { name: unload_after, label: 生成后卸载模型, widget: checkbox, default: false }
+
+  qwen3_voice_prompt:
+    label: "Qwen3 音色特征提取"
+    category: tts
+    badge: TTS
+    badgeColor: "var(--accent)"
+    inputs:
+      - { id: ref_audio, type: audio, label: 参考音频 }
+    outputs:
+      - { id: voice_clone_prompt, type: data, label: 克隆特征 }
+    widgets:
+      - { name: ref_text, label: 参考文本, widget: textarea, rows: 2 }
+      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "0.6B" }
+      - { name: device, label: 设备, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
+      - { name: precision, label: 精度, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
+      - { name: attention, label: 注意力机制, widget: select, options: [{label: auto, value: auto}, {label: sdpa, value: sdpa}, {label: eager, value: eager}], default: auto }
+      - { name: x_vector_only, label: 仅提取音色向量, widget: checkbox, default: false }
+      - { name: unload_after, label: 提取后卸载模型, widget: checkbox, default: false }
+
+  qwen3_role_bank:
+    label: "Qwen3 角色库"
+    category: tts
+    badge: 工具
+    badgeColor: "var(--accent-2)"
+    inputs:
+      - { id: prompt_1, type: data, label: 角色1特征 }
+      - { id: prompt_2, type: data, label: 角色2特征 }
+      - { id: prompt_3, type: data, label: 角色3特征 }
+      - { id: prompt_4, type: data, label: 角色4特征 }
+      - { id: prompt_5, type: data, label: 角色5特征 }
+      - { id: prompt_6, type: data, label: 角色6特征 }
+      - { id: prompt_7, type: data, label: 角色7特征 }
+      - { id: prompt_8, type: data, label: 角色8特征 }
+    outputs:
+      - { id: role_bank, type: data, label: 角色库 }
+    widgets:
+      - { name: role_name_1, label: 角色1名称, widget: input, default: "Role1" }
+      - { name: role_name_2, label: 角色2名称, widget: input, default: "Role2" }
+      - { name: role_name_3, label: 角色3名称, widget: input, default: "Role3" }
+      - { name: role_name_4, label: 角色4名称, widget: input, default: "Role4" }
+      - { name: role_name_5, label: 角色5名称, widget: input, default: "Role5" }
+      - { name: role_name_6, label: 角色6名称, widget: input, default: "Role6" }
+      - { name: role_name_7, label: 角色7名称, widget: input, default: "Role7" }
+      - { name: role_name_8, label: 角色8名称, widget: input, default: "Role8" }
+
+  qwen3_dialogue:
+    label: "Qwen3 多角色对话"
+    category: tts
+    badge: TTS
+    badgeColor: "var(--ok)"
+    inputs:
+      - { id: role_bank, type: data, label: 角色库 }
+    outputs:
+      - { id: audio, type: audio, label: 音频 }
+    widgets:
+      - { name: script, label: 剧本, widget: textarea, rows: 6, default: "Role1: 你好，最近怎么样？\nRole2: 挺好的，谢谢关心。" }
+      - { name: model_choice, label: 模型大小, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
+      - { name: device, label: 设备, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
+      - { name: precision, label: 精度, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
+      - { name: language, label: 语言, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}], default: auto }
+      - { name: pause_linebreak, label: 换行停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.5 }
+      - { name: period_pause, label: 句号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.4 }
+      - { name: comma_pause, label: 逗号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.2 }
+      - { name: question_pause, label: 问号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.6 }
+      - { name: hyphen_pause, label: 破折号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.3 }
+      - { name: merge_outputs, label: 合并输出, widget: checkbox, default: true }
+      - { name: batch_size, label: 批处理大小, widget: slider, min: 1, max: 32, step: 1, default: 4 }
+      - { name: seed, label: 种子, widget: slider, min: 0, max: 999999999, step: 1, default: 0 }
+      - { name: max_new_tokens, label: 每行最大Token, widget: slider, min: 512, max: 4096, step: 256, default: 2048 }
+      - { name: top_p, label: top_p, widget: slider, min: 0, max: 1, step: 0.05, default: 0.8 }
+      - { name: top_k, label: top_k, widget: slider, min: 0, max: 100, step: 1, default: 20 }
+      - { name: temperature, label: 温度, widget: slider, min: 0.1, max: 2.0, step: 0.1, default: 1.0 }
+      - { name: repetition_penalty, label: 重复惩罚, widget: slider, min: 1.0, max: 2.0, step: 0.05, default: 1.05 }
+      - { name: attention, label: 注意力机制, widget: select, options: [{label: auto, value: auto}, {label: sdpa, value: sdpa}, {label: eager, value: eager}], default: auto }
+      - { name: unload_after, label: 生成后卸载模型, widget: checkbox, default: false }
+
+  qwen3_tts_config:
+    label: "Qwen3 停顿配置"
+    category: tts
+    badge: 配置
+    badgeColor: "var(--muted-strong)"
+    inputs: []
+    outputs:
+      - { id: config, type: data, label: 配置 }
+    widgets:
+      - { name: pause_linebreak, label: 换行停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.5 }
+      - { name: period_pause, label: 句号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.4 }
+      - { name: comma_pause, label: 逗号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.2 }
+      - { name: question_pause, label: 问号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.6 }
+      - { name: hyphen_pause, label: 破折号停顿(秒), widget: slider, min: 0, max: 5, step: 0.1, default: 0.3 }
