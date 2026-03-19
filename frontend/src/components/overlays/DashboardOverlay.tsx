@@ -185,6 +185,23 @@ function GpuPanel({ gpu, chartColor }: { gpu: SysGpuInfo; chartColor: string }) 
           {memUsedG}G / {memTotalG}G
         </span>
       </div>
+
+      {gpu.loaded_models && gpu.loaded_models.length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
+          {gpu.loaded_models.map((m) => (
+            <span key={m.name} style={{
+              background: 'var(--bg)',
+              padding: '1px 6px',
+              borderRadius: 3,
+              marginRight: 4,
+              display: 'inline-block',
+              marginBottom: 2,
+            }}>
+              {m.name} ({m.vram_gb}GB)
+            </span>
+          ))}
+        </div>
+      )}
     </MonPanel>
   )
 }

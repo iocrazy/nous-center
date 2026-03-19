@@ -45,6 +45,33 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Model metadata sync failed (non-fatal): %s", e)
 
+    # Auto-load resident models
+    from src.config import load_model_configs
+    configs = load_model_configs()
+    for key, cfg in configs.items():
+        if cfg.get("resident", False):
+            try:
+                logger.info(f"Auto-loading resident model: {key}")
+                await model_scheduler.load_model(key)
+            except Exception as e:
+                logger.warning(f"Failed to auto-load {key}: {e}")
+
+    # Re-register model references for published workflows
+    from sqlalchemy import select
+    from src.models.workflow import Workflow
+    async with sf() as session:
+        stmt = select(Workflow).where(Workflow.status == "published")
+        result = await session.execute(stmt)
+        for wf in result.scalars():
+            deps = model_scheduler.get_model_dependencies({"nodes": wf.nodes, "edges": wf.edges})
+            for dep in deps:
+                model_scheduler.add_reference(dep["key"], str(wf.id))
+                # Also load the model if not already loaded
+                try:
+                    await model_scheduler.load_model(dep["key"])
+                except Exception as e:
+                    logger.warning(f"Failed to load model {dep['key']} for workflow {wf.id}: {e}")
+
     # Start idle model checker background task
     async def idle_checker():
         while True:

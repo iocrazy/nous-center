@@ -144,6 +144,27 @@ async def get_system_stats():
         for gpu in gpus:
             gpu["processes"] = gpu_procs.get(gpu["index"], [])
 
+    # Add loaded models to GPU info
+    from src.services import model_scheduler
+    from src.config import load_model_configs
+
+    configs = load_model_configs()
+    loaded = model_scheduler.get_status()["loaded"]
+    for model_key in loaded:
+        cfg = configs.get(model_key, {})
+        gpu_idx = cfg.get("gpu")
+        if isinstance(gpu_idx, int):
+            # Find the GPU in our list and add the model
+            for g in gpus:
+                if g["index"] == gpu_idx:
+                    if "loaded_models" not in g:
+                        g["loaded_models"] = []
+                    g["loaded_models"].append({
+                        "name": model_key,
+                        "type": cfg.get("type", ""),
+                        "vram_gb": cfg.get("vram_gb", 0),
+                    })
+
     # CPU stats
     cpu_pct = psutil.cpu_percent(interval=0.1)
     cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)

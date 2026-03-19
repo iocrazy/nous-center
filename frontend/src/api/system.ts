@@ -37,6 +37,7 @@ export interface SysGpuInfo {
   memory_total_mb: number
   memory_free_mb: number
   processes: { pid: number; used_gpu_memory_mb: number }[]
+  loaded_models?: { name: string; type: string; vram_gb: number }[]
 }
 
 export interface SysGpuResponse {
