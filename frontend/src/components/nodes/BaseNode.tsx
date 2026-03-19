@@ -179,7 +179,7 @@ export function NodeWidgetRow({
         gap: 6,
       }}
     >
-      <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>{label}</span>
+      <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0, width: 110, textAlign: 'left' }}>{label}</span>
       <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
     </div>
   )
