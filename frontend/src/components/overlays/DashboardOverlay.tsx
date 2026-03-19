@@ -19,9 +19,9 @@ export default function DashboardOverlay() {
       className="absolute inset-0 overflow-y-auto z-[16]"
       style={{ background: 'var(--bg)' }}
     >
-      <div style={{ padding: 10 }}>
+      <div style={{ maxWidth: 1400, margin: '0 auto', padding: 20 }}>
         {/* Stats row */}
-        <div className="grid grid-cols-4 gap-2 mb-2">
+        <div className="grid grid-cols-4 gap-3 mb-3">
           <StatCard label="API Keys" value="3" sub="2 active" />
           <StatCard label="Today Calls" value="--" sub="--" />
           <StatCard label="Uptime" value={monitorData ? formatUptime(monitorData.uptime_seconds) : '--'} sub="" />
@@ -29,7 +29,7 @@ export default function DashboardOverlay() {
         </div>
 
         {/* GPU panels */}
-        <div className="grid grid-cols-2 gap-2 mb-2">
+        <div className="grid grid-cols-2 gap-3 mb-3">
           {gpuData?.gpus ? (
             gpuData.gpus.map((gpu, i) => (
               <GpuPanel
@@ -47,23 +47,26 @@ export default function DashboardOverlay() {
         </div>
 
         {/* System stats */}
-        <div className="grid grid-cols-4 gap-2 mb-2">
-          <StatCard
+        <div
+          className="grid gap-3 mb-3"
+          style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}
+        >
+          <SystemStatCard
             label="CPU"
             value={sysStats ? `${fmt(sysStats.cpu_usage_percent, 0)}%` : '--'}
             sub={sysStats ? `${sysStats.cpu_count} cores` : '--'}
           />
-          <StatCard
+          <SystemStatCard
             label="RAM"
             value={sysStats ? `${fmt(sysStats.memory_used_gb)}G` : '--'}
             sub={sysStats ? `/ ${fmt(sysStats.memory_total_gb)}G` : '--'}
           />
-          <StatCard
+          <SystemStatCard
             label="SWAP"
             value={sysStats ? `${fmt(sysStats.swap_used_gb)}G` : '--'}
             sub={sysStats ? `/ ${fmt(sysStats.swap_total_gb)}G` : '--'}
           />
-          <StatCard
+          <SystemStatCard
             label="Disk"
             value={sysStats ? `${fmt(sysStats.disk_used_gb)}G` : '--'}
             sub={sysStats ? `/ ${fmt(sysStats.disk_total_gb)}G` : '--'}
@@ -75,12 +78,12 @@ export default function DashboardOverlay() {
           <div
             className="grid"
             style={{
-              gridTemplateColumns: '50px 50px 50px 50px 1fr',
+              gridTemplateColumns: '60px 60px 60px 80px 1fr',
               gap: 4,
-              fontSize: 8,
+              fontSize: 12,
               color: 'var(--accent-2)',
               fontFamily: 'var(--mono)',
-              padding: '3px 0',
+              padding: '4px 0',
               borderBottom: '1px solid var(--border)',
               fontWeight: 600,
             }}
@@ -88,9 +91,10 @@ export default function DashboardOverlay() {
             <span>PID</span><span>CPU%</span><span>MEM</span><span>NAME</span><span>COMMAND</span>
           </div>
           {procData?.processes ? (
-            procData.processes.slice(0, 15).map((p) => (
+            procData.processes.slice(0, 15).map((p, i) => (
               <ProcRow
                 key={p.pid}
+                index={i}
                 pid={String(p.pid)}
                 cpu={`${p.cpu_percent.toFixed(1)}%`}
                 mem={`${p.memory_mb}M`}
@@ -99,7 +103,7 @@ export default function DashboardOverlay() {
               />
             ))
           ) : (
-            <div style={{ fontSize: 9, color: 'var(--muted)', padding: '8px 0', textAlign: 'center' }}>
+            <div style={{ fontSize: 11, color: 'var(--muted)', padding: '12px 0', textAlign: 'center' }}>
               启动 nous-center-sys 以获取进程数据
             </div>
           )}
@@ -116,16 +120,37 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub: st
       style={{
         background: 'var(--card)',
         border: '1px solid var(--border)',
-        padding: '8px 10px',
+        padding: '12px 14px',
       }}
     >
-      <div style={{ fontSize: 8, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>
+      <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
         {label}
       </div>
-      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-strong)', fontFamily: 'var(--mono)' }}>
+      <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-strong)', fontFamily: 'var(--mono)' }}>
         {value}
       </div>
-      <div style={{ fontSize: 8, color: 'var(--ok)', marginTop: 1 }}>{sub}</div>
+      <div style={{ fontSize: 11, color: 'var(--ok)', marginTop: 2 }}>{sub}</div>
+    </div>
+  )
+}
+
+function SystemStatCard({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div
+      className="text-center rounded-md"
+      style={{
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        padding: '12px 14px',
+      }}
+    >
+      <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-strong)', fontFamily: 'var(--mono)' }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--ok)', marginTop: 2 }}>{sub}</div>
     </div>
   )
 }
@@ -136,66 +161,69 @@ function GpuPanel({ gpu, chartColor }: { gpu: SysGpuInfo; chartColor: string }) 
   const memTotalG = (gpu.memory_total_mb / 1024).toFixed(0)
 
   return (
-    <MonPanel title={`GPU ${gpu.index}`} titleColor={chartColor} value={`${gpu.utilization_gpu}%`}>
-      <div style={{ fontSize: 8, color: 'var(--muted-strong)', fontFamily: 'var(--mono)', lineHeight: 1.6, marginBottom: 4 }}>
-        <span style={{ color: 'var(--text)' }}>{gpu.name}</span>
+    <MonPanel title={`GPU ${gpu.index}`} titleColor={chartColor} value={`${gpu.utilization_gpu}%`} accentColor={chartColor}>
+      <div style={{ fontSize: 12, color: 'var(--muted-strong)', fontFamily: 'var(--mono)', lineHeight: 1.8, marginBottom: 8 }}>
+        <span style={{ color: 'var(--text)', fontSize: 14, fontWeight: 600 }}>{gpu.name}</span>
         <br />
-        <span style={{ color: 'var(--accent-2)' }}>TEMP</span>{' '}
         <span style={{ color: gpu.temperature < 50 ? 'var(--ok)' : gpu.temperature < 80 ? 'var(--warn)' : '#ef4444' }}>
           {gpu.temperature}°C
         </span> &nbsp;
-        <span style={{ color: 'var(--accent-2)' }}>FAN</span> {gpu.fan_speed}% &nbsp;
-        <span style={{ color: 'var(--accent-2)' }}>POW</span> {gpu.power_draw_w.toFixed(0)}/{gpu.power_limit_w.toFixed(0)}W
+        <span style={{ color: 'var(--muted)' }}>FAN</span> {gpu.fan_speed}% &nbsp;
+        <span style={{ color: 'var(--muted)' }}>POW</span> {gpu.power_draw_w.toFixed(0)}/{gpu.power_limit_w.toFixed(0)}W
       </div>
 
-      {/* Simple utilization bar */}
-      <div className="flex items-center gap-1.5 mb-1">
-        <span style={{ fontSize: 9, color: 'var(--muted)', width: 32, fontFamily: 'var(--mono)' }}>GPU</span>
-        <div className="flex-1 overflow-hidden" style={{ height: 10, background: 'var(--bg)', borderRadius: 2 }}>
+      {/* GPU utilization bar */}
+      <div className="flex items-center gap-2 mb-2">
+        <span style={{ fontSize: 12, color: 'var(--muted)', width: 36, fontFamily: 'var(--mono)', fontWeight: 600 }}>GPU</span>
+        <div className="flex-1 overflow-hidden" style={{ height: 10, background: 'var(--bg)', borderRadius: 3 }}>
           <div
             style={{
               height: '100%',
               width: `${gpu.utilization_gpu}%`,
               background: chartColor,
-              borderRadius: 2,
+              borderRadius: 3,
               transition: 'width 0.5s',
             }}
           />
         </div>
-        <span style={{ fontSize: 8, color: 'var(--muted)', fontFamily: 'var(--mono)', width: 32, textAlign: 'right' }}>
+        <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--mono)', width: 36, textAlign: 'right' }}>
           {gpu.utilization_gpu}%
         </span>
       </div>
 
+      {/* Separator */}
+      <div style={{ height: 1, background: 'var(--border)', margin: '4px 0 8px' }} />
+
       {/* Memory bar */}
-      <div className="flex items-center gap-1.5 mb-0.5">
-        <span style={{ fontSize: 9, color: 'var(--muted)', width: 32, fontFamily: 'var(--mono)' }}>MEM</span>
-        <div className="flex-1 overflow-hidden" style={{ height: 10, background: 'var(--bg)', borderRadius: 2 }}>
+      <div className="flex items-center gap-2">
+        <span style={{ fontSize: 12, color: 'var(--muted)', width: 36, fontFamily: 'var(--mono)', fontWeight: 600 }}>MEM</span>
+        <div className="flex-1 overflow-hidden" style={{ height: 10, background: 'var(--bg)', borderRadius: 3 }}>
           <div
             style={{
               height: '100%',
               width: `${memPct}%`,
               background: chartColor,
-              borderRadius: 2,
+              borderRadius: 3,
               transition: 'width 0.5s',
             }}
           />
         </div>
-        <span style={{ fontSize: 8, color: 'var(--muted)', fontFamily: 'var(--mono)', width: 56, textAlign: 'right' }}>
+        <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--mono)', width: 80, textAlign: 'right' }}>
           {memUsedG}G / {memTotalG}G
         </span>
       </div>
 
       {gpu.loaded_models && gpu.loaded_models.length > 0 && (
-        <div style={{ marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {gpu.loaded_models.map((m) => (
             <span key={m.name} style={{
-              background: 'var(--bg)',
-              padding: '1px 6px',
-              borderRadius: 3,
-              marginRight: 4,
-              display: 'inline-block',
-              marginBottom: 2,
+              background: `color-mix(in srgb, ${chartColor} 15%, transparent)`,
+              color: chartColor,
+              padding: '2px 8px',
+              borderRadius: 4,
+              fontSize: 11,
+              fontWeight: 500,
+              border: `1px solid color-mix(in srgb, ${chartColor} 25%, transparent)`,
             }}>
               {m.name} ({m.vram_gb}GB)
             </span>
@@ -208,8 +236,8 @@ function GpuPanel({ gpu, chartColor }: { gpu: SysGpuInfo; chartColor: string }) 
 
 function PlaceholderGpuPanel({ index, color }: { index: number; color: string }) {
   return (
-    <MonPanel title={`GPU ${index}`} titleColor={color}>
-      <div style={{ fontSize: 9, color: 'var(--muted)', padding: '12px 0', textAlign: 'center' }}>
+    <MonPanel title={`GPU ${index}`} titleColor={color} accentColor={color}>
+      <div style={{ fontSize: 11, color: 'var(--muted)', padding: '16px 0', textAlign: 'center' }}>
         等待数据...
       </div>
     </MonPanel>
@@ -220,11 +248,13 @@ function MonPanel({
   title,
   titleColor,
   value,
+  accentColor,
   children,
 }: {
   title: string
   titleColor?: string
   value?: string
+  accentColor?: string
   children: React.ReactNode
 }) {
   return (
@@ -233,13 +263,14 @@ function MonPanel({
       style={{
         background: 'var(--card)',
         border: '1px solid var(--border)',
-        padding: '8px 10px',
+        borderTop: accentColor ? `2px solid ${accentColor}` : undefined,
+        padding: 16,
       }}
     >
-      <div className="flex items-center gap-1.5 mb-1.5" style={{ fontSize: 10, fontWeight: 600, color: titleColor ?? 'var(--accent-2)' }}>
+      <div className="flex items-center gap-2 mb-2" style={{ fontSize: 12, fontWeight: 600, color: titleColor ?? 'var(--accent-2)' }}>
         {title}
         {value && (
-          <span className="ml-auto" style={{ color: 'var(--text-strong)', fontFamily: 'var(--mono)', fontSize: 11 }}>
+          <span className="ml-auto" style={{ color: 'var(--text-strong)', fontFamily: 'var(--mono)', fontSize: 14 }}>
             {value}
           </span>
         )}
@@ -249,17 +280,18 @@ function MonPanel({
   )
 }
 
-function ProcRow({ pid, cpu, mem, name, cmd }: { pid: string; cpu: string; mem: string; name: string; cmd: string }) {
+function ProcRow({ pid, cpu, mem, name, cmd, index }: { pid: string; cpu: string; mem: string; name: string; cmd: string; index: number }) {
   return (
     <div
       className="grid"
       style={{
-        gridTemplateColumns: '50px 50px 50px 50px 1fr',
+        gridTemplateColumns: '60px 60px 60px 80px 1fr',
         gap: 4,
-        fontSize: 8,
+        fontSize: 12,
         color: 'var(--muted)',
         fontFamily: 'var(--mono)',
-        padding: '2px 0',
+        padding: '3px 0',
+        background: index % 2 === 1 ? 'rgba(255,255,255,0.02)' : 'transparent',
         borderBottom: '1px solid rgba(255,255,255,0.02)',
       }}
     >
