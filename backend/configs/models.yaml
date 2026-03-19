@@ -4,7 +4,7 @@ models:
     type: image
     gpu: 0
     vram_gb: 10
-    resident: true
+    resident: false
     modelscope_id: "AI-ModelScope/stable-diffusion-xl-base-1.0"
     hf_id: "stabilityai/stable-diffusion-xl-base-1.0"
 

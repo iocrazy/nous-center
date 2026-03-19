@@ -93,6 +93,9 @@ async def load_model(model_key: str) -> None:
         if not engine.is_loaded:
             await asyncio.to_thread(engine.load)
 
+    else:
+        raise ValueError(f"Unsupported model type: {model_type} (only tts/llm supported)")
+
     _loaded_models.add(model_key)
     _last_used[model_key] = time.time()
     logger.info("Model loaded: %s on %s", model_key, device)
