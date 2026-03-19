@@ -55,7 +55,7 @@ export function useUnloadEngine() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (name: string) =>
-      apiFetch(`/api/v1/engines/${name}/unload`, { method: 'POST' }),
+      apiFetch(`/api/v1/engines/${name}/unload?force=true`, { method: 'POST' }),
     onSuccess: (_, name) => {
       qc.invalidateQueries({ queryKey: ['engines'] })
       useToastStore.getState().add(`${name} 已卸载`, 'success')
