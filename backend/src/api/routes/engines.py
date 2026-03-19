@@ -169,6 +169,27 @@ async def set_resident(name: str, resident: bool = True):
     return {"name": name, "resident": resident}
 
 
+@router.patch("/{name}/gpu")
+async def set_gpu(name: str, gpu: int = 0):
+    """Change GPU assignment for an engine."""
+    import yaml
+
+    configs_path = Path(__file__).resolve().parent.parent.parent / "configs" / "models.yaml"
+
+    with open(configs_path) as f:
+        data = yaml.safe_load(f)
+
+    if name not in data.get("models", {}):
+        raise HTTPException(404, detail=f"Unknown engine: {name}")
+
+    data["models"][name]["gpu"] = gpu
+
+    with open(configs_path, "w") as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+    return {"name": name, "gpu": gpu}
+
+
 @router.get("/scheduler/status")
 async def scheduler_status():
     """Return current model scheduler status."""

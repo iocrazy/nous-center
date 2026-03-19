@@ -110,3 +110,29 @@ export function useRefreshMetadata() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['engines'] }),
   })
 }
+
+export interface GpuDevice {
+  index: number
+  name: string
+  vram_gb: number
+}
+
+export function useGpus() {
+  return useQuery({
+    queryKey: ['gpus'],
+    queryFn: () =>
+      apiFetch<{ count: number; devices: GpuDevice[] }>('/api/v1/engines/gpus'),
+  })
+}
+
+export function useSetGpu() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, gpu }: { name: string; gpu: number }) =>
+      apiFetch(`/api/v1/engines/${name}/gpu?gpu=${gpu}`, { method: 'PATCH' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['engines'] }),
+    onError: (error: Error) => {
+      useToastStore.getState().add(`GPU 分配失败: ${error.message}`, 'error')
+    },
+  })
+}

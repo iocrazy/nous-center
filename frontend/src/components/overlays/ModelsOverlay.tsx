@@ -1,4 +1,10 @@
-import { useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata, useScanModels, useSetResident, type EngineInfo } from '../../api/engines'
+import { useState, useCallback } from 'react'
+import {
+  useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
+  useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
+  type EngineInfo,
+} from '../../api/engines'
+import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
 
 const TYPE_LABELS: Record<string, string> = {
   llm: '语言模型 LLM',
@@ -10,6 +16,12 @@ const TYPE_LABELS: Record<string, string> = {
 
 const TYPE_ORDER = ['llm', 'tts', 'image', 'video', 'understand']
 
+interface ContextMenuState {
+  visible: boolean
+  position: { x: number; y: number }
+  model: EngineInfo | null
+}
+
 export default function ModelsOverlay() {
   const { data: engines, isLoading, isError } = useEngines()
   const loadEngine = useLoadEngine()
@@ -17,6 +29,35 @@ export default function ModelsOverlay() {
   const syncMeta = useSyncMetadata()
   const scanModels = useScanModels()
   const setResident = useSetResident()
+  const refreshMeta = useRefreshMetadata()
+  const { data: gpuData } = useGpus()
+  const setGpu = useSetGpu()
+
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState>({
+    visible: false,
+    position: { x: 0, y: 0 },
+    model: null,
+  })
+
+  const closeMenu = useCallback(() => {
+    setCtxMenu((prev) => ({ ...prev, visible: false }))
+  }, [])
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, model: EngineInfo) => {
+    e.preventDefault()
+    setCtxMenu({ visible: true, position: { x: e.clientX, y: e.clientY }, model })
+  }, [])
+
+  const handleToggle = useCallback(
+    (engine: EngineInfo) => {
+      if (engine.status === 'loaded') {
+        unloadEngine.mutate(engine.name)
+      } else {
+        loadEngine.mutate(engine.name)
+      }
+    },
+    [loadEngine, unloadEngine],
+  )
 
   // Group by type
   const groups = (engines ?? []).reduce<Record<string, EngineInfo[]>>((acc, e) => {
@@ -24,15 +65,50 @@ export default function ModelsOverlay() {
     return acc
   }, {})
 
-  const handleToggle = (engine: EngineInfo) => {
-    if (engine.status === 'loaded') {
-      unloadEngine.mutate(engine.name)
-    } else {
-      loadEngine.mutate(engine.name)
-    }
-  }
-
   const hasAnyMissing = (engines ?? []).some((e) => !e.has_metadata)
+
+  // Build context menu items for the active model
+  const menuItems: MenuItem[] = ctxMenu.model
+    ? [
+        {
+          label: ctxMenu.model.status === 'loaded' ? '卸载模型' : '加载模型',
+          onClick: () => handleToggle(ctxMenu.model!),
+        },
+        {
+          label: ctxMenu.model.resident ? '取消自动加载' : '设为自动加载',
+          onClick: () =>
+            setResident.mutate({
+              name: ctxMenu.model!.name,
+              resident: !ctxMenu.model!.resident,
+            }),
+        },
+        { label: '', divider: true },
+        {
+          label: 'GPU 分配',
+          submenu: (gpuData?.devices ?? []).map((g) => {
+            const currentGpu = ctxMenu.model!.gpu
+            const isCurrentGpu = Array.isArray(currentGpu)
+              ? currentGpu.includes(g.index)
+              : currentGpu === g.index
+            return {
+              label: `GPU ${g.index}: ${g.name}`,
+              onClick: () => setGpu.mutate({ name: ctxMenu.model!.name, gpu: g.index }),
+              disabled: isCurrentGpu,
+            }
+          }),
+        },
+        { label: '', divider: true },
+        {
+          label: '刷新元数据',
+          onClick: () => refreshMeta.mutate(ctxMenu.model!.name),
+        },
+        {
+          label: '删除',
+          danger: true,
+          disabled: true,
+        },
+      ]
+    : []
 
   return (
     <div
@@ -77,7 +153,7 @@ export default function ModelsOverlay() {
             </button>
           )}
           <span style={{ fontSize: 9, color: 'var(--muted)' }}>
-            扫描本地目录自动检测模型
+            扫描本地目录自动检测模型 · 右键点击卡片可操作
           </span>
         </div>
 
@@ -128,47 +204,43 @@ export default function ModelsOverlay() {
                 <ModelCard
                   key={model.name}
                   model={model}
-                  busy={
-                    (loadEngine.isPending && loadEngine.variables === model.name) ||
-                    (unloadEngine.isPending && unloadEngine.variables === model.name)
-                  }
-                  onToggle={() => handleToggle(model)}
-                  onResidentToggle={(v) => setResident.mutate({ name: model.name, resident: v })}
+                  onContextMenu={(e) => handleContextMenu(e, model)}
                 />
               ))}
             </div>
           </div>
         ))}
       </div>
+
+      {ctxMenu.visible && ctxMenu.model && (
+        <ContextMenu items={menuItems} position={ctxMenu.position} onClose={closeMenu} />
+      )}
     </div>
   )
 }
 
 function ModelCard({
   model,
-  busy,
-  onToggle,
-  onResidentToggle,
+  onContextMenu,
 }: {
   model: EngineInfo
-  busy: boolean
-  onToggle: () => void
-  onResidentToggle: (resident: boolean) => void
+  onContextMenu: (e: React.MouseEvent) => void
 }) {
   const notDownloaded = model.local_path != null && !model.local_exists
-  const canLoad = model.type === 'tts' && !notDownloaded
 
   return (
     <div
       className="rounded-md"
+      onContextMenu={onContextMenu}
       style={{
         background: 'var(--card)',
         border: '1px solid var(--border)',
         padding: '10px 12px',
         opacity: notDownloaded ? 0.6 : 1,
+        cursor: 'context-menu',
       }}
     >
-      {/* Row 1: Name + badges + status + toggle */}
+      {/* Row 1: Name + badges + status */}
       <div className="flex items-center gap-2 mb-1">
         <span
           style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}
@@ -192,24 +264,6 @@ function ModelCard({
           </span>
         )}
         <StatusBadge status={model.status} />
-        <button
-          disabled={busy || !canLoad}
-          onClick={onToggle}
-          title={notDownloaded ? '未下载' : undefined}
-          style={{
-            padding: '2px 8px',
-            fontSize: 9,
-            borderRadius: 3,
-            border: '1px solid var(--border)',
-            background: model.status === 'loaded' ? 'none' : 'var(--accent)',
-            color: model.status === 'loaded' ? 'var(--muted)' : '#fff',
-            cursor: busy ? 'wait' : 'pointer',
-            opacity: busy || !canLoad ? 0.4 : 1,
-            flexShrink: 0,
-          }}
-        >
-          {busy ? '...' : model.status === 'loaded' ? 'Unload' : 'Load'}
-        </button>
       </div>
 
       {/* Row 2: Tags line */}
@@ -230,22 +284,18 @@ function ModelCard({
         ))}
       </div>
 
-      {/* Row 3: Local info */}
+      {/* Row 3: Local info (read-only) */}
       <div className="flex items-center gap-3 mt-1" style={{ fontSize: 9, color: 'var(--muted)' }}>
         <span>{model.vram_gb}GB VRAM</span>
         <span>GPU {Array.isArray(model.gpu) ? model.gpu.join(',') : model.gpu}</span>
         <span
-          onClick={() => onResidentToggle(!model.resident)}
-          title={model.resident ? '点击取消自动加载' : '点击设为自动加载'}
           style={{
-            cursor: 'pointer',
             color: model.resident ? 'var(--warn)' : 'var(--muted)',
             background: model.resident
               ? 'color-mix(in srgb, var(--warn) 15%, transparent)'
               : 'var(--bg)',
             padding: '1px 5px',
             borderRadius: 3,
-            userSelect: 'none',
           }}
         >
           {model.resident ? 'resident' : 'on-demand'}
