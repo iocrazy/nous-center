@@ -135,6 +135,27 @@ async def unload_engine(name: str, force: bool = False):
     return EngineLoadResponse(name=name, status="unloaded")
 
 
+@router.patch("/{name}/resident")
+async def set_resident(name: str, resident: bool = True):
+    """Toggle auto-load on startup for an engine."""
+    import yaml
+
+    configs_path = Path(__file__).resolve().parent.parent.parent / "configs" / "models.yaml"
+
+    with open(configs_path) as f:
+        data = yaml.safe_load(f)
+
+    if name not in data.get("models", {}):
+        raise HTTPException(404, detail=f"Unknown engine: {name}")
+
+    data["models"][name]["resident"] = resident
+
+    with open(configs_path, "w") as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+    return {"name": name, "resident": resident}
+
+
 @router.get("/scheduler/status")
 async def scheduler_status():
     """Return current model scheduler status."""

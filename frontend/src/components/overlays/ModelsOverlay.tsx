@@ -1,4 +1,4 @@
-import { useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata, type EngineInfo } from '../../api/engines'
+import { useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata, useSetResident, type EngineInfo } from '../../api/engines'
 
 const TYPE_LABELS: Record<string, string> = {
   tts: '语音合成 TTS',
@@ -14,6 +14,7 @@ export default function ModelsOverlay() {
   const loadEngine = useLoadEngine()
   const unloadEngine = useUnloadEngine()
   const syncMeta = useSyncMetadata()
+  const setResident = useSetResident()
 
   // Group by type
   const groups = (engines ?? []).reduce<Record<string, EngineInfo[]>>((acc, e) => {
@@ -114,6 +115,7 @@ export default function ModelsOverlay() {
                     (unloadEngine.isPending && unloadEngine.variables === model.name)
                   }
                   onToggle={() => handleToggle(model)}
+                  onResidentToggle={(v) => setResident.mutate({ name: model.name, resident: v })}
                 />
               ))}
             </div>
@@ -128,10 +130,12 @@ function ModelCard({
   model,
   busy,
   onToggle,
+  onResidentToggle,
 }: {
   model: EngineInfo
   busy: boolean
   onToggle: () => void
+  onResidentToggle: (resident: boolean) => void
 }) {
   return (
     <div
@@ -193,10 +197,29 @@ function ModelCard({
       <div className="flex items-center gap-3 mt-1" style={{ fontSize: 9, color: 'var(--muted)' }}>
         <span>{model.vram_gb}GB VRAM</span>
         <span>GPU {Array.isArray(model.gpu) ? model.gpu.join(',') : model.gpu}</span>
-        {model.resident && <span style={{ color: 'var(--warn)' }}>resident</span>}
+        <span
+          onClick={() => onResidentToggle(!model.resident)}
+          title={model.resident ? '点击取消自动加载' : '点击设为自动加载'}
+          style={{
+            cursor: 'pointer',
+            color: model.resident ? 'var(--warn)' : 'var(--muted)',
+            background: model.resident
+              ? 'color-mix(in srgb, var(--warn) 15%, transparent)'
+              : 'var(--bg)',
+            padding: '1px 5px',
+            borderRadius: 3,
+            userSelect: 'none',
+          }}
+        >
+          {model.resident ? 'resident' : 'on-demand'}
+        </span>
         {model.local_path && (
-          <span style={{ color: model.local_exists ? 'var(--ok)' : 'var(--warn)' }}>
-            {model.local_exists ? '✓ 本地' : '✗ 未下载'}
+          <span
+            style={{ color: model.local_exists ? 'var(--ok)' : 'var(--warn)' }}
+            title={model.local_path}
+          >
+            {model.local_exists ? '✓ ' : '✗ '}
+            <span style={{ fontFamily: 'monospace' }}>{model.local_path}</span>
           </span>
         )}
       </div>

@@ -74,6 +74,18 @@ export function useSyncMetadata() {
   })
 }
 
+export function useSetResident() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, resident }: { name: string; resident: boolean }) =>
+      apiFetch(`/api/v1/engines/${name}/resident?resident=${resident}`, { method: 'PATCH' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['engines'] }),
+    onError: (error: Error) => {
+      useToastStore.getState().add(`设置失败: ${error.message}`, 'error')
+    },
+  })
+}
+
 export function useRefreshMetadata() {
   const qc = useQueryClient()
   return useMutation({
