@@ -1,11 +1,18 @@
-import { useSysGpus, useSysStats, useSysProcesses, type SysGpuInfo } from '../../api/system'
+import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, type SysGpuInfo } from '../../api/system'
 
 export default function DashboardOverlay() {
   const { data: gpuData } = useSysGpus()
   const { data: sysStats } = useSysStats()
   const { data: procData } = useSysProcesses()
+  const { data: monitorData } = useMonitorStats()
 
   const fmt = (n: number, d = 1) => n.toFixed(d)
+  const formatUptime = (s: number) => {
+    const d = Math.floor(s / 86400)
+    const h = Math.floor((s % 86400) / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    return d > 0 ? `${d}d ${h}h` : `${h}h ${m}m`
+  }
 
   return (
     <div
@@ -17,7 +24,7 @@ export default function DashboardOverlay() {
         <div className="grid grid-cols-4 gap-2 mb-2">
           <StatCard label="API Keys" value="3" sub="2 active" />
           <StatCard label="Today Calls" value="--" sub="--" />
-          <StatCard label="Uptime" value="--" sub="--" />
+          <StatCard label="Uptime" value={monitorData ? formatUptime(monitorData.uptime_seconds) : '--'} sub="" />
           <StatCard label="Token Usage" value="--" sub="--" />
         </div>
 
@@ -56,7 +63,11 @@ export default function DashboardOverlay() {
             value={sysStats ? `${fmt(sysStats.swap_used_gb)}G` : '--'}
             sub={sysStats ? `/ ${fmt(sysStats.swap_total_gb)}G` : '--'}
           />
-          <StatCard label="Disk" value="--" sub="--" />
+          <StatCard
+            label="Disk"
+            value={sysStats ? `${fmt(sysStats.disk_used_gb)}G` : '--'}
+            sub={sysStats ? `/ ${fmt(sysStats.disk_total_gb)}G` : '--'}
+          />
         </div>
 
         {/* Process table */}

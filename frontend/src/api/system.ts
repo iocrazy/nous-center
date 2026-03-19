@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
 
-// --- Python backend GPU summary (basic info) ---
+// --- Python backend GPU summary (basic info, used by engines page) ---
 export interface GpuInfo {
   index: number
   name: string
@@ -22,7 +22,7 @@ export function useGpuStats() {
   })
 }
 
-// --- Rust sidecar endpoints ---
+// --- Unified monitor endpoint (replaces Rust sidecar) ---
 
 export interface SysGpuInfo {
   index: number
@@ -44,23 +44,6 @@ export interface SysGpuResponse {
   gpus: SysGpuInfo[]
 }
 
-// Slow down polling when the service is unreachable (error → 10s, ok → normal interval)
-function errorAwareInterval(normalMs: number) {
-  return (query: { state: { status: string } }) =>
-    query.state.status === 'error' ? 10_000 : normalMs
-}
-
-export function useSysGpus() {
-  return useQuery({
-    queryKey: ['sys-gpus'],
-    queryFn: () => apiFetch<SysGpuResponse>('/sys/gpus'),
-    refetchInterval: errorAwareInterval(2000),
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: false,
-    retry: false,
-  })
-}
-
 export interface SystemStats {
   cpu_usage_percent: number
   cpu_count: number
@@ -70,17 +53,9 @@ export interface SystemStats {
   memory_available_gb: number
   swap_total_gb: number
   swap_used_gb: number
-}
-
-export function useSysStats() {
-  return useQuery({
-    queryKey: ['sys-stats'],
-    queryFn: () => apiFetch<SystemStats>('/sys/stats'),
-    refetchInterval: errorAwareInterval(3000),
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: false,
-    retry: false,
-  })
+  disk_total_gb: number
+  disk_used_gb: number
+  disk_percent: number
 }
 
 export interface ProcessInfo {
@@ -91,13 +66,36 @@ export interface ProcessInfo {
   command: string
 }
 
-export function useSysProcesses() {
+interface MonitorStatsResponse {
+  gpus: SysGpuResponse
+  system: SystemStats
+  processes: ProcessInfo[]
+  uptime_seconds: number
+}
+
+// Single query that fetches everything from the Python backend
+export function useMonitorStats() {
   return useQuery({
-    queryKey: ['sys-processes'],
-    queryFn: () => apiFetch<{ processes: ProcessInfo[] }>('/sys/processes'),
-    refetchInterval: errorAwareInterval(5000),
+    queryKey: ['monitor-stats'],
+    queryFn: () => apiFetch<MonitorStatsResponse>('/api/v1/monitor/stats'),
+    refetchInterval: 2000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
-    retry: false,
   })
+}
+
+// Convenience hooks that derive from the unified query
+export function useSysGpus() {
+  const q = useMonitorStats()
+  return { ...q, data: q.data?.gpus }
+}
+
+export function useSysStats() {
+  const q = useMonitorStats()
+  return { ...q, data: q.data?.system }
+}
+
+export function useSysProcesses() {
+  const q = useMonitorStats()
+  return { ...q, data: q.data ? { processes: q.data.processes } : undefined }
 }
