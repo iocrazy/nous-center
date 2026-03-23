@@ -158,6 +158,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   if (!declDef || !portDef) return null
 
   return (
+    <div style={{ width: 320 }}>
     <BaseNode
       title={declDef.label}
       badge={{
@@ -179,5 +180,6 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         </NodeWidgetRow>
       ))}
     </BaseNode>
+    </div>
   )
 }

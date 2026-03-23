@@ -334,7 +334,7 @@ export function NodeNumberDrag({
             fontFamily: 'var(--mono)',
             color: 'var(--text)',
             cursor: 'text',
-            minWidth: 32,
+            width: 45,
             textAlign: 'right',
             flexShrink: 0,
             userSelect: 'none',
