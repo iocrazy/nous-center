@@ -157,3 +157,21 @@ async def unpublish_workflow(
     wf.status = "draft"
     await session.commit()
     return {"status": "unpublished"}
+
+
+@router.post("/execute")
+async def execute_workflow_direct(body: dict):
+    """Execute a workflow directly without publishing. Used by frontend Run for plugin nodes."""
+    from src.services.workflow_executor import WorkflowExecutor, ExecutionError
+
+    nodes = body.get("nodes", [])
+    edges = body.get("edges", [])
+    if not nodes:
+        raise HTTPException(400, "Workflow is empty")
+
+    executor = WorkflowExecutor({"nodes": nodes, "edges": edges})
+    try:
+        result = await executor.execute()
+    except ExecutionError as e:
+        raise HTTPException(500, str(e))
+    return result

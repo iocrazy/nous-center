@@ -148,6 +148,50 @@ const nodeExecutors: Record<NodeType, (node: WorkflowNode, inputs: NodeOutput) =
   },
 }
 
+/**
+ * Check if workflow contains plugin nodes (not in built-in executors).
+ * If so, execute on backend instead of frontend.
+ */
+function hasPluginNodes(nodes: WorkflowNode[]): boolean {
+  return nodes.some((n) => !(n.type in nodeExecutors))
+}
+
+/**
+ * Execute workflow on backend via API.
+ * Used for workflows containing plugin nodes.
+ */
+async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
+  const result = await apiFetch<{ outputs: Record<string, Record<string, unknown>> }>(
+    '/api/v1/workflows/execute',
+    {
+      method: 'POST',
+      body: JSON.stringify({ nodes: workflow.nodes, edges: workflow.edges }),
+    }
+  )
+
+  // Find output node result
+  const outputNodeId = workflow.nodes.find((n) => n.type === 'output')?.id
+  if (!outputNodeId) throw new Error('工作流缺少输出节点')
+
+  const outputData = result.outputs[outputNodeId]
+  const audio = (outputData?.audio as string) ?? (outputData?.audioBase64 as string) ?? ''
+
+  if (!audio) {
+    // Maybe it's text-only output
+    const text = outputData?.text as string
+    if (text) {
+      return { audioBase64: '', sampleRate: 24000, duration: 0 }
+    }
+    throw new Error('工作流执行完成但没有音频输出')
+  }
+
+  return {
+    audioBase64: audio,
+    sampleRate: (outputData?.sample_rate as number) ?? (outputData?.sampleRate as number) ?? 24000,
+    duration: 0,
+  }
+}
+
 export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResult> {
   const { nodes, edges } = workflow
 
@@ -155,6 +199,11 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
 
   const hasOutput = nodes.some((n) => n.type === 'output')
   if (!hasOutput) throw new Error('工作流缺少输出节点')
+
+  // If workflow has plugin nodes, execute on backend
+  if (hasPluginNodes(nodes)) {
+    return executeOnBackend(workflow)
+  }
 
   const sorted = topoSort(nodes, edges)
   const outputs = new Map<string, NodeOutput>()
