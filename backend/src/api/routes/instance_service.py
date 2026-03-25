@@ -98,6 +98,7 @@ async def instance_run(
 ):
     """Execute a published workflow instance."""
     from src.services.workflow_executor import WorkflowExecutor, ExecutionError
+    from src.models.execution_task import ExecutionTask
 
     instance, api_key = auth
 
@@ -108,8 +109,20 @@ async def instance_run(
 
     # The workflow DAG is stored in params_override at publish time
     workflow_data = instance.params_override or {}
-    if not workflow_data.get("nodes"):
+    nodes = workflow_data.get("nodes", [])
+    if not nodes:
         raise HTTPException(400, detail="Workflow has no nodes")
+
+    # Create task record
+    task = ExecutionTask(
+        workflow_id=instance.source_id,
+        workflow_name=instance.name or "API 执行",
+        status="running",
+        nodes_total=len(nodes),
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
 
     async def broadcast_progress(data: dict):
         from src.api.main import _ws_connections
@@ -119,11 +132,23 @@ async def instance_run(
             except Exception:
                 pass
 
+    start = time.monotonic()
     executor = WorkflowExecutor(workflow_data, on_progress=broadcast_progress)
 
     try:
         result = await executor.execute()
+        elapsed = int((time.monotonic() - start) * 1000)
+        task.status = "completed"
+        task.result = result
+        task.duration_ms = elapsed
+        task.nodes_done = len(nodes)
+        task.current_node = None
     except ExecutionError as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        task.status = "failed"
+        task.error = str(e)
+        task.duration_ms = elapsed
+        await session.commit()
         raise HTTPException(422, detail=str(e))
 
     await broadcast_progress({"type": "complete", "progress": 100})

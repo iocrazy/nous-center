@@ -10,10 +10,13 @@ import {
   Sun,
   Moon,
   Monitor,
+  ListTodo,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
 import { useThemeStore } from '../../stores/theme'
+import { useExecutionStore } from '../../stores/execution'
+import { useTasks } from '../../api/tasks'
 
 const OVERLAY_ROUTES: Record<OverlayId, string> = {
   dashboard: '/dashboard',
@@ -111,6 +114,8 @@ export default function IconRail() {
 
       {/* Bottom section */}
       <div className="mt-auto flex flex-col items-center gap-1">
+        <TaskRailButton />
+
         <RailButton
           active={activeOverlay === 'settings'}
           onClick={() => navigateOverlay('settings')}
@@ -200,6 +205,42 @@ function RailButton({
         {label}
       </span>
     </button>
+  )
+}
+
+function TaskRailButton() {
+  const { taskPanelOpen, toggleTaskPanel } = useExecutionStore()
+  const { data: tasks } = useTasks()
+  const runningCount = tasks?.filter((t) => t.status === 'running').length ?? 0
+
+  return (
+    <div className="relative">
+      <RailButton active={taskPanelOpen} onClick={toggleTaskPanel} label="Tasks">
+        <ListTodo size={18} />
+      </RailButton>
+      {runningCount > 0 && (
+        <span
+          className="absolute pointer-events-none"
+          style={{
+            top: 2,
+            right: 2,
+            minWidth: 14,
+            height: 14,
+            borderRadius: 7,
+            background: 'var(--accent)',
+            color: '#fff',
+            fontSize: 9,
+            fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '0 3px',
+          }}
+        >
+          {runningCount}
+        </span>
+      )}
+    </div>
   )
 }
 

@@ -30,6 +30,7 @@ import SettingsOverlay from '../overlays/SettingsOverlay'
 import PresetDetailOverlay from '../overlays/PresetDetailOverlay'
 import ApiManagementOverlay from '../overlays/ApiManagementOverlay'
 import AgentManagementOverlay from '../overlays/AgentManagementOverlay'
+import TaskPanel from '../panels/TaskPanel'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
   const def = NODE_DEFS[nodeType as NodeType]
@@ -54,6 +55,8 @@ export default function NodeEditor() {
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
   const { activePanel, activeOverlay, panelWidth } = usePanelStore()
   const nodeStates = useExecutionStore((s) => s.nodeStates)
+  const taskPanelOpen = useExecutionStore((s) => s.taskPanelOpen)
+  const toggleTaskPanel = useExecutionStore((s) => s.toggleTaskPanel)
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
@@ -230,6 +233,9 @@ export default function NodeEditor() {
       {activeOverlay === 'preset-detail' && <PresetDetailOverlay />}
       {activeOverlay === 'api-management' && <ApiManagementOverlay />}
       {activeOverlay === 'agents' && <AgentManagementOverlay />}
+
+      {/* Task panel */}
+      <TaskPanel open={taskPanelOpen} onClose={toggleTaskPanel} />
     </div>
   )
 }

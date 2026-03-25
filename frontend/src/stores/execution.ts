@@ -27,6 +27,10 @@ export interface ExecutionState {
   setNodeState: (nodeId: string, state: NodeExecState) => void
   setCurrentNode: (nodeId: string | null, nodeType: string | null) => void
   resetNodeStates: () => void
+
+  // Task panel
+  taskPanelOpen: boolean
+  toggleTaskPanel: () => void
 }
 
 export const useExecutionStore = create<ExecutionState>((set, get) => ({
@@ -39,6 +43,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   nodeStates: {},
   currentNodeId: null,
   currentNodeType: null,
+  taskPanelOpen: false,
 
   start: (taskId) =>
     set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null }),
@@ -62,6 +67,9 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 
   resetNodeStates: () =>
     set({ nodeStates: {}, currentNodeId: null, currentNodeType: null }),
+
+  toggleTaskPanel: () =>
+    set((s) => ({ taskPanelOpen: !s.taskPanelOpen })),
 
   wsConnect: (instanceId: string) => {
     const existing = get()._ws

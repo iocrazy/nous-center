@@ -160,18 +160,48 @@ async def unpublish_workflow(
 
 
 @router.post("/execute")
-async def execute_workflow_direct(body: dict):
+async def execute_workflow_direct(
+    body: dict,
+    session: AsyncSession = Depends(get_async_session),
+):
     """Execute a workflow directly without publishing. Used by frontend Run for plugin nodes."""
+    import time
     from src.services.workflow_executor import WorkflowExecutor, ExecutionError
+    from src.models.execution_task import ExecutionTask
 
     nodes = body.get("nodes", [])
     edges = body.get("edges", [])
     if not nodes:
         raise HTTPException(400, "Workflow is empty")
 
+    # Create task record
+    task = ExecutionTask(
+        workflow_name=body.get("name", "直接执行"),
+        status="running",
+        nodes_total=len(nodes),
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+
+    start = time.monotonic()
     executor = WorkflowExecutor({"nodes": nodes, "edges": edges})
+
     try:
         result = await executor.execute()
+        elapsed = int((time.monotonic() - start) * 1000)
+        task.status = "completed"
+        task.result = result
+        task.duration_ms = elapsed
+        task.nodes_done = len(nodes)
+        task.current_node = None
     except ExecutionError as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        task.status = "failed"
+        task.error = str(e)
+        task.duration_ms = elapsed
+        await session.commit()
         raise HTTPException(500, str(e))
+
+    await session.commit()
     return result

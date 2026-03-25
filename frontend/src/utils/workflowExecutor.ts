@@ -193,6 +193,24 @@ async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
   }
 }
 
+async function recordTask(data: {
+  workflow_name: string
+  status: string
+  nodes_total: number
+  nodes_done: number
+  duration_ms: number
+  error?: string
+}) {
+  try {
+    await apiFetch('/api/v1/tasks/record', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  } catch {
+    // ignore if recording fails
+  }
+}
+
 export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResult> {
   const { nodes, edges } = workflow
 
@@ -201,7 +219,7 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
   const hasOutput = nodes.some((n) => n.type === 'output')
   if (!hasOutput) throw new Error('工作流缺少输出节点')
 
-  // If workflow has plugin nodes, execute on backend
+  // If workflow has plugin nodes, execute on backend (task is created server-side)
   if (hasPluginNodes(nodes)) {
     return executeOnBackend(workflow)
   }
@@ -209,6 +227,7 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
   const sorted = topoSort(nodes, edges)
   const outputs = new Map<string, NodeOutput>()
   const exec = useExecutionStore.getState()
+  const startTime = performance.now()
 
   // Mark all nodes as pending
   for (const node of sorted) {
@@ -231,6 +250,15 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
       exec.setNodeState(node.id, 'completed')
     } catch (e) {
       exec.setNodeState(node.id, 'error')
+      const elapsed = Math.round(performance.now() - startTime)
+      recordTask({
+        workflow_name: workflow.name || '前端执行',
+        status: 'failed',
+        nodes_total: sorted.length,
+        nodes_done: i,
+        duration_ms: elapsed,
+        error: e instanceof Error ? e.message : String(e),
+      })
       throw e
     }
   }
@@ -239,9 +267,28 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
   const outputNode = sorted.find((n) => n.type === 'output')!
   const finalOutput = outputs.get(outputNode.id)
 
+  const elapsed = Math.round(performance.now() - startTime)
+
   if (!finalOutput?.audioBase64) {
+    recordTask({
+      workflow_name: workflow.name || '前端执行',
+      status: 'failed',
+      nodes_total: sorted.length,
+      nodes_done: sorted.length,
+      duration_ms: elapsed,
+      error: '工作流执行完成但没有音频输出',
+    })
     throw new Error('工作流执行完成但没有音频输出')
   }
+
+  // Record successful task
+  recordTask({
+    workflow_name: workflow.name || '前端执行',
+    status: 'completed',
+    nodes_total: sorted.length,
+    nodes_done: sorted.length,
+    duration_ms: elapsed,
+  })
 
   return {
     audioBase64: finalOutput.audioBase64,
