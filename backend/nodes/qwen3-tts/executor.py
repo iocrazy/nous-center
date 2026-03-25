@@ -1,8 +1,11 @@
 """Qwen3-TTS node executors -- ported from ComfyUI-Qwen-TTS."""
 
 import base64
+import io
 import logging
 import os
+import struct
+import wave
 
 import numpy as np
 
@@ -10,6 +13,26 @@ logger = logging.getLogger(__name__)
 
 # Model cache (same pattern as ComfyUI version)
 _MODEL_CACHE = {}
+
+
+def _numpy_to_wav_base64(samples: np.ndarray, sample_rate: int) -> str:
+    """Convert numpy float32 audio array to WAV base64 string."""
+    # Ensure float32 mono
+    if samples.ndim > 1:
+        samples = np.mean(samples, axis=0)
+    samples = samples.astype(np.float32)
+
+    # Convert to int16 PCM
+    pcm = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm.tobytes())
+
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 def _get_qwen_model(model_type: str, model_choice: str, device: str = "cuda", precision: str = "bf16"):
@@ -79,7 +102,9 @@ async def exec_qwen3_voice_clone(data: dict, inputs: dict) -> dict:
         temperature=float(data.get("temperature", 1.0)),
     )
 
-    audio_b64 = base64.b64encode(np.array(wavs[0]).tobytes()).decode() if wavs else ""
+    if not wavs:
+        raise RuntimeError("语音生成失败：无输出")
+    audio_b64 = _numpy_to_wav_base64(np.array(wavs[0]), sr)
     return {"audio": audio_b64, "sample_rate": sr}
 
 
@@ -106,7 +131,9 @@ async def exec_qwen3_custom_voice(data: dict, inputs: dict) -> dict:
         temperature=float(data.get("temperature", 1.0)),
     )
 
-    audio_b64 = base64.b64encode(np.array(wavs[0]).tobytes()).decode() if wavs else ""
+    if not wavs:
+        raise RuntimeError("语音生成失败：无输出")
+    audio_b64 = _numpy_to_wav_base64(np.array(wavs[0]), sr)
     return {"audio": audio_b64, "sample_rate": sr}
 
 
@@ -133,7 +160,9 @@ async def exec_qwen3_voice_design(data: dict, inputs: dict) -> dict:
         temperature=float(data.get("temperature", 1.0)),
     )
 
-    audio_b64 = base64.b64encode(np.array(wavs[0]).tobytes()).decode() if wavs else ""
+    if not wavs:
+        raise RuntimeError("语音生成失败：无输出")
+    audio_b64 = _numpy_to_wav_base64(np.array(wavs[0]), sr)
     return {"audio": audio_b64, "sample_rate": sr}
 
 

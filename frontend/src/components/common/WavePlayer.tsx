@@ -2,7 +2,7 @@ import { useRef, useState, useEffect, useCallback } from 'react'
 import { initWasm, decode_audio, compute_waveform } from '../../wasm'
 
 interface Props {
-  /** Base64-encoded audio data */
+  /** Base64-encoded audio data (WAV format) */
   audioBase64: string | null
   sampleRate?: number
   duration?: number
@@ -15,6 +15,7 @@ export default function WavePlayer({ audioBase64, sampleRate, duration }: Props)
   const [currentTime, setCurrentTime] = useState(0)
   const [peaks, setPeaks] = useState<Float32Array | null>(null)
   const [totalDuration, setTotalDuration] = useState(duration ?? 0)
+  const [wasmFailed, setWasmFailed] = useState(false)
 
   // Decode audio + compute waveform via WASM
   useEffect(() => {
@@ -22,14 +23,24 @@ export default function WavePlayer({ audioBase64, sampleRate, duration }: Props)
 
     let cancelled = false
     ;(async () => {
-      await initWasm()
-      const raw = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0))
-      const decoded = decode_audio(raw)
-      if (cancelled) return
-      const mono = decoded.samples_mono()
-      setTotalDuration(decoded.duration_seconds)
-      const p = compute_waveform(mono, 800)
-      setPeaks(new Float32Array(p))
+      try {
+        await initWasm()
+        const raw = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0))
+        const decoded = decode_audio(raw)
+        if (cancelled) return
+        const mono = decoded.samples_mono()
+        setTotalDuration(decoded.duration_seconds)
+        const p = compute_waveform(mono, 800)
+        setPeaks(new Float32Array(p))
+      } catch (e) {
+        console.warn('WASM decode failed, falling back to audio element', e)
+        setWasmFailed(true)
+        // Fall back to HTML audio element for duration
+        const audio = audioRef.current
+        if (audio) {
+          audio.onloadedmetadata = () => setTotalDuration(audio.duration)
+        }
+      }
     })()
 
     return () => { cancelled = true }
@@ -42,12 +53,14 @@ export default function WavePlayer({ audioBase64, sampleRate, duration }: Props)
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const w = canvas.width
-    const h = canvas.height
+    const dpr = window.devicePixelRatio || 1
+    const w = canvas.width / dpr
+    const h = canvas.height / dpr
     const mid = h / 2
     const numBuckets = peaks.length / 2
 
-    ctx.clearRect(0, 0, w, h)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.scale(dpr, dpr)
 
     // Progress position
     const progress = totalDuration > 0 ? currentTime / totalDuration : 0
@@ -57,11 +70,24 @@ export default function WavePlayer({ audioBase64, sampleRate, duration }: Props)
       const x = (i / numBuckets) * w
       const min = peaks[i * 2]
       const max = peaks[i * 2 + 1]
+      const barW = Math.max(1, w / numBuckets - 0.5)
 
       ctx.fillStyle = x < progressX ? '#3b82f6' : '#4b5563'
-      ctx.fillRect(x, mid - max * mid, Math.max(1, w / numBuckets), (max - min) * mid)
+      ctx.fillRect(x, mid - max * mid, barW, (max - min) * mid || 1)
     }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
   }, [peaks, currentTime, totalDuration])
+
+  // Resize canvas for HiDPI
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const dpr = window.devicePixelRatio || 1
+    const rect = canvas.getBoundingClientRect()
+    canvas.width = rect.width * dpr
+    canvas.height = rect.height * dpr
+  }, [peaks])
 
   // Time update
   useEffect(() => {
@@ -69,7 +95,11 @@ export default function WavePlayer({ audioBase64, sampleRate, duration }: Props)
     if (!audio) return
     const handler = () => setCurrentTime(audio.currentTime)
     audio.addEventListener('timeupdate', handler)
-    return () => audio.removeEventListener('timeupdate', handler)
+    audio.addEventListener('ended', () => setPlaying(false))
+    return () => {
+      audio.removeEventListener('timeupdate', handler)
+      audio.removeEventListener('ended', () => setPlaying(false))
+    }
   }, [])
 
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -82,46 +112,132 @@ export default function WavePlayer({ audioBase64, sampleRate, duration }: Props)
     setCurrentTime(audio.currentTime)
   }, [totalDuration])
 
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (playing) {
+      audio.pause()
+      setPlaying(false)
+    } else {
+      audio.play()
+      setPlaying(true)
+    }
+  }, [playing])
+
   if (!audioBase64) return null
 
   const src = `data:audio/wav;base64,${audioBase64}`
 
   return (
-    <div className="bg-gray-900 rounded p-3 space-y-2">
-      <audio
-        ref={audioRef}
-        src={src}
-        onEnded={() => setPlaying(false)}
-      />
-      <canvas
-        ref={canvasRef}
-        width={800}
-        height={80}
-        className="w-full h-20 cursor-pointer rounded"
-        onClick={handleCanvasClick}
-      />
-      <div className="flex items-center gap-3">
-        <button
-          className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm"
-          onClick={() => {
-            const audio = audioRef.current
-            if (!audio) return
-            if (playing) { audio.pause(); setPlaying(false) }
-            else { audio.play(); setPlaying(true) }
+    <div
+      style={{
+        background: 'var(--bg)',
+        borderRadius: 6,
+        padding: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+      }}
+    >
+      <audio ref={audioRef} src={src} preload="metadata" />
+
+      {/* Waveform canvas */}
+      {peaks ? (
+        <canvas
+          ref={canvasRef}
+          style={{
+            width: '100%',
+            height: 48,
+            cursor: 'pointer',
+            borderRadius: 4,
+            background: 'var(--card)',
+          }}
+          onClick={handleCanvasClick}
+        />
+      ) : wasmFailed ? (
+        <div
+          style={{
+            width: '100%',
+            height: 48,
+            borderRadius: 4,
+            background: 'var(--card)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 10,
+            color: 'var(--muted)',
           }}
         >
-          {playing ? '⏸ 暂停' : '▶ 播放'}
+          波形加载中...
+        </div>
+      ) : (
+        <div
+          style={{
+            width: '100%',
+            height: 48,
+            borderRadius: 4,
+            background: 'var(--card)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <div
+            style={{
+              width: 16,
+              height: 16,
+              border: '2px solid var(--accent)',
+              borderTopColor: 'transparent',
+              borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite',
+            }}
+          />
+        </div>
+      )}
+
+      {/* Controls */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}
+      >
+        <button
+          onClick={togglePlay}
+          style={{
+            padding: '3px 10px',
+            fontSize: 10,
+            borderRadius: 4,
+            border: 'none',
+            background: 'var(--accent)',
+            color: '#fff',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          {playing ? '⏸' : '▶'}
         </button>
-        <span className="text-xs text-gray-400">
+
+        <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
           {currentTime.toFixed(1)}s / {totalDuration.toFixed(1)}s
         </span>
+
         {sampleRate && (
-          <span className="text-xs text-gray-500">{sampleRate}Hz</span>
+          <span style={{ fontSize: 9, color: 'var(--muted-strong)' }}>
+            {sampleRate}Hz
+          </span>
         )}
+
         <a
           href={src}
           download="tts_output.wav"
-          className="text-xs text-blue-400 hover:text-blue-300 ml-auto"
+          style={{
+            fontSize: 10,
+            color: 'var(--accent)',
+            textDecoration: 'none',
+            marginLeft: 'auto',
+          }}
         >
           下载
         </a>
