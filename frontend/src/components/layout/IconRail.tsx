@@ -21,7 +21,7 @@ import { useTasks } from '../../api/tasks'
 const OVERLAY_ROUTES: Record<OverlayId, string> = {
   dashboard: '/dashboard',
   models: '/models',
-  'api-management': '/api',
+  'api-management': '/api-management',
   agents: '/agents',
   settings: '/settings',
   'preset-detail': '/', // no dedicated route
