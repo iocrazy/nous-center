@@ -1,24 +1,41 @@
 name: qwen3-tts
-version: "1.1"
+version: "1.2"
 description: "Qwen3-TTS 语音合成节点包 — 移植自 ComfyUI-Qwen-TTS"
 author: "flybirdxx (ComfyUI) / nous-center"
 
 nodes:
+  qwen3_model_loader:
+    label: "Qwen3 模型加载"
+    category: tts
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: model, type: data, label: 模型 }
+    widgets:
+      - { name: model_name, label: model_name, widget: select, options: [
+          {label: "1.7B-Base", value: "Qwen/Qwen3-TTS-12Hz-1.7B-Base"},
+          {label: "1.7B-CustomVoice", value: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"},
+          {label: "1.7B-VoiceDesign", value: "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"},
+          {label: "0.6B-Base", value: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"},
+          {label: "0.6B-CustomVoice", value: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"}
+        ], default: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" }
+      - { name: device, label: device, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
+      - { name: precision, label: precision, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
+
   qwen3_custom_voice:
     label: "Qwen3 预置音色"
     category: tts
     badge: TTS
     badgeColor: "var(--warn)"
     inputs:
+      - { id: model, type: data, label: 模型 }
       - { id: text, type: text, label: 文本 }
       - { id: config, type: data, label: 配置 }
     outputs:
       - { id: audio, type: audio, label: 音频 }
     widgets:
       - { name: speaker, label: speaker, widget: select, options: [{label: Aiden, value: aiden}, {label: Dylan, value: dylan}, {label: Eric, value: eric}, {label: Serena, value: serena}, {label: Vivian, value: vivian}, {label: Ryan, value: ryan}, {label: Uncle_Fu, value: uncle_fu}, {label: Ono_Anna, value: ono_anna}, {label: Sohee, value: sohee}], default: ryan }
-      - { name: model_choice, label: model_choice, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
-      - { name: device, label: device, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
-      - { name: precision, label: precision, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
       - { name: language, label: language, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}, {label: 韩文, value: korean}, {label: 法文, value: french}, {label: 德文, value: german}, {label: 西班牙文, value: spanish}, {label: 葡萄牙文, value: portuguese}, {label: 俄文, value: russian}, {label: 意大利文, value: italian}], default: auto }
       - { name: seed, label: seed, widget: input, default: "0" }
       - { name: instruct, label: instruct, widget: textarea, rows: 2 }
@@ -38,6 +55,7 @@ nodes:
     badge: TTS
     badgeColor: "var(--warn)"
     inputs:
+      - { id: model, type: data, label: 模型 }
       - { id: text, type: text, label: 文本 }
       - { id: ref_audio, type: audio, label: 参考音频 }
       - { id: voice_clone_prompt, type: data, label: 克隆特征 }
@@ -45,9 +63,6 @@ nodes:
     outputs:
       - { id: audio, type: audio, label: 音频 }
     widgets:
-      - { name: model_choice, label: model_choice, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "0.6B" }
-      - { name: device, label: device, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
-      - { name: precision, label: precision, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
       - { name: language, label: language, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}, {label: 韩文, value: korean}, {label: 法文, value: french}, {label: 德文, value: german}, {label: 西班牙文, value: spanish}, {label: 葡萄牙文, value: portuguese}, {label: 俄文, value: russian}, {label: 意大利文, value: italian}], default: auto }
       - { name: ref_text, label: ref_text, widget: textarea, rows: 2 }
       - { name: seed, label: seed, widget: input, default: "0" }
@@ -67,15 +82,13 @@ nodes:
     badge: TTS
     badgeColor: "var(--warn)"
     inputs:
+      - { id: model, type: data, label: 模型 }
       - { id: text, type: text, label: 文本 }
       - { id: config, type: data, label: 配置 }
     outputs:
       - { id: audio, type: audio, label: 音频 }
     widgets:
       - { name: instruct, label: instruct, widget: textarea, rows: 3, default: "A young female voice, energetic and bright." }
-      - { name: model_choice, label: model_choice, widget: select, options: [{label: "1.7B", value: "1.7B"}], default: "1.7B" }
-      - { name: device, label: device, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
-      - { name: precision, label: precision, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
       - { name: language, label: language, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}, {label: 日文, value: japanese}, {label: 韩文, value: korean}], default: auto }
       - { name: seed, label: seed, widget: input, default: "0" }
       - { name: max_new_tokens, label: max_new_tokens, widget: slider, min: 512, max: 4096, step: 256, default: 2048 }
@@ -92,14 +105,12 @@ nodes:
     badge: TTS
     badgeColor: "var(--accent)"
     inputs:
+      - { id: model, type: data, label: 模型 }
       - { id: ref_audio, type: audio, label: 参考音频 }
     outputs:
       - { id: voice_clone_prompt, type: data, label: 克隆特征 }
     widgets:
       - { name: ref_text, label: ref_text, widget: textarea, rows: 2 }
-      - { name: model_choice, label: model_choice, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "0.6B" }
-      - { name: device, label: device, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
-      - { name: precision, label: precision, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
       - { name: attention, label: attention, widget: select, options: [{label: auto, value: auto}, {label: sdpa, value: sdpa}, {label: eager, value: eager}], default: auto }
       - { name: x_vector_only, label: x_vector_only, widget: checkbox, default: false }
       - { name: unload_after, label: unload_after, widget: checkbox, default: false }
@@ -136,14 +147,12 @@ nodes:
     badge: TTS
     badgeColor: "var(--ok)"
     inputs:
+      - { id: model, type: data, label: 模型 }
       - { id: role_bank, type: data, label: 角色库 }
     outputs:
       - { id: audio, type: audio, label: 音频 }
     widgets:
       - { name: script, label: script, widget: textarea, rows: 6, default: "Role1: 你好，最近怎么样？\nRole2: 挺好的，谢谢关心。" }
-      - { name: model_choice, label: model_choice, widget: select, options: [{label: "0.6B", value: "0.6B"}, {label: "1.7B", value: "1.7B"}], default: "1.7B" }
-      - { name: device, label: device, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
-      - { name: precision, label: precision, widget: select, options: [{label: bf16, value: bf16}, {label: fp32, value: fp32}], default: bf16 }
       - { name: language, label: language, widget: select, options: [{label: 自动, value: auto}, {label: 中文, value: chinese}, {label: 英文, value: english}], default: auto }
       - { name: pause_linebreak, label: pause_linebreak, widget: slider, min: 0, max: 5, step: 0.1, default: 0.5 }
       - { name: period_pause, label: period_pause, widget: slider, min: 0, max: 5, step: 0.1, default: 0.4 }

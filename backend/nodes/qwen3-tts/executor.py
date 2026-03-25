@@ -74,6 +74,43 @@ def _get_qwen_model(model_type: str, model_choice: str, device: str = "cuda", pr
     return model
 
 
+def _parse_model_cache_key(inputs: dict, default_model_type: str) -> tuple:
+    """Parse model cache key from inputs, with fallback defaults."""
+    model_cache_key = inputs.get("model", "")
+    if model_cache_key and "|" in str(model_cache_key):
+        parts = str(model_cache_key).split("|")
+        return parts[0], parts[1], parts[2], parts[3]
+    # Fallback: backward compatibility
+    return default_model_type, "1.7B", "auto", "bf16"
+
+
+async def exec_qwen3_model_loader(data: dict, inputs: dict) -> dict:
+    """Load Qwen3-TTS model and return cache key."""
+    import asyncio
+
+    model_name = data.get("model_name", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
+    device = data.get("device", "auto")
+    precision = data.get("precision", "bf16")
+
+    # Determine model type from name
+    if "VoiceDesign" in model_name:
+        model_type = "VoiceDesign"
+    elif "CustomVoice" in model_name:
+        model_type = "CustomVoice"
+    else:
+        model_type = "Base"
+
+    # Determine model choice (0.6B or 1.7B)
+    model_choice = "0.6B" if "0.6B" in model_name else "1.7B"
+
+    # Load model (cached)
+    await asyncio.to_thread(_get_qwen_model, model_type, model_choice, device, precision)
+
+    # Return cache key so downstream nodes can retrieve the model
+    cache_key = f"{model_type}|{model_choice}|{device}|{precision}"
+    return {"model": cache_key}
+
+
 async def exec_qwen3_voice_clone(data: dict, inputs: dict) -> dict:
     """Voice clone from reference audio."""
     import asyncio
@@ -84,9 +121,10 @@ async def exec_qwen3_voice_clone(data: dict, inputs: dict) -> dict:
     if not text:
         raise RuntimeError("文本不能为空")
 
-    model = await asyncio.to_thread(
-        _get_qwen_model, "Base", data.get("model_choice", "1.7B")
-    )
+    # Get model from inputs (loaded by model_loader node)
+    model_type, model_choice, device, precision = _parse_model_cache_key(inputs, "Base")
+
+    model = await asyncio.to_thread(_get_qwen_model, model_type, model_choice, device, precision)
 
     seed = int(data.get("seed", 0))
     torch.manual_seed(seed)
@@ -116,9 +154,10 @@ async def exec_qwen3_custom_voice(data: dict, inputs: dict) -> dict:
     if not text:
         raise RuntimeError("文本不能为空")
 
-    model = await asyncio.to_thread(
-        _get_qwen_model, "CustomVoice", data.get("model_choice", "1.7B")
-    )
+    # Get model from inputs (loaded by model_loader node)
+    model_type, model_choice, device, precision = _parse_model_cache_key(inputs, "CustomVoice")
+
+    model = await asyncio.to_thread(_get_qwen_model, model_type, model_choice, device, precision)
 
     wavs, sr = await asyncio.to_thread(
         model.generate_custom_voice,
@@ -146,9 +185,10 @@ async def exec_qwen3_voice_design(data: dict, inputs: dict) -> dict:
     if not text or not instruct:
         raise RuntimeError("文本和音色描述都不能为空")
 
-    model = await asyncio.to_thread(
-        _get_qwen_model, "VoiceDesign", data.get("model_choice", "1.7B")
-    )
+    # Get model from inputs (loaded by model_loader node)
+    model_type, model_choice, device, precision = _parse_model_cache_key(inputs, "VoiceDesign")
+
+    model = await asyncio.to_thread(_get_qwen_model, model_type, model_choice, device, precision)
 
     wavs, sr = await asyncio.to_thread(
         model.generate_voice_design,
@@ -168,6 +208,7 @@ async def exec_qwen3_voice_design(data: dict, inputs: dict) -> dict:
 
 # Register executors -- this dict is read by the node package scanner
 EXECUTORS = {
+    "qwen3_model_loader": exec_qwen3_model_loader,
     "qwen3_voice_clone": exec_qwen3_voice_clone,
     "qwen3_custom_voice": exec_qwen3_custom_voice,
     "qwen3_voice_design": exec_qwen3_voice_design,
