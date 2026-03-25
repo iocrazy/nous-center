@@ -10,6 +10,7 @@ from src.api.routes import tasks, understand, generate, tts, engines, audio, voi
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services import model_scheduler
+from src.services.gpu_monitor import memory_guard_loop
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ async def lifespan(app: FastAPI):
                 logger.warning("Idle model check failed: %s", e)
 
     asyncio.create_task(idle_checker())
+    asyncio.create_task(memory_guard_loop(reserved_gb=4.0))
 
     yield
 

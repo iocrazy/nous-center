@@ -144,6 +144,12 @@ async def get_system_stats():
         for gpu in gpus:
             gpu["processes"] = gpu_procs.get(gpu["index"], [])
 
+    # Add memory warning flags
+    from src.services.gpu_monitor import DEFAULT_RESERVED_GB
+    for gpu in gpus:
+        free_gb = gpu["memory_free_mb"] / 1024
+        gpu["low_memory"] = free_gb < DEFAULT_RESERVED_GB
+
     # Add loaded models to GPU info
     from src.services import model_scheduler
     from src.config import load_model_configs

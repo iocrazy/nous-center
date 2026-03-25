@@ -60,6 +60,28 @@ async def load_model(model_key: str) -> None:
     if not cfg:
         raise ValueError(f"Unknown model: {model_key}")
 
+    # Pre-load memory check: evict LRU models if not enough GPU memory
+    from src.services.gpu_monitor import get_gpu_free_mb, check_and_evict
+
+    gpu_idx = cfg.get("gpu", 0)
+    if isinstance(gpu_idx, list):
+        gpu_idx = gpu_idx[0]
+    needed_mb = int(cfg.get("vram_gb", 0) * 1024)
+    free_mb = get_gpu_free_mb(gpu_idx)
+
+    if needed_mb > 0 and free_mb > 0 and free_mb < needed_mb:
+        logger.info(
+            "Not enough GPU memory (need %dMB, free %dMB). Evicting...",
+            needed_mb,
+            free_mb,
+        )
+        await check_and_evict(reserved_gb=0)  # Emergency evict
+        free_mb = get_gpu_free_mb(gpu_idx)
+        if free_mb > 0 and free_mb < needed_mb:
+            raise ValueError(
+                f"GPU {gpu_idx} 显存不足: 需要 {needed_mb}MB, 可用 {free_mb}MB"
+            )
+
     settings = get_settings()
     model_type = cfg.get("type", "")
     device = get_device_for_engine(cfg)
@@ -160,21 +182,24 @@ def get_status() -> dict:
 async def check_idle_models() -> None:
     """Unload models that have been idle too long and have no references."""
     now = time.time()
+    configs = load_model_configs()
     to_unload = []
     for model_key in list(_loaded_models):
         if model_key not in _last_used:
             continue
         if _references[model_key]:
             continue  # Still referenced
-        configs = load_model_configs()
         cfg = configs.get(model_key, {})
         if cfg.get("resident", False):
             continue
-        if now - _last_used[model_key] > IDLE_TIMEOUT_SECONDS:
+        ttl = cfg.get("ttl_seconds", IDLE_TIMEOUT_SECONDS)
+        if ttl <= 0:
+            continue  # No TTL — keep loaded indefinitely
+        if now - _last_used[model_key] > ttl:
             to_unload.append(model_key)
 
     for key in to_unload:
-        logger.info("Idle timeout: unloading %s", key)
+        logger.info("TTL expired: unloading %s", key)
         await unload_model(key)
 
 

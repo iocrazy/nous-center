@@ -159,9 +159,25 @@ function GpuPanel({ gpu, chartColor }: { gpu: SysGpuInfo; chartColor: string }) 
   const memPct = gpu.memory_total_mb > 0 ? (gpu.memory_used_mb / gpu.memory_total_mb) * 100 : 0
   const memUsedG = (gpu.memory_used_mb / 1024).toFixed(1)
   const memTotalG = (gpu.memory_total_mb / 1024).toFixed(0)
+  const borderColor = gpu.low_memory ? '#ef4444' : chartColor
+  const memBarColor = gpu.low_memory ? '#ef4444' : chartColor
 
   return (
-    <MonPanel title={`GPU ${gpu.index}`} titleColor={chartColor} value={`${gpu.utilization_gpu}%`} accentColor={chartColor}>
+    <MonPanel title={`GPU ${gpu.index}`} titleColor={chartColor} value={`${gpu.utilization_gpu}%`} accentColor={borderColor}>
+      {gpu.low_memory && (
+        <div style={{
+          background: 'rgba(239, 68, 68, 0.1)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: 4,
+          padding: '4px 8px',
+          marginBottom: 8,
+          fontSize: 11,
+          color: '#ef4444',
+          fontWeight: 600,
+        }}>
+          WARNING: Low VRAM — auto-eviction active
+        </div>
+      )}
       <div style={{ fontSize: 12, color: 'var(--muted-strong)', fontFamily: 'var(--mono)', lineHeight: 1.8, marginBottom: 8 }}>
         <span style={{ color: 'var(--text)', fontSize: 14, fontWeight: 600 }}>{gpu.name}</span>
         <br />
@@ -202,13 +218,13 @@ function GpuPanel({ gpu, chartColor }: { gpu: SysGpuInfo; chartColor: string }) 
             style={{
               height: '100%',
               width: `${memPct}%`,
-              background: chartColor,
+              background: memBarColor,
               borderRadius: 3,
               transition: 'width 0.5s',
             }}
           />
         </div>
-        <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'var(--mono)', width: 80, textAlign: 'right' }}>
+        <span style={{ fontSize: 12, color: gpu.low_memory ? '#ef4444' : 'var(--muted)', fontFamily: 'var(--mono)', width: 80, textAlign: 'right' }}>
           {memUsedG}G / {memTotalG}G
         </span>
       </div>
