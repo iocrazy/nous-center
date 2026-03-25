@@ -14,7 +14,7 @@ export default function Topbar() {
   const updateNode = useWorkspaceStore((s) => s.updateNode)
   const { activeOverlay } = usePanelStore()
   const navigate = useNavigate()
-  const { isRunning, start, succeed, fail } = useExecutionStore()
+  const { isRunning, progress, currentNodeType, start, succeed, fail, resetNodeStates } = useExecutionStore()
   const toast = useToastStore((s) => s.add)
   const publishWf = usePublishWorkflow()
   const unpublishWf = useUnpublishWorkflow()
@@ -43,10 +43,16 @@ export default function Topbar() {
           duration: result.duration,
         })
       }
+
+      // Keep final states visible, then reset
+      setTimeout(() => resetNodeStates(), 3000)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       fail(msg)
       toast(msg, 'error')
+
+      // Keep error states visible, then reset
+      setTimeout(() => resetNodeStates(), 5000)
     }
   }
 
@@ -72,6 +78,7 @@ export default function Topbar() {
         borderBottom: '1px solid var(--border)',
         padding: '0 12px',
         backdropFilter: 'blur(8px)',
+        position: 'relative',
       }}
     >
       {activeOverlay && (
@@ -133,6 +140,13 @@ export default function Topbar() {
         </>
       )}
 
+      {/* Current node execution indicator */}
+      {isRunning && currentNodeType && (
+        <span style={{ fontSize: 10, color: 'var(--ok)', marginLeft: 8, flexShrink: 0 }}>
+          ● {progress}% — {currentNodeType}
+        </span>
+      )}
+
       <div className="ml-auto flex gap-1.5">
         {!activeOverlay && (
           <>
@@ -168,6 +182,26 @@ export default function Topbar() {
           </>
         )}
       </div>
+
+      {/* Bottom progress bar */}
+      {isRunning && (
+        <div style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: 3,
+          background: 'var(--border)',
+        }}>
+          <div style={{
+            height: '100%',
+            width: `${progress}%`,
+            background: 'var(--ok)',
+            transition: 'width 0.3s ease',
+            borderRadius: '0 1px 1px 0',
+          }} />
+        </div>
+      )}
     </div>
   )
 }

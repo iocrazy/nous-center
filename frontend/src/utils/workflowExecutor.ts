@@ -1,6 +1,7 @@
 import type { Workflow, WorkflowNode, WorkflowEdge, NodeType } from '../models/workflow'
 import { apiFetch } from '../api/client'
 import type { SynthesizeResponse } from '../api/tts'
+import { useExecutionStore } from '../stores/execution'
 
 export interface ExecutionResult {
   audioBase64: string
@@ -207,14 +208,31 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
 
   const sorted = topoSort(nodes, edges)
   const outputs = new Map<string, NodeOutput>()
+  const exec = useExecutionStore.getState()
 
+  // Mark all nodes as pending
   for (const node of sorted) {
+    exec.setNodeState(node.id, 'pending')
+  }
+
+  for (let i = 0; i < sorted.length; i++) {
+    const node = sorted[i]
     const inputs = getInputs(node.id, edges, outputs)
     const executor = nodeExecutors[node.type]
     if (!executor) throw new Error(`未知节点类型: ${node.type}`)
 
-    const result = await executor(node, inputs)
-    outputs.set(node.id, result)
+    exec.setNodeState(node.id, 'running')
+    exec.setCurrentNode(node.id, node.type)
+    exec.setProgress(Math.round(((i) / sorted.length) * 100))
+
+    try {
+      const result = await executor(node, inputs)
+      outputs.set(node.id, result)
+      exec.setNodeState(node.id, 'completed')
+    } catch (e) {
+      exec.setNodeState(node.id, 'error')
+      throw e
+    }
   }
 
   // Find the output node's result

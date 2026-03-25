@@ -114,6 +114,37 @@ input[type="number"] {
   padding: 0 !important;
 }
 
+/* Node execution state styles */
+.react-flow__node.node-running > div {
+  outline: 2px solid var(--ok) !important;
+  outline-offset: 1px;
+  border-radius: 8px;
+  animation: node-pulse 1.5s ease-in-out infinite;
+}
+
+.react-flow__node.node-completed > div {
+  outline: 2px solid var(--ok) !important;
+  outline-offset: 1px;
+  border-radius: 8px;
+}
+
+.react-flow__node.node-error > div {
+  outline: 2px solid var(--warn) !important;
+  outline-offset: 1px;
+  border-radius: 8px;
+}
+
+.react-flow__node.node-pending > div {
+  outline: 1px dashed var(--muted-strong) !important;
+  outline-offset: 1px;
+  border-radius: 8px;
+}
+
+@keyframes node-pulse {
+  0%, 100% { outline-color: var(--ok); }
+  50% { outline-color: transparent; }
+}
+
 /* Node slider — ElevenLabs style range input */
 .node-slider {
   -webkit-appearance: none;

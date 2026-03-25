@@ -19,6 +19,7 @@ import '@xyflow/react/dist/style.css'
 import { nodeTypes } from './nodeTypes'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
+import { useExecutionStore } from '../../stores/execution'
 import { NODE_DEFS, type NodeType, type PortType } from '../../models/workflow'
 import NodeLibraryPanel from '../panels/NodeLibraryPanel'
 import WorkflowsPanel from '../panels/WorkflowsPanel'
@@ -52,9 +53,17 @@ export default function NodeEditor() {
   const storeAddNode = useWorkspaceStore((s) => s.addNode)
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
   const { activePanel, activeOverlay, panelWidth } = usePanelStore()
+  const nodeStates = useExecutionStore((s) => s.nodeStates)
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
+
+  const NODE_STATE_CLASS: Record<string, string> = {
+    pending: 'node-pending',
+    running: 'node-running',
+    completed: 'node-completed',
+    error: 'node-error',
+  }
 
   const rfNodes: Node[] = useMemo(
     () =>
@@ -63,8 +72,9 @@ export default function NodeEditor() {
         type: n.type,
         position: n.position,
         data: n.data,
+        className: nodeStates[n.id] ? NODE_STATE_CLASS[nodeStates[n.id]] : undefined,
       })),
-    [workflow.nodes],
+    [workflow.nodes, nodeStates],
   )
 
   const rfEdges: Edge[] = useMemo(
