@@ -166,7 +166,7 @@ async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
     '/api/v1/workflows/execute',
     {
       method: 'POST',
-      body: JSON.stringify({ nodes: workflow.nodes, edges: workflow.edges }),
+      body: JSON.stringify({ nodes: workflow.nodes, edges: workflow.edges, name: workflow.name }),
     }
   )
 
@@ -221,7 +221,30 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
 
   // If workflow has plugin nodes, execute on backend (task is created server-side)
   if (hasPluginNodes(nodes)) {
-    return executeOnBackend(workflow)
+    const startTime = Date.now()
+    try {
+      const result = await executeOnBackend(workflow)
+      const elapsed = Date.now() - startTime
+      recordTask({
+        workflow_name: workflow.name || '前端执行',
+        status: 'completed',
+        nodes_total: nodes.length,
+        nodes_done: nodes.length,
+        duration_ms: elapsed,
+      })
+      return result
+    } catch (e) {
+      const elapsed = Date.now() - startTime
+      recordTask({
+        workflow_name: workflow.name || '前端执行',
+        status: 'failed',
+        nodes_total: nodes.length,
+        nodes_done: 0,
+        duration_ms: elapsed,
+        error: e instanceof Error ? e.message : String(e),
+      })
+      throw e
+    }
   }
 
   const sorted = topoSort(nodes, edges)
