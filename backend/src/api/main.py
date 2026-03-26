@@ -145,6 +145,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    from src.api.middleware import RequestLoggingMiddleware
+    app.add_middleware(RequestLoggingMiddleware)
+
     @app.get("/health")
     async def health_check():
         checks: dict = {"status": "ok"}
