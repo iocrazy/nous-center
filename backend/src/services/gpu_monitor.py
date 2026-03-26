@@ -99,7 +99,7 @@ async def check_and_evict(reserved_gb: float = DEFAULT_RESERVED_GB) -> None:
             # Find loaded models on this GPU, sorted by last_used (oldest first)
             candidates = []
             async with model_scheduler._lock:
-                for model_key in list(model_scheduler._loaded_models):
+                for model_key in model_scheduler.get_loaded_keys():
                     cfg = configs.get(model_key, {})
                     model_gpu = cfg.get("gpu", -1)
                     if isinstance(model_gpu, list):

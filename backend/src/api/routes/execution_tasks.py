@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.database import get_async_session
 from src.models.execution_task import ExecutionTask
+from src.utils.constants import VALID_TASK_STATUSES
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["execution-tasks"])
 
@@ -28,9 +29,6 @@ async def list_tasks(
     return [_task_to_dict(t) for t in tasks]
 
 
-_VALID_STATUSES = {"queued", "running", "completed", "failed", "cancelled"}
-
-
 @router.post("/record")
 async def record_task(
     body: dict,
@@ -38,7 +36,7 @@ async def record_task(
 ):
     """Record a task from frontend execution."""
     status = body.get("status", "completed")
-    if status not in _VALID_STATUSES:
+    if status not in VALID_TASK_STATUSES:
         raise HTTPException(400, f"Invalid status: {status}")
 
     task = ExecutionTask(

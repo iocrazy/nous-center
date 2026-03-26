@@ -6,6 +6,15 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(timeout=120, limits=httpx.Limits(max_connections=10))
+    return _client
+
 
 async def call_llm(
     prompt: str,
@@ -28,20 +37,20 @@ async def call_llm(
 
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            url,
-            json={
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            },
-            headers=headers,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+    client = _get_client()
+    resp = await client.post(
+        url,
+        json={
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
+        headers=headers,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
 
 
 async def call_llm_with_tools(
@@ -73,16 +82,16 @@ async def call_llm_with_tools(
         body["tools"] = tools
         body["tool_choice"] = "auto"
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(url, json=body, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+    client = _get_client()
+    resp = await client.post(url, json=body, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
 
-        choice = data["choices"][0]
-        message = choice["message"]
+    choice = data["choices"][0]
+    message = choice["message"]
 
-        result: dict = {"content": message.get("content", "") or ""}
-        if message.get("tool_calls"):
-            result["tool_calls"] = message["tool_calls"]
+    result: dict = {"content": message.get("content", "") or ""}
+    if message.get("tool_calls"):
+        result["tool_calls"] = message["tool_calls"]
 
-        return result
+    return result

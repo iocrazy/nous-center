@@ -170,7 +170,7 @@ def create_app() -> FastAPI:
         checks["gpus"] = len(gpus)
 
         # Loaded models
-        checks["models_loaded"] = len(model_scheduler._loaded_models)
+        checks["models_loaded"] = model_scheduler.get_loaded_count()
 
         return checks
     app.include_router(tasks.router)

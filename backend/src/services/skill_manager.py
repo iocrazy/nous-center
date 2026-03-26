@@ -20,6 +20,7 @@ import shutil
 from pathlib import Path
 
 from src.config import get_settings
+from src.utils.path_security import validate_path as _validate_path_raw
 
 
 def _skills_dir() -> Path:
@@ -28,11 +29,7 @@ def _skills_dir() -> Path:
 
 
 def _validate_path(base: Path, untrusted: str) -> Path:
-    """Ensure the resolved path stays under *base*. Raises ValueError on traversal."""
-    target = (base / untrusted).resolve()
-    if not str(target).startswith(str(base.resolve())):
-        raise ValueError(f"Invalid path component: {untrusted}")
-    return target
+    return _validate_path_raw(base / untrusted, base)
 
 
 def _parse_frontmatter(raw: str) -> tuple[dict, str]:

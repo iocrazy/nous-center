@@ -10,6 +10,7 @@ from typing import Any
 
 from src.services import agent_manager
 from src.services.llm_service import call_llm
+from src.utils.constants import ALLOWED_LLM_HOSTS
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +22,7 @@ class ExecutionError(Exception):
 def _validate_llm_url(url: str) -> str:
     """Ensure LLM base_url only points to localhost."""
     parsed = urllib.parse.urlparse(url)
-    allowed_hosts = {"localhost", "127.0.0.1", "0.0.0.0"}
-    if parsed.hostname and parsed.hostname not in allowed_hosts:
+    if parsed.hostname and parsed.hostname not in ALLOWED_LLM_HOSTS:
         raise ExecutionError(f"LLM base_url 只允许 localhost，收到: {parsed.hostname}")
     return url
 

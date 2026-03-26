@@ -134,6 +134,9 @@ async def load_model(model_key: str) -> None:
 
 async def unload_model(model_key: str, force: bool = False) -> None:
     """Unload a model if no references remain."""
+    configs = load_model_configs()
+    cfg = configs.get(model_key, {})
+
     # Check preconditions under lock
     async with _lock:
         if not force and _references[model_key]:
@@ -143,9 +146,6 @@ async def unload_model(model_key: str, force: bool = False) -> None:
                 _references[model_key],
             )
             return
-
-        configs = load_model_configs()
-        cfg = configs.get(model_key, {})
 
         if not force and cfg.get("resident", False):
             logger.info("Model %s is resident, skipping unload", model_key)
@@ -186,6 +186,14 @@ async def remove_reference(model_key: str, workflow_id: str) -> None:
         _references[model_key].discard(workflow_id)
 
 
+def get_loaded_count() -> int:
+    return len(_loaded_models)
+
+
+def get_loaded_keys() -> list[str]:
+    return list(_loaded_models)
+
+
 def get_status() -> dict:
     """Return current model scheduler status."""
     return {
@@ -197,9 +205,9 @@ def get_status() -> dict:
 
 async def check_idle_models() -> None:
     """Unload models that have been idle too long and have no references."""
+    configs = load_model_configs()
     async with _lock:
         now = time.time()
-        configs = load_model_configs()
         to_unload = []
         for model_key in list(_loaded_models):
             if model_key not in _last_used:
