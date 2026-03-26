@@ -239,7 +239,9 @@ async def _exec_prompt_template(data: dict, inputs: dict) -> dict:
 
 
 async def _exec_agent(data: dict, inputs: dict) -> dict:
-    """Execute a pre-configured agent: load config, assemble prompts, call LLM."""
+    """Execute agent with multi-turn tool call loop."""
+    from src.services.llm_service import call_llm_with_tools
+    from src.services.skill_tools import skills_to_tools, execute_tool
     from src.config import get_settings
 
     agent_name = data.get("agent_name", "")
@@ -255,27 +257,83 @@ async def _exec_agent(data: dict, inputs: dict) -> dict:
 
     # Assemble system prompt from MD files
     prompts = agent.get("prompts", {})
-    system_parts = []
+    system_parts: list[str] = []
     for fname in ["IDENTITY.md", "SOUL.md", "AGENT.md"]:
         content = prompts.get(fname, "").strip()
         if content:
             system_parts.append(content)
     system_prompt = "\n\n".join(system_parts) if system_parts else None
 
-    # Get LLM config
+    # Get tools from agent's skills
+    agent_skills = agent.get("skills", [])
+    tools = skills_to_tools(agent_skills)
+
+    # LLM config
     model_config = agent.get("model", {})
     settings = get_settings()
     base_url = model_config.get("base_url") or settings.VLLM_BASE_URL
     model = model_config.get("model") or model_config.get("engine_key") or ""
     api_key = model_config.get("api_key") or model_config.get("fallback_api")
 
-    result = await call_llm(
-        prompt=input_text,
-        base_url=base_url,
-        model=model,
-        system=system_prompt,
-        api_key=api_key,
-    )
+    # Multi-turn loop (max 10 iterations to prevent infinite loops)
+    messages: list[dict] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": input_text})
+
+    max_iterations = 10
+    response: dict = {}
+    for _i in range(max_iterations):
+        response = await call_llm_with_tools(
+            messages=messages,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            tools=tools if tools else None,
+        )
+
+        # Check if response has tool calls
+        if response.get("tool_calls"):
+            # Append assistant message with tool calls
+            messages.append({
+                "role": "assistant",
+                "content": response.get("content", ""),
+                "tool_calls": response["tool_calls"],
+            })
+
+            for tool_call in response["tool_calls"]:
+                tool_name = tool_call["function"]["name"]
+                tool_args = tool_call["function"]["arguments"]
+
+                try:
+                    result = await execute_tool(tool_name, tool_args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": str(result),
+                    })
+                except Exception as e:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": f"Error: {e}",
+                    })
+        else:
+            # No tool calls — return final response
+            return {"text": response.get("content", "")}
+
+    # Max iterations reached
+    return {"text": response.get("content", "Agent 达到最大迭代次数")}
+
+
+async def _exec_python_code(data: dict, inputs: dict) -> dict:
+    """Execute Python code from the node."""
+    from src.services.skill_tools import _execute_python
+
+    code = data.get("code", "")
+    if not code and inputs.get("text"):
+        code = inputs["text"]
+    result = await _execute_python(code)
     return {"text": result}
 
 
@@ -312,4 +370,5 @@ _NODE_EXECUTORS = {
     "prompt_template": _exec_prompt_template,
     "agent": _exec_agent,
     "if_else": _exec_if_else,
+    "python_exec": _exec_python_code,
 }

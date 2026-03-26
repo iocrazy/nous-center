@@ -1,0 +1,154 @@
+"""Convert Skills (SKILL.md) to OpenAI tool schemas and execute them."""
+
+import json
+import logging
+from typing import Any
+
+from src.services import skill_manager
+
+logger = logging.getLogger(__name__)
+
+
+def skills_to_tools(skill_names: list[str]) -> list[dict]:
+    """Convert a list of skill names to OpenAI tools format."""
+    tools = []
+    for name in skill_names:
+        try:
+            skill = skill_manager.get_skill(name)
+        except FileNotFoundError:
+            continue
+        if not skill:
+            continue
+
+        # Parse parameters from SKILL.md body
+        params = _extract_params(skill.get("body", ""))
+
+        tool = {
+            "type": "function",
+            "function": {
+                "name": name.replace("-", "_"),
+                "description": skill.get("description", ""),
+                "parameters": {
+                    "type": "object",
+                    "properties": params,
+                },
+            },
+        }
+        tools.append(tool)
+
+    # Always add code execution tool
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "execute_python",
+            "description": (
+                "Execute Python code in a sandboxed environment. "
+                "Use this for data processing, file generation, calculations, etc."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Python code to execute",
+                    },
+                },
+                "required": ["code"],
+            },
+        },
+    })
+
+    return tools
+
+
+def _extract_params(body: str) -> dict:
+    """Extract parameter definitions from SKILL.md body text.
+
+    Looks for a ``## 参数`` or ``## Parameters`` section containing lines
+    formatted as ``- name: description``.
+    """
+    params: dict[str, dict[str, str]] = {}
+    in_params = False
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("## 参数") or stripped.startswith("## Parameters"):
+            in_params = True
+            continue
+        if in_params and stripped.startswith("## "):
+            break
+        if in_params and stripped.startswith("- "):
+            # Parse "- name: description" format
+            parts = stripped[2:].split(":", 1)
+            if len(parts) == 2:
+                param_name = parts[0].strip()
+                param_desc = parts[1].strip()
+                params[param_name] = {
+                    "type": "string",
+                    "description": param_desc,
+                }
+    return params
+
+
+async def execute_tool(tool_name: str, arguments: str | dict) -> str:
+    """Execute a tool by name with given arguments."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = {"input": arguments}
+
+    # Built-in tools
+    if tool_name == "execute_python":
+        return await _execute_python(arguments.get("code", ""))
+
+    # Skill-based tools (mapped from SKILL.md)
+    # For now, these are informational — the model uses the skill's instructions
+    # to generate code, then calls execute_python
+    return f"Skill '{tool_name}' executed with args: {arguments}"
+
+
+async def _execute_python(code: str) -> str:
+    """Execute Python code in a subprocess sandbox."""
+    import asyncio
+    import os
+    import tempfile
+
+    if not code.strip():
+        return "Error: empty code"
+
+    # Write code to temp file
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, dir="/tmp"
+    ) as f:
+        f.write(code)
+        tmp_path = f.name
+
+    try:
+        # Execute with timeout (30 seconds)
+        proc = await asyncio.create_subprocess_exec(
+            "python3",
+            tmp_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd="/tmp",
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return "Error: execution timed out (30s)"
+
+        output = stdout.decode("utf-8", errors="replace")
+        errors = stderr.decode("utf-8", errors="replace")
+
+        if proc.returncode != 0:
+            return f"Error (exit code {proc.returncode}):\n{errors}\n{output}"
+
+        result = output.strip()
+        if errors.strip():
+            result += f"\n[stderr]: {errors.strip()}"
+
+        return result if result else "(no output)"
+    finally:
+        os.unlink(tmp_path)

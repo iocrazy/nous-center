@@ -17,6 +17,7 @@ export type BuiltinNodeType =
   | 'prompt_template'
   | 'agent'
   | 'if_else'
+  | 'python_exec'
 
 export interface PortDef {
   id: string
@@ -118,6 +119,12 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
       { id: 'true', type: 'text', label: '真' },
       { id: 'false', type: 'text', label: '假' },
     ],
+  },
+  python_exec: {
+    type: 'python_exec',
+    label: 'Python 执行',
+    inputs: [{ id: 'text', type: 'text', label: '输入' }],
+    outputs: [{ id: 'text', type: 'text', label: '输出' }],
   },
 }
 

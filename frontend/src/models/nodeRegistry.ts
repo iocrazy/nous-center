@@ -80,6 +80,16 @@ export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
       },
     ],
   },
+  python_exec: {
+    type: 'python_exec',
+    label: 'Python 执行',
+    category: 'utility',
+    badge: '代码',
+    badgeColor: 'var(--accent-2)',
+    widgets: [
+      { name: 'code', label: 'code', widget: 'textarea', rows: 8, default: 'print("Hello World")' },
+    ],
+  },
 }
 
 export interface NodeCategoryDef {
@@ -108,6 +118,14 @@ export const NODE_CATEGORIES: NodeCategoryDef[] = [
       { type: 'if_else', dotColor: 'var(--accent)' },
     ],
   },
+  {
+    name: 'utility',
+    label: '工具',
+    color: 'var(--accent-2)',
+    nodes: [
+      { type: 'python_exec', dotColor: 'var(--accent-2)' },
+    ],
+  },
 ]
 
 /** Plugin categories added dynamically from API */
@@ -125,6 +143,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   ai: 'var(--purple)',
   audio: 'var(--info)',
   control: 'var(--accent)',
+  utility: 'var(--accent-2)',
 }
 
 interface PluginNodeDef {
