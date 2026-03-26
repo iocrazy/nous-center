@@ -73,37 +73,37 @@ def test_get_model_dependencies_unknown_model_skipped():
     assert len(deps) == 0
 
 
-def test_reference_counting():
-    add_reference("model_a", "wf_1")
-    add_reference("model_a", "wf_2")
+async def test_reference_counting():
+    await add_reference("model_a", "wf_1")
+    await add_reference("model_a", "wf_2")
     assert len(_references["model_a"]) == 2
 
-    remove_reference("model_a", "wf_1")
+    await remove_reference("model_a", "wf_1")
     assert len(_references["model_a"]) == 1
 
-    remove_reference("model_a", "wf_2")
+    await remove_reference("model_a", "wf_2")
     assert len(_references["model_a"]) == 0
 
 
-def test_reference_counting_idempotent():
+async def test_reference_counting_idempotent():
     """Adding same reference twice is a no-op (set semantics)."""
-    add_reference("model_a", "wf_1")
-    add_reference("model_a", "wf_1")
+    await add_reference("model_a", "wf_1")
+    await add_reference("model_a", "wf_1")
     assert len(_references["model_a"]) == 1
 
-    remove_reference("model_a", "wf_1")
+    await remove_reference("model_a", "wf_1")
     assert len(_references["model_a"]) == 0
 
 
-def test_remove_nonexistent_reference():
+async def test_remove_nonexistent_reference():
     """Removing a reference that doesn't exist should not raise."""
-    remove_reference("model_a", "wf_99")
+    await remove_reference("model_a", "wf_99")
     assert len(_references["model_a"]) == 0
 
 
-def test_get_status():
+async def test_get_status():
     _loaded_models.add("model_x")
-    add_reference("model_x", "wf_1")
+    await add_reference("model_x", "wf_1")
     _last_used["model_x"] = 12345.0
 
     status = get_status()
@@ -153,7 +153,7 @@ async def test_check_idle_models_skips_referenced():
     """Models with active references should not be unloaded."""
     _loaded_models.add("referenced_model")
     _last_used["referenced_model"] = time.time() - IDLE_TIMEOUT_SECONDS - 10
-    add_reference("referenced_model", "wf_1")
+    await add_reference("referenced_model", "wf_1")
 
     with patch("src.services.model_scheduler.load_model_configs") as mock_cfg:
         mock_cfg.return_value = {
@@ -198,7 +198,7 @@ async def test_load_model_unknown():
 async def test_unload_model_skips_referenced():
     """Unloading a model with active references (non-force) should skip."""
     _loaded_models.add("ref_model")
-    add_reference("ref_model", "wf_1")
+    await add_reference("ref_model", "wf_1")
 
     with patch("src.services.model_scheduler.load_model_configs") as mock_cfg:
         mock_cfg.return_value = {"ref_model": {"type": "tts"}}
@@ -211,7 +211,7 @@ async def test_unload_model_force():
     """Force-unloading a model should work even with references."""
     _loaded_models.add("force_model")
     _last_used["force_model"] = time.time()
-    add_reference("force_model", "wf_1")
+    await add_reference("force_model", "wf_1")
 
     with patch("src.services.model_scheduler.load_model_configs") as mock_cfg:
         mock_cfg.return_value = {"force_model": {"type": "tts"}}

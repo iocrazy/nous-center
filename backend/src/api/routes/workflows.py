@@ -114,7 +114,7 @@ async def publish_workflow(
     for dep in deps:
         try:
             await model_scheduler.load_model(dep["key"])
-            model_scheduler.add_reference(dep["key"], str(wf.id))
+            await model_scheduler.add_reference(dep["key"], str(wf.id))
         except Exception as e:
             raise HTTPException(503, f"无法加载模型 {dep['key']}: {e}")
 
@@ -151,7 +151,7 @@ async def unpublish_workflow(
         {"nodes": wf.nodes, "edges": wf.edges}
     )
     for dep in deps:
-        model_scheduler.remove_reference(dep["key"], str(wf.id))
+        await model_scheduler.remove_reference(dep["key"], str(wf.id))
         await model_scheduler.unload_model(dep["key"])
 
     wf.status = "draft"

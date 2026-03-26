@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
         for wf in result.scalars():
             deps = model_scheduler.get_model_dependencies({"nodes": wf.nodes, "edges": wf.edges})
             for dep in deps:
-                model_scheduler.add_reference(dep["key"], str(wf.id))
+                await model_scheduler.add_reference(dep["key"], str(wf.id))
                 # Also load the model if not already loaded
                 try:
                     await model_scheduler.load_model(dep["key"])

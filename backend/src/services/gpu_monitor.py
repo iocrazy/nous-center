@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import subprocess
+import threading
 import time
 from typing import Optional
 
@@ -14,51 +15,53 @@ POLL_INTERVAL_SECONDS = 5
 
 _gpu_stats: list[dict] = []  # cached GPU stats
 _last_poll: float = 0
+_stats_lock = threading.Lock()  # protects _gpu_stats and _last_poll
 
 
 def poll_gpu_stats() -> list[dict]:
     """Query nvidia-smi for current GPU memory usage."""
     global _gpu_stats, _last_poll
 
-    now = time.time()
-    if now - _last_poll < 2:  # Cache for 2 seconds
-        return _gpu_stats
+    with _stats_lock:
+        now = time.time()
+        if now - _last_poll < 2:  # Cache for 2 seconds
+            return list(_gpu_stats)
 
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,memory.used,memory.total,memory.free,utilization.gpu,temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return _gpu_stats
-
-        stats = []
-        for line in result.stdout.strip().split("\n"):
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 6:
-                continue
-            stats.append(
-                {
-                    "index": int(parts[0]),
-                    "used_mb": int(parts[1]),
-                    "total_mb": int(parts[2]),
-                    "free_mb": int(parts[3]),
-                    "utilization_pct": int(parts[4]),
-                    "temperature": int(parts[5]),
-                }
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,memory.used,memory.total,memory.free,utilization.gpu,temperature.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
-        _gpu_stats = stats
-        _last_poll = now
-    except Exception as e:
-        logger.warning("nvidia-smi poll failed: %s", e)
+            if result.returncode != 0:
+                return list(_gpu_stats)
 
-    return _gpu_stats
+            stats = []
+            for line in result.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 6:
+                    continue
+                stats.append(
+                    {
+                        "index": int(parts[0]),
+                        "used_mb": int(parts[1]),
+                        "total_mb": int(parts[2]),
+                        "free_mb": int(parts[3]),
+                        "utilization_pct": int(parts[4]),
+                        "temperature": int(parts[5]),
+                    }
+                )
+            _gpu_stats = stats
+            _last_poll = now
+        except Exception as e:
+            logger.warning("nvidia-smi poll failed: %s", e)
+
+        return list(_gpu_stats)
 
 
 def get_gpu_free_mb(gpu_index: int) -> int:
@@ -95,23 +98,24 @@ async def check_and_evict(reserved_gb: float = DEFAULT_RESERVED_GB) -> None:
 
             # Find loaded models on this GPU, sorted by last_used (oldest first)
             candidates = []
-            for model_key in list(model_scheduler._loaded_models):
-                cfg = configs.get(model_key, {})
-                model_gpu = cfg.get("gpu", -1)
-                if isinstance(model_gpu, list):
-                    on_this_gpu = gpu["index"] in model_gpu
-                else:
-                    on_this_gpu = model_gpu == gpu["index"]
+            async with model_scheduler._lock:
+                for model_key in list(model_scheduler._loaded_models):
+                    cfg = configs.get(model_key, {})
+                    model_gpu = cfg.get("gpu", -1)
+                    if isinstance(model_gpu, list):
+                        on_this_gpu = gpu["index"] in model_gpu
+                    else:
+                        on_this_gpu = model_gpu == gpu["index"]
 
-                if not on_this_gpu:
-                    continue
-                if cfg.get("resident", False):
-                    continue  # Don't evict resident models
-                if model_scheduler._references.get(model_key):
-                    continue  # Don't evict referenced models
+                    if not on_this_gpu:
+                        continue
+                    if cfg.get("resident", False):
+                        continue  # Don't evict resident models
+                    if model_scheduler._references.get(model_key):
+                        continue  # Don't evict referenced models
 
-                last_used = model_scheduler._last_used.get(model_key, 0)
-                candidates.append((model_key, last_used))
+                    last_used = model_scheduler._last_used.get(model_key, 0)
+                    candidates.append((model_key, last_used))
 
             # Sort by last_used ascending (oldest first)
             candidates.sort(key=lambda x: x[1])

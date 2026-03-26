@@ -23,6 +23,9 @@ _last_used: dict[str, float] = {}
 # Track which models are loaded
 _loaded_models: set[str] = set()
 
+# Lock protecting _loaded_models, _references, _last_used
+_lock = asyncio.Lock()
+
 
 def get_model_dependencies(workflow: dict) -> list[dict]:
     """Extract model dependencies from workflow nodes."""
@@ -51,9 +54,11 @@ def get_model_dependencies(workflow: dict) -> list[dict]:
 
 async def load_model(model_key: str) -> None:
     """Load a model by key (TTS or LLM)."""
-    if model_key in _loaded_models:
-        _last_used[model_key] = time.time()
-        return
+    # Quick check under lock — return early if already loaded
+    async with _lock:
+        if model_key in _loaded_models:
+            _last_used[model_key] = time.time()
+            return
 
     configs = load_model_configs()
     cfg = configs.get(model_key)
@@ -61,6 +66,7 @@ async def load_model(model_key: str) -> None:
         raise ValueError(f"Unknown model: {model_key}")
 
     # Pre-load memory check: evict LRU models if not enough GPU memory
+    # (done outside _lock to avoid deadlock — check_and_evict acquires _lock)
     from src.services.gpu_monitor import get_gpu_free_mb, check_and_evict
 
     gpu_idx = cfg.get("gpu", 0)
@@ -86,6 +92,7 @@ async def load_model(model_key: str) -> None:
     model_type = cfg.get("type", "")
     device = get_device_for_engine(cfg)
 
+    # Perform actual model loading outside the lock (long-running I/O)
     if model_type == "tts":
         # Ensure engine classes are registered
         import src.workers.tts_engines.cosyvoice2  # noqa: F401
@@ -118,30 +125,35 @@ async def load_model(model_key: str) -> None:
     else:
         raise ValueError(f"Unsupported model type: {model_type} (only tts/llm supported)")
 
-    _loaded_models.add(model_key)
-    _last_used[model_key] = time.time()
+    # Update shared state under lock
+    async with _lock:
+        _loaded_models.add(model_key)
+        _last_used[model_key] = time.time()
     logger.info("Model loaded: %s on %s", model_key, device)
 
 
 async def unload_model(model_key: str, force: bool = False) -> None:
     """Unload a model if no references remain."""
-    if not force and _references[model_key]:
-        logger.info(
-            "Model %s still referenced by %s, skipping unload",
-            model_key,
-            _references[model_key],
-        )
-        return
+    # Check preconditions under lock
+    async with _lock:
+        if not force and _references[model_key]:
+            logger.info(
+                "Model %s still referenced by %s, skipping unload",
+                model_key,
+                _references[model_key],
+            )
+            return
 
-    configs = load_model_configs()
-    cfg = configs.get(model_key, {})
+        configs = load_model_configs()
+        cfg = configs.get(model_key, {})
 
-    if not force and cfg.get("resident", False):
-        logger.info("Model %s is resident, skipping unload", model_key)
-        return
+        if not force and cfg.get("resident", False):
+            logger.info("Model %s is resident, skipping unload", model_key)
+            return
 
-    model_type = cfg.get("type", "")
+        model_type = cfg.get("type", "")
 
+    # Perform actual engine unload outside the lock
     if model_type == "tts":
         from src.workers.tts_engines import registry
 
@@ -155,19 +167,23 @@ async def unload_model(model_key: str, force: bool = False) -> None:
         if engine and engine.is_loaded:
             engine.unload()
 
-    _loaded_models.discard(model_key)
-    _last_used.pop(model_key, None)
+    # Update shared state under lock
+    async with _lock:
+        _loaded_models.discard(model_key)
+        _last_used.pop(model_key, None)
     logger.info("Model unloaded: %s", model_key)
 
 
-def add_reference(model_key: str, workflow_id: str) -> None:
+async def add_reference(model_key: str, workflow_id: str) -> None:
     """Track that a workflow references this model."""
-    _references[model_key].add(workflow_id)
+    async with _lock:
+        _references[model_key].add(workflow_id)
 
 
-def remove_reference(model_key: str, workflow_id: str) -> None:
+async def remove_reference(model_key: str, workflow_id: str) -> None:
     """Remove workflow reference to model."""
-    _references[model_key].discard(workflow_id)
+    async with _lock:
+        _references[model_key].discard(workflow_id)
 
 
 def get_status() -> dict:
@@ -181,22 +197,23 @@ def get_status() -> dict:
 
 async def check_idle_models() -> None:
     """Unload models that have been idle too long and have no references."""
-    now = time.time()
-    configs = load_model_configs()
-    to_unload = []
-    for model_key in list(_loaded_models):
-        if model_key not in _last_used:
-            continue
-        if _references[model_key]:
-            continue  # Still referenced
-        cfg = configs.get(model_key, {})
-        if cfg.get("resident", False):
-            continue
-        ttl = cfg.get("ttl_seconds", IDLE_TIMEOUT_SECONDS)
-        if ttl <= 0:
-            continue  # No TTL — keep loaded indefinitely
-        if now - _last_used[model_key] > ttl:
-            to_unload.append(model_key)
+    async with _lock:
+        now = time.time()
+        configs = load_model_configs()
+        to_unload = []
+        for model_key in list(_loaded_models):
+            if model_key not in _last_used:
+                continue
+            if _references[model_key]:
+                continue  # Still referenced
+            cfg = configs.get(model_key, {})
+            if cfg.get("resident", False):
+                continue
+            ttl = cfg.get("ttl_seconds", IDLE_TIMEOUT_SECONDS)
+            if ttl <= 0:
+                continue  # No TTL — keep loaded indefinitely
+            if now - _last_used[model_key] > ttl:
+                to_unload.append(model_key)
 
     for key in to_unload:
         logger.info("TTL expired: unloading %s", key)
