@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.deps_admin import require_admin
 from src.models.database import get_async_session
 from src.models.schemas import WorkflowCreate, WorkflowUpdate, WorkflowOut
 from src.models.service_instance import ServiceInstance
@@ -13,7 +14,7 @@ from src.services import model_scheduler
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
 
 
-@router.post("", response_model=WorkflowOut, status_code=201)
+@router.post("", response_model=WorkflowOut, status_code=201, dependencies=[Depends(require_admin)])
 async def create_workflow(
     body: WorkflowCreate,
     session: AsyncSession = Depends(get_async_session),
@@ -48,7 +49,7 @@ async def get_workflow(
     return wf
 
 
-@router.patch("/{workflow_id}", response_model=WorkflowOut)
+@router.patch("/{workflow_id}", response_model=WorkflowOut, dependencies=[Depends(require_admin)])
 async def update_workflow(
     workflow_id: int,
     body: WorkflowUpdate,
@@ -64,7 +65,7 @@ async def update_workflow(
     return wf
 
 
-@router.delete("/{workflow_id}", status_code=204)
+@router.delete("/{workflow_id}", status_code=204, dependencies=[Depends(require_admin)])
 async def delete_workflow(
     workflow_id: int,
     session: AsyncSession = Depends(get_async_session),
@@ -76,7 +77,7 @@ async def delete_workflow(
     await session.commit()
 
 
-@router.post("/{workflow_id}/publish")
+@router.post("/{workflow_id}/publish", dependencies=[Depends(require_admin)])
 async def publish_workflow(
     workflow_id: int,
     session: AsyncSession = Depends(get_async_session),
@@ -128,7 +129,7 @@ async def publish_workflow(
     }
 
 
-@router.post("/{workflow_id}/unpublish")
+@router.post("/{workflow_id}/unpublish", dependencies=[Depends(require_admin)])
 async def unpublish_workflow(
     workflow_id: int,
     session: AsyncSession = Depends(get_async_session),

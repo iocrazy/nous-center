@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.deps_admin import require_admin
 from src.config import load_model_configs, get_settings
 from src.services.model_scanner import scan_models
 from src.gpu.detector import get_device_for_engine, gpu_summary
@@ -89,21 +90,21 @@ async def list_all_engines(
     return result
 
 
-@router.post("/scan")
+@router.post("/scan", dependencies=[Depends(require_admin)])
 async def scan_models_endpoint():
     """Re-scan models directory for new models."""
     configs = scan_models()
     return {"count": len(configs), "models": list(configs.keys())}
 
 
-@router.post("/sync-metadata")
+@router.post("/sync-metadata", dependencies=[Depends(require_admin)])
 async def sync_all_metadata(session: AsyncSession = Depends(get_async_session)):
     """Fetch metadata for any engine not yet in DB."""
     metadata = await sync_metadata(session)
     return {"synced": len(metadata)}
 
 
-@router.post("/{name}/refresh-metadata", response_model=EngineInfo)
+@router.post("/{name}/refresh-metadata", response_model=EngineInfo, dependencies=[Depends(require_admin)])
 async def refresh_engine_metadata(
     name: str,
     session: AsyncSession = Depends(get_async_session),
@@ -117,7 +118,7 @@ async def refresh_engine_metadata(
     return _build_engine_info(name, configs[name], meta, local_dirs)
 
 
-@router.post("/{name}/load", response_model=EngineLoadResponse)
+@router.post("/{name}/load", response_model=EngineLoadResponse, dependencies=[Depends(require_admin)])
 async def load_engine(name: str):
     configs = scan_models()
     if name not in configs:
@@ -133,7 +134,7 @@ async def load_engine(name: str):
     return EngineLoadResponse(name=name, status="loaded", load_time_seconds=elapsed)
 
 
-@router.post("/{name}/unload", response_model=EngineLoadResponse)
+@router.post("/{name}/unload", response_model=EngineLoadResponse, dependencies=[Depends(require_admin)])
 async def unload_engine(name: str, force: bool = False):
     configs = scan_models()
     if name not in configs:
@@ -148,7 +149,7 @@ async def unload_engine(name: str, force: bool = False):
     return EngineLoadResponse(name=name, status="unloaded")
 
 
-@router.patch("/{name}/resident")
+@router.patch("/{name}/resident", dependencies=[Depends(require_admin)])
 async def set_resident(name: str, resident: bool = True):
     """Toggle auto-load on startup for an engine."""
     import yaml
@@ -169,7 +170,7 @@ async def set_resident(name: str, resident: bool = True):
     return {"name": name, "resident": resident}
 
 
-@router.patch("/{name}/gpu")
+@router.patch("/{name}/gpu", dependencies=[Depends(require_admin)])
 async def set_gpu(name: str, gpu: int = 0):
     """Change GPU assignment for an engine."""
     import yaml

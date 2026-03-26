@@ -1,8 +1,9 @@
 """Settings management endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from src.api.deps_admin import require_admin
 from src.config import get_settings, save_settings
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
@@ -41,7 +42,7 @@ async def get_current_settings():
     )
 
 
-@router.put("", response_model=SettingsResponse)
+@router.put("", response_model=SettingsResponse, dependencies=[Depends(require_admin)])
 async def update_settings(req: SettingsUpdate):
     """Update configuration and persist to settings.yaml."""
     updates = req.model_dump(exclude_none=True)

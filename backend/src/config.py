@@ -28,6 +28,8 @@ class Settings(BaseSettings):
 
     CACHE_TTL_SECONDS: int = 3600  # TTS cache TTL (1 hour)
 
+    ADMIN_TOKEN: str = ""  # Set to require auth for management API
+
     NOUS_CENTER_HOME: str = "~/.nous-center"
 
     model_config = {"env_file": ".env", "extra": "ignore"}

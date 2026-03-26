@@ -289,6 +289,9 @@ async def _exec_agent(data: dict, inputs: dict) -> dict:
 
     _validate_llm_url(base_url)
 
+    # Build allowed tool names set for whitelist validation
+    allowed_tools = {t["function"]["name"] for t in tools} if tools else set()
+
     # Multi-turn loop (max 10 iterations to prevent infinite loops)
     messages: list[dict] = []
     if system_prompt:
@@ -318,6 +321,15 @@ async def _exec_agent(data: dict, inputs: dict) -> dict:
             for tool_call in response["tool_calls"]:
                 tool_name = tool_call["function"]["name"]
                 tool_args = tool_call["function"]["arguments"]
+
+                # Whitelist validation: reject unknown tools
+                if tool_name not in allowed_tools:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": f"Error: unknown tool '{tool_name}'",
+                    })
+                    continue
 
                 try:
                     result = await execute_tool(tool_name, tool_args)

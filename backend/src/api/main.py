@@ -145,7 +145,31 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.add_api_route("/health", lambda: {"status": "ok"}, methods=["GET"])
+    @app.get("/health")
+    async def health_check():
+        checks: dict = {"status": "ok"}
+
+        # Check database
+        try:
+            from src.models.database import create_session_factory
+            from sqlalchemy import text
+            _sf = create_session_factory()
+            async with _sf() as session:
+                await session.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        except Exception:
+            checks["database"] = "error"
+            checks["status"] = "degraded"
+
+        # GPU availability
+        from src.services.gpu_monitor import get_gpu_stats
+        gpus = get_gpu_stats()
+        checks["gpus"] = len(gpus)
+
+        # Loaded models
+        checks["models_loaded"] = len(model_scheduler._loaded_models)
+
+        return checks
     app.include_router(tasks.router)
     app.include_router(understand.router)
     app.include_router(generate.router)

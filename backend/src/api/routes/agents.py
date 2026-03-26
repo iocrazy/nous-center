@@ -1,8 +1,9 @@
 """Agent CRUD routes (file-based, no DB)."""
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from src.api.deps_admin import require_admin
 from src.services import agent_manager
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
@@ -20,7 +21,7 @@ class AgentUpdate(BaseModel):
     status: str | None = None
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_admin)])
 def create_agent(body: AgentCreate):
     try:
         return agent_manager.create_agent(body.name, body.display_name)
@@ -41,7 +42,7 @@ def get_agent(name: str):
         raise HTTPException(404, str(e))
 
 
-@router.patch("/{name}")
+@router.patch("/{name}", dependencies=[Depends(require_admin)])
 def update_agent(name: str, body: AgentUpdate):
     updates = body.model_dump(exclude_unset=True)
     try:
@@ -50,7 +51,7 @@ def update_agent(name: str, body: AgentUpdate):
         raise HTTPException(404, str(e))
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_agent(name: str):
     try:
         agent_manager.delete_agent(name)
@@ -58,7 +59,7 @@ def delete_agent(name: str):
         raise HTTPException(404, str(e))
 
 
-@router.put("/{name}/prompts/{filename}")
+@router.put("/{name}/prompts/{filename}", dependencies=[Depends(require_admin)])
 async def save_prompt(name: str, filename: str, request: Request):
     content = (await request.body()).decode("utf-8")
     try:
