@@ -374,7 +374,10 @@ async def _exec_if_else(data: dict, inputs: dict) -> dict:
     elif match_type == "equals":
         matched = text == condition
     elif match_type == "regex":
-        matched = bool(re.search(condition, text))
+        try:
+            matched = bool(re.search(condition, text))
+        except re.error:
+            raise ExecutionError(f"无效的正则表达式: {condition}")
     elif match_type == "not_empty":
         matched = bool(text.strip())
     else:

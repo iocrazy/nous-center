@@ -110,99 +110,63 @@ async def exec_qwen3_model_loader(data: dict, inputs: dict) -> dict:
     return {"model": cache_key}
 
 
-async def exec_qwen3_voice_clone(data: dict, inputs: dict) -> dict:
-    """Voice clone from reference audio."""
+async def _exec_qwen3_tts(data: dict, inputs: dict, default_model_type: str, generate_method: str, **extra_kwargs) -> dict:
+    """Common TTS execution logic."""
     import asyncio
-
-    import torch
 
     text = inputs.get("text", data.get("text", ""))
     if not text:
         raise RuntimeError("文本不能为空")
 
-    # Get model from inputs (loaded by model_loader node)
-    model_type, model_choice, device, precision = _parse_model_cache_key(inputs, "Base")
-
+    model_type, model_choice, device, precision = _parse_model_cache_key(inputs, default_model_type)
     model = await asyncio.to_thread(_get_qwen_model, model_type, model_choice, device, precision)
 
-    seed = int(data.get("seed", 0))
-    torch.manual_seed(seed)
+    # Build kwargs for the generate method
+    gen_kwargs = {
+        "text": text,
+        "language": data.get("language", "auto"),
+        "max_new_tokens": int(data.get("max_new_tokens", 2048)),
+        "top_p": float(data.get("top_p", 0.8)),
+        "temperature": float(data.get("temperature", 1.0)),
+        **extra_kwargs,
+    }
 
-    wavs, sr = await asyncio.to_thread(
-        model.generate_voice_clone,
-        text=text,
-        language=data.get("language", "auto"),
-        ref_audio=inputs.get("ref_audio"),
-        ref_text=data.get("ref_text"),
-        max_new_tokens=int(data.get("max_new_tokens", 2048)),
-        top_p=float(data.get("top_p", 0.8)),
-        temperature=float(data.get("temperature", 1.0)),
-    )
+    gen_fn = getattr(model, generate_method)
+    wavs, sr = await asyncio.to_thread(gen_fn, **gen_kwargs)
 
     if not wavs:
         raise RuntimeError("语音生成失败：无输出")
     audio_b64 = _numpy_to_wav_base64(np.array(wavs[0]), sr)
     return {"audio": audio_b64, "sample_rate": sr}
+
+
+async def exec_qwen3_voice_clone(data: dict, inputs: dict) -> dict:
+    """Voice clone from reference audio."""
+    import torch
+    seed = int(data.get("seed", 0))
+    torch.manual_seed(seed)
+    return await _exec_qwen3_tts(data, inputs, "Base", "generate_voice_clone",
+        ref_audio=inputs.get("ref_audio"),
+        ref_text=data.get("ref_text"),
+    )
 
 
 async def exec_qwen3_custom_voice(data: dict, inputs: dict) -> dict:
     """Custom voice TTS with preset speakers."""
-    import asyncio
-
-    text = inputs.get("text", data.get("text", ""))
-    if not text:
-        raise RuntimeError("文本不能为空")
-
-    # Get model from inputs (loaded by model_loader node)
-    model_type, model_choice, device, precision = _parse_model_cache_key(inputs, "CustomVoice")
-
-    model = await asyncio.to_thread(_get_qwen_model, model_type, model_choice, device, precision)
-
-    wavs, sr = await asyncio.to_thread(
-        model.generate_custom_voice,
-        text=text,
-        language=data.get("language", "auto"),
+    return await _exec_qwen3_tts(data, inputs, "CustomVoice", "generate_custom_voice",
         speaker=data.get("speaker", "ryan"),
         instruct=data.get("instruct") or None,
-        max_new_tokens=int(data.get("max_new_tokens", 2048)),
-        top_p=float(data.get("top_p", 0.8)),
-        temperature=float(data.get("temperature", 1.0)),
     )
-
-    if not wavs:
-        raise RuntimeError("语音生成失败：无输出")
-    audio_b64 = _numpy_to_wav_base64(np.array(wavs[0]), sr)
-    return {"audio": audio_b64, "sample_rate": sr}
 
 
 async def exec_qwen3_voice_design(data: dict, inputs: dict) -> dict:
     """Voice design from text description."""
-    import asyncio
-
-    text = inputs.get("text", data.get("text", ""))
     instruct = data.get("instruct", "")
-    if not text or not instruct:
-        raise RuntimeError("文本和音色描述都不能为空")
-
-    # Get model from inputs (loaded by model_loader node)
-    model_type, model_choice, device, precision = _parse_model_cache_key(inputs, "VoiceDesign")
-
-    model = await asyncio.to_thread(_get_qwen_model, model_type, model_choice, device, precision)
-
-    wavs, sr = await asyncio.to_thread(
-        model.generate_voice_design,
-        text=text,
-        language=data.get("language", "auto"),
+    if not instruct:
+        raise RuntimeError("音色描述不能为空")
+    return await _exec_qwen3_tts(data, inputs, "VoiceDesign", "generate_voice_design",
         instruct=instruct,
-        max_new_tokens=int(data.get("max_new_tokens", 2048)),
-        top_p=float(data.get("top_p", 0.8)),
-        temperature=float(data.get("temperature", 1.0)),
     )
-
-    if not wavs:
-        raise RuntimeError("语音生成失败：无输出")
-    audio_b64 = _numpy_to_wav_base64(np.array(wavs[0]), sr)
-    return {"audio": audio_b64, "sample_rate": sr}
 
 
 # Register executors -- this dict is read by the node package scanner
