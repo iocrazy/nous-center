@@ -28,19 +28,26 @@ async def list_tasks(
     return [_task_to_dict(t) for t in tasks]
 
 
+_VALID_STATUSES = {"queued", "running", "completed", "failed", "cancelled"}
+
+
 @router.post("/record")
 async def record_task(
     body: dict,
     session: AsyncSession = Depends(get_async_session),
 ):
     """Record a task from frontend execution."""
+    status = body.get("status", "completed")
+    if status not in _VALID_STATUSES:
+        raise HTTPException(400, f"Invalid status: {status}")
+
     task = ExecutionTask(
-        workflow_name=body.get("workflow_name", ""),
-        status=body.get("status", "completed"),
-        nodes_total=body.get("nodes_total", 0),
-        nodes_done=body.get("nodes_done", 0),
-        error=body.get("error"),
-        duration_ms=body.get("duration_ms"),
+        workflow_name=str(body.get("workflow_name", ""))[:100],
+        status=status,
+        nodes_total=int(body.get("nodes_total", 0)),
+        nodes_done=int(body.get("nodes_done", 0)),
+        error=str(body["error"])[:2000] if body.get("error") else None,
+        duration_ms=int(body["duration_ms"]) if body.get("duration_ms") is not None else None,
     )
     session.add(task)
     await session.commit()

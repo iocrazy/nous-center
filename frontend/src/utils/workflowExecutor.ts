@@ -219,32 +219,9 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
   const hasOutput = nodes.some((n) => n.type === 'output')
   if (!hasOutput) throw new Error('工作流缺少输出节点')
 
-  // If workflow has plugin nodes, execute on backend (task is created server-side)
+  // If workflow has plugin nodes, execute on backend (task record is created server-side)
   if (hasPluginNodes(nodes)) {
-    const startTime = Date.now()
-    try {
-      const result = await executeOnBackend(workflow)
-      const elapsed = Date.now() - startTime
-      recordTask({
-        workflow_name: workflow.name || '前端执行',
-        status: 'completed',
-        nodes_total: nodes.length,
-        nodes_done: nodes.length,
-        duration_ms: elapsed,
-      })
-      return result
-    } catch (e) {
-      const elapsed = Date.now() - startTime
-      recordTask({
-        workflow_name: workflow.name || '前端执行',
-        status: 'failed',
-        nodes_total: nodes.length,
-        nodes_done: 0,
-        duration_ms: elapsed,
-        error: e instanceof Error ? e.message : String(e),
-      })
-      throw e
-    }
+    return executeOnBackend(workflow)
   }
 
   const sorted = topoSort(nodes, edges)

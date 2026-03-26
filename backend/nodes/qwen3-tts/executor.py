@@ -4,7 +4,6 @@ import base64
 import io
 import logging
 import os
-import struct
 import wave
 
 import numpy as np

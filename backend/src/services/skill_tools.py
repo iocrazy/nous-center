@@ -107,14 +107,55 @@ async def execute_tool(tool_name: str, arguments: str | dict) -> str:
     return f"Skill '{tool_name}' executed with args: {arguments}"
 
 
+# Dangerous modules/builtins that should not appear in sandboxed code
+_BLOCKED_IMPORTS = {
+    "os", "subprocess", "shutil", "sys", "importlib",
+    "ctypes", "signal", "socket", "http", "urllib",
+    "pathlib",  # can traverse filesystem
+}
+_BLOCKED_BUILTINS = {"exec", "eval", "compile", "__import__", "breakpoint"}
+
+
+def _check_code_safety(code: str) -> str | None:
+    """Return an error message if code contains blocked patterns, else None."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return f"SyntaxError: {e}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in _BLOCKED_IMPORTS:
+                    return f"安全限制: 禁止导入 '{alias.name}'"
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                top = node.module.split(".")[0]
+                if top in _BLOCKED_IMPORTS:
+                    return f"安全限制: 禁止导入 '{node.module}'"
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _BLOCKED_BUILTINS:
+                return f"安全限制: 禁止调用 '{node.func.id}()'"
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "system":
+                return "安全限制: 禁止调用 os.system()"
+    return None
+
+
 async def _execute_python(code: str) -> str:
-    """Execute Python code in a subprocess sandbox."""
+    """Execute Python code in a subprocess sandbox with safety checks."""
     import asyncio
     import os
     import tempfile
 
     if not code.strip():
         return "Error: empty code"
+
+    # Safety check before execution
+    safety_error = _check_code_safety(code)
+    if safety_error:
+        return safety_error
 
     # Write code to temp file
     with tempfile.NamedTemporaryFile(
