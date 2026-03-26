@@ -14,6 +14,14 @@ from src.config import get_settings
 
 PROMPT_FILES = ["AGENT.md", "SOUL.md", "IDENTITY.md"]
 
+
+def _validate_path(base: Path, untrusted: str) -> Path:
+    """Ensure the resolved path stays under *base*. Raises ValueError on traversal."""
+    target = (base / untrusted).resolve()
+    if not str(target).startswith(str(base.resolve())):
+        raise ValueError(f"Invalid path component: {untrusted}")
+    return target
+
 _DEFAULT_CONFIG = {
     "display_name": "",
     "model": "",
@@ -44,7 +52,7 @@ def list_agents() -> list[dict]:
 
 def get_agent(name: str) -> dict:
     """Return config + prompt file contents for *name*. Raises FileNotFoundError."""
-    agent_dir = _agents_dir() / name
+    agent_dir = _validate_path(_agents_dir(), name)
     cfg_path = agent_dir / "config.json"
     if not cfg_path.exists():
         raise FileNotFoundError(f"Agent '{name}' not found")
@@ -60,7 +68,7 @@ def get_agent(name: str) -> dict:
 
 def create_agent(name: str, display_name: str | None = None) -> dict:
     """Create a new agent directory with default files. Raises FileExistsError."""
-    agent_dir = _agents_dir() / name
+    agent_dir = _validate_path(_agents_dir(), name)
     if agent_dir.exists():
         raise FileExistsError(f"Agent '{name}' already exists")
     agent_dir.mkdir(parents=True)
@@ -76,7 +84,7 @@ def create_agent(name: str, display_name: str | None = None) -> dict:
 
 def update_agent(name: str, updates: dict) -> dict:
     """Merge *updates* into config.json. Raises FileNotFoundError."""
-    agent_dir = _agents_dir() / name
+    agent_dir = _validate_path(_agents_dir(), name)
     cfg_path = agent_dir / "config.json"
     if not cfg_path.exists():
         raise FileNotFoundError(f"Agent '{name}' not found")
@@ -91,7 +99,7 @@ def update_agent(name: str, updates: dict) -> dict:
 
 def delete_agent(name: str) -> None:
     """Remove agent directory. Raises FileNotFoundError."""
-    agent_dir = _agents_dir() / name
+    agent_dir = _validate_path(_agents_dir(), name)
     if not agent_dir.exists():
         raise FileNotFoundError(f"Agent '{name}' not found")
     shutil.rmtree(agent_dir)
@@ -99,18 +107,23 @@ def delete_agent(name: str) -> None:
 
 def get_prompt(name: str, filename: str) -> str:
     """Read a prompt markdown file. Raises FileNotFoundError."""
-    agent_dir = _agents_dir() / name
+    agent_dir = _validate_path(_agents_dir(), name)
     if not agent_dir.exists():
         raise FileNotFoundError(f"Agent '{name}' not found")
-    p = agent_dir / filename
-    if not p.exists():
+    target = (agent_dir / filename).resolve()
+    if not str(target).startswith(str(agent_dir.resolve())):
+        raise ValueError(f"Invalid filename: {filename}")
+    if not target.exists():
         raise FileNotFoundError(f"Prompt file '{filename}' not found")
-    return p.read_text(encoding="utf-8")
+    return target.read_text(encoding="utf-8")
 
 
 def save_prompt(name: str, filename: str, content: str) -> None:
     """Write content to a prompt markdown file. Raises FileNotFoundError."""
-    agent_dir = _agents_dir() / name
+    agent_dir = _validate_path(_agents_dir(), name)
     if not agent_dir.exists():
         raise FileNotFoundError(f"Agent '{name}' not found")
-    (agent_dir / filename).write_text(content, encoding="utf-8")
+    target = (agent_dir / filename).resolve()
+    if not str(target).startswith(str(agent_dir.resolve())):
+        raise ValueError(f"Invalid filename: {filename}")
+    target.write_text(content, encoding="utf-8")

@@ -27,6 +27,14 @@ def _skills_dir() -> Path:
     return home / "skills"
 
 
+def _validate_path(base: Path, untrusted: str) -> Path:
+    """Ensure the resolved path stays under *base*. Raises ValueError on traversal."""
+    target = (base / untrusted).resolve()
+    if not str(target).startswith(str(base.resolve())):
+        raise ValueError(f"Invalid path component: {untrusted}")
+    return target
+
+
 def _parse_frontmatter(raw: str) -> tuple[dict, str]:
     """Split SKILL.md into (frontmatter_dict, body_text)."""
     import yaml
@@ -70,7 +78,7 @@ def list_skills() -> list[dict]:
 
 def get_skill(name: str) -> dict:
     """Return full skill content: frontmatter fields + body + raw."""
-    skill_dir = _skills_dir() / name
+    skill_dir = _validate_path(_skills_dir(), name)
     md = skill_dir / "SKILL.md"
     if not md.exists():
         raise FileNotFoundError(f"Skill '{name}' not found")
@@ -87,7 +95,7 @@ def get_skill(name: str) -> dict:
 
 def create_skill(name: str, description: str = "", body: str = "") -> dict:
     """Create a new skill directory with SKILL.md."""
-    skill_dir = _skills_dir() / name
+    skill_dir = _validate_path(_skills_dir(), name)
     if skill_dir.exists():
         raise FileExistsError(f"Skill '{name}' already exists")
     skill_dir.mkdir(parents=True)
@@ -98,7 +106,7 @@ def create_skill(name: str, description: str = "", body: str = "") -> dict:
 
 def update_skill(name: str, raw_content: str) -> dict:
     """Overwrite SKILL.md with raw content."""
-    skill_dir = _skills_dir() / name
+    skill_dir = _validate_path(_skills_dir(), name)
     md = skill_dir / "SKILL.md"
     if not md.exists():
         raise FileNotFoundError(f"Skill '{name}' not found")
@@ -115,7 +123,7 @@ def update_skill(name: str, raw_content: str) -> dict:
 
 def delete_skill(name: str) -> None:
     """Remove skill directory."""
-    skill_dir = _skills_dir() / name
+    skill_dir = _validate_path(_skills_dir(), name)
     if not skill_dir.exists():
         raise FileNotFoundError(f"Skill '{name}' not found")
     shutil.rmtree(skill_dir)

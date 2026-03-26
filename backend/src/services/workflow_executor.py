@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import urllib.parse
 from collections import defaultdict, deque
 from typing import Any
 
@@ -15,6 +16,15 @@ logger = logging.getLogger(__name__)
 
 class ExecutionError(Exception):
     pass
+
+
+def _validate_llm_url(url: str) -> str:
+    """Ensure LLM base_url only points to localhost."""
+    parsed = urllib.parse.urlparse(url)
+    allowed_hosts = {"localhost", "127.0.0.1", "0.0.0.0"}
+    if parsed.hostname and parsed.hostname not in allowed_hosts:
+        raise ExecutionError(f"LLM base_url 只允许 localhost，收到: {parsed.hostname}")
+    return url
 
 
 class WorkflowExecutor:
@@ -217,6 +227,8 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     if not base_url:
         base_url = "http://localhost:8100"
 
+    _validate_llm_url(base_url)
+
     result = await call_llm(
         prompt=prompt,
         base_url=base_url,
@@ -274,6 +286,8 @@ async def _exec_agent(data: dict, inputs: dict) -> dict:
     base_url = model_config.get("base_url") or settings.VLLM_BASE_URL
     model = model_config.get("model") or model_config.get("engine_key") or ""
     api_key = model_config.get("api_key") or model_config.get("fallback_api")
+
+    _validate_llm_url(base_url)
 
     # Multi-turn loop (max 10 iterations to prevent infinite loops)
     messages: list[dict] = []

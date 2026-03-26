@@ -63,6 +63,8 @@ async def save_prompt(name: str, filename: str, request: Request):
     content = (await request.body()).decode("utf-8")
     try:
         agent_manager.save_prompt(name, filename, content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     return {"ok": True}
