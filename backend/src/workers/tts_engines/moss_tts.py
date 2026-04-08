@@ -26,7 +26,7 @@ class MOSSTTSEngine(TTSEngine):
 
     ENGINE_NAME = "moss_tts"
 
-    def load(self) -> None:
+    def load_sync(self) -> None:
         logger.info("Loading MOSS-TTS from %s", self.model_path)
         from transformers import AutoModel, AutoProcessor
 

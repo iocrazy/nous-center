@@ -28,7 +28,7 @@ def _ensure_indextts_path():
 class IndexTTS2Engine(TTSEngine):
     ENGINE_NAME = "indextts2"
 
-    def load(self) -> None:
+    def load_sync(self) -> None:
         logger.info("Loading IndexTTS-2 from %s", self.model_path)
         _ensure_indextts_path()
         from indextts.infer_v2 import IndexTTS2

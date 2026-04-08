@@ -36,7 +36,7 @@ def _ensure_cosyvoice_path():
 class CosyVoice2Engine(TTSEngine):
     ENGINE_NAME = "cosyvoice2"
 
-    def load(self) -> None:
+    def load_sync(self) -> None:
         logger.info("Loading CosyVoice2-0.5B from %s (device=%s)", self.model_path, self.device)
         _ensure_cosyvoice_path()
 

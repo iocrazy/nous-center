@@ -1,6 +1,8 @@
-from abc import ABC, abstractmethod
+from __future__ import annotations
+from abc import abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Any
+from src.services.inference.base import InferenceAdapter, InferenceResult
 
 
 @dataclass
@@ -11,21 +13,20 @@ class TTSResult:
     format: str = "wav"
 
 
-class TTSEngine(ABC):
-    """Base class for all TTS engines."""
+class TTSEngine(InferenceAdapter):
+    model_type = "tts"
+    estimated_vram_mb = 0
 
     def __init__(self, model_path: str, device: str = "cuda"):
-        self.model_path = Path(model_path)
-        self.device = device
-        self._model = None
+        super().__init__(model_path=model_path, device=device)
 
-    @property
-    def is_loaded(self) -> bool:
-        return self._model is not None
+    async def load(self, device: str | None = None) -> None:
+        if device:
+            self.device = device
+        self.load_sync()
 
-    @abstractmethod
-    def load(self) -> None:
-        """Load model weights into memory/GPU."""
+    def load_sync(self) -> None:
+        raise NotImplementedError
 
     @abstractmethod
     def synthesize(
@@ -38,18 +39,35 @@ class TTSEngine(ABC):
         reference_text: str | None = None,
         emotion: str | None = None,
     ) -> TTSResult:
-        """Synthesize speech from text. Returns audio bytes."""
+        ...
+
+    async def infer(self, params: dict[str, Any]) -> InferenceResult:
+        result = self.synthesize(
+            text=params.get("text", ""),
+            voice=params.get("voice", "default"),
+            speed=params.get("speed", 1.0),
+            sample_rate=params.get("sample_rate", 24000),
+            reference_audio=params.get("reference_audio"),
+            reference_text=params.get("reference_text"),
+            emotion=params.get("emotion"),
+        )
+        return InferenceResult(
+            data=result.audio_bytes,
+            content_type="audio/wav",
+            metadata={
+                "sample_rate": result.sample_rate,
+                "duration_seconds": result.duration_seconds,
+                "format": result.format,
+            },
+        )
 
     def unload(self) -> None:
-        """Release model from memory/GPU."""
         self._model = None
 
     @property
     @abstractmethod
-    def engine_name(self) -> str:
-        """Unique engine identifier."""
+    def engine_name(self) -> str: ...
 
     @property
     def supported_voices(self) -> list[str]:
-        """List of supported voice names."""
         return ["default"]

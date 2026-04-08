@@ -70,7 +70,7 @@ class Qwen3TTSBaseEngine(Qwen3TTSBase):
 
     ENGINE_NAME = "qwen3_tts_base"
 
-    def load(self) -> None:
+    def load_sync(self) -> None:
         self._load_model()
 
     def synthesize(
@@ -127,7 +127,7 @@ class Qwen3TTSCustomVoiceEngine(Qwen3TTSBase):
         "Ryan", "Aiden", "Ono_Anna", "Sohee",
     ]
 
-    def load(self) -> None:
+    def load_sync(self) -> None:
         self._load_model()
 
     def synthesize(
@@ -175,7 +175,7 @@ class Qwen3TTSVoiceDesignEngine(Qwen3TTSBase):
 
     ENGINE_NAME = "qwen3_tts_voicedesign"
 
-    def load(self) -> None:
+    def load_sync(self) -> None:
         self._load_model()
 
     def synthesize(

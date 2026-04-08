@@ -77,7 +77,7 @@ def generate_tts_task(self, task_id: str, params: dict):
 
         if not engine.is_loaded:
             logger.info("Loading TTS engine: %s", engine_name)
-            engine.load()
+            engine.load_sync()
 
         # 2. Run inference
         self.update_state(state="RUNNING", meta={"progress": 30, "step": "synthesizing"})
