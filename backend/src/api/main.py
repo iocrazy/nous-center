@@ -112,6 +112,33 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Failed to auto-load {spec.id}: {e}")
 
+    # Auto-detect running vLLM instances and register matching adapters
+    vllm_urls_checked: dict[str, list[str]] = {}  # url -> list of served model paths
+    for spec in registry.specs:
+        if spec.model_type != "llm" or not spec.params.get("vllm_base_url"):
+            continue
+        base_url = spec.params["vllm_base_url"].rstrip("/")
+        if base_url not in vllm_urls_checked:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=3) as client:
+                    resp = await client.get(f"{base_url}/v1/models")
+                    if resp.status_code == 200:
+                        models_data = resp.json().get("data", [])
+                        vllm_urls_checked[base_url] = [m.get("id", "") for m in models_data]
+                    else:
+                        vllm_urls_checked[base_url] = []
+            except Exception:
+                vllm_urls_checked[base_url] = []
+        # Check if this spec's model path matches any served model
+        served = vllm_urls_checked.get(base_url, [])
+        if any(s.rstrip("/").endswith(spec.path.rstrip("/")) for s in served):
+            logger.info("Auto-detected running vLLM model for %s", spec.id)
+            try:
+                await model_mgr.load_model(spec.id)
+            except Exception as e:
+                logger.warning("Failed to auto-register %s: %s", spec.id, e)
+
     # Re-register model references for published workflows
     from sqlalchemy import select
     from src.models.workflow import Workflow
