@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services.gpu_monitor import memory_guard_loop
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     import src.models.model_metadata  # noqa: F401
     import src.models.workflow  # noqa: F401
     import src.models.execution_task  # noqa: F401
+    import src.models.workflow_app  # noqa: F401
 
     engine = create_engine()
     async with engine.begin() as conn:
@@ -204,6 +205,7 @@ def create_app() -> FastAPI:
     app.include_router(monitor.router)
     app.include_router(node_packages.router)
     app.include_router(execution_tasks.router)
+    app.include_router(apps.router)
 
     @app.websocket("/ws/tasks/{task_id}")
     async def websocket_task(websocket: WebSocket, task_id: str):

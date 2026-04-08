@@ -24,6 +24,7 @@ import src.models.instance_api_key  # noqa: F401 — register model
 import src.models.model_metadata  # noqa: F401 — register model
 import src.models.workflow  # noqa: F401 — register model
 import src.models.execution_task  # noqa: F401 — register model
+import src.models.workflow_app  # noqa: F401 — register model
 
 
 def _mock_model_manager():

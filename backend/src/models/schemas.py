@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_serializer, field_validator
 
@@ -345,4 +345,45 @@ class WorkflowOut(BaseModel):
 
     @field_serializer("id")
     def serialize_id(self, v: int) -> str:
+        return str(v)
+
+
+# --- Workflow Apps ---
+
+class ExposedParam(BaseModel):
+    node_id: str
+    param_key: str
+    api_name: str
+    param_type: str = "string"
+    description: str = ""
+    required: bool = True
+    default: Any = None
+
+
+class WorkflowAppPublish(BaseModel):
+    name: str = Field(..., pattern=r"^[a-z0-9][a-z0-9-]*$", max_length=100)
+    display_name: str = Field(..., max_length=200)
+    description: str = ""
+    exposed_inputs: list[ExposedParam] = []
+    exposed_outputs: list[ExposedParam] = []
+
+
+class WorkflowAppOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    name: str
+    display_name: str
+    description: str
+    workflow_id: int
+    workflow_snapshot: dict
+    active: bool
+    exposed_inputs: list
+    exposed_outputs: list
+    call_count: int
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("id", "workflow_id")
+    def serialize_ids(self, v: int) -> str:
         return str(v)
