@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 class LoadedModel:
     spec: ModelSpec
     adapter: InferenceAdapter
-    gpu_index: int
+    gpu_index: int  # primary GPU (for single-GPU models)
+    gpu_indices: list[int] = field(default_factory=list)  # all GPUs (for tensor-parallel)
     loaded_at: float = field(default_factory=time.monotonic)
     last_used: float = field(default_factory=time.monotonic)
 
@@ -54,6 +55,36 @@ class ModelManager:
         module = importlib.import_module(module_path)
         cls = getattr(module, class_name)
         return cls(spec.path)
+
+    def _detect_vllm_gpus(self, spec: ModelSpec) -> list[int]:
+        """Detect which GPUs vLLM is using by checking nvidia-smi."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return [0]
+            gpu_result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            uuid_to_idx: dict[str, int] = {}
+            for line in gpu_result.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    uuid_to_idx[parts[1]] = int(parts[0])
+            vllm_gpus: set[int] = set()
+            for line in result.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    idx = uuid_to_idx.get(parts[1])
+                    if idx is not None:
+                        vllm_gpus.add(idx)
+            return sorted(vllm_gpus) if vllm_gpus else [0]
+        except Exception:
+            return [0]
 
     # ------------------------------------------------------------------
     # Public API
@@ -104,8 +135,23 @@ class ModelManager:
                 self._models[model_id].touch()
                 return
 
-            # Determine device
-            gpu_index = self._allocator.get_best_gpu(spec.vram_mb)
+            # Determine device and GPU indices
+            if spec.gpu is not None:
+                # Use configured GPU(s)
+                if isinstance(spec.gpu, list):
+                    gpu_indices = spec.gpu
+                    gpu_index = spec.gpu[0]
+                else:
+                    gpu_indices = [spec.gpu]
+                    gpu_index = spec.gpu
+            elif spec.vram_mb > 0:
+                gpu_index = self._allocator.get_best_gpu(spec.vram_mb)
+                gpu_indices = [gpu_index] if gpu_index >= 0 else []
+            else:
+                # External service (e.g. vLLM) — detect GPUs from running process
+                gpu_index = 0
+                gpu_indices = self._detect_vllm_gpus(spec)
+
             device = f"cuda:{gpu_index}" if gpu_index >= 0 else "cpu"
 
             # Build adapter
@@ -119,6 +165,7 @@ class ModelManager:
                 spec=spec,
                 adapter=adapter,
                 gpu_index=gpu_index,
+                gpu_indices=gpu_indices,
             )
             self._references.setdefault(model_id, set())
             logger.info("Loaded model %r on %s", model_id, device)

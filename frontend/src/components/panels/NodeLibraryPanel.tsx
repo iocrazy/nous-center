@@ -17,10 +17,17 @@ const BUILTIN_CATEGORIES: NodeCategory[] = [
     nodes: c.nodes,
   })),
   {
+    name: 'io',
+    color: 'var(--info)',
+    nodes: [
+      { type: 'text_input', dotColor: 'var(--ok)' },
+      { type: 'text_output', dotColor: 'var(--info)' },
+    ],
+  },
+  {
     name: 'tts',
     color: 'var(--accent)',
     nodes: [
-      { type: 'text_input', dotColor: 'var(--ok)' },
       { type: 'ref_audio', dotColor: 'var(--accent-2)' },
       { type: 'tts_engine', dotColor: 'var(--accent)' },
       { type: 'output', dotColor: 'var(--info)' },

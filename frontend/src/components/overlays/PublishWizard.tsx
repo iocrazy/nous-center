@@ -82,7 +82,7 @@ export default function PublishWizard({ workflowId, onClose }: Props) {
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }}>
       <div style={{
-        background: 'var(--bg-secondary)', borderRadius: 12, width: 600, maxHeight: '80vh',
+        background: 'var(--bg-elevated)', borderRadius: 12, width: 600, maxHeight: '80vh',
         overflow: 'auto', padding: 24,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
@@ -97,17 +97,17 @@ export default function PublishWizard({ workflowId, onClose }: Props) {
             <label>
               显示名称
               <input value={displayName} onChange={(e) => handleDisplayNameChange(e.target.value)}
-                style={{ width: '100%', padding: 8, marginTop: 4, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', boxSizing: 'border-box' }} />
+                style={{ width: '100%', padding: 8, marginTop: 4, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', boxSizing: 'border-box' }} />
             </label>
             <label>
               URL 名称
               <input value={name} onChange={(e) => setName(e.target.value)}
-                style={{ width: '100%', padding: 8, marginTop: 4, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                style={{ width: '100%', padding: 8, marginTop: 4, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'monospace', boxSizing: 'border-box' }} />
             </label>
             <label>
               描述
               <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3}
-                style={{ width: '100%', padding: 8, marginTop: 4, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', resize: 'vertical', boxSizing: 'border-box' }} />
+                style={{ width: '100%', padding: 8, marginTop: 4, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', resize: 'vertical', boxSizing: 'border-box' }} />
             </label>
           </div>
         )}
@@ -139,12 +139,12 @@ export default function PublishWizard({ workflowId, onClose }: Props) {
         {step === 3 && (
           <div>
             <h3 style={{ fontSize: 14, marginBottom: 8 }}>API 端点</h3>
-            <code style={{ display: 'block', padding: 8, background: 'var(--bg-primary)', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>
+            <code style={{ display: 'block', padding: 8, background: 'var(--bg)', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>
               POST /v1/apps/{name}
             </code>
             <h3 style={{ fontSize: 14, marginBottom: 8 }}>curl 示例</h3>
             <div style={{ position: 'relative' }}>
-              <pre style={{ padding: 12, background: 'var(--bg-primary)', borderRadius: 6, overflow: 'auto', fontSize: 12, margin: 0 }}>
+              <pre style={{ padding: 12, background: 'var(--bg)', borderRadius: 6, overflow: 'auto', fontSize: 12, margin: 0 }}>
                 {curlExample}
               </pre>
               <button onClick={handleCopy} style={{
@@ -181,7 +181,7 @@ export default function PublishWizard({ workflowId, onClose }: Props) {
 
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
           <button onClick={() => setStep(Math.max(1, step - 1))} disabled={step === 1}
-            style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', cursor: step === 1 ? 'not-allowed' : 'pointer', opacity: step === 1 ? 0.5 : 1 }}>
+            style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: step === 1 ? 'not-allowed' : 'pointer', opacity: step === 1 ? 0.5 : 1 }}>
             <ChevronLeft size={16} /> 上一步
           </button>
           {step < 3 ? (

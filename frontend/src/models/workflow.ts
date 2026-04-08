@@ -6,6 +6,7 @@ export type NodeType = string
 /** Built-in node types (for reference / type narrowing). */
 export type BuiltinNodeType =
   | 'text_input'
+  | 'text_output'
   | 'ref_audio'
   | 'tts_engine'
   | 'resample'
@@ -38,6 +39,12 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     label: '文本输入',
     inputs: [],
     outputs: [{ id: 'text', type: 'text', label: '文本' }],
+  },
+  text_output: {
+    type: 'text_output',
+    label: '文本输出',
+    inputs: [{ id: 'text', type: 'text', label: '文本' }],
+    outputs: [],
   },
   ref_audio: {
     type: 'ref_audio',

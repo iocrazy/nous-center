@@ -15,21 +15,11 @@ export interface WorkflowTab {
 }
 
 function createDefaultWorkflow(name: string): Workflow {
-  const textId = uid()
-  const engineId = uid()
-  const outputId = uid()
   return {
     id: uid(),
     name,
-    nodes: [
-      { id: textId, type: 'text_input', data: { text: '' }, position: { x: 100, y: 200 } },
-      { id: engineId, type: 'tts_engine', data: { engine: 'cosyvoice2' }, position: { x: 400, y: 200 } },
-      { id: outputId, type: 'output', data: {}, position: { x: 700, y: 200 } },
-    ],
-    edges: [
-      { id: uid(), source: textId, sourceHandle: 'text', target: engineId, targetHandle: 'text' },
-      { id: uid(), source: engineId, sourceHandle: 'audio', target: outputId, targetHandle: 'audio' },
-    ],
+    nodes: [],
+    edges: [],
   }
 }
 
@@ -59,7 +49,7 @@ interface WorkspaceState {
 
 const initialTab: WorkflowTab = {
   id: uid(),
-  name: '基础合成',
+  name: '新工作流',
   workflow: createDefaultWorkflow('基础合成'),
   isDirty: false,
   dbId: null,
@@ -130,7 +120,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ),
     })),
 
-  updateNode: (nodeId, data) =>
+  updateNode: (nodeId, data) => {
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
@@ -146,18 +136,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             }
           : t
       ),
-    })),
+    }))
+    get().markDirty()
+  },
 
-  addNode: (node) =>
+  addNode: (node) => {
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
           ? { ...t, isDirty: true, workflow: { ...t.workflow, nodes: [...t.workflow.nodes, node] } }
           : t
       ),
-    })),
+    }))
+    get().markDirty()
+  },
 
-  removeNode: (nodeId) =>
+  removeNode: (nodeId) => {
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
@@ -172,18 +166,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             }
           : t
       ),
-    })),
+    }))
+    get().markDirty()
+  },
 
-  addEdge: (edge) =>
+  addEdge: (edge) => {
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
           ? { ...t, isDirty: true, workflow: { ...t.workflow, edges: [...t.workflow.edges, edge] } }
           : t
       ),
-    })),
+    }))
+    get().markDirty()
+  },
 
-  removeEdge: (edgeId) =>
+  removeEdge: (edgeId) => {
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
@@ -197,10 +195,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             }
           : t
       ),
-    })),
+    }))
+    get().markDirty()
+  },
 
-  markDirty: () => {
-    const activeTabId = get().activeTabId
+  markDirty: (tabId?: string) => {
+    const activeTabId = tabId ?? get().activeTabId
     const tab = get().tabs.find((t) => t.id === activeTabId)
     set((s) => ({
       tabs: s.tabs.map((t) =>

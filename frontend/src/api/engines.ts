@@ -24,6 +24,8 @@ export interface EngineInfo {
   description: string | null
   has_metadata: boolean
   auto_detected: boolean
+  loaded_gpu: number | null
+  loaded_gpus: number[] | null
 }
 
 export function useEngines() {

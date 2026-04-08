@@ -1,7 +1,9 @@
 import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, type SysGpuInfo } from '../../api/system'
+import { useEngines } from '../../api/engines'
 
 export default function DashboardOverlay() {
   const { data: gpuData } = useSysGpus()
+  const { data: engines } = useEngines()
   const { data: sysStats } = useSysStats()
   const { data: procData } = useSysProcesses()
   const { data: monitorData } = useMonitorStats()
@@ -72,6 +74,60 @@ export default function DashboardOverlay() {
             sub={sysStats ? `/ ${fmt(sysStats.disk_total_gb)}G` : '--'}
           />
         </div>
+
+        {/* Loaded Models */}
+        {(() => {
+          const loadedModels = engines?.filter((e) => e.status === 'loaded') ?? []
+          return (
+            <MonPanel title={`Loaded Models (${loadedModels.length})`}>
+              {loadedModels.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {loadedModels.map((m) => (
+                    <div
+                      key={m.name}
+                      className="flex items-center gap-3"
+                      style={{
+                        padding: '8px 12px',
+                        background: 'var(--card)',
+                        borderRadius: 6,
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 8, height: 8, borderRadius: '50%',
+                          background: 'var(--ok)', flexShrink: 0,
+                        }}
+                      />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)', flex: 1 }}>
+                        {m.display_name}
+                      </span>
+                      <span style={{
+                        fontSize: 9, padding: '2px 6px', borderRadius: 3,
+                        background: 'color-mix(in srgb, var(--accent-2) 15%, transparent)',
+                        color: 'var(--accent-2)',
+                      }}>
+                        {m.type.toUpperCase()}
+                      </span>
+                      {m.loaded_gpus && m.loaded_gpus.length > 0 && (
+                        <span style={{ fontSize: 9, color: 'var(--muted)' }}>
+                          GPU {m.loaded_gpus.join(',')}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 9, color: 'var(--muted)' }}>
+                        {m.vram_gb}GB
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--muted)', padding: '12px 0', textAlign: 'center' }}>
+                  暂无加载的模型
+                </div>
+              )}
+            </MonPanel>
+          )
+        })()}
 
         {/* Process table */}
         <MonPanel title="Processes">

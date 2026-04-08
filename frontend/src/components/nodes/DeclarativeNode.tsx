@@ -198,7 +198,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
       ))}
       {streamText && (
         <div style={{
-          padding: '6px 8px', margin: '4px 8px 8px', background: 'var(--bg-primary)',
+          padding: '6px 8px', margin: '4px 8px 8px', background: 'var(--bg)',
           borderRadius: 4, fontSize: 11, maxHeight: 120, overflow: 'auto',
           whiteSpace: 'pre-wrap', color: 'var(--text-secondary)',
           border: '1px solid var(--border)',

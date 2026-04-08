@@ -263,7 +263,7 @@ function ModelCard({
             自动检测
           </span>
         )}
-        <StatusBadge status={model.status} />
+        <StatusBadge status={model.status} loadedGpus={model.loaded_gpus} />
       </div>
 
       {/* Row 2: Tags line */}
@@ -343,8 +343,11 @@ function Tag({
   )
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, loadedGpus }: { status: string; loadedGpus?: number[] | null }) {
   const isLoaded = status === 'loaded'
+  const gpuLabel = loadedGpus && loadedGpus.length > 0
+    ? ` · GPU ${loadedGpus.join(',')}`
+    : ''
   return (
     <span
       className="flex items-center gap-1"
@@ -358,7 +361,7 @@ function StatusBadge({ status }: { status: string }) {
           background: isLoaded ? 'var(--ok)' : 'var(--muted-strong)',
         }}
       />
-      {isLoaded ? 'loaded' : 'idle'}
+      {isLoaded ? `running${gpuLabel}` : 'idle'}
     </span>
   )
 }

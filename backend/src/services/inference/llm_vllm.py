@@ -13,6 +13,7 @@ class VLLMAdapter(InferenceAdapter):
     def __init__(self, model_path: str, device: str = "cuda", vllm_base_url: str = "http://localhost:8100", **kwargs: Any):
         super().__init__(model_path=model_path, device=device)
         self._base_url = vllm_base_url.rstrip("/")
+        self.base_url = self._base_url
         self._client = httpx.AsyncClient(timeout=120, limits=httpx.Limits(max_connections=10))
 
     async def load(self, device: str | None = None) -> None:

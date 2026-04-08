@@ -98,6 +98,8 @@ class EngineInfo(BaseModel):
     description: str | None = None
     has_metadata: bool = False
     auto_detected: bool = False
+    loaded_gpu: int | None = None
+    loaded_gpus: list[int] | None = None
 
 
 class EngineLoadResponse(BaseModel):

@@ -76,7 +76,7 @@ export default function Topbar() {
       className="flex items-center gap-2 shrink-0 z-[18]"
       style={{
         height: 36,
-        background: 'rgba(18,20,26,0.9)',
+        background: 'var(--bg-accent)',
         borderBottom: '1px solid var(--border)',
         padding: '0 12px',
         backdropFilter: 'blur(8px)',

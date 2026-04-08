@@ -257,16 +257,12 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     # If model_key specified, use ModelManager to resolve base_url
     if model_key and _model_manager is not None:
         adapter = _model_manager.get_adapter(model_key)
-        if adapter is not None and adapter.is_loaded and hasattr(adapter, "base_url"):
-            base_url = adapter.base_url
-        else:
+        if adapter is None or not adapter.is_loaded:
             # Try to load on demand
             await _model_manager.load_model(model_key)
             adapter = _model_manager.get_adapter(model_key)
-            if adapter is not None and adapter.is_loaded and hasattr(adapter, "base_url"):
-                base_url = adapter.base_url
-            else:
-                raise ExecutionError(f"模型 {model_key} 未加载")
+        if adapter is not None and hasattr(adapter, "base_url"):
+            base_url = adapter.base_url
 
     if not base_url:
         base_url = "http://localhost:8100"
@@ -458,8 +454,14 @@ async def _exec_if_else(data: dict, inputs: dict) -> dict:
     return {"true": text if matched else "", "false": text if not matched else ""}
 
 
+async def _exec_text_output(data: dict, inputs: dict) -> dict:
+    """Display text — passes through input text."""
+    return {"text": inputs.get("text", "")}
+
+
 _NODE_EXECUTORS = {
     "text_input": _exec_text_input,
+    "text_output": _exec_text_output,
     "ref_audio": _exec_ref_audio,
     "tts_engine": _exec_tts_engine,
     "output": _exec_output,

@@ -26,10 +26,18 @@ async def list_gpus():
     return gpu_summary()
 
 
-def _is_engine_loaded(name: str) -> bool:
+def _get_model_manager(request: Request):
+    return getattr(request.app.state, "model_manager", None)
+
+
+def _is_engine_loaded(name: str, request: Request | None = None) -> bool:
+    if request is not None:
+        mgr = _get_model_manager(request)
+        if mgr is not None:
+            return mgr.is_loaded(name)
+    # Fallback to old registries
     from src.workers.tts_engines import registry as tts_registry
     from src.workers.llm_engines import registry as llm_registry
-
     engine = tts_registry._ENGINE_INSTANCES.get(name)
     if engine is not None:
         return engine.is_loaded
@@ -39,20 +47,44 @@ def _is_engine_loaded(name: str) -> bool:
     return False
 
 
-def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str]) -> EngineInfo:
+def _get_loaded_gpu(name: str, request: Request | None = None) -> int | None:
+    if request is not None:
+        mgr = _get_model_manager(request)
+        if mgr is not None and mgr.is_loaded(name):
+            lm = mgr._models.get(name)
+            return lm.gpu_index if lm else None
+    return None
+
+
+def _get_loaded_gpus(name: str, request: Request | None = None) -> list[int] | None:
+    if request is not None:
+        mgr = _get_model_manager(request)
+        if mgr is not None and mgr.is_loaded(name):
+            lm = mgr._models.get(name)
+            if lm and lm.gpu_indices:
+                return lm.gpu_indices
+            elif lm:
+                return [lm.gpu_index]
+    return None
+
+
+def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request: Request | None = None) -> EngineInfo:
     local_path = cfg.get("local_path")
     local_exists = local_path in local_dirs if local_path else False
+    loaded = _is_engine_loaded(key, request)
     info = EngineInfo(
         name=key,
         display_name=cfg["name"],
         type=cfg["type"],
-        status="loaded" if _is_engine_loaded(key) else "unloaded",
+        status="loaded" if loaded else "unloaded",
         gpu=cfg.get("gpu", 1),
         vram_gb=cfg.get("vram_gb", 0),
         resident=cfg.get("resident", False),
         local_path=local_path,
         local_exists=local_exists,
         auto_detected=cfg.get("auto_detected", False),
+        loaded_gpu=_get_loaded_gpu(key, request) if loaded else None,
+        loaded_gpus=_get_loaded_gpus(key, request) if loaded else None,
     )
     if meta:
         info.organization = meta.organization
@@ -70,6 +102,7 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str]) -> Engin
 
 @router.get("", response_model=list[EngineInfo])
 async def list_all_engines(
+    request: Request,
     type: str | None = None,
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -85,7 +118,7 @@ async def list_all_engines(
         local_path = cfg.get("local_path")
         if not local_path or local_path not in local_dirs:
             continue
-        result.append(_build_engine_info(key, cfg, metadata.get(key), local_dirs))
+        result.append(_build_engine_info(key, cfg, metadata.get(key), local_dirs, request))
     return result
 
 

@@ -2,6 +2,7 @@ import type { Workflow, WorkflowNode, WorkflowEdge, NodeType } from '../models/w
 import { apiFetch } from '../api/client'
 import type { SynthesizeResponse } from '../api/tts'
 import { useExecutionStore } from '../stores/execution'
+import { useWorkspaceStore } from '../stores/workspace'
 
 export interface ExecutionResult {
   audioBase64: string
@@ -170,27 +171,32 @@ async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
     }
   )
 
-  // Find output node result
-  const outputNodeId = workflow.nodes.find((n) => n.type === 'output')?.id
-  if (!outputNodeId) throw new Error('工作流缺少输出节点')
+  // Find output node result — support both audio output and text output
+  const audioOutputNode = workflow.nodes.find((n) => n.type === 'output')
+  const textOutputNode = workflow.nodes.find((n) => n.type === 'text_output')
 
-  const outputData = result.outputs[outputNodeId]
-  const audio = (outputData?.audio as string) ?? (outputData?.audioBase64 as string) ?? ''
-
-  if (!audio) {
-    // Maybe it's text-only output
-    const text = outputData?.text as string
-    if (text) {
-      return { audioBase64: '', sampleRate: 24000, duration: 0 }
+  if (audioOutputNode) {
+    const outputData = result.outputs[audioOutputNode.id]
+    const audio = (outputData?.audio as string) ?? (outputData?.audioBase64 as string) ?? ''
+    if (audio) {
+      return {
+        audioBase64: audio,
+        sampleRate: (outputData?.sample_rate as number) ?? (outputData?.sampleRate as number) ?? 24000,
+        duration: 0,
+      }
     }
-    throw new Error('工作流执行完成但没有音频输出')
   }
 
-  return {
-    audioBase64: audio,
-    sampleRate: (outputData?.sample_rate as number) ?? (outputData?.sampleRate as number) ?? 24000,
-    duration: 0,
+  if (textOutputNode) {
+    const outputData = result.outputs[textOutputNode.id]
+    const text = (outputData?.text as string) ?? ''
+    // Update the text_output node's data to display the result
+    const { updateNode } = useWorkspaceStore.getState()
+    updateNode(textOutputNode.id, { text })
+    return { audioBase64: '', sampleRate: 24000, duration: 0 }
   }
+
+  throw new Error('工作流执行完成但没有输出')
 }
 
 async function recordTask(data: {
@@ -216,7 +222,7 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
 
   if (nodes.length === 0) throw new Error('工作流为空')
 
-  const hasOutput = nodes.some((n) => n.type === 'output')
+  const hasOutput = nodes.some((n) => n.type === 'output' || n.type === 'text_output')
   if (!hasOutput) throw new Error('工作流缺少输出节点')
 
   // If workflow has plugin nodes, execute on backend (task record is created server-side)

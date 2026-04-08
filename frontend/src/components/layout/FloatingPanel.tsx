@@ -45,10 +45,10 @@ export default function FloatingPanel({ title, children, searchPlaceholder, onSe
       className="absolute left-0 top-0 bottom-0 z-[15] flex flex-col"
       style={{
         width: panelWidth,
-        background: 'rgba(20,22,29,0.95)',
+        background: 'var(--bg-elevated)',
         borderRight: '1px solid var(--border)',
         backdropFilter: 'blur(12px)',
-        boxShadow: '4px 0 16px rgba(0,0,0,0.3)',
+        boxShadow: 'var(--shadow-md)',
       }}
     >
       {/* Header */}

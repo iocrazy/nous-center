@@ -50,7 +50,8 @@ export default function WorkflowTabs() {
               <span style={{ color: 'var(--accent)', fontSize: 8 }}>●</span>
             )}
             {tabs.length > 1 && (
-              <button
+              <span
+                role="button"
                 onClick={(e) => {
                   e.stopPropagation()
                   removeTab(tab.id)
@@ -68,7 +69,7 @@ export default function WorkflowTabs() {
                 }}
               >
                 <X size={9} />
-              </button>
+              </span>
             )}
           </button>
         </div>

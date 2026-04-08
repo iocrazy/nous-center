@@ -55,6 +55,14 @@ models:
     params:
       vllm_base_url: http://localhost:8100
 
+  - id: qwen3_5_35b_a3b_gptq_int4
+    type: llm
+    adapter: src.services.inference.llm_vllm.VLLMAdapter
+    path: llm/Qwen3.5-35B-A3B-GPTQ-Int4
+    vram_mb: 0
+    params:
+      vllm_base_url: http://localhost:8100
+
   - id: gemma-4-26b-a4b-it
     type: llm
     adapter: src.services.inference.llm_vllm.VLLMAdapter

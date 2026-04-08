@@ -10,18 +10,32 @@ export default function TextInputNode({ id, data, selected }: NodeProps) {
   return (
     <BaseNode
       title={def.label}
-      badge={{ label: 'TTS', bg: 'rgba(34,197,94,0.15)', color: 'var(--ok)' }}
+      badge={{ label: 'IO', bg: 'rgba(59,130,246,0.15)', color: 'var(--info)' }}
       selected={selected}
       inputs={def.inputs}
       outputs={def.outputs}
     >
-      <NodeWidgetRow label="text">
-        <NodeTextarea
+      <div style={{ padding: '4px 10px' }}>
+        <textarea
           value={(data.text as string) ?? ''}
           onChange={(e) => updateNode(id, { text: e.target.value })}
           placeholder="输入文本..."
+          rows={5}
+          style={{
+            width: '100%',
+            minHeight: 100,
+            padding: 8,
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg)',
+            color: 'var(--text)',
+            fontSize: 13,
+            lineHeight: 1.5,
+            resize: 'vertical',
+            fontFamily: 'inherit',
+          }}
         />
-      </NodeWidgetRow>
+      </div>
     </BaseNode>
   )
 }
