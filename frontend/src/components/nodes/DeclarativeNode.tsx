@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import type { NodeProps } from '@xyflow/react'
 import { useQuery } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -155,6 +156,22 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   const declDef = DECLARATIVE_NODES[nodeType]
   const portDef = NODE_DEFS[nodeType]
 
+  const [streamText, setStreamText] = useState('')
+
+  useEffect(() => {
+    const handler = (event: CustomEvent) => {
+      const data = event.detail
+      if (data.type === 'node_stream' && data.node_id === id) {
+        setStreamText((prev) => prev + data.token)
+      }
+      if (data.type === 'node_complete' && data.node_id === id) {
+        setStreamText('')
+      }
+    }
+    window.addEventListener('node-progress', handler as any)
+    return () => window.removeEventListener('node-progress', handler as any)
+  }, [id])
+
   if (!declDef || !portDef) return null
 
   return (
@@ -179,6 +196,17 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
           />
         </NodeWidgetRow>
       ))}
+      {streamText && (
+        <div style={{
+          padding: '6px 8px', margin: '4px 8px 8px', background: 'var(--bg-primary)',
+          borderRadius: 4, fontSize: 11, maxHeight: 120, overflow: 'auto',
+          whiteSpace: 'pre-wrap', color: 'var(--text-secondary)',
+          border: '1px solid var(--border)',
+        }}>
+          {streamText}
+          <span style={{ animation: 'blink 1s infinite' }}>▍</span>
+        </div>
+      )}
     </BaseNode>
     </div>
   )
