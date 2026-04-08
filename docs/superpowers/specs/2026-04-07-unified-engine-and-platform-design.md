@@ -23,20 +23,33 @@ class InferenceResult:
     content_type: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
-class InferenceAdapter(Protocol):
+class InferenceAdapter(ABC):
     model_type: str            # "tts" | "llm" | "image"
     estimated_vram_mb: int
 
+    def __init__(self, model_path: str, device: str = "cuda"):
+        self.model_path = Path(model_path)
+        self.device = device
+        self._model = None
+
+    @abstractmethod
     async def load(self, device: str) -> None: ...
-    async def unload(self) -> None: ...
+    def unload(self) -> None:
+        self._model = None
     @property
-    def is_loaded(self) -> bool: ...
+    def is_loaded(self) -> bool:
+        return self._model is not None
+    @abstractmethod
     async def infer(self, params: dict) -> InferenceResult: ...
 ```
 
+Note: Use ABC instead of Protocol because adapters share common state (`model_path`, `device`, `_model`) and default `unload()`/`is_loaded` implementations. The existing `TTSEngine` already uses this pattern.
+
 ### TTS Engine Migration
 
-Existing `TTSEngine` base class inherits `InferenceAdapter`. The `synthesize()` method is preserved as a TTS-specific convenience; `infer()` delegates to `synthesize()` and wraps the result.
+Existing `TTSEngine` base class inherits `InferenceAdapter`. The `synthesize()` method is preserved as a TTS-specific convenience; `infer()` delegates to `synthesize()` and wraps the result as `InferenceResult`. The existing `TTSResult` dataclass is kept for backward compatibility within TTS code paths.
+
+Current `TTSEngine.load()` is synchronous — the `InferenceAdapter.load()` is async, so `ModelManager` wraps sync loads with `asyncio.to_thread()` (as `model_scheduler.py` already does).
 
 ```
 InferenceAdapter
@@ -72,13 +85,20 @@ models:
 
 ### ModelManager
 
-Refactored from existing `model_scheduler.py`:
+Refactored from existing `model_scheduler.py`. The current scheduler uses module-level dicts (`_loaded_models`, `_references`, `_last_used`) with a shared `asyncio.Lock`. The refactor moves this into a `ModelManager` class for testability and cleaner dependency injection.
 
-- Manages all adapter lifecycle (load/unload)
-- LRU eviction: when VRAM is insufficient, unloads least-recently-used model
-- Per-model async lock: prevents concurrent load/unload on same model
-- GPUAllocator integration: picks optimal GPU based on free VRAM
-- Resident model support: pinned models skip eviction
+Key behaviors preserved from `model_scheduler.py`:
+- Reference counting: workflows register/unregister model usage
+- Idle timeout: unload models after configurable TTL (default 300s)
+- Resident models: pinned models skip eviction and idle timeout
+- `asyncio.to_thread()` for blocking PyTorch load/unload calls
+
+New behaviors:
+- Per-model async lock: prevents concurrent load/unload on same model (current code has one global lock)
+- GPUAllocator: extracted from `gpu_monitor.py`, picks optimal GPU based on free VRAM (current `get_device_for_engine` is static config-based)
+- Unified adapter registry: replaces separate `tts_engines/registry.py` and `llm_engines/registry.py`
+
+Migration: `gpu_monitor.py`'s `check_and_evict()` currently reaches into `model_scheduler._lock` and `_references` directly. After refactor, `ModelManager` exposes a clean `evict_lru(gpu_index)` method instead.
 
 ### File Changes
 
@@ -254,7 +274,9 @@ pending → queued → running → completed
 |----------|-------|
 | `ExecutionTask` model | Preserved as persistent record |
 | `WorkflowExecutor` | Submits tasks to `TaskQueue`, no longer directly awaits |
-| `instance_service.py /run` | Submit via `TaskQueue.submit()` |
+| `instance_service.py /run` | Submit via `TaskQueue.submit()`, return task_id for polling |
+
+Note: `WorkflowExecutor` currently uses a synchronous `on_progress` callback for WebSocket updates. The `TaskQueue` wrapper must preserve this — the queue runs the executor in a task, and the progress callback still pushes to WebSocket connections. The queue adds lifecycle management (timeout, retry) around the executor, not inside it.
 
 ### File Changes
 
