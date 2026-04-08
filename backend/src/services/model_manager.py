@@ -41,9 +41,7 @@ class ModelManager:
     # ------------------------------------------------------------------
 
     def _lock_for(self, model_id: str) -> asyncio.Lock:
-        if model_id not in self._locks:
-            self._locks[model_id] = asyncio.Lock()
-        return self._locks[model_id]
+        return self._locks.setdefault(model_id, asyncio.Lock())
 
     def _instantiate_adapter(self, spec: ModelSpec) -> InferenceAdapter:
         """Dynamically import and instantiate adapter from spec.adapter_class dotted path."""

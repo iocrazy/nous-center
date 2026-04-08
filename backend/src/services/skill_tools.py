@@ -112,6 +112,10 @@ _BLOCKED_IMPORTS = {
     "os", "subprocess", "shutil", "sys", "importlib",
     "ctypes", "signal", "socket", "http", "urllib",
     "pathlib",  # can traverse filesystem
+    "pickle",  # arbitrary code execution via deserialization
+    "multiprocessing",  # can spawn unrestricted subprocesses
+    "code",  # interactive interpreter, allows arbitrary eval
+    "pty",  # pseudo-terminal, can spawn unrestricted shells
 }
 _BLOCKED_BUILTINS = {"exec", "eval", "compile", "__import__", "breakpoint"}
 

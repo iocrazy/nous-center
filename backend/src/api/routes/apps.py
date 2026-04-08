@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.deps_admin import require_admin
 from src.models.database import get_async_session
 from src.models.schemas import WorkflowAppPublish, WorkflowAppOut
 from src.models.workflow import Workflow
@@ -18,6 +19,7 @@ router = APIRouter(tags=["apps"])
     "/api/v1/workflows/{workflow_id}/publish-app",
     response_model=WorkflowAppOut,
     status_code=201,
+    dependencies=[Depends(require_admin)],
 )
 async def publish_app(
     workflow_id: int,
@@ -61,7 +63,7 @@ async def list_apps(
     return result.scalars().all()
 
 
-@router.delete("/api/v1/apps/{app_name}", status_code=204)
+@router.delete("/api/v1/apps/{app_name}", status_code=204, dependencies=[Depends(require_admin)])
 async def delete_app(
     app_name: str,
     session: AsyncSession = Depends(get_async_session),
@@ -75,7 +77,7 @@ async def delete_app(
     await session.commit()
 
 
-@router.post("/v1/apps/{app_name}")
+@router.post("/v1/apps/{app_name}", dependencies=[Depends(require_admin)])
 async def execute_app(
     app_name: str,
     body: dict,
