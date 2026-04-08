@@ -7,6 +7,7 @@ export type NodeType = string
 export type BuiltinNodeType =
   | 'text_input'
   | 'text_output'
+  | 'multimodal_input'
   | 'ref_audio'
   | 'tts_engine'
   | 'resample'
@@ -45,6 +46,15 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     label: '文本输出',
     inputs: [{ id: 'text', type: 'text', label: '文本' }],
     outputs: [],
+  },
+  multimodal_input: {
+    type: 'multimodal_input',
+    label: '多模态输入',
+    inputs: [],
+    outputs: [
+      { id: 'text', type: 'text', label: '文本' },
+      { id: 'image', type: 'data', label: '图片' },
+    ],
   },
   ref_audio: {
     type: 'ref_audio',

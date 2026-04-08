@@ -22,6 +22,7 @@ const BUILTIN_CATEGORIES: NodeCategory[] = [
     nodes: [
       { type: 'text_input', dotColor: 'var(--ok)' },
       { type: 'text_output', dotColor: 'var(--info)' },
+      { type: 'multimodal_input', dotColor: 'var(--purple)' },
     ],
   },
   {

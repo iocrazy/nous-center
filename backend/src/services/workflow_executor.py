@@ -192,6 +192,14 @@ async def _exec_text_input(data: dict, inputs: dict) -> dict:
     return {"text": data.get("text", "")}
 
 
+async def _exec_multimodal_input(data: dict, inputs: dict) -> dict:
+    """Multi-modal input — outputs text and optional image."""
+    return {
+        "text": data.get("text", ""),
+        "image": data.get("image", ""),  # base64 data URL
+    }
+
+
 async def _exec_ref_audio(data: dict, inputs: dict) -> dict:
     return {
         "audio_path": data.get("path", ""),
@@ -274,7 +282,17 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     system_msg = data.get("system")
     if system_msg:
         messages.append({"role": "system", "content": system_msg})
-    messages.append({"role": "user", "content": prompt})
+
+    # Support multimodal: if an image (base64 data URL) is provided, use vision format
+    image = inputs.get("image", "")
+    if image:
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image}},
+        ]
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": prompt})
 
     # Use streaming when requested and a progress callback is available
     if data.get("stream") and _on_progress_ref is not None:
@@ -462,6 +480,7 @@ async def _exec_text_output(data: dict, inputs: dict) -> dict:
 _NODE_EXECUTORS = {
     "text_input": _exec_text_input,
     "text_output": _exec_text_output,
+    "multimodal_input": _exec_multimodal_input,
     "ref_audio": _exec_ref_audio,
     "tts_engine": _exec_tts_engine,
     "output": _exec_output,

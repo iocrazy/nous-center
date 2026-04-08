@@ -1,6 +1,7 @@
 import type { NodeTypes } from '@xyflow/react'
 import TextInputNode from './TextInputNode'
 import TextOutputNode from './TextOutputNode'
+import MultimodalInputNode from './MultimodalInputNode'
 import RefAudioNode from './RefAudioNode'
 import TTSEngineNode from './TTSEngineNode'
 import OutputNode from './OutputNode'
@@ -14,6 +15,7 @@ import { DECLARATIVE_NODES, onPluginDefsLoaded } from '../../models/nodeRegistry
 const handwrittenTypes: NodeTypes = {
   text_input: TextInputNode,
   text_output: TextOutputNode,
+  multimodal_input: MultimodalInputNode,
   ref_audio: RefAudioNode,
   tts_engine: TTSEngineNode,
   output: OutputNode,
