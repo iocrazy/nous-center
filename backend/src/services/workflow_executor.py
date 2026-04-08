@@ -8,6 +8,8 @@ import urllib.parse
 from collections import defaultdict, deque
 from typing import Any
 
+import httpx
+
 from src.services import agent_manager
 from src.services.llm_service import call_llm
 from src.services.model_manager import ModelManager
@@ -16,11 +18,41 @@ from src.utils.constants import ALLOWED_LLM_HOSTS
 logger = logging.getLogger(__name__)
 
 _model_manager: ModelManager | None = None
+_on_progress_ref = None
 
 
 def set_model_manager(mgr: ModelManager) -> None:
     global _model_manager
     _model_manager = mgr
+
+
+async def _stream_llm(base_url: str, params: dict, on_token=None) -> str:
+    """Stream LLM response, calling on_token for each chunk. Returns full text."""
+    import json as _json
+
+    full_text = ""
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream(
+            "POST",
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            json={**params, "stream": True},
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = _json.loads(payload)
+                    delta = chunk["choices"][0].get("delta", {})
+                    token = delta.get("content", "")
+                    if token and on_token:
+                        await on_token(token)
+                    full_text += token
+                except Exception:
+                    pass
+    return full_text
 
 
 class ExecutionError(Exception):
@@ -137,7 +169,7 @@ class WorkflowExecutor:
     async def _execute_node(self, node: dict, inputs: dict) -> dict[str, Any]:
         """Execute a single node."""
         node_type = node["type"]
-        data = node.get("data", {})
+        data = dict(node.get("data", {}))
         executor = _NODE_EXECUTORS.get(node_type)
         if executor is None:
             # Check plugin executors from node packages
@@ -146,6 +178,10 @@ class WorkflowExecutor:
             executor = plugin_executors.get(node_type)
         if executor is None:
             raise ExecutionError(f"未知节点类型: {node_type}")
+        # Inject node_id and progress callback so executors can push streaming events
+        data["_node_id"] = node["id"]
+        global _on_progress_ref
+        _on_progress_ref = self._on_progress
         return await executor(data, inputs)
 
 
@@ -210,7 +246,7 @@ async def _exec_passthrough(data: dict, inputs: dict) -> dict:
 
 
 async def _exec_llm(data: dict, inputs: dict) -> dict:
-    """Call LLM via OpenAI-compatible API."""
+    """Call LLM via OpenAI-compatible API, with optional streaming."""
     prompt = inputs.get("prompt") or inputs.get("text", "")
     if not prompt:
         raise ExecutionError("LLM 节点缺少 prompt 输入")
@@ -236,6 +272,34 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
         base_url = "http://localhost:8100"
 
     _validate_llm_url(base_url)
+
+    # Build messages for streaming path
+    messages = []
+    system_msg = data.get("system")
+    if system_msg:
+        messages.append({"role": "system", "content": system_msg})
+    messages.append({"role": "user", "content": prompt})
+
+    # Use streaming when requested and a progress callback is available
+    if data.get("stream") and _on_progress_ref is not None:
+        node_id = data.get("_node_id", "")
+        on_progress = _on_progress_ref
+
+        async def _push_token(token: str) -> None:
+            await on_progress({
+                "type": "node_stream",
+                "node_id": node_id,
+                "token": token,
+            })
+
+        params = {
+            "model": data.get("model", ""),
+            "messages": messages,
+            "temperature": data.get("temperature", 0.7),
+            "max_tokens": data.get("max_tokens", 2048),
+        }
+        result = await _stream_llm(base_url, params, on_token=_push_token)
+        return {"text": result}
 
     result = await call_llm(
         prompt=prompt,
