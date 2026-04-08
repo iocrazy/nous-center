@@ -81,3 +81,16 @@ models:
       tensor_parallel_size: 2
       max_model_len: 4096
       gpu_memory_utilization: 0.85
+
+  - id: gemma-4-26b-a4b-it-gptq-int4
+    type: llm
+    adapter: src.services.inference.llm_vllm.VLLMAdapter
+    path: llm/gemma-4-26B-A4B-it-GPTQ-Int4
+    vram_mb: 0
+    params:
+      vllm_port: 8101
+      tensor_parallel_size: 2
+      max_model_len: 4096
+      gpu_memory_utilization: 0.85
+      quantization: gptq
+      dtype: float16
