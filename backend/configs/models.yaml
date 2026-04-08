@@ -17,7 +17,7 @@ models:
 
   - id: moss_tts
     type: tts
-    adapter: src.workers.tts_engines.moss_tts.MossTTSEngine
+    adapter: src.workers.tts_engines.moss_tts.MOSSTTSEngine
     path: tts/moss-tts
     vram_mb: 8000
     gpu: 1
@@ -25,16 +25,15 @@ models:
 
   - id: qwen3_tts_base
     type: tts
-    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSEngine
+    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSBaseEngine
     path: tts/qwen3-tts-1.7b-base
     vram_mb: 4000
     gpu: 0
-    resident: true
-    ttl_seconds: 0
+    resident: false
 
   - id: qwen3_tts_customvoice
     type: tts
-    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSEngine
+    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSCustomVoiceEngine
     path: tts/qwen3-tts-1.7b-customvoice
     vram_mb: 4000
     gpu: 1
@@ -42,7 +41,7 @@ models:
 
   - id: qwen3_tts_voicedesign
     type: tts
-    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSEngine
+    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSVoiceDesignEngine
     path: tts/qwen3-tts-1.7b-voicedesign
     vram_mb: 4000
     gpu: 1

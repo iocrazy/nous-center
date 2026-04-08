@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
     from src.services.gpu_allocator import GPUAllocator
     from src.services.model_manager import ModelManager
 
-    config_path = str(Path(__file__).resolve().parent.parent / "configs" / "models.yaml")
+    config_path = str(Path(__file__).resolve().parent.parent.parent / "configs" / "models.yaml")
     registry = ModelRegistry(config_path)
     allocator = GPUAllocator()
     model_mgr = ModelManager(registry=registry, allocator=allocator)
