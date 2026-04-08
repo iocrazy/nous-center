@@ -59,9 +59,9 @@ async def test_synthesize_engine_not_loaded(client):
 
 
 
-async def test_batch_accepts_rounds_schema(client):
+async def test_batch_accepts_rounds_schema(db_client):
     """Batch endpoint should accept the new rounds schema."""
-    resp = await client.post("/api/v1/tts/batch", json={
+    resp = await db_client.post("/api/v1/tts/batch", json={
         "rounds": [
             {"round_id": 1, "voice_preset": "test", "text": "hello"},
             {"round_id": 2, "voice_preset": "test", "text": "world"},

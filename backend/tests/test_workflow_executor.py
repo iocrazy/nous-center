@@ -117,7 +117,7 @@ async def test_llm_node():
     wf = {
         "nodes": [
             {"id": "n1", "type": "text_input", "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
-            {"id": "n2", "type": "llm", "data": {"model": "test-model", "base_url": "http://test:8100"}, "position": {"x": 200, "y": 0}},
+            {"id": "n2", "type": "llm", "data": {"model": "test-model", "base_url": "http://localhost:8100"}, "position": {"x": 200, "y": 0}},
             {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
         ],
         "edges": [
@@ -208,14 +208,18 @@ async def test_exec_agent_full():
         ],
     }
     with patch("src.services.workflow_executor.agent_manager") as mock_am, \
-         patch("src.services.workflow_executor.call_llm", new_callable=AsyncMock) as mock_llm:
+         patch("src.services.llm_service.call_llm_with_tools", new_callable=AsyncMock) as mock_llm_tools, \
+         patch("src.services.workflow_executor.call_llm", new_callable=AsyncMock):
         mock_am.get_agent.return_value = mock_agent
-        mock_llm.return_value = "你好！有什么可以帮你的？"
+        # call_llm_with_tools returns a dict with "content" and optionally "tool_calls"
+        mock_llm_tools.return_value = {"content": "你好！有什么可以帮你的？"}
         executor = WorkflowExecutor(wf)
         result = await executor.execute()
 
     assert result["outputs"]["n2"]["text"] == "你好！有什么可以帮你的？"
     # Verify system prompt was assembled from MD files
-    call_args = mock_llm.call_args
-    assert "你是助手" in call_args.kwargs.get("system", "")
-    assert "友好且专业" in call_args.kwargs.get("system", "")
+    call_args = mock_llm_tools.call_args
+    system_in_messages = [m["content"] for m in call_args.kwargs.get("messages", []) if m["role"] == "system"]
+    system_text = system_in_messages[0] if system_in_messages else ""
+    assert "你是助手" in system_text
+    assert "友好且专业" in system_text

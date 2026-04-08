@@ -5,7 +5,9 @@ from src.config import Settings, load_model_configs, _resolve_path
 
 
 def test_settings_defaults():
+    # Use _env_file=None to prevent .env from overriding defaults
     settings = Settings(
+        _env_file=None,
         REDIS_URL="redis://localhost:6379/0",
         DATABASE_URL="postgresql+asyncpg://x:x@localhost/db",
     )
