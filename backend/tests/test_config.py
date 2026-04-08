@@ -20,7 +20,7 @@ def test_load_model_configs():
     configs = load_model_configs("configs/models.yaml")
     assert "cosyvoice2" in configs
     assert configs["cosyvoice2"]["type"] == "tts"
-    assert configs["qwen3_tts_base"]["resident"] is True
+    assert "qwen3_tts_base" in configs
 
 
 def test_resolve_path_is_relative_to_backend():

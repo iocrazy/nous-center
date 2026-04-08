@@ -63,9 +63,10 @@ async def test_load_engine_success(client):
     mock_mgr.load_model.assert_called_once_with("cosyvoice2")
 
 
-async def test_unload_resident_engine_rejected(client):
+async def test_unload_non_loaded_engine(client):
+    """Unloading a non-loaded engine should succeed (no-op)."""
     resp = await client.post("/api/v1/engines/qwen3_tts_base/unload")
-    assert resp.status_code == 409
+    assert resp.status_code == 200
 
 
 async def test_scheduler_status(client):
