@@ -1,5 +1,6 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
+import PublishWizard from '../overlays/PublishWizard'
 import { useNavigate } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
@@ -21,6 +22,7 @@ export default function Topbar() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const isPublished = activeTab?.workflow?.status === 'published'
+  const [showPublishWizard, setShowPublishWizard] = useState(false)
 
   const overlayTitle = activeOverlay === 'dashboard' ? 'Dashboard' : activeOverlay === 'models' ? 'Models' : activeOverlay === 'settings' ? '设置' : activeOverlay === 'preset-detail' ? '预设详情' : activeOverlay === 'api-management' ? 'API 管理' : null
 
@@ -178,6 +180,17 @@ export default function Topbar() {
               >
                 {isPublished ? '下线' : '发布'}
               </button>
+            )}
+            {!isPublished && (
+              <button
+                onClick={() => setShowPublishWizard(true)}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 13 }}
+              >
+                发布 App
+              </button>
+            )}
+            {showPublishWizard && activeTab?.workflow && (
+              <PublishWizard workflowId={String(activeTab.workflow.id)} onClose={() => setShowPublishWizard(false)} />
             )}
           </>
         )}
