@@ -1,6 +1,6 @@
 """Workflow CRUD routes."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,7 +9,6 @@ from src.models.database import get_async_session
 from src.models.schemas import WorkflowCreate, WorkflowUpdate, WorkflowOut
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
-from src.services import model_scheduler
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
 
@@ -80,8 +79,10 @@ async def delete_workflow(
 @router.post("/{workflow_id}/publish", dependencies=[Depends(require_admin)])
 async def publish_workflow(
     workflow_id: int,
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
 ):
+    model_mgr = request.app.state.model_manager
     wf = await session.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -109,13 +110,13 @@ async def publish_workflow(
         instance.endpoint_path = f"/v1/instances/{instance.id}/run"
 
     # Auto-load model dependencies
-    deps = model_scheduler.get_model_dependencies(
+    deps = model_mgr.get_model_dependencies(
         {"nodes": wf.nodes, "edges": wf.edges}
     )
     for dep in deps:
         try:
-            await model_scheduler.load_model(dep["key"])
-            await model_scheduler.add_reference(dep["key"], str(wf.id))
+            await model_mgr.load_model(dep["key"])
+            model_mgr.add_reference(dep["key"], str(wf.id))
         except Exception as e:
             raise HTTPException(503, f"无法加载模型 {dep['key']}: {e}")
 
@@ -132,8 +133,10 @@ async def publish_workflow(
 @router.post("/{workflow_id}/unpublish", dependencies=[Depends(require_admin)])
 async def unpublish_workflow(
     workflow_id: int,
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
 ):
+    model_mgr = request.app.state.model_manager
     wf = await session.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -148,12 +151,12 @@ async def unpublish_workflow(
         instance.status = "inactive"
 
     # Remove model references and attempt unload
-    deps = model_scheduler.get_model_dependencies(
+    deps = model_mgr.get_model_dependencies(
         {"nodes": wf.nodes, "edges": wf.edges}
     )
     for dep in deps:
-        await model_scheduler.remove_reference(dep["key"], str(wf.id))
-        await model_scheduler.unload_model(dep["key"])
+        model_mgr.remove_reference(dep["key"], str(wf.id))
+        await model_mgr.unload_model(dep["key"])
 
     wf.status = "draft"
     await session.commit()

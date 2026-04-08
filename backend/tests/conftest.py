@@ -26,9 +26,29 @@ import src.models.workflow  # noqa: F401 — register model
 import src.models.execution_task  # noqa: F401 — register model
 
 
+def _mock_model_manager():
+    """Create a mock ModelManager for tests."""
+    mgr = MagicMock()
+    mgr.load_model = MagicMock(side_effect=lambda *a, **kw: _async_noop())
+    mgr.unload_model = MagicMock(side_effect=lambda *a, **kw: _async_noop())
+    mgr.add_reference = MagicMock()
+    mgr.remove_reference = MagicMock()
+    mgr.get_model_dependencies = MagicMock(return_value=[])
+    mgr.loaded_model_ids = []
+    mgr.get_status = MagicMock(return_value={"loaded": [], "references": {}, "last_used": {}})
+    mgr.check_idle_models = MagicMock(side_effect=lambda: _async_noop())
+    return mgr
+
+
+async def _async_noop():
+    pass
+
+
 @pytest.fixture
 def app():
-    return create_app()
+    _app = create_app()
+    _app.state.model_manager = _mock_model_manager()
+    return _app
 
 
 @pytest.fixture
@@ -53,6 +73,7 @@ async def db_client(tmp_path):
             yield session
 
     test_app = create_app()
+    test_app.state.model_manager = _mock_model_manager()
     test_app.dependency_overrides[get_async_session] = override_session
 
     transport = ASGITransport(app=test_app)

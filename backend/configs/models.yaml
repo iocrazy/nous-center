@@ -1,84 +1,65 @@
 models:
-  cosyvoice2:
-    gpu: 1
-    hf_id: FunAudioLLM/CosyVoice2-0.5B
-    local_path: tts/cosyvoice2-0.5b
-    modelscope_id: iic/CosyVoice2-0.5B
-    name: CosyVoice2-0.5B
-    resident: false
+  - id: cosyvoice2
     type: tts
-    vram_gb: 3
-  indextts2:
+    adapter: src.workers.tts_engines.cosyvoice2.CosyVoice2Engine
+    path: tts/cosyvoice2-0.5b
+    vram_mb: 3000
     gpu: 1
-    hf_id: IndexTeam/IndexTTS-2
-    local_path: tts/indextts-2
-    modelscope_id: IndexTeam/IndexTTS-2
-    name: IndexTTS-2
     resident: false
+
+  - id: indextts2
     type: tts
-    vram_gb: 4
-  moss_tts:
+    adapter: src.workers.tts_engines.indextts2.IndexTTS2Engine
+    path: tts/indextts-2
+    vram_mb: 4000
     gpu: 1
-    hf_id: openmoss/MOSS-TTS
-    local_path: tts/moss-tts
-    modelscope_id: openmoss/MOSS-TTS
-    name: MOSS-TTS
     resident: false
+
+  - id: moss_tts
     type: tts
-    vram_gb: 8
-  qwen25_vl:
-    engine: vllm
+    adapter: src.workers.tts_engines.moss_tts.MossTTSEngine
+    path: tts/moss-tts
+    vram_mb: 8000
     gpu: 1
-    hf_id: Qwen/Qwen2.5-VL-7B-Instruct
-    modelscope_id: Qwen/Qwen2.5-VL-7B-Instruct
-    name: Qwen/Qwen2.5-VL-7B-Instruct
     resident: false
-    type: understand
-    vram_gb: 16
-  qwen3_tts_base:
+
+  - id: qwen3_tts_base
+    type: tts
+    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSEngine
+    path: tts/qwen3-tts-1.7b-base
+    vram_mb: 4000
     gpu: 0
-    hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base
-    local_path: tts/qwen3-tts-1.7b-base
-    modelscope_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base
-    name: Qwen3-TTS-12Hz-1.7B-Base
     resident: true
     ttl_seconds: 0
+
+  - id: qwen3_tts_customvoice
     type: tts
-    vram_gb: 4
-  qwen3_tts_customvoice:
+    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSEngine
+    path: tts/qwen3-tts-1.7b-customvoice
+    vram_mb: 4000
     gpu: 1
-    hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
-    local_path: tts/qwen3-tts-1.7b-customvoice
-    modelscope_id: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
-    name: Qwen3-TTS-12Hz-1.7B-CustomVoice
     resident: false
+
+  - id: qwen3_tts_voicedesign
     type: tts
-    vram_gb: 4
-  qwen3_tts_voicedesign:
+    adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSEngine
+    path: tts/qwen3-tts-1.7b-voicedesign
+    vram_mb: 4000
     gpu: 1
-    hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
-    local_path: tts/qwen3-tts-1.7b-voicedesign
-    modelscope_id: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
-    name: Qwen3-TTS-12Hz-1.7B-VoiceDesign
     resident: false
-    type: tts
-    vram_gb: 4
-  sdxl:
-    gpu: 0
-    hf_id: stabilityai/stable-diffusion-xl-base-1.0
-    modelscope_id: AI-ModelScope/stable-diffusion-xl-base-1.0
-    name: stabilityai/stable-diffusion-xl-base-1.0
-    resident: false
-    type: image
-    vram_gb: 10
-  wan21:
-    exclusive: true
-    gpu:
-    - 0
-    - 1
-    hf_id: Wan-AI/Wan2.1-T2V-14B
-    modelscope_id: Wan-AI/Wan2.1-T2V-14B
-    name: Wan2.1
-    resident: false
-    type: video
-    vram_gb: 40
+
+  - id: qwen35-35b-a3b
+    type: llm
+    adapter: src.services.inference.llm_vllm.VLLMAdapter
+    path: llm/Qwen3.5-35B-A3B
+    vram_mb: 0
+    params:
+      vllm_base_url: http://localhost:8100
+
+  - id: gemma-4-26b-a4b-it
+    type: llm
+    adapter: src.services.inference.llm_vllm.VLLMAdapter
+    path: llm/gemma-4-26B-A4B-it
+    vram_mb: 0
+    params:
+      vllm_base_url: http://localhost:8100

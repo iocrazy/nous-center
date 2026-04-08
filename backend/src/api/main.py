@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
-from src.services import model_scheduler
 from src.services.gpu_monitor import memory_guard_loop
 
 logger = logging.getLogger(__name__)
@@ -87,16 +87,29 @@ async def lifespan(app: FastAPI):
     scan_packages()
     logger.info("Node packages scanned")
 
+    # Create ModelManager
+    from src.services.inference.registry import ModelRegistry
+    from src.services.gpu_allocator import GPUAllocator
+    from src.services.model_manager import ModelManager
+
+    config_path = str(Path(__file__).resolve().parent.parent / "configs" / "models.yaml")
+    registry = ModelRegistry(config_path)
+    allocator = GPUAllocator()
+    model_mgr = ModelManager(registry=registry, allocator=allocator)
+    app.state.model_manager = model_mgr
+
+    # Wire ModelManager into workflow executor
+    from src.services.workflow_executor import set_model_manager
+    set_model_manager(model_mgr)
+
     # Auto-load resident models
-    from src.config import load_model_configs
-    configs = load_model_configs()
-    for key, cfg in configs.items():
-        if cfg.get("resident", False):
+    for spec in registry.specs:
+        if spec.resident:
             try:
-                logger.info(f"Auto-loading resident model: {key}")
-                await model_scheduler.load_model(key)
+                logger.info(f"Auto-loading resident model: {spec.id}")
+                await model_mgr.load_model(spec.id)
             except Exception as e:
-                logger.warning(f"Failed to auto-load {key}: {e}")
+                logger.warning(f"Failed to auto-load {spec.id}: {e}")
 
     # Re-register model references for published workflows
     from sqlalchemy import select
@@ -105,12 +118,11 @@ async def lifespan(app: FastAPI):
         stmt = select(Workflow).where(Workflow.status == "published")
         result = await session.execute(stmt)
         for wf in result.scalars():
-            deps = model_scheduler.get_model_dependencies({"nodes": wf.nodes, "edges": wf.edges})
+            deps = model_mgr.get_model_dependencies({"nodes": wf.nodes, "edges": wf.edges})
             for dep in deps:
-                await model_scheduler.add_reference(dep["key"], str(wf.id))
-                # Also load the model if not already loaded
+                model_mgr.add_reference(dep["key"], str(wf.id))
                 try:
-                    await model_scheduler.load_model(dep["key"])
+                    await model_mgr.load_model(dep["key"])
                 except Exception as e:
                     logger.warning(f"Failed to load model {dep['key']} for workflow {wf.id}: {e}")
 
@@ -119,7 +131,7 @@ async def lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(60)
             try:
-                await model_scheduler.check_idle_models()
+                await model_mgr.check_idle_models()
             except Exception as e:
                 logger.warning("Idle model check failed: %s", e)
 
@@ -170,7 +182,8 @@ def create_app() -> FastAPI:
         checks["gpus"] = len(gpus)
 
         # Loaded models
-        checks["models_loaded"] = model_scheduler.get_loaded_count()
+        mgr = getattr(app.state, "model_manager", None)
+        checks["models_loaded"] = len(mgr.loaded_model_ids) if mgr else 0
 
         return checks
     app.include_router(tasks.router)

@@ -2,16 +2,15 @@ import asyncio
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
-from src.config import load_model_configs, get_settings
+from src.config import get_settings
 from src.services.model_scanner import scan_models
 from src.gpu.detector import get_device_for_engine, gpu_summary
 from src.models.database import get_async_session
 from src.models.schemas import EngineInfo, EngineLoadResponse
-from src.services import model_scheduler
 from src.services.model_metadata_service import (
     get_all_metadata, sync_metadata, refresh_metadata, scan_local_models,
     _format_size,
@@ -119,14 +118,15 @@ async def refresh_engine_metadata(
 
 
 @router.post("/{name}/load", response_model=EngineLoadResponse, dependencies=[Depends(require_admin)])
-async def load_engine(name: str):
+async def load_engine(name: str, request: Request):
     configs = scan_models()
     if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
+    model_mgr = request.app.state.model_manager
     start = time.monotonic()
     try:
-        await model_scheduler.load_model(name)
+        await model_mgr.load_model(name)
     except Exception as e:
         raise HTTPException(503, detail=f"加载失败: {e}")
     elapsed = round(time.monotonic() - start, 2)
@@ -135,7 +135,7 @@ async def load_engine(name: str):
 
 
 @router.post("/{name}/unload", response_model=EngineLoadResponse, dependencies=[Depends(require_admin)])
-async def unload_engine(name: str, force: bool = False):
+async def unload_engine(name: str, request: Request, force: bool = False):
     configs = scan_models()
     if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
@@ -144,7 +144,8 @@ async def unload_engine(name: str, force: bool = False):
     if cfg.get("resident", False) and not force:
         raise HTTPException(409, detail=f"Engine {name} is resident. Use force=true to unload.")
 
-    await model_scheduler.unload_model(name, force=force)
+    model_mgr = request.app.state.model_manager
+    await model_mgr.unload_model(name, force=force)
 
     return EngineLoadResponse(name=name, status="unloaded")
 
@@ -159,10 +160,21 @@ async def set_resident(name: str, resident: bool = True):
     with open(configs_path) as f:
         data = yaml.safe_load(f)
 
-    if name not in data.get("models", {}):
-        raise HTTPException(404, detail=f"Unknown engine: {name}")
-
-    data["models"][name]["resident"] = resident
+    # Support both old dict format and new list format
+    models = data.get("models", [])
+    if isinstance(models, list):
+        found = False
+        for entry in models:
+            if entry.get("id") == name:
+                entry["resident"] = resident
+                found = True
+                break
+        if not found:
+            raise HTTPException(404, detail=f"Unknown engine: {name}")
+    else:
+        if name not in models:
+            raise HTTPException(404, detail=f"Unknown engine: {name}")
+        models[name]["resident"] = resident
 
     with open(configs_path, "w") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
@@ -180,10 +192,21 @@ async def set_gpu(name: str, gpu: int = 0):
     with open(configs_path) as f:
         data = yaml.safe_load(f)
 
-    if name not in data.get("models", {}):
-        raise HTTPException(404, detail=f"Unknown engine: {name}")
-
-    data["models"][name]["gpu"] = gpu
+    # Support both old dict format and new list format
+    models = data.get("models", [])
+    if isinstance(models, list):
+        found = False
+        for entry in models:
+            if entry.get("id") == name:
+                entry["gpu"] = gpu
+                found = True
+                break
+        if not found:
+            raise HTTPException(404, detail=f"Unknown engine: {name}")
+    else:
+        if name not in models:
+            raise HTTPException(404, detail=f"Unknown engine: {name}")
+        models[name]["gpu"] = gpu
 
     with open(configs_path, "w") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
@@ -192,6 +215,7 @@ async def set_gpu(name: str, gpu: int = 0):
 
 
 @router.get("/scheduler/status")
-async def scheduler_status():
-    """Return current model scheduler status."""
-    return model_scheduler.get_status()
+async def scheduler_status(request: Request):
+    """Return current model manager status."""
+    model_mgr = request.app.state.model_manager
+    return model_mgr.get_status()

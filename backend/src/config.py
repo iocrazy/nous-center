@@ -70,7 +70,32 @@ def save_settings(updates: dict) -> None:
 
 
 def load_model_configs(path: str = "configs/models.yaml") -> dict:
+    """Load model configs and return dict keyed by model id/name.
+
+    Supports both old dict-based format and new list-based format.
+    """
     resolved = _resolve_path(path)
     with open(resolved) as f:
         data = yaml.safe_load(f)
-    return data["models"]
+    models = data["models"]
+
+    # New list-based format: convert to dict keyed by id
+    if isinstance(models, list):
+        result = {}
+        for entry in models:
+            model_id = entry["id"]
+            result[model_id] = {
+                "name": model_id,
+                "type": entry.get("type", ""),
+                "gpu": entry.get("gpu", 0),
+                "vram_gb": round(entry.get("vram_mb", 0) / 1024, 1),
+                "resident": entry.get("resident", False),
+                "local_path": entry.get("path", ""),
+                "ttl_seconds": entry.get("ttl_seconds", 300),
+            }
+            if entry.get("params"):
+                result[model_id]["params"] = entry["params"]
+        return result
+
+    # Old dict-based format: return as-is
+    return models

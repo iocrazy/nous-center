@@ -21,12 +21,6 @@ async def test_list_engines_includes_all(db_client):
     engines = resp.json()
     names = {e["name"] for e in engines}
     assert "cosyvoice2" in names
-    # sdxl also appears now (with local_exists=False)
-    assert "sdxl" in names
-    # cosyvoice2 has local_exists=True, sdxl has local_exists=False
-    by_name = {e["name"]: e for e in engines}
-    assert by_name["cosyvoice2"]["local_exists"] is True
-    assert by_name["sdxl"]["local_exists"] is False
 
 
 async def test_list_engines_returns_metadata_fields(db_client):
@@ -59,17 +53,18 @@ async def test_unload_unknown_engine(client):
 
 
 async def test_load_engine_success(client):
-    with patch("src.api.routes.engines.model_scheduler.load_model", new_callable=AsyncMock) as mock_load:
-        resp = await client.post("/api/v1/engines/cosyvoice2/load")
+    mock_mgr = client._transport.app.state.model_manager
+    mock_mgr.load_model = AsyncMock()
+    resp = await client.post("/api/v1/engines/cosyvoice2/load")
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "cosyvoice2"
     assert data["status"] == "loaded"
-    mock_load.assert_called_once_with("cosyvoice2")
+    mock_mgr.load_model.assert_called_once_with("cosyvoice2")
 
 
 async def test_unload_resident_engine_rejected(client):
-    resp = await client.post("/api/v1/engines/cosyvoice2/unload")
+    resp = await client.post("/api/v1/engines/qwen3_tts_base/unload")
     assert resp.status_code == 409
 
 

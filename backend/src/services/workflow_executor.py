@@ -10,9 +10,17 @@ from typing import Any
 
 from src.services import agent_manager
 from src.services.llm_service import call_llm
+from src.services.model_manager import ModelManager
 from src.utils.constants import ALLOWED_LLM_HOSTS
 
 logger = logging.getLogger(__name__)
+
+_model_manager: ModelManager | None = None
+
+
+def set_model_manager(mgr: ModelManager) -> None:
+    global _model_manager
+    _model_manager = mgr
 
 
 class ExecutionError(Exception):
@@ -156,19 +164,21 @@ async def _exec_ref_audio(data: dict, inputs: dict) -> dict:
 
 
 async def _exec_tts_engine(data: dict, inputs: dict) -> dict:
-    """Call TTS engine via the engine registry."""
+    """Call TTS engine via ModelManager."""
     import asyncio
     import base64
-
-    from src.workers.tts_engines import registry
 
     text = inputs.get("text", "")
     if not text:
         raise ExecutionError("TTS 节点缺少文本输入")
 
     engine_name = data.get("engine", "cosyvoice2")
-    engine = registry._ENGINE_INSTANCES.get(engine_name)
-    if not engine or not engine.is_loaded:
+
+    if _model_manager is None:
+        raise ExecutionError("ModelManager 未初始化")
+
+    adapter = _model_manager.get_adapter(engine_name)
+    if adapter is None or not adapter.is_loaded:
         raise ExecutionError(
             f"引擎 {engine_name} 未加载，请先通过管理 API 加载"
         )
@@ -180,7 +190,7 @@ async def _exec_tts_engine(data: dict, inputs: dict) -> dict:
         "sample_rate": data.get("sample_rate", 24000),
     }
 
-    result = await asyncio.to_thread(engine.synthesize, **kwargs)
+    result = await asyncio.to_thread(adapter.synthesize, **kwargs)
     audio_b64 = base64.b64encode(result.audio_bytes).decode()
     return {
         "audio": audio_b64,
@@ -201,8 +211,6 @@ async def _exec_passthrough(data: dict, inputs: dict) -> dict:
 
 async def _exec_llm(data: dict, inputs: dict) -> dict:
     """Call LLM via OpenAI-compatible API."""
-    from src.services import model_scheduler
-
     prompt = inputs.get("prompt") or inputs.get("text", "")
     if not prompt:
         raise ExecutionError("LLM 节点缺少 prompt 输入")
@@ -210,17 +218,17 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     model_key = data.get("model_key", "")
     base_url = data.get("base_url", "")
 
-    # If model_key specified, use scheduler to get base_url
-    if model_key:
-        url = model_scheduler.get_llm_base_url(model_key)
-        if url:
-            base_url = url
+    # If model_key specified, use ModelManager to resolve base_url
+    if model_key and _model_manager is not None:
+        adapter = _model_manager.get_adapter(model_key)
+        if adapter is not None and adapter.is_loaded and hasattr(adapter, "base_url"):
+            base_url = adapter.base_url
         else:
             # Try to load on demand
-            await model_scheduler.load_model(model_key)
-            url = model_scheduler.get_llm_base_url(model_key)
-            if url:
-                base_url = url
+            await _model_manager.load_model(model_key)
+            adapter = _model_manager.get_adapter(model_key)
+            if adapter is not None and adapter.is_loaded and hasattr(adapter, "base_url"):
+                base_url = adapter.base_url
             else:
                 raise ExecutionError(f"模型 {model_key} 未加载")
 

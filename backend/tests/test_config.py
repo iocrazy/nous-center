@@ -16,9 +16,9 @@ def test_settings_defaults():
 
 def test_load_model_configs():
     configs = load_model_configs("configs/models.yaml")
-    assert "sdxl" in configs
-    assert configs["sdxl"]["type"] == "image"
-    assert configs["wan21"]["exclusive"] is True
+    assert "cosyvoice2" in configs
+    assert configs["cosyvoice2"]["type"] == "tts"
+    assert configs["qwen3_tts_base"]["resident"] is True
 
 
 def test_resolve_path_is_relative_to_backend():

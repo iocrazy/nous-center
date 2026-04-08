@@ -153,6 +153,57 @@ class ModelManager:
             del self._models[model_id]
             logger.info("Unloaded model %r", model_id)
 
+    @property
+    def loaded_model_ids(self) -> list[str]:
+        return [mid for mid, entry in self._models.items() if entry.adapter.is_loaded]
+
+    def get_status(self) -> dict:
+        """Return current model manager status."""
+        return {
+            "loaded": self.loaded_model_ids,
+            "references": {k: list(v) for k, v in self._references.items() if v},
+            "last_used": {
+                mid: entry.last_used for mid, entry in self._models.items()
+            },
+        }
+
+    def get_model_dependencies(self, workflow: dict) -> list[dict]:
+        """Extract model dependencies from workflow nodes."""
+        deps: list[dict] = []
+        seen: set[str] = set()
+        for node in workflow.get("nodes", []):
+            node_type = node.get("type", "")
+            data = node.get("data", {})
+            model_key: str | None = None
+            if node_type == "tts_engine":
+                model_key = data.get("engine")
+            elif node_type == "llm":
+                model_key = data.get("model_key")
+            if model_key and model_key not in seen:
+                spec = self._registry.get(model_key)
+                if spec is not None:
+                    seen.add(model_key)
+                    deps.append({"key": model_key, "type": spec.model_type})
+        return deps
+
+    async def check_idle_models(self) -> None:
+        """Unload models that have been idle too long with no references."""
+        now = time.monotonic()
+        to_unload: list[str] = []
+        for mid, entry in list(self._models.items()):
+            if entry.spec.resident:
+                continue
+            if self._references.get(mid):
+                continue
+            ttl = entry.spec.ttl_seconds
+            if ttl <= 0:
+                continue
+            if now - entry.last_used > ttl:
+                to_unload.append(mid)
+        for mid in to_unload:
+            logger.info("TTL expired: unloading %s", mid)
+            await self.unload_model(mid)
+
     async def evict_lru(self, gpu_index: int | None = None) -> str | None:
         """Evict the least-recently-used non-resident, non-referenced model.
 
