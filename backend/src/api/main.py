@@ -113,15 +113,18 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"Failed to auto-load {spec.id}: {e}")
 
     # Auto-detect running vLLM instances and register matching adapters
+    import httpx as _httpx
     vllm_urls_checked: dict[str, list[str]] = {}  # url -> list of served model paths
     for spec in registry.specs:
-        if spec.model_type != "llm" or not spec.params.get("vllm_base_url"):
+        if spec.model_type != "llm":
             continue
-        base_url = spec.params["vllm_base_url"].rstrip("/")
+        port = spec.params.get("vllm_port") or spec.params.get("vllm_base_url", "").split(":")[-1]
+        if not port:
+            continue
+        base_url = f"http://localhost:{port}"
         if base_url not in vllm_urls_checked:
             try:
-                import httpx
-                async with httpx.AsyncClient(timeout=3) as client:
+                async with _httpx.AsyncClient(timeout=3) as client:
                     resp = await client.get(f"{base_url}/v1/models")
                     if resp.status_code == 200:
                         models_data = resp.json().get("data", [])

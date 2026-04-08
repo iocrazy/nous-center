@@ -54,7 +54,7 @@ class ModelManager:
             )
         module = importlib.import_module(module_path)
         cls = getattr(module, class_name)
-        return cls(spec.path)
+        return cls(model_path=spec.path, **spec.params)
 
     def _detect_vllm_gpus(self, spec: ModelSpec) -> list[int]:
         """Detect which GPUs vLLM is using by checking nvidia-smi."""

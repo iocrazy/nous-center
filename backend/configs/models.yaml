@@ -53,7 +53,10 @@ models:
     path: llm/Qwen3.5-35B-A3B
     vram_mb: 0
     params:
-      vllm_base_url: http://localhost:8100
+      vllm_port: 8100
+      tensor_parallel_size: 2
+      max_model_len: 4096
+      gpu_memory_utilization: 0.85
 
   - id: qwen3_5_35b_a3b_gptq_int4
     type: llm
@@ -61,7 +64,12 @@ models:
     path: llm/Qwen3.5-35B-A3B-GPTQ-Int4
     vram_mb: 0
     params:
-      vllm_base_url: http://localhost:8100
+      vllm_port: 8100
+      tensor_parallel_size: 2
+      max_model_len: 4096
+      gpu_memory_utilization: 0.85
+      quantization: gptq
+      dtype: float16
 
   - id: gemma-4-26b-a4b-it
     type: llm
@@ -69,4 +77,7 @@ models:
     path: llm/gemma-4-26B-A4B-it
     vram_mb: 0
     params:
-      vllm_base_url: http://localhost:8100
+      vllm_port: 8101
+      tensor_parallel_size: 2
+      max_model_len: 4096
+      gpu_memory_utilization: 0.85
