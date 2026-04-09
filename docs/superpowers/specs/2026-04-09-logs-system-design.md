@@ -10,7 +10,9 @@
 
 Separate `logs.db` SQLite database (WAL mode) for all log storage, isolated from business data. Collection via middleware (Request + Audit), Python logging handler (Application), and dedicated API endpoint (Frontend).
 
-Retention: 7 days OR 10,000 records per table, whichever triggers first. Background cleanup runs hourly.
+Retention: 7 days OR 100,000 records per table, whichever triggers first. Background cleanup runs hourly.
+
+Initialization: `log_db.init()` called in `main.py` lifespan, creates `data/logs.db` with WAL mode and all 4 tables if they don't exist. Uses raw `sqlite3` (synchronous), not SQLAlchemy — log writes are fire-and-forget, no need for async ORM overhead.
 
 ## Data Models
 
@@ -94,7 +96,19 @@ Frontend installs global error handlers on app init:
 
 New `AuditMiddleware` that runs after authentication. Captures requests where the admin token was provided (matches `require_admin` pattern). Records method, path, IP, and request body.
 
-Action name derived from path: `/api/v1/engines/{name}/load` → `load_engine`, `/api/v1/workflows/{id}/publish-app` → `publish_app`.
+Action name derived from method + last meaningful path segment:
+
+| Path Pattern | Action |
+|-------------|--------|
+| `POST /api/v1/engines/{name}/load` | `load_engine` |
+| `POST /api/v1/engines/{name}/unload` | `unload_engine` |
+| `POST /api/v1/engines/reload` | `reload_registry` |
+| `POST /api/v1/workflows` | `create_workflow` |
+| `PATCH /api/v1/workflows/{id}` | `update_workflow` |
+| `DELETE /api/v1/workflows/{id}` | `delete_workflow` |
+| `POST /api/v1/workflows/{id}/publish-app` | `publish_app` |
+| `DELETE /api/v1/apps/{name}` | `unpublish_app` |
+| Other admin endpoints | `{method}_{last_segment}` (fallback) |
 
 ## Retention & Cleanup
 
