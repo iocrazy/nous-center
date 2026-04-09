@@ -284,8 +284,8 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
         messages.append({"role": "system", "content": system_msg})
 
     # Support multimodal: if an image (base64 data URL) is provided, use vision format
-    image = inputs.get("image", "")
-    if image:
+    image = inputs.get("image") or ""
+    if image and image.startswith("data:"):
         content = [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": image}},
