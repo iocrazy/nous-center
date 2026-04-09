@@ -113,7 +113,10 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
   llm: {
     type: 'llm',
     label: 'LLM',
-    inputs: [{ id: 'prompt', type: 'text', label: '提示' }],
+    inputs: [
+      { id: 'prompt', type: 'text', label: '提示' },
+      { id: 'image', type: 'data', label: '图片' },
+    ],
     outputs: [{ id: 'text', type: 'text', label: '输出' }],
   },
   prompt_template: {

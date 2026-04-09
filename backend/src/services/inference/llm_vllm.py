@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -80,7 +81,7 @@ class VLLMAdapter(InferenceAdapter):
 
         # Build vLLM command
         cmd = [
-            "python", "-m", "vllm.entrypoints.openai.api_server",
+            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
             "--model", model_path,
             "--port", str(self._port),
             "--max-model-len", str(self._max_model_len),
