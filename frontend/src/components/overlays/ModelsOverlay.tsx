@@ -308,7 +308,7 @@ function ModelCard({
             fontSize: 9,
           }}
         >
-          {model.resident ? '常驻' : '按需'}
+          {model.resident ? 'resident' : 'on-demand'}
         </button>
         {model.local_path && (
           <span
