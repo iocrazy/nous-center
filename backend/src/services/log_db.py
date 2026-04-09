@@ -1,7 +1,7 @@
 """Independent SQLite log database — separate from business data."""
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _local = threading.local()
@@ -104,8 +104,11 @@ def init_log_db(db_path: str | None = None) -> str:
     return db_path
 
 
+_CST = timezone(timedelta(hours=8))
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(_CST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def insert_request_log(db_path: str | None = None, **kwargs) -> None:
@@ -205,7 +208,7 @@ def query_logs(
 
 def cleanup_logs(db_path: str | None = None, max_age_days: int = 7, max_rows: int = 100_000) -> dict:
     from datetime import timedelta
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (datetime.now(_CST) - timedelta(days=max_age_days)).strftime("%Y-%m-%d %H:%M:%S")
     conn = _get_conn(db_path)
     deleted = {}
     for table in _TABLES:
