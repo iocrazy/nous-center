@@ -103,6 +103,6 @@ models:
     gpu: 1
     params:
       vllm_port: 8101
-      max_model_len: 4096
+      max_model_len: 2048
       gpu_memory_utilization: 0.90
-      max_num_seqs: 32
+      max_num_seqs: 16
