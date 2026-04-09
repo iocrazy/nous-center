@@ -177,8 +177,12 @@ def query_logs(
         conditions.append(f"({or_clauses})")
         params.extend([f"%{search}%"] * len(cols))
     if level and table == "app_logs":
-        conditions.append("level = ?")
-        params.append(level.upper())
+        _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+        min_level = _LEVEL_ORDER.get(level.upper(), 0)
+        allowed = [k for k, v in _LEVEL_ORDER.items() if v >= min_level]
+        placeholders = ",".join("?" * len(allowed))
+        conditions.append(f"level IN ({placeholders})")
+        params.extend(allowed)
     if type_filter and table == "frontend_logs":
         conditions.append("type = ?")
         params.append(type_filter)

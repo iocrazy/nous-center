@@ -352,6 +352,7 @@ export default function LogsOverlay() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [timeRange, setTimeRange] = useState<TimeRange>(TIME_RANGES[1]) // default 1h
   const [live, setLive] = useState(true)
+  const [levelFilter, setLevelFilter] = useState<string>('')  // '' = all
 
   // Debounce search input
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -372,7 +373,7 @@ export default function LogsOverlay() {
   }
 
   const reqQuery = useRequestLogs(queryParams, activeTab === 'requests' && live)
-  const appQuery = useAppLogs(queryParams, activeTab === 'app' && live)
+  const appQuery = useAppLogs({ ...queryParams, level: levelFilter || undefined }, activeTab === 'app' && live)
   const feQuery = useFrontendLogs(queryParams, activeTab === 'frontend' && live)
   const auditQuery = useAuditLogs(queryParams, activeTab === 'audit' && live)
 
@@ -535,6 +536,29 @@ export default function LogsOverlay() {
               </button>
             ))}
           </div>
+
+          {/* Level filter (visible on App Logs tab) */}
+          {activeTab === 'app' && (
+            <select
+              value={levelFilter}
+              onChange={(e) => setLevelFilter(e.target.value)}
+              style={{
+                padding: '3px 8px',
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'var(--bg)',
+                color: 'var(--text)',
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              <option value="">All Levels</option>
+              <option value="DEBUG">DEBUG+</option>
+              <option value="INFO">INFO+</option>
+              <option value="WARNING">WARNING+</option>
+              <option value="ERROR">ERROR+</option>
+            </select>
+          )}
         </div>
 
         {/* Tabs */}
