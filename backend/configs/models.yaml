@@ -105,3 +105,4 @@ models:
       vllm_port: 8101
       max_model_len: 4096
       gpu_memory_utilization: 0.90
+      max_num_seqs: 32

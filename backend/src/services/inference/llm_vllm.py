@@ -49,6 +49,7 @@ class VLLMAdapter(InferenceAdapter):
         gpu_memory_utilization: float = 0.85,
         quantization: str | None = None,
         dtype: str | None = None,
+        max_num_seqs: int | None = None,
         **kwargs: Any,
     ):
         super().__init__(model_path=model_path, device=device)
@@ -57,6 +58,7 @@ class VLLMAdapter(InferenceAdapter):
         self._max_model_len = max_model_len
         self._gpu_mem_util = gpu_memory_utilization
         self._quantization = quantization
+        self._max_num_seqs = max_num_seqs
         self._dtype = dtype
         self._base_url = f"http://localhost:{self._port}"
         self.base_url = self._base_url
@@ -94,6 +96,8 @@ class VLLMAdapter(InferenceAdapter):
             cmd += ["--quantization", self._quantization]
         if self._dtype:
             cmd += ["--dtype", self._dtype]
+        if self._max_num_seqs:
+            cmd += ["--max-num-seqs", str(self._max_num_seqs)]
 
         # Set CUDA_VISIBLE_DEVICES for single-GPU mode
         env = dict(os.environ)
