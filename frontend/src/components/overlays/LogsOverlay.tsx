@@ -227,9 +227,9 @@ function RequestTable({ items, loading }: { items: LogItem[]; loading: boolean }
               <Td mono>{formatTs(row.timestamp)}</Td>
               <Td><MethodBadge method={String(row.method ?? '')} /></Td>
               <Td mono>{String(row.path ?? '—')}</Td>
-              <Td><StatusBadge status={row.status_code as number} /></Td>
-              <Td>{row.duration_ms != null ? `${Number(row.duration_ms).toFixed(1)}ms` : '—'}</Td>
-              <Td>{String(row.client_ip ?? '—')}</Td>
+              <Td><StatusBadge status={row.status as number} /></Td>
+              <Td>{row.duration_ms != null ? `${Number(row.duration_ms)}ms` : '—'}</Td>
+              <Td>{String(row.ip ?? '—')}</Td>
             </tr>
           ))
         )}
