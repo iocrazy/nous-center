@@ -16,11 +16,12 @@ export interface ExecutionTask {
   updated_at: string
 }
 
-export function useTasks() {
+export function useTasks(enabled = true) {
   return useQuery({
     queryKey: ['tasks'],
     queryFn: () => apiFetch<ExecutionTask[]>('/api/v1/tasks?limit=50'),
-    refetchInterval: 3000,
+    refetchInterval: enabled ? 10000 : false,
+    enabled,
   })
 }
 

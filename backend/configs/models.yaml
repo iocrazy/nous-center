@@ -99,9 +99,9 @@ models:
     type: llm
     adapter: src.services.inference.llm_vllm.VLLMAdapter
     path: llm/gemma-4-26B-A4B-it-AWQ-4bit
-    vram_mb: 0
+    vram_mb: 17000
+    gpu: 1
     params:
       vllm_port: 8101
-      tensor_parallel_size: 2
       max_model_len: 4096
-      gpu_memory_utilization: 0.60
+      gpu_memory_utilization: 0.90
