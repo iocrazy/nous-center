@@ -49,7 +49,7 @@ class ModelRegistry:
                 vram_mb=entry.get("vram_mb", 0),
                 params=entry.get("params", {}),
                 resident=entry.get("resident", False),
-                ttl_seconds=entry.get("ttl_seconds", 300),
+                ttl_seconds=entry.get("ttl_seconds", 3600 if entry["type"] == "llm" else 300),
                 gpu=entry.get("gpu"),
             )
             self._specs[spec.id] = spec

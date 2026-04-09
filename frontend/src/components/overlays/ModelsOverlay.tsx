@@ -290,7 +290,12 @@ function ModelCard({
       <div className="flex items-center gap-3 mt-1" style={{ fontSize: 9, color: 'var(--muted)' }}>
         <span>{model.vram_gb}GB VRAM</span>
         <span>GPU {Array.isArray(model.gpu) ? model.gpu.join(',') : model.gpu}</span>
-        <span
+        <button
+          title={model.resident ? '点击取消常驻' : '点击设为常驻（不会被自动卸载）'}
+          onClick={(e) => {
+            e.stopPropagation()
+            setResident.mutate({ name: model.name, resident: !model.resident })
+          }}
           style={{
             color: model.resident ? 'var(--warn)' : 'var(--muted)',
             background: model.resident
@@ -298,10 +303,13 @@ function ModelCard({
               : 'var(--bg)',
             padding: '1px 5px',
             borderRadius: 3,
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: 9,
           }}
         >
           {model.resident ? 'resident' : 'on-demand'}
-        </span>
+        </button>
         {model.local_path && (
           <span
             style={{ color: model.local_exists ? 'var(--ok)' : 'var(--warn)' }}
