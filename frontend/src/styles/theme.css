@@ -113,6 +113,12 @@ body {
   stroke: var(--muted-strong) !important;
 }
 
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--accent) !important;
+  stroke-width: 3 !important;
+  filter: drop-shadow(0 0 4px var(--accent));
+}
+
 /* Style native select dropdown options */
 select option {
   background: var(--bg-elevated);
