@@ -144,20 +144,22 @@ class VLLMAdapter(InferenceAdapter):
             needed = model_size_gb + kv_buffer_gb + 1.0  # +1GB CUDA overhead
             utilization = min(0.92, needed / gpu_total_gb)
 
-        # 9. Calculate max_model_len
-        max_position = model_config.get("max_position_embeddings", 131072)
-        hidden_size = model_config.get("hidden_size", 4096)
-        num_layers = model_config.get("num_hidden_layers", 32)
-        num_kv_heads = model_config.get("num_key_value_heads", 8)
-        head_dim = hidden_size // model_config.get("num_attention_heads", 32)
-        bytes_per_token = 2 * num_layers * num_kv_heads * head_dim * 2  # key+value, fp16
-        kv_cache_bytes = kv_buffer_gb * 1024 * 1024 * 1024
-        estimated_max_tokens = int(kv_cache_bytes / bytes_per_token) if bytes_per_token > 0 else 4096
-        max_model_len = min(max_position, max(1024, estimated_max_tokens))
-        max_model_len = (max_model_len // 1024) * 1024  # round down to nearest 1024
+        # 9. Calculate max_model_len (conservative for stability)
+        # Cap at 8192 for quantized models on consumer GPUs, 4096 for tight memory
+        if kv_buffer_gb < 3.0:
+            max_model_len = 2048
+        elif kv_buffer_gb < 6.0:
+            max_model_len = 4096
+        else:
+            max_model_len = 8192
 
-        # 10. Calculate max_num_seqs
-        max_num_seqs = min(256, max(8, estimated_max_tokens // 128))
+        # 10. Calculate max_num_seqs (conservative to avoid sampler warmup OOM)
+        if kv_buffer_gb < 3.0:
+            max_num_seqs = 16
+        elif kv_buffer_gb < 6.0:
+            max_num_seqs = 32
+        else:
+            max_num_seqs = 64
 
         # 11. Find free port
         port = self._port

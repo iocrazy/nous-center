@@ -89,8 +89,8 @@ async def check_and_evict(reserved_gb: float = DEFAULT_RESERVED_GB) -> None:
     for gpu in stats:
         free_gb = gpu["free_mb"] / 1024
         if free_gb < reserved_gb:
-            logger.warning(
-                "GPU %d low memory: %.1fGB free (threshold: %.1fGB). Evicting LRU model...",
+            logger.debug(
+                "GPU %d low memory: %.1fGB free (threshold: %.1fGB). Checking for eviction...",
                 gpu["index"],
                 free_gb,
                 reserved_gb,
