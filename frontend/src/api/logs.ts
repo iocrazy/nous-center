@@ -32,38 +32,44 @@ function buildParams(params: LogQueryParams): string {
   return str ? `?${str}` : ''
 }
 
+/** Stable key excludes `since` (which changes every render) to avoid infinite refetch loops. */
+function stableKey(params: LogQueryParams): Omit<LogQueryParams, 'since'> {
+  const { since: _, ...rest } = params
+  return rest
+}
+
 export function useRequestLogs(params: LogQueryParams = {}, enabled = true) {
   return useQuery({
-    queryKey: ['logs', 'requests', params],
+    queryKey: ['logs', 'requests', stableKey(params)],
     queryFn: () => apiFetch<LogResponse>(`/api/v1/logs/requests${buildParams(params)}`),
-    refetchInterval: 3000,
+    refetchInterval: enabled ? 3000 : false,
     enabled,
   })
 }
 
 export function useAppLogs(params: LogQueryParams = {}, enabled = true) {
   return useQuery({
-    queryKey: ['logs', 'app', params],
+    queryKey: ['logs', 'app', stableKey(params)],
     queryFn: () => apiFetch<LogResponse>(`/api/v1/logs/app${buildParams(params)}`),
-    refetchInterval: 3000,
+    refetchInterval: enabled ? 3000 : false,
     enabled,
   })
 }
 
 export function useFrontendLogs(params: LogQueryParams = {}, enabled = true) {
   return useQuery({
-    queryKey: ['logs', 'frontend', params],
+    queryKey: ['logs', 'frontend', stableKey(params)],
     queryFn: () => apiFetch<LogResponse>(`/api/v1/logs/frontend${buildParams(params)}`),
-    refetchInterval: 3000,
+    refetchInterval: enabled ? 3000 : false,
     enabled,
   })
 }
 
 export function useAuditLogs(params: LogQueryParams = {}, enabled = true) {
   return useQuery({
-    queryKey: ['logs', 'audit', params],
+    queryKey: ['logs', 'audit', stableKey(params)],
     queryFn: () => apiFetch<LogResponse>(`/api/v1/logs/audit${buildParams(params)}`),
-    refetchInterval: 3000,
+    refetchInterval: enabled ? 3000 : false,
     enabled,
   })
 }
