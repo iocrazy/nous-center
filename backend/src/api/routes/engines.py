@@ -129,6 +129,16 @@ async def scan_models_endpoint():
     return {"count": len(configs), "models": list(configs.keys())}
 
 
+@router.post("/reload", dependencies=[Depends(require_admin)])
+async def reload_registry(request: Request):
+    """Hot-reload models.yaml without restarting. Picks up new model configs."""
+    mgr = _get_model_manager(request)
+    if mgr is None:
+        raise HTTPException(503, "ModelManager not initialized")
+    new_count = mgr._registry.reload()
+    return {"status": "reloaded", "new_models": new_count, "total": len(mgr._registry.specs)}
+
+
 @router.post("/sync-metadata", dependencies=[Depends(require_admin)])
 async def sync_all_metadata(session: AsyncSession = Depends(get_async_session)):
     """Fetch metadata for any engine not yet in DB."""

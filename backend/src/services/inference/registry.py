@@ -24,8 +24,18 @@ class ModelSpec:
 
 class ModelRegistry:
     def __init__(self, config_path: str):
+        self._config_path = config_path
         self._specs: dict[str, ModelSpec] = {}
         self._load(config_path)
+
+    def reload(self) -> int:
+        """Hot-reload config from disk. Returns number of new specs added."""
+        old_ids = set(self._specs.keys())
+        self._load(self._config_path)
+        new_ids = set(self._specs.keys()) - old_ids
+        if new_ids:
+            logger.info("Registry reloaded, new models: %s", new_ids)
+        return len(new_ids)
 
     def _load(self, config_path: str) -> None:
         with open(config_path) as f:
