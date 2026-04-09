@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services.gpu_monitor import memory_guard_loop
@@ -36,6 +36,11 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     await engine.dispose()
     logger.info("Database tables ensured")
+
+    # Initialize log database
+    from src.services.log_db import init_log_db
+    init_log_db()
+    logger.info("Log database initialized")
 
     # Auto-sync model metadata for any new engines
     from src.models.database import create_session_factory
@@ -169,6 +174,17 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(idle_checker())
     asyncio.create_task(memory_guard_loop(reserved_gb=4.0))
 
+    async def log_cleanup_loop():
+        while True:
+            await asyncio.sleep(3600)  # Every hour
+            try:
+                from src.services.log_db import cleanup_logs
+                cleanup_logs()
+            except Exception as e:
+                logger.warning("Log cleanup failed: %s", e)
+
+    asyncio.create_task(log_cleanup_loop())
+
     yield
 
 
@@ -188,7 +204,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from src.api.middleware import RequestLoggingMiddleware
+    from src.api.middleware import RequestLoggingMiddleware, AuditMiddleware
+    app.add_middleware(AuditMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
 
     @app.get("/health")
@@ -236,6 +253,7 @@ def create_app() -> FastAPI:
     app.include_router(node_packages.router)
     app.include_router(execution_tasks.router)
     app.include_router(apps.router)
+    app.include_router(logs.router)
 
     @app.websocket("/ws/tasks/{task_id}")
     async def websocket_task(websocket: WebSocket, task_id: str):
