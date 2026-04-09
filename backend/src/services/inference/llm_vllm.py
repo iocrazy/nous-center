@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -94,12 +95,22 @@ class VLLMAdapter(InferenceAdapter):
         if self._dtype:
             cmd += ["--dtype", self._dtype]
 
-        logger.info("Starting vLLM: %s", " ".join(cmd))
+        # Set CUDA_VISIBLE_DEVICES for single-GPU mode
+        env = dict(os.environ)
+        if self._tp <= 1 and device:
+            # Extract GPU index from device string like "cuda:0"
+            gpu_idx = device.split(":")[-1] if ":" in device else "0"
+            env["CUDA_VISIBLE_DEVICES"] = gpu_idx
+            logger.info("Starting vLLM on GPU %s: %s", gpu_idx, " ".join(cmd))
+        else:
+            logger.info("Starting vLLM (TP=%d): %s", self._tp, " ".join(cmd))
+
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=env,
         )
         self._managed = True
 
