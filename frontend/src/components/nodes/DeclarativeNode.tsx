@@ -45,12 +45,23 @@ function ModelSelectWidget({
     queryFn: () => apiFetch<EngineInfo[]>(`/api/v1/engines${params}`),
   })
 
+  const loaded = (engines ?? []).filter((e) => e.status === 'loaded')
+  const unloaded = (engines ?? []).filter((e) => e.status !== 'loaded' && e.local_exists)
+
   return (
     <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">选择模型...</option>
-      {(engines ?? []).map((e) => (
-        <option key={e.name} value={e.name} disabled={!e.local_exists}>
-          {e.display_name} {e.local_exists ? '' : '(未下载)'}
+      {loaded.map((e) => (
+        <option key={e.name} value={e.name}>
+          {e.display_name}
+        </option>
+      ))}
+      {unloaded.length > 0 && loaded.length > 0 && (
+        <option disabled>──── 未加载 ────</option>
+      )}
+      {unloaded.map((e) => (
+        <option key={e.name} value={e.name} disabled>
+          {e.display_name} (未加载)
         </option>
       ))}
     </NodeSelect>
