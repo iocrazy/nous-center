@@ -1,4 +1,5 @@
 """Request logging and audit middleware."""
+import asyncio
 import json
 import logging
 import re
@@ -47,17 +48,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         logger.info("%s %s %d %dms", request.method, path, response.status_code, elapsed_ms)
 
-        # Write to log DB (fire-and-forget)
+        # Write to log DB (fire-and-forget, non-blocking)
         try:
             from src.services.log_db import insert_request_log
-            insert_request_log(
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, lambda: insert_request_log(
                 method=request.method,
                 path=path,
                 status=response.status_code,
                 duration_ms=elapsed_ms,
                 ip=request.client.host if request.client else "",
                 user_agent=request.headers.get("user-agent", ""),
-            )
+            ))
         except Exception:
             pass
 
@@ -88,13 +90,14 @@ class AuditMiddleware(BaseHTTPMiddleware):
                     from src.services.log_db import insert_audit_log
                     action = derive_audit_action(request.method, path)
                     detail = body.decode("utf-8", errors="replace")[:2000] if body else ""
-                    insert_audit_log(
+                    loop = asyncio.get_running_loop()
+                    loop.run_in_executor(None, lambda: insert_audit_log(
                         action=action,
                         path=path,
                         method=request.method,
                         ip=request.client.host if request.client else "",
                         detail=detail,
-                    )
+                    ))
                 except Exception:
                     pass
 

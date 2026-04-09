@@ -245,7 +245,7 @@ function AppTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
         <tr>
           <Th w={140}>Time</Th>
           <Th w={80}>Level</Th>
-          <Th w={120}>Logger</Th>
+          <Th w={120}>Module</Th>
           <Th>Message</Th>
         </tr>
       </thead>
@@ -259,7 +259,7 @@ function AppTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
             <tr key={row.id} className="log-row">
               <Td mono>{formatTs(row.timestamp)}</Td>
               <Td><LevelBadge level={String(row.level ?? '')} /></Td>
-              <Td mono>{String(row.logger ?? '—')}</Td>
+              <Td mono>{String(row.module ?? '—')}</Td>
               <Td>{String(row.message ?? '—')}</Td>
             </tr>
           ))
@@ -275,9 +275,9 @@ function FrontendTable({ items, loading }: { items: LogItem[]; loading: boolean 
       <thead>
         <tr>
           <Th w={140}>Time</Th>
-          <Th w={80}>Level</Th>
+          <Th w={80}>Type</Th>
           <Th>Message</Th>
-          <Th w={120}>URL</Th>
+          <Th w={120}>Page</Th>
         </tr>
       </thead>
       <tbody>
@@ -289,9 +289,9 @@ function FrontendTable({ items, loading }: { items: LogItem[]; loading: boolean 
           items.map((row) => (
             <tr key={row.id} className="log-row">
               <Td mono>{formatTs(row.timestamp)}</Td>
-              <Td><LevelBadge level={String(row.level ?? '')} /></Td>
+              <Td><LevelBadge level={String(row.type ?? '')} /></Td>
               <Td>{String(row.message ?? '—')}</Td>
-              <Td mono>{String(row.url ?? '—')}</Td>
+              <Td mono>{String(row.page ?? '—')}</Td>
             </tr>
           ))
         )}
@@ -307,24 +307,26 @@ function AuditTable({ items, loading }: { items: LogItem[]; loading: boolean }) 
         <tr>
           <Th w={140}>Time</Th>
           <Th w={80}>Action</Th>
-          <Th w={120}>Resource</Th>
-          <Th w={100}>User</Th>
-          <Th>Details</Th>
+          <Th w={120}>Path</Th>
+          <Th w={80}>Method</Th>
+          <Th w={100}>IP</Th>
+          <Th>Detail</Th>
         </tr>
       </thead>
       <tbody>
         {loading && items.length === 0 ? (
-          <LoadingRow cols={5} />
+          <LoadingRow cols={6} />
         ) : items.length === 0 ? (
-          <EmptyRow cols={5} />
+          <EmptyRow cols={6} />
         ) : (
           items.map((row) => (
             <tr key={row.id} className="log-row">
               <Td mono>{formatTs(row.timestamp)}</Td>
               <Td><LevelBadge level={String(row.action ?? '')} /></Td>
-              <Td mono>{String(row.resource ?? '—')}</Td>
-              <Td>{String(row.user ?? '—')}</Td>
-              <Td>{String(row.details ?? '—')}</Td>
+              <Td mono>{String(row.path ?? '—')}</Td>
+              <Td><MethodBadge method={String(row.method ?? '')} /></Td>
+              <Td>{String(row.ip ?? '—')}</Td>
+              <Td>{String(row.detail ?? '—')}</Td>
             </tr>
           ))
         )}

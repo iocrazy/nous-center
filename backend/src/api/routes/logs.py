@@ -1,7 +1,8 @@
 """Log query and frontend error reporting endpoints."""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from src.api.deps_admin import require_admin
 from src.services.log_db import query_logs, insert_frontend_log
 
 router = APIRouter(prefix="/api/v1/logs", tags=["logs"])
@@ -14,7 +15,7 @@ class FrontendLogReport(BaseModel):
     stack: str | None = None
 
 
-@router.get("/requests")
+@router.get("/requests", dependencies=[Depends(require_admin)])
 async def get_request_logs(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -26,7 +27,7 @@ async def get_request_logs(
     return query_logs(table="request_logs", limit=limit, offset=offset, search=search, method=method, status=status, since=since)
 
 
-@router.get("/app")
+@router.get("/app", dependencies=[Depends(require_admin)])
 async def get_app_logs(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -37,7 +38,7 @@ async def get_app_logs(
     return query_logs(table="app_logs", limit=limit, offset=offset, search=search, level=level, since=since)
 
 
-@router.get("/frontend")
+@router.get("/frontend", dependencies=[Depends(require_admin)])
 async def get_frontend_logs(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -54,7 +55,7 @@ async def report_frontend_log(body: FrontendLogReport):
     return {"status": "recorded"}
 
 
-@router.get("/audit")
+@router.get("/audit", dependencies=[Depends(require_admin)])
 async def get_audit_logs(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
