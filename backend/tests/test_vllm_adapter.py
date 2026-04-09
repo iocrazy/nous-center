@@ -27,8 +27,14 @@ async def test_load_connects_to_existing_vllm(adapter):
 
 async def test_load_fails_if_no_vllm_and_bad_model(adapter):
     """If vLLM is not running and model path is invalid, load() raises RuntimeError."""
+    auto_result = {
+        "port": 19999, "tp": 1, "max_model_len": 4096,
+        "utilization": 0.85, "quantization": None, "dtype": None,
+        "max_num_seqs": 32, "gpu_idx": 0, "model_size_gb": 0.0,
+    }
     # Health check fails (no existing vLLM)
-    with patch.object(adapter, "_health_check", new_callable=AsyncMock, return_value=False):
+    with patch.object(adapter, "_health_check", new_callable=AsyncMock, return_value=False), \
+         patch.object(adapter, "_auto_configure", return_value=auto_result):
         # subprocess will fail because model_path is a temp dir with no model
         with pytest.raises(RuntimeError, match="vLLM failed to start"):
             await adapter.load("cpu")
