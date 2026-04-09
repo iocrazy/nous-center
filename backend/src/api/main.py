@@ -42,6 +42,15 @@ async def lifespan(app: FastAPI):
     init_log_db()
     logger.info("Log database initialized")
 
+    # Install DB log handler for application logs
+    from src.services.log_collector import DbLogHandler
+    import logging as _logging
+    db_handler = DbLogHandler()
+    db_handler.setLevel(_logging.INFO)
+    _logging.getLogger("src").addHandler(db_handler)
+    _logging.getLogger("nous").addHandler(db_handler)
+    logger.info("Application log collector installed")
+
     # Auto-sync model metadata for any new engines
     from src.models.database import create_session_factory
     from src.services.model_metadata_service import sync_metadata
