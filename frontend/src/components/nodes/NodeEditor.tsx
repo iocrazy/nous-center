@@ -213,12 +213,21 @@ export default function NodeEditor() {
           onDragOver={onDragOver}
           onDrop={onDrop}
           onNodeDragStop={syncPositionsToStore}
+          onEdgeDoubleClick={(_event, edge) => {
+            setEdges((eds) => eds.filter((e) => e.id !== edge.id))
+            storeRemoveEdge(edge.id)
+          }}
+          onEdgeContextMenu={(event, edge) => {
+            event.preventDefault()
+            setEdges((eds) => eds.filter((e) => e.id !== edge.id))
+            storeRemoveEdge(edge.id)
+          }}
           nodeTypes={nodeTypes}
           deleteKeyCode={['Backspace', 'Delete']}
           edgesReconnectable
           fitView
           fitViewOptions={{ padding: 0.1, minZoom: 0.5, maxZoom: 1.5 }}
-          defaultEdgeOptions={{ animated: true, style: { stroke: 'var(--muted-strong)' } }}
+          defaultEdgeOptions={{ animated: true, style: { stroke: 'var(--muted-strong)', strokeWidth: 2 } }}
           style={{ background: 'var(--bg)' }}
         >
           <Background color="rgba(255,255,255,0.03)" gap={20} />
