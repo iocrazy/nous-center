@@ -30,13 +30,16 @@ function RouteSync() {
 }
 
 function MainLayout() {
+  const activeOverlay = usePanelStore((s) => s.activeOverlay)
+  const isWorkflowView = !activeOverlay
+
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
       <RouteSync />
       <IconRail />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <WorkflowTabs />
-        <Topbar />
+        {isWorkflowView && <WorkflowTabs />}
+        {isWorkflowView && <Topbar />}
         <NodeEditor />
       </div>
       <ToastContainer />
