@@ -249,6 +249,7 @@ function ModelCard({
           {model.organization ? `${model.organization}/` : ''}
           {model.display_name}
         </span>
+        <CopyButton text={model.name} />
         {model.auto_detected && (
           <span
             style={{
@@ -363,5 +364,32 @@ function StatusBadge({ status, loadedGpus }: { status: string; loadedGpus?: numb
       />
       {isLoaded ? `running${gpuLabel}` : 'idle'}
     </span>
+  )
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      title={`复制: ${text}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        navigator.clipboard.writeText(text)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }}
+      style={{
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        padding: 2,
+        color: copied ? 'var(--ok)' : 'var(--muted)',
+        fontSize: 11,
+        flexShrink: 0,
+        lineHeight: 1,
+      }}
+    >
+      {copied ? '✓' : '📋'}
+    </button>
   )
 }
