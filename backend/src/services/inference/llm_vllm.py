@@ -258,33 +258,38 @@ class VLLMAdapter(InferenceAdapter):
         start = time.monotonic()
         timeout = 300
         last_log = 0
-        while time.monotonic() - start < timeout:
-            if self._process.poll() is not None:
-                # Process exited
-                output = self._process.stdout.read() if self._process.stdout else ""
-                logger.error("vLLM process exited with code %d", self._process.returncode)
-                logger.error("vLLM output (last 500 chars): %s", output[-500:])
-                self._process = None
-                raise RuntimeError(f"vLLM failed to start: {output[-200:]}")
+        try:
+            while time.monotonic() - start < timeout:
+                if self._process.poll() is not None:
+                    # Process exited
+                    output = self._process.stdout.read() if self._process.stdout else ""
+                    logger.error("vLLM process exited with code %d", self._process.returncode)
+                    logger.error("vLLM output (last 500 chars): %s", output[-500:])
+                    self._kill_process()
+                    raise RuntimeError(f"vLLM failed to start: {output[-200:]}")
 
-            if await self._health_check():
-                elapsed = int(time.monotonic() - start)
-                self._model = True
-                logger.info("vLLM ready in %ds at %s", elapsed, self._base_url)
-                return
+                if await self._health_check():
+                    elapsed = int(time.monotonic() - start)
+                    self._model = True
+                    logger.info("vLLM ready in %ds at %s", elapsed, self._base_url)
+                    return
 
-            # Log progress every 30 seconds
-            elapsed_now = int(time.monotonic() - start)
-            if elapsed_now - last_log >= 30:
-                last_log = elapsed_now
-                logger.info("vLLM still starting... (%ds elapsed, timeout %ds)", elapsed_now, timeout)
+                # Log progress every 30 seconds
+                elapsed_now = int(time.monotonic() - start)
+                if elapsed_now - last_log >= 30:
+                    last_log = elapsed_now
+                    logger.info("vLLM still starting... (%ds elapsed, timeout %ds)", elapsed_now, timeout)
 
-            await asyncio.sleep(5)
+                await asyncio.sleep(5)
 
-        # Timeout
-        logger.error("vLLM did not become healthy within %ds", timeout)
-        self._kill_process()
-        raise RuntimeError(f"vLLM did not become healthy within {timeout}s")
+            # Timeout
+            logger.error("vLLM did not become healthy within %ds", timeout)
+            self._kill_process()
+            raise RuntimeError(f"vLLM did not become healthy within {timeout}s")
+        except Exception:
+            # Ensure cleanup on ANY failure
+            self._kill_process()
+            raise
 
     def unload(self) -> None:
         """Kill vLLM subprocess and release GPU memory."""
