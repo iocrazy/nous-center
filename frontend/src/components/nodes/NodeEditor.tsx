@@ -227,7 +227,19 @@ export default function NodeEditor() {
           edgesReconnectable
           fitView
           fitViewOptions={{ padding: 0.1, minZoom: 0.5, maxZoom: 1.5 }}
-          defaultEdgeOptions={{ animated: true, style: { stroke: 'var(--muted-strong)', strokeWidth: 2 } }}
+          defaultEdgeOptions={{
+            animated: true,
+            style: { stroke: 'var(--muted-strong)', strokeWidth: 2 },
+            focusable: true,
+            interactionWidth: 20,
+          }}
+          onEdgeClick={(_event, edge) => {
+            setEdges((eds) => eds.map((e) =>
+              e.id === edge.id
+                ? { ...e, selected: true, style: { stroke: 'var(--accent)', strokeWidth: 3 } }
+                : { ...e, selected: false, style: { stroke: 'var(--muted-strong)', strokeWidth: 2 } }
+            ))
+          }}
           style={{ background: 'var(--bg)' }}
         >
           <Background color="rgba(255,255,255,0.03)" gap={20} />
