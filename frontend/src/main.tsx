@@ -3,7 +3,10 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
 import { loadPluginDefinitions } from './models/nodeRegistry'
+import { installErrorReporter } from './utils/errorReporter'
 import './index.css'
+
+installErrorReporter()
 
 // Load plugin node definitions from backend before rendering
 loadPluginDefinitions().finally(() => {
