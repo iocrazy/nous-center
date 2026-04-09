@@ -10,7 +10,7 @@ from starlette.requests import Request
 logger = logging.getLogger("nous.access")
 
 # Paths to skip logging (avoid recursion and noise)
-_SKIP_PATHS = {"/health", "/favicon.ico"}
+_SKIP_PATHS = {"/health", "/favicon.ico", "/api/v1/tasks"}
 _SKIP_PREFIXES = ("/api/v1/logs/",)
 
 # Audit action derivation rules
