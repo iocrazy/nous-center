@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { Copy, Check } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
@@ -384,12 +385,12 @@ function CopyButton({ text }: { text: string }) {
         cursor: 'pointer',
         padding: 2,
         color: copied ? 'var(--ok)' : 'var(--muted)',
-        fontSize: 11,
         flexShrink: 0,
-        lineHeight: 1,
+        display: 'flex',
+        alignItems: 'center',
       }}
     >
-      {copied ? '✓' : '📋'}
+      {copied ? <Check size={12} /> : <Copy size={12} />}
     </button>
   )
 }
