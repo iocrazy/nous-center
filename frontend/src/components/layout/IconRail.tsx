@@ -11,6 +11,7 @@ import {
   Moon,
   Monitor,
   ListTodo,
+  ScrollText,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
@@ -24,6 +25,7 @@ const OVERLAY_ROUTES: Record<OverlayId, string> = {
   'api-management': '/api-management',
   agents: '/agents',
   settings: '/settings',
+  logs: '/logs',
   'preset-detail': '/', // no dedicated route
 }
 
@@ -115,6 +117,14 @@ export default function IconRail() {
       {/* Bottom section */}
       <div className="mt-auto flex flex-col items-center gap-1">
         <TaskRailButton />
+
+        <RailButton
+          active={activeOverlay === 'logs'}
+          onClick={() => navigateOverlay('logs')}
+          label="Logs"
+        >
+          <ScrollText size={18} />
+        </RailButton>
 
         <RailButton
           active={activeOverlay === 'settings'}

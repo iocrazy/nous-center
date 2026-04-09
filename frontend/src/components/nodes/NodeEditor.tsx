@@ -30,6 +30,7 @@ import SettingsOverlay from '../overlays/SettingsOverlay'
 import PresetDetailOverlay from '../overlays/PresetDetailOverlay'
 import ApiManagementOverlay from '../overlays/ApiManagementOverlay'
 import AgentManagementOverlay from '../overlays/AgentManagementOverlay'
+import LogsOverlay from '../overlays/LogsOverlay'
 import TaskPanel from '../panels/TaskPanel'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
@@ -233,6 +234,7 @@ export default function NodeEditor() {
       {activeOverlay === 'preset-detail' && <PresetDetailOverlay />}
       {activeOverlay === 'api-management' && <ApiManagementOverlay />}
       {activeOverlay === 'agents' && <AgentManagementOverlay />}
+      {activeOverlay === 'logs' && <LogsOverlay />}
 
       {/* Task panel */}
       <TaskPanel open={taskPanelOpen} onClose={toggleTaskPanel} />

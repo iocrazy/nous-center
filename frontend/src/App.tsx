@@ -13,6 +13,7 @@ const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/settings': 'settings',
   '/dashboard': 'dashboard',
   '/api-management': 'api-management',
+  '/logs': 'logs',
 }
 
 /** Syncs the current URL to the panel store's activeOverlay */
@@ -53,6 +54,7 @@ export default function App() {
         <Route path="/settings" element={<MainLayout />} />
         <Route path="/dashboard" element={<MainLayout />} />
         <Route path="/api-management" element={<MainLayout />} />
+        <Route path="/logs" element={<MainLayout />} />
       </Routes>
     </BrowserRouter>
   )
