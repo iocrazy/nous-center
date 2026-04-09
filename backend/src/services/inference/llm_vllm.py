@@ -250,6 +250,7 @@ class VLLMAdapter(InferenceAdapter):
             stderr=subprocess.STDOUT,
             text=True,
             env=env,
+            start_new_session=True,  # Create process group for clean kill
         )
         self._managed = True
 
@@ -299,11 +300,14 @@ class VLLMAdapter(InferenceAdapter):
         if self._process is None:
             return
         try:
-            self._process.terminate()
+            import signal
+            # Kill entire process group (includes vLLM worker subprocesses)
+            pgid = os.getpgid(self._process.pid)
+            os.killpg(pgid, signal.SIGTERM)
             try:
                 self._process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                self._process.kill()
+                os.killpg(pgid, signal.SIGKILL)
                 self._process.wait(timeout=5)
         except Exception as e:
             logger.warning("Error killing vLLM: %s", e)
