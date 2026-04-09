@@ -62,12 +62,12 @@ models:
     type: llm
     adapter: src.services.inference.llm_vllm.VLLMAdapter
     path: llm/Qwen3.5-35B-A3B-GPTQ-Int4
-    vram_mb: 18000
-    gpu: 0
+    vram_mb: 0
     params:
       vllm_port: 8100
-      max_model_len: 8192
-      gpu_memory_utilization: 0.90
+      tensor_parallel_size: 2
+      max_model_len: 4096
+      gpu_memory_utilization: 0.85
       quantization: gptq
       dtype: float16
 
@@ -99,9 +99,9 @@ models:
     type: llm
     adapter: src.services.inference.llm_vllm.VLLMAdapter
     path: llm/gemma-4-26B-A4B-it-AWQ-4bit
-    vram_mb: 17000
-    gpu: 1
+    vram_mb: 0
     params:
       vllm_port: 8101
-      max_model_len: 8192
-      gpu_memory_utilization: 0.90
+      tensor_parallel_size: 2
+      max_model_len: 4096
+      gpu_memory_utilization: 0.85
