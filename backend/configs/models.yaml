@@ -67,7 +67,7 @@ models:
       vllm_port: 8100
       tensor_parallel_size: 2
       max_model_len: 4096
-      gpu_memory_utilization: 0.85
+      gpu_memory_utilization: 0.60
       quantization: gptq
       dtype: float16
 
@@ -104,4 +104,4 @@ models:
       vllm_port: 8101
       tensor_parallel_size: 2
       max_model_len: 4096
-      gpu_memory_utilization: 0.85
+      gpu_memory_utilization: 0.60
