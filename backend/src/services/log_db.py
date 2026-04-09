@@ -164,8 +164,10 @@ def query_logs(
     params: list = []
 
     if since:
+        # Normalize ISO format (2026-04-09T01:19:06.863Z) to SQLite format (2026-04-09 01:19:06)
+        normalized = since.replace("T", " ").replace("Z", "").split(".")[0]
         conditions.append("timestamp >= ?")
-        params.append(since)
+        params.append(normalized)
     if search and table in _SEARCH_COLS:
         cols = _SEARCH_COLS[table]
         or_clauses = " OR ".join(f"{c} LIKE ?" for c in cols)
