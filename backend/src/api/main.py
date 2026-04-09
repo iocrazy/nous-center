@@ -273,6 +273,16 @@ def create_app() -> FastAPI:
         except WebSocketDisconnect:
             ws_manager.disconnect(task_id, websocket)
 
+    @app.websocket("/ws/tasks")
+    async def websocket_tasks_global(websocket: WebSocket):
+        """Global task list WebSocket — pushes task create/update/delete events."""
+        await ws_manager.subscribe_global(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            ws_manager.unsubscribe_global(websocket)
+
     @app.websocket("/ws/tts")
     async def websocket_tts(websocket: WebSocket):
         await handle_tts_websocket(websocket)

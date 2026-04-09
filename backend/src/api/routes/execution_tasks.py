@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.database import get_async_session
 from src.models.execution_task import ExecutionTask
 from src.utils.constants import VALID_TASK_STATUSES
+from src.api.websocket import ws_manager
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["execution-tasks"])
 
@@ -50,7 +51,9 @@ async def record_task(
     session.add(task)
     await session.commit()
     await session.refresh(task)
-    return _task_to_dict(task)
+    result = _task_to_dict(task)
+    await ws_manager.broadcast_task_update("created", result)
+    return result
 
 
 @router.get("/{task_id}")
@@ -76,6 +79,7 @@ async def cancel_task(
         raise HTTPException(400, "Can only cancel queued or running tasks")
     task.status = "cancelled"
     await session.commit()
+    await ws_manager.broadcast_task_update("updated", _task_to_dict(task))
     return {"status": "cancelled"}
 
 
@@ -108,8 +112,10 @@ async def delete_task(
     task = await session.get(ExecutionTask, task_id)
     if not task:
         raise HTTPException(404)
+    task_dict = _task_to_dict(task)
     await session.delete(task)
     await session.commit()
+    await ws_manager.broadcast_task_update("deleted", task_dict)
     return {"status": "deleted"}
 
 
