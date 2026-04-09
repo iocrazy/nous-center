@@ -214,8 +214,11 @@ export default function NodeEditor() {
           onDrop={onDrop}
           onNodeDragStop={syncPositionsToStore}
           nodeTypes={nodeTypes}
+          deleteKeyCode={['Backspace', 'Delete']}
+          edgesReconnectable
           fitView
           fitViewOptions={{ padding: 0.1, minZoom: 0.5, maxZoom: 1.5 }}
+          defaultEdgeOptions={{ animated: true, style: { stroke: 'var(--muted-strong)' } }}
           style={{ background: 'var(--bg)' }}
         >
           <Background color="rgba(255,255,255,0.03)" gap={20} />
