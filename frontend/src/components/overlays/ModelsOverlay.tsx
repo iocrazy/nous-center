@@ -206,6 +206,7 @@ export default function ModelsOverlay() {
                   key={model.name}
                   model={model}
                   onContextMenu={(e) => handleContextMenu(e, model)}
+                  onToggleResident={(name, resident) => setResident.mutate({ name, resident })}
                 />
               ))}
             </div>
@@ -223,9 +224,11 @@ export default function ModelsOverlay() {
 function ModelCard({
   model,
   onContextMenu,
+  onToggleResident,
 }: {
   model: EngineInfo
   onContextMenu: (e: React.MouseEvent) => void
+  onToggleResident: (name: string, resident: boolean) => void
 }) {
   const notDownloaded = model.local_path != null && !model.local_exists
 
@@ -294,7 +297,7 @@ function ModelCard({
           title={model.resident ? '点击取消常驻' : '点击设为常驻（不会被自动卸载）'}
           onClick={(e) => {
             e.stopPropagation()
-            setResident.mutate({ name: model.name, resident: !model.resident })
+            onToggleResident(model.name, !model.resident)
           }}
           style={{
             color: model.resident ? 'var(--warn)' : 'var(--muted)',
