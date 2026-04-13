@@ -205,6 +205,7 @@ class VLLMAdapter(InferenceAdapter):
         port = self._port or auto["port"]
         tp = self._tp or auto["tp"]
         max_model_len = self._max_model_len or auto["max_model_len"]
+        self.max_model_len = max_model_len  # expose for clamp logic
         utilization = self._gpu_mem_util or auto["utilization"]
         quantization = self._quantization or auto["quantization"]
         dtype = self._dtype or auto["dtype"]

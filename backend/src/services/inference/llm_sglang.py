@@ -172,6 +172,7 @@ class SGLangAdapter(InferenceAdapter):
         port = self._port or auto["port"]
         tp = self._tp or auto["tp"]
         max_model_len = self._max_model_len or auto["max_model_len"]
+        self.max_model_len = max_model_len
         utilization = self._gpu_mem_util or auto["utilization"]
         quantization = self._quantization or auto["quantization"]
         max_num_seqs = self._max_num_seqs or auto["max_num_seqs"]

@@ -285,6 +285,7 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
 
     model_key = data.get("model_key", "")
     base_url = data.get("base_url", "")
+    adapter = None
 
     # If model_key specified, use ModelManager to resolve base_url
     if model_key and _model_manager is not None:
@@ -332,18 +333,23 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     # Thinking mode (Qwen3.5, etc.)
     enable_thinking = str(data.get("enable_thinking", "false")).lower() == "true"
 
-    # Clamp max_tokens — hard cap at 4096 by default, refine from model if possible
+    # Clamp max_tokens to model's actual max_model_len
     max_tokens = int(data.get("max_tokens", 2048))
     model_max = 4096  # safe default
-    try:
-        async with httpx.AsyncClient(timeout=3, proxy=None) as _c:
-            _resp = await _c.get(f"{base_url.rstrip('/')}/v1/models")
-            if _resp.status_code == 200:
-                models = _resp.json().get("data", [])
-                if models:
-                    model_max = models[0].get("max_model_len", model_max)
-    except Exception:
-        pass
+    # Try getting max_model_len from adapter (no HTTP needed)
+    if adapter is not None:
+        model_max = getattr(adapter, "max_model_len", model_max) or model_max
+    else:
+        # Fallback: query vLLM/SGLang API
+        try:
+            async with httpx.AsyncClient(timeout=3, proxy=None) as _c:
+                _resp = await _c.get(f"{base_url.rstrip('/')}/v1/models")
+                if _resp.status_code == 200:
+                    models = _resp.json().get("data", [])
+                    if models:
+                        model_max = models[0].get("max_model_len", model_max)
+        except Exception:
+            pass
     safe_max = max(model_max - 512, model_max // 2)
     if max_tokens > safe_max:
         max_tokens = safe_max
