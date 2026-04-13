@@ -41,24 +41,24 @@ models:
   resident: false
   type: tts
   vram_mb: 4000
-- adapter: src.services.inference.llm_sglang.SGLangAdapter
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen35-35b-a3b
   path: llm/Qwen3.5-35B-A3B
   type: llm
-- adapter: src.services.inference.llm_sglang.SGLangAdapter
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_5_35b_a3b_gptq_int4
   path: llm/Qwen3.5-35B-A3B-GPTQ-Int4
   resident: false
   type: llm
-- adapter: src.services.inference.llm_sglang.SGLangAdapter
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it
   path: llm/gemma-4-26B-A4B-it
   type: llm
-- adapter: src.services.inference.llm_sglang.SGLangAdapter
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it-gptq-int4
   path: llm/gemma-4-26B-A4B-it-GPTQ-Int4
   type: llm
-- adapter: src.services.inference.llm_sglang.SGLangAdapter
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it-awq-4bit
   path: llm/gemma-4-26B-A4B-it-AWQ-4bit
   type: llm

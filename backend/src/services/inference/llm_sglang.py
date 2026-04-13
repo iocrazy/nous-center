@@ -104,7 +104,7 @@ class SGLangAdapter(InferenceAdapter):
         gpu_free_gb = gpu_stats[gpu_idx]["free_mb"] / 1024 if gpu_idx < len(gpu_stats) else 24.0
 
         tp = self._tp or 1
-        if tp <= 1 and model_size_gb > gpu_free_gb * 0.85:
+        if tp <= 1 and model_size_gb > gpu_free_gb * 0.6:
             total_free = sum(g["free_mb"] for g in gpu_stats) / 1024
             if total_free > model_size_gb * 1.2:
                 tp = len(gpu_stats)
@@ -112,14 +112,15 @@ class SGLangAdapter(InferenceAdapter):
         if tp > 1:
             per_gpu_model = model_size_gb / tp
             kv_buffer_gb = 4.0
-            needed = per_gpu_model + kv_buffer_gb
-            utilization = min(0.85, needed / gpu_total_gb)
+            # SGLang mem-fraction-static = fraction of FREE memory (after model) for KV cache
+            free_after_model = gpu_total_gb - per_gpu_model - 1.0  # 1GB CUDA overhead
+            utilization = min(0.80, kv_buffer_gb / free_after_model) if free_after_model > 0 else 0.5
         else:
-            kv_buffer_gb = min(4.0, gpu_free_gb - model_size_gb - 1.0)
+            kv_buffer_gb = min(4.0, gpu_free_gb - model_size_gb - 2.0)  # 2GB reserved
             if kv_buffer_gb < 1.0:
                 kv_buffer_gb = 1.0
-            needed = model_size_gb + kv_buffer_gb + 1.0
-            utilization = min(0.92, needed / gpu_total_gb)
+            free_after_model = gpu_free_gb - model_size_gb - 1.0
+            utilization = min(0.75, kv_buffer_gb / free_after_model) if free_after_model > 0 else 0.4
 
         if kv_buffer_gb < 3.0:
             max_model_len = 2048
@@ -190,13 +191,12 @@ class SGLangAdapter(InferenceAdapter):
         if not Path(model_path).exists():
             model_path = str(self.model_path)
 
-        # Build SGLang command
+        # Build SGLang command — let SGLang auto-manage memory allocation
         cmd = [
             sys.executable, "-m", "sglang.launch_server",
             "--model-path", model_path,
             "--port", str(port),
             "--context-length", str(max_model_len),
-            "--mem-fraction-static", str(utilization),
         ]
         if tp > 1:
             cmd += ["--tp", str(tp)]
