@@ -26,7 +26,7 @@ def scan_running_vllm() -> list[dict]:
 
         for line in output.stdout.strip().split("\n"):
             line = line.strip()
-            if "vllm.entrypoints" not in line:
+            if "vllm.entrypoints" not in line and "sglang.launch_server" not in line:
                 continue
 
             parts = line.split(None, 1)
@@ -38,7 +38,8 @@ def scan_running_vllm() -> list[dict]:
                 continue
             cmdline = parts[1]
 
-            model_match = re.search(r"--model\s+(\S+)", cmdline)
+            # Match both vLLM (--model) and SGLang (--model-path)
+            model_match = re.search(r"--model(?:-path)?\s+(\S+)", cmdline)
             port_match = re.search(r"--port\s+(\d+)", cmdline)
             if model_match and port_match:
                 candidates.append({
