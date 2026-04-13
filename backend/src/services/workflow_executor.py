@@ -399,7 +399,13 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=300, proxy=None) as _client:
         resp = await _client.post(f"{base_url.rstrip('/')}/v1/chat/completions", json=body, headers=headers)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            try:
+                err = resp.json()
+                detail = err.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                detail = resp.text[:300]
+            raise ExecutionError(f"LLM API error ({resp.status_code}): {detail}")
         resp_data = resp.json()
         result = resp_data["choices"][0]["message"]["content"]
     result = _strip_thinking(result)

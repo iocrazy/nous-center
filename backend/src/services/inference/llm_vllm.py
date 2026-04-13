@@ -148,14 +148,17 @@ class VLLMAdapter(InferenceAdapter):
             needed = model_size_gb + kv_buffer_gb + 1.0  # +1GB CUDA overhead
             utilization = min(0.92, needed / gpu_total_gb)
 
-        # 9. Calculate max_model_len (conservative for stability)
-        # Cap at 8192 for quantized models on consumer GPUs, 4096 for tight memory
-        if kv_buffer_gb < 3.0:
-            max_model_len = 2048
-        elif kv_buffer_gb < 6.0:
-            max_model_len = 4096
-        else:
-            max_model_len = 8192
+        # 9. Calculate max_model_len based on available KV cache memory
+        # KV cache per token varies by model, use ~128KB/token as estimate
+        kv_bytes_per_token = 131072  # 128KB, typical for Qwen3.5/Gemma4 MoE
+        kv_cache_bytes = kv_buffer_gb * 1024**3
+        estimated_max = int(kv_cache_bytes / kv_bytes_per_token)
+        # Read model's native max from config
+        max_position = model_config.get("max_position_embeddings") or \
+                       model_config.get("text_config", {}).get("max_position_embeddings", 262144)
+        # Use the smaller of estimated capacity and model native max, round down to 1024
+        max_model_len = min(estimated_max, max_position)
+        max_model_len = max(2048, (max_model_len // 1024) * 1024)  # at least 2048
 
         # 10. Calculate max_num_seqs (conservative to avoid sampler warmup OOM)
         if kv_buffer_gb < 3.0:
