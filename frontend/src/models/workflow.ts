@@ -54,6 +54,7 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     outputs: [
       { id: 'text', type: 'text', label: '文本' },
       { id: 'image', type: 'data', label: '图片' },
+      { id: 'audio', type: 'audio', label: '音频' },
     ],
   },
   ref_audio: {

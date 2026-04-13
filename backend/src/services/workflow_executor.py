@@ -219,6 +219,7 @@ async def _exec_multimodal_input(data: dict, inputs: dict) -> dict:
         "text": data.get("text", ""),
         "image": images[0] if images else "",  # backward compat: first image
         "images": images,
+        "audio": data.get("audio_data", ""),  # base64 data URL
     }
 
 

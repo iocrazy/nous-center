@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect, useState } from 'react'
-import { ImagePlus, X } from 'lucide-react'
+import { ImagePlus, X, Music, Upload } from 'lucide-react'
 import type { NodeProps } from '@xyflow/react'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS } from '../../models/workflow'
@@ -353,6 +353,102 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
           onChange={onInputChange}
         />
       </div>
+
+      {/* Audio section */}
+      <AudioUpload
+        id={id}
+        audioData={(data.audio_data as string) ?? ''}
+        audioName={(data.audio_name as string) ?? ''}
+        onChange={(audioData, audioName) => updateNode(id, { audio_data: audioData, audio_name: audioName })}
+      />
     </BaseNode>
+  )
+}
+
+function AudioUpload({
+  id,
+  audioData,
+  audioName,
+  onChange,
+}: {
+  id: string
+  audioData: string
+  audioName: string
+  onChange: (data: string, name: string) => void
+}) {
+  const dropRef = useRef<HTMLDivElement>(null)
+
+  const handleFile = useCallback(
+    (file: File) => {
+      if (!file.type.startsWith('audio/')) return
+      const reader = new FileReader()
+      reader.onload = (e) => onChange(e.target?.result as string, file.name)
+      reader.readAsDataURL(file)
+    },
+    [onChange],
+  )
+
+  return (
+    <div style={{ padding: '0 10px 8px' }}>
+      {audioData ? (
+        <div style={{
+          background: 'var(--bg)',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          padding: 6,
+        }}>
+          <div className="flex items-center gap-2" style={{ marginBottom: 4 }}>
+            <Music size={12} style={{ color: 'var(--info)', flexShrink: 0 }} />
+            <span style={{ fontSize: 10, color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {audioName}
+            </span>
+            <button
+              className="nodrag"
+              onClick={() => onChange('', '')}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', padding: 2, display: 'flex', flexShrink: 0 }}
+            >
+              <X size={10} />
+            </button>
+          </div>
+          <audio className="nodrag" controls src={audioData} style={{ width: '100%', height: 28 }} />
+        </div>
+      ) : (
+        <div
+          ref={dropRef}
+          className="nodrag"
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (dropRef.current) dropRef.current.style.borderColor = 'var(--info)' }}
+          onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); if (dropRef.current) dropRef.current.style.borderColor = 'var(--border)' }}
+          onDrop={(e) => {
+            e.preventDefault(); e.stopPropagation()
+            if (dropRef.current) dropRef.current.style.borderColor = 'var(--border)'
+            const file = e.dataTransfer.files[0]
+            if (file) handleFile(file)
+          }}
+          onClick={() => document.getElementById(`mm-audio-${id}`)?.click()}
+          style={{
+            border: '1.5px dashed var(--border)',
+            borderRadius: 4,
+            padding: '6px 8px',
+            textAlign: 'center',
+            cursor: 'pointer',
+            transition: 'border-color 0.15s',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+          }}
+        >
+          <Upload size={12} style={{ color: 'var(--muted)' }} />
+          <span style={{ fontSize: 10, color: 'var(--muted)' }}>上传音频</span>
+        </div>
+      )}
+      <input
+        id={`mm-audio-${id}`}
+        type="file"
+        accept="audio/*"
+        style={{ display: 'none' }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = '' }}
+      />
+    </div>
   )
 }
