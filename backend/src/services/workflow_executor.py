@@ -208,10 +208,17 @@ async def _exec_text_input(data: dict, inputs: dict) -> dict:
 
 
 async def _exec_multimodal_input(data: dict, inputs: dict) -> dict:
-    """Multi-modal input — outputs text and optional image."""
+    """Multi-modal input — outputs text and optional images."""
+    # Support both single image (legacy) and multiple images
+    images = data.get("images") or []
+    if not images:
+        single = data.get("image", "")
+        if single and single.startswith("data:"):
+            images = [single]
     return {
         "text": data.get("text", ""),
-        "image": data.get("image", ""),  # base64 data URL
+        "image": images[0] if images else "",  # backward compat: first image
+        "images": images,
     }
 
 
@@ -298,13 +305,18 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     if system_msg:
         messages.append({"role": "system", "content": system_msg})
 
-    # Support multimodal: if an image (base64 data URL) is provided, use vision format
-    image = inputs.get("image") or ""
-    if image and image.startswith("data:"):
-        content = [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": image}},
-        ]
+    # Support multimodal: multiple images via "images" list, fallback to single "image"
+    images = inputs.get("images") or []
+    if not images:
+        single = inputs.get("image") or ""
+        if single and single.startswith("data:"):
+            images = [single]
+
+    if images:
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for img in images:
+            if img and img.startswith("data:"):
+                content.append({"type": "image_url", "image_url": {"url": img}})
         messages.append({"role": "user", "content": content})
     else:
         messages.append({"role": "user", "content": prompt})
