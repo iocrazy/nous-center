@@ -170,76 +170,71 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
     >
       {/* Text area */}
       <div style={{ padding: '4px 10px' }}>
-        <div style={{ position: 'relative' }}>
-          <textarea
-            ref={textareaRef}
-            value={(data.text as string) ?? ''}
-            onChange={handleTextChange}
-            onBlur={() => setTimeout(() => setShowAtPopup(false), 200)}
-            placeholder={images.length > 0 ? '输入文本... 输入 @ 引用图片' : '输入文本...'}
-            rows={5}
-            className="nodrag nowheel"
-            style={{
-              width: '100%',
-              minHeight: 80,
-              padding: 8,
-              borderRadius: 4,
-              border: '1px solid var(--border)',
-              background: 'var(--bg)',
-              color: 'var(--text)',
-              fontSize: 13,
-              lineHeight: 1.5,
-              resize: 'vertical',
-              fontFamily: 'inherit',
-            }}
-          />
-          {/* @ mention popup */}
-          {showAtPopup && images.length > 0 && (
-            <div
-              className="nodrag"
-              style={{
-                position: 'absolute',
-                bottom: 4,
-                left: 4,
-                right: 4,
-                background: 'var(--card)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-                padding: 4,
-                zIndex: 10,
-                display: 'flex',
-                gap: 4,
-                flexWrap: 'wrap',
-              }}
-            >
-              {images.map((img, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => selectAtImage(idx)}
-                  style={{
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    padding: '3px 6px',
-                    borderRadius: 4,
-                    fontSize: 10,
-                    color: 'var(--text)',
-                    background: 'var(--bg)',
-                    border: '1px solid var(--border)',
-                  }}
-                  onMouseOver={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--accent)' }}
-                  onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)' }}
-                >
-                  <img src={img} alt="" style={{ width: 24, height: 24, objectFit: 'cover', borderRadius: 3 }} />
-                  <span>@img{idx + 1}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <textarea
+          ref={textareaRef}
+          value={(data.text as string) ?? ''}
+          onChange={handleTextChange}
+          onBlur={() => setTimeout(() => setShowAtPopup(false), 200)}
+          placeholder={images.length > 0 ? '输入文本... 输入 @ 引用图片' : '输入文本...'}
+          rows={5}
+          className="nodrag nowheel"
+          style={{
+            width: '100%',
+            minHeight: 80,
+            padding: 8,
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg)',
+            color: 'var(--text)',
+            fontSize: 13,
+            lineHeight: 1.5,
+            resize: 'none',
+            fontFamily: 'inherit',
+          }}
+        />
       </div>
+
+      {/* @ mention popup — outside textarea wrapper to avoid IME issues */}
+      {showAtPopup && images.length > 0 && (
+        <div
+          className="nodrag"
+          style={{
+            margin: '0 10px 4px',
+            background: 'var(--card)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+            padding: 4,
+            display: 'flex',
+            gap: 4,
+            flexWrap: 'wrap',
+          }}
+        >
+          {images.map((img, idx) => (
+            <div
+              key={idx}
+              onClick={() => selectAtImage(idx)}
+              style={{
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '3px 6px',
+                borderRadius: 4,
+                fontSize: 10,
+                color: 'var(--text)',
+                background: 'var(--bg)',
+                border: '1px solid var(--border)',
+              }}
+              onMouseOver={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--accent)' }}
+              onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)' }}
+            >
+              <img src={img} alt="" style={{ width: 24, height: 24, objectFit: 'cover', borderRadius: 3 }} />
+              <span>@img{idx + 1}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Image thumbnails grid */}
       {images.length > 0 && (
