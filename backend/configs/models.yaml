@@ -62,3 +62,10 @@ models:
   id: gemma-4-26b-a4b-it-awq-4bit
   path: llm/gemma-4-26B-A4B-it-AWQ-4bit
   type: llm
+- adapter: src.workers.tts_engines.voxcpm2.VoxCPM2Engine
+  gpu: 0
+  id: voxcpm2
+  path: tts/VoxCPM2
+  resident: false
+  type: tts
+  vram_mb: 8000

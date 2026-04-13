@@ -1,0 +1,43 @@
+name: voxcpm2
+version: "1.0"
+description: "VoxCPM2 语音合成节点包 — 30语言 / 语音设计 / 语音克隆 / 48kHz"
+author: "OpenBMB / nous-center"
+
+nodes:
+  voxcpm2_load_model:
+    label: "VoxCPM2 加载模型"
+    category: tts
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: model, type: data, label: 模型 }
+    widgets:
+      - { name: model_name, label: model_name, widget: select, options: [
+          {label: "VoxCPM2", value: "VoxCPM2"},
+        ], default: "VoxCPM2" }
+      - { name: device, label: device, widget: select, options: [{label: auto, value: auto}, {label: cuda, value: cuda}, {label: cpu, value: cpu}], default: auto }
+      - { name: load_denoiser, label: load_denoiser, widget: checkbox, default: false }
+
+  voxcpm2_generate:
+    label: "VoxCPM2 语音生成"
+    category: tts
+    badge: TTS
+    badgeColor: "var(--warn)"
+    inputs:
+      - { id: model, type: data, label: 模型 }
+      - { id: text, type: text, label: 文本 }
+      - { id: reference_audio, type: audio, label: 参考音频 }
+    outputs:
+      - { id: audio, type: audio, label: 音频 }
+    widgets:
+      - { name: mode, label: mode, widget: select, options: [
+          {label: "语音设计 (文字描述声音)", value: "design"},
+          {label: "可控克隆 (参考音频+风格)", value: "clone"},
+          {label: "终极克隆 (音频续写)", value: "ultimate"},
+        ], default: "design" }
+      - { name: voice_description, label: voice_desc, widget: textarea, rows: 2, default: "A young woman, gentle and sweet voice" }
+      - { name: prompt_text, label: prompt_text, widget: textarea, rows: 2 }
+      - { name: cfg_value, label: cfg_value, widget: slider, min: 0.5, max: 5.0, step: 0.5, precision: 1, default: 2.0 }
+      - { name: inference_timesteps, label: timesteps, widget: slider, min: 5, max: 50, step: 5, precision: 0, default: 10 }
+      - { name: seed, label: seed, widget: input, default: "-1" }
