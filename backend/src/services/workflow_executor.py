@@ -31,7 +31,7 @@ async def _stream_llm(base_url: str, params: dict, on_token=None) -> str:
     import json as _json
 
     full_text = ""
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300, proxy=None) as client:
         async with client.stream(
             "POST",
             f"{base_url.rstrip('/')}/v1/chat/completions",
@@ -315,7 +315,7 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     # Clamp max_tokens to model's max_model_len
     max_tokens = int(data.get("max_tokens", 2048))
     try:
-        async with httpx.AsyncClient(timeout=5) as _c:
+        async with httpx.AsyncClient(timeout=5, proxy=None) as _c:
             _resp = await _c.get(f"{base_url.rstrip('/')}/v1/models")
             if _resp.status_code == 200:
                 models = _resp.json().get("data", [])
@@ -345,24 +345,37 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
             "messages": messages,
             "temperature": data.get("temperature", 0.7),
             "max_tokens": max_tokens,
-            "chat_template_kwargs": {"enable_thinking": enable_thinking},
         }
+        if enable_thinking:
+            params["chat_template_kwargs"] = {"enable_thinking": True}
         result = await _stream_llm(base_url, params, on_token=_push_token)
-        # Always strip thinking tags (model may output them even when disabled)
         result = _strip_thinking(result)
         return {"text": result}
 
-    # Non-streaming path
-    result = await call_llm(
-        prompt=prompt,
-        base_url=base_url,
-        model=data.get("model", ""),
-        system=data.get("system"),
-        api_key=data.get("api_key"),
-        temperature=data.get("temperature", 0.7),
-        max_tokens=max_tokens,
-        extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
-    )
+    # Non-streaming path — use raw httpx to support vision format
+    extra_body: dict[str, Any] = {}
+    if enable_thinking:
+        extra_body["chat_template_kwargs"] = {"enable_thinking": True}
+
+    body: dict[str, Any] = {
+        "model": data.get("model", ""),
+        "messages": messages,
+        "temperature": data.get("temperature", 0.7),
+        "max_tokens": max_tokens,
+    }
+    if extra_body:
+        body.update(extra_body)
+
+    headers: dict[str, str] = {}
+    api_key = data.get("api_key")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    async with httpx.AsyncClient(timeout=300, proxy=None) as _client:
+        resp = await _client.post(f"{base_url.rstrip('/')}/v1/chat/completions", json=body, headers=headers)
+        resp.raise_for_status()
+        resp_data = resp.json()
+        result = resp_data["choices"][0]["message"]["content"]
     result = _strip_thinking(result)
     return {"text": result}
 
