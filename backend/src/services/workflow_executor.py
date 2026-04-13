@@ -332,21 +332,21 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     # Thinking mode (Qwen3.5, etc.)
     enable_thinking = str(data.get("enable_thinking", "false")).lower() == "true"
 
-    # Clamp max_tokens to model's max_model_len
+    # Clamp max_tokens — hard cap at 4096 by default, refine from model if possible
     max_tokens = int(data.get("max_tokens", 2048))
+    model_max = 4096  # safe default
     try:
-        async with httpx.AsyncClient(timeout=5, proxy=None) as _c:
+        async with httpx.AsyncClient(timeout=3, proxy=None) as _c:
             _resp = await _c.get(f"{base_url.rstrip('/')}/v1/models")
             if _resp.status_code == 200:
                 models = _resp.json().get("data", [])
                 if models:
-                    model_max = models[0].get("max_model_len", max_tokens)
-                    # Reserve tokens for prompt (max_model_len is total = prompt + output)
-                    safe_max = max(model_max - 512, model_max // 2)
-                    if max_tokens > safe_max:
-                        max_tokens = safe_max
-    except Exception as _e:
-        logger.debug("Failed to query max_model_len: %s", _e)
+                    model_max = models[0].get("max_model_len", model_max)
+    except Exception:
+        pass
+    safe_max = max(model_max - 512, model_max // 2)
+    if max_tokens > safe_max:
+        max_tokens = safe_max
 
     # Use streaming when requested and a progress callback is available
     if data.get("stream") and _on_progress_ref is not None:

@@ -43,6 +43,7 @@ function ModelSelectWidget({
   const { data: engines } = useQuery({
     queryKey: ['engines', filter],
     queryFn: () => apiFetch<EngineInfo[]>(`/api/v1/engines${params}`),
+    refetchInterval: 10_000,
   })
 
   const loaded = (engines ?? []).filter((e) => e.status === 'loaded')
