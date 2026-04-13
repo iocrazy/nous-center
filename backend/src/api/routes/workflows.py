@@ -1,6 +1,10 @@
 """Workflow CRUD routes."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+
+logger = logging.getLogger(__name__)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -205,6 +209,15 @@ async def execute_workflow_direct(
         task.error = str(e)
         task.duration_ms = elapsed
         await session.commit()
+        logger.error("Workflow execution failed: %s", e)
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        elapsed = int((time.monotonic() - start) * 1000)
+        task.status = "failed"
+        task.error = str(e)
+        task.duration_ms = elapsed
+        await session.commit()
+        logger.error("Workflow execution error: %s", e, exc_info=True)
         raise HTTPException(500, str(e))
 
     await session.commit()

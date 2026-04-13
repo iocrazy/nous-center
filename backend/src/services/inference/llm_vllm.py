@@ -50,6 +50,7 @@ class VLLMAdapter(InferenceAdapter):
         quantization: str | None = None,
         dtype: str | None = None,
         max_num_seqs: int | None = None,
+        adopt_pid: int | None = None,
         **kwargs: Any,
     ):
         super().__init__(model_path=model_path, device=device)
@@ -67,6 +68,8 @@ class VLLMAdapter(InferenceAdapter):
             self._base_url = None  # Will be set in load()
         self.base_url = self._base_url
         self._process: subprocess.Popen | None = None
+        self._adopt_pid = adopt_pid  # PID of an orphan process to adopt
+        self._adopted_pid: int | None = None  # Set in load() when adopting
         self._client = httpx.AsyncClient(timeout=120, limits=httpx.Limits(max_connections=10))
         self._managed = True  # True = we control the subprocess
 
@@ -100,11 +103,12 @@ class VLLMAdapter(InferenceAdapter):
         # 3. Auto-detect quantization from config
         quant_config = model_config.get("quantization_config", {})
         quantization = quant_config.get("quant_method")  # "gptq", "awq", "compressed-tensors", etc
+        # Use gptq_marlin for faster inference (vLLM recommended over plain gptq)
+        if quantization == "gptq":
+            quantization = "gptq_marlin"
 
-        # 4. Auto-detect dtype
+        # 4. Auto-detect dtype — let vLLM choose (bfloat16 is safer for mixed-dtype GPTQ models)
         dtype = None
-        if quantization in ("gptq",):
-            dtype = "float16"  # GPTQ requires float16
 
         # 5. Get GPU info
         gpu_stats = poll_gpu_stats()
@@ -186,8 +190,14 @@ class VLLMAdapter(InferenceAdapter):
         # First check if vLLM is already running on this port
         if self._base_url and await self._health_check():
             self._model = True
-            self._managed = False  # We didn't start it, don't kill it
-            logger.info("Connected to existing vLLM at %s", self._base_url)
+            if self._adopt_pid:
+                # Adopt orphan process — we manage its lifecycle
+                self._managed = True
+                self._adopted_pid = self._adopt_pid
+                logger.info("Adopted orphan vLLM (pid=%d) at %s", self._adopt_pid, self._base_url)
+            else:
+                self._managed = False  # External instance, don't kill it
+                logger.info("Connected to existing vLLM at %s", self._base_url)
             return
 
         # Auto-configure parameters
@@ -234,8 +244,14 @@ class VLLMAdapter(InferenceAdapter):
         if max_num_seqs:
             cmd += ["--max-num-seqs", str(max_num_seqs)]
 
-        # Set CUDA_VISIBLE_DEVICES for single-GPU mode
+        # Set cache directories to persistent storage (avoid re-compilation)
         env = dict(os.environ)
+        from src.config import get_settings
+        _cache_root = str(Path(get_settings().LOCAL_MODELS_PATH) / ".cache")
+        env["TORCH_HOME"] = str(Path(_cache_root) / "torch")
+        env["XDG_CACHE_HOME"] = _cache_root
+
+        # Set CUDA_VISIBLE_DEVICES for single-GPU mode
         if tp <= 1 and device:
             # Extract GPU index from device string like "cuda:0"
             gpu_idx = device.split(":")[-1] if ":" in device else "0"
@@ -254,9 +270,9 @@ class VLLMAdapter(InferenceAdapter):
         )
         self._managed = True
 
-        # Wait for vLLM to become healthy (up to 5 minutes)
+        # Wait for vLLM to become healthy (up to 10 minutes for first-time CUDA kernel compilation)
         start = time.monotonic()
-        timeout = 300
+        timeout = 600
         last_log = 0
         try:
             while time.monotonic() - start < timeout:
@@ -293,31 +309,53 @@ class VLLMAdapter(InferenceAdapter):
 
     def unload(self) -> None:
         """Kill vLLM subprocess and release GPU memory."""
-        if self._managed and self._process is not None:
-            logger.info("Unloading vLLM model: killing subprocess (port %s)", self._port)
+        if self._managed and (self._process is not None or self._adopted_pid is not None):
+            logger.info("Unloading vLLM model: killing process (port %s)", self._port)
             self._kill_process()
-            logger.info("vLLM subprocess killed, GPU memory released")
+            logger.info("vLLM process killed, GPU memory released")
         else:
             logger.info("Disconnecting from external vLLM at %s", self._base_url)
         self._model = None
 
     def _kill_process(self) -> None:
-        if self._process is None:
-            return
-        try:
-            import signal
-            # Kill entire process group (includes vLLM worker subprocesses)
-            pgid = os.getpgid(self._process.pid)
-            os.killpg(pgid, signal.SIGTERM)
+        import signal
+
+        # Kill subprocess we spawned
+        if self._process is not None:
             try:
-                self._process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(pgid, signal.SIGKILL)
-                self._process.wait(timeout=5)
-        except Exception as e:
-            logger.warning("Error killing vLLM: %s", e)
-        finally:
-            self._process = None
+                pgid = os.getpgid(self._process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                try:
+                    self._process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(pgid, signal.SIGKILL)
+                    self._process.wait(timeout=5)
+            except Exception as e:
+                logger.warning("Error killing vLLM subprocess: %s", e)
+            finally:
+                self._process = None
+            return
+
+        # Kill adopted orphan process
+        adopted = getattr(self, "_adopted_pid", None)
+        if adopted:
+            try:
+                pgid = os.getpgid(adopted)
+                os.killpg(pgid, signal.SIGTERM)
+                logger.info("Sent SIGTERM to adopted vLLM process group (pid=%d)", adopted)
+            except ProcessLookupError:
+                pass  # Already gone
+            except Exception as e:
+                logger.warning("Error killing adopted vLLM (pid=%d): %s", adopted, e)
+            finally:
+                self._adopted_pid = None
+
+    @property
+    def pid(self) -> int | None:
+        """Return the PID of the managed vLLM process, if any."""
+        if self._process is not None:
+            return self._process.pid
+        return self._adopted_pid
 
     async def _health_check(self) -> bool:
         try:

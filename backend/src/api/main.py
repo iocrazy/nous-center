@@ -21,6 +21,11 @@ _ws_connections: dict[str, list[WebSocket]] = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Create database tables on startup."""
+    # Ensure localhost requests bypass proxy
+    import os
+    no_proxy = os.environ.get("NO_PROXY", "")
+    if "localhost" not in no_proxy:
+        os.environ["NO_PROXY"] = f"{no_proxy},localhost,127.0.0.1" if no_proxy else "localhost,127.0.0.1"
     from src.models.database import Base, create_engine
     import src.models.voice_preset  # noqa: F401
     import src.models.tts_usage  # noqa: F401
@@ -117,48 +122,63 @@ async def lifespan(app: FastAPI):
     from src.services.workflow_executor import set_model_manager
     set_model_manager(model_mgr)
 
-    # Auto-load resident models
-    for spec in registry.specs:
-        if spec.resident:
+    # Auto-detect running vLLM instances BEFORE resident auto-load
+    # (so we reconnect to orphans instead of spawning duplicates)
+    import os as _os
+    import signal as _signal
+    from src.services.inference.vllm_scanner import scan_running_vllm
+    running_vllm = scan_running_vllm()
+    if running_vllm:
+        logger.info("Found %d running vLLM process(es)", len(running_vllm))
+    reconnected: set[str] = set()
+    for vllm_info in running_vllm:
+        # Kill unhealthy orphans immediately
+        if not vllm_info["healthy"]:
+            logger.warning(
+                "Killing unhealthy orphan vLLM (pid=%d, port=%d, model=%s)",
+                vllm_info["pid"], vllm_info["port"], vllm_info["model_path"],
+            )
             try:
-                logger.info(f"Auto-loading resident model: {spec.id}")
-                await model_mgr.load_model(spec.id)
+                pid = vllm_info["pid"]
+                # Try process group kill first (catches worker subprocesses)
+                try:
+                    pgid = _os.getpgid(pid)
+                    _os.killpg(pgid, _signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    _os.kill(pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             except Exception as e:
-                logger.warning(f"Failed to auto-load {spec.id}: {e}")
+                logger.warning("Failed to kill orphan pid=%d: %s", vllm_info["pid"], e)
+            continue
 
-    # Auto-detect running vLLM instances and register matching adapters
-    import httpx as _httpx
-    vllm_urls_checked: dict[str, list[str]] = {}  # url -> list of served model paths
-    for spec in registry.specs:
-        if spec.model_type != "llm":
-            continue
-        port = spec.params.get("vllm_port") or spec.params.get("vllm_base_url", "").split(":")[-1]
-        if not port:
-            continue
-        base_url = f"http://localhost:{port}"
-        if base_url not in vllm_urls_checked:
-            try:
-                async with _httpx.AsyncClient(timeout=3) as client:
-                    resp = await client.get(f"{base_url}/v1/models")
-                    if resp.status_code == 200:
-                        models_data = resp.json().get("data", [])
-                        vllm_urls_checked[base_url] = [m.get("id", "") for m in models_data]
-                    else:
-                        vllm_urls_checked[base_url] = []
-            except Exception:
-                vllm_urls_checked[base_url] = []
-        # Check if this spec's model path matches any served model
-        served = vllm_urls_checked.get(base_url, [])
-        if any(s.rstrip("/").endswith(spec.path.rstrip("/")) for s in served):
-            logger.info("Auto-detected running vLLM model for %s", spec.id)
-            try:
-                await model_mgr.load_model(spec.id)
-            except Exception as e:
-                logger.warning("Failed to auto-register %s: %s", spec.id, e)
+        # Reconnect healthy ones
+        for spec in registry.specs:
+            if spec.model_type != "llm" or not spec.path:
+                continue
+            if vllm_info["model_path"].rstrip("/").endswith(spec.path.rstrip("/")):
+                logger.info(
+                    "Reconnecting to running vLLM for %s (pid=%s, port=%s)",
+                    spec.id, vllm_info["pid"], vllm_info["port"],
+                )
+                try:
+                    def _factory(s, port=vllm_info["port"], pid=vllm_info["pid"]):
+                        from src.services.inference.llm_vllm import VLLMAdapter
+                        return VLLMAdapter(model_path=s.path, vllm_port=port, adopt_pid=pid, **s.params)
+                    await model_mgr.load_model(spec.id, adapter_factory=_factory)
+                    reconnected.add(spec.id)
+                except Exception as e:
+                    logger.warning("Failed to reconnect %s: %s", spec.id, e)
+                break
+
+    # Auto-load disabled — models are loaded manually from the UI
+    # Resident flag only prevents auto-unload by idle checker
+    from src.api.routes.engines import _loading_states
 
     # Re-register model references for published workflows
     from sqlalchemy import select
     from src.models.workflow import Workflow
+    wf_model_deps: list[dict] = []
     async with sf() as session:
         stmt = select(Workflow).where(Workflow.status == "published")
         result = await session.execute(stmt)
@@ -166,10 +186,18 @@ async def lifespan(app: FastAPI):
             deps = model_mgr.get_model_dependencies({"nodes": wf.nodes, "edges": wf.edges})
             for dep in deps:
                 model_mgr.add_reference(dep["key"], str(wf.id))
-                try:
-                    await model_mgr.load_model(dep["key"])
-                except Exception as e:
-                    logger.warning(f"Failed to load model {dep['key']} for workflow {wf.id}: {e}")
+                wf_model_deps.append({"key": dep["key"], "wf_id": wf.id})
+
+    # Load workflow dependencies in background (non-blocking)
+    async def _load_wf_deps():
+        for dep in wf_model_deps:
+            try:
+                await model_mgr.load_model(dep["key"])
+            except Exception as e:
+                logger.warning("Failed to load model %s for workflow %s: %s", dep["key"], dep["wf_id"], e)
+
+    if wf_model_deps:
+        asyncio.create_task(_load_wf_deps())
 
     # Start idle model checker background task
     async def idle_checker():
@@ -282,6 +310,16 @@ def create_app() -> FastAPI:
                 await websocket.receive_text()
         except WebSocketDisconnect:
             ws_manager.unsubscribe_global(websocket)
+
+    @app.websocket("/ws/models")
+    async def websocket_models(websocket: WebSocket):
+        """Model loading status WebSocket -- pushes loading/loaded/failed events."""
+        await ws_manager.subscribe_models(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            ws_manager.unsubscribe_models(websocket)
 
     @app.websocket("/ws/tts")
     async def websocket_tts(websocket: WebSocket):

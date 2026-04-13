@@ -17,6 +17,7 @@ export default function TextInputNode({ id, data, selected }: NodeProps) {
     >
       <div style={{ padding: '4px 10px' }}>
         <textarea
+          className="nodrag nowheel"
           value={(data.text as string) ?? ''}
           onChange={(e) => updateNode(id, { text: e.target.value })}
           placeholder="输入文本..."

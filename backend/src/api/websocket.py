@@ -9,6 +9,8 @@ class ConnectionManager:
         self.active_connections: dict[str, list[WebSocket]] = {}
         # Global task list subscribers
         self._global_subscribers: list[WebSocket] = []
+        # Model status subscribers
+        self._model_subscribers: list[WebSocket] = []
 
     async def connect(self, task_id: str, websocket: WebSocket):
         await websocket.accept()
@@ -51,6 +53,35 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self._global_subscribers.remove(ws)
+
+    # --- Model status ---
+
+    async def subscribe_models(self, websocket: WebSocket):
+        await websocket.accept()
+        self._model_subscribers.append(websocket)
+
+    def unsubscribe_models(self, websocket: WebSocket):
+        if websocket in self._model_subscribers:
+            self._model_subscribers.remove(websocket)
+
+    async def broadcast_model_status(self, model_id: str, status: str, detail: str = ""):
+        """Broadcast model loading status to all model subscribers."""
+        if not self._model_subscribers:
+            return
+        message = json.dumps({
+            "event": "model_status",
+            "model": model_id,
+            "status": status,
+            "detail": detail,
+        })
+        dead: list[WebSocket] = []
+        for ws in self._model_subscribers:
+            try:
+                await ws.send_text(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self._model_subscribers.remove(ws)
 
 
 ws_manager = ConnectionManager()

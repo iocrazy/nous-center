@@ -37,6 +37,15 @@ async def _stream_llm(base_url: str, params: dict, on_token=None) -> str:
             f"{base_url.rstrip('/')}/v1/chat/completions",
             json={**params, "stream": True},
         ) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                try:
+                    err = _json.loads(body)
+                    detail = err.get("error", {}).get("message", body.decode()[:200])
+                except Exception:
+                    detail = body.decode()[:200]
+                raise ExecutionError(f"LLM API error ({resp.status_code}): {detail}")
+
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data: "):
                     continue
@@ -53,6 +62,12 @@ async def _stream_llm(base_url: str, params: dict, on_token=None) -> str:
                 except Exception:
                     pass
     return full_text
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks from model output, return only the final answer."""
+    result = re.sub(r"<think>[\s\S]*?</think>\s*", "", text)
+    return result.strip()
 
 
 class ExecutionError(Exception):
@@ -294,6 +309,25 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     else:
         messages.append({"role": "user", "content": prompt})
 
+    # Thinking mode (Qwen3.5, etc.)
+    enable_thinking = str(data.get("enable_thinking", "false")).lower() == "true"
+
+    # Clamp max_tokens to model's max_model_len
+    max_tokens = int(data.get("max_tokens", 2048))
+    try:
+        async with httpx.AsyncClient(timeout=5) as _c:
+            _resp = await _c.get(f"{base_url.rstrip('/')}/v1/models")
+            if _resp.status_code == 200:
+                models = _resp.json().get("data", [])
+                if models:
+                    model_max = models[0].get("max_model_len", max_tokens)
+                    # Reserve tokens for prompt (max_model_len is total = prompt + output)
+                    safe_max = max(model_max - 512, model_max // 2)
+                    if max_tokens > safe_max:
+                        max_tokens = safe_max
+    except Exception as _e:
+        logger.debug("Failed to query max_model_len: %s", _e)
+
     # Use streaming when requested and a progress callback is available
     if data.get("stream") and _on_progress_ref is not None:
         node_id = data.get("_node_id", "")
@@ -306,15 +340,19 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
                 "token": token,
             })
 
-        params = {
+        params: dict[str, Any] = {
             "model": data.get("model", ""),
             "messages": messages,
             "temperature": data.get("temperature", 0.7),
-            "max_tokens": data.get("max_tokens", 2048),
+            "max_tokens": max_tokens,
+            "chat_template_kwargs": {"enable_thinking": enable_thinking},
         }
         result = await _stream_llm(base_url, params, on_token=_push_token)
+        # Always strip thinking tags (model may output them even when disabled)
+        result = _strip_thinking(result)
         return {"text": result}
 
+    # Non-streaming path
     result = await call_llm(
         prompt=prompt,
         base_url=base_url,
@@ -322,8 +360,10 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
         system=data.get("system"),
         api_key=data.get("api_key"),
         temperature=data.get("temperature", 0.7),
-        max_tokens=data.get("max_tokens", 2048),
+        max_tokens=max_tokens,
+        extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
     )
+    result = _strip_thinking(result)
     return {"text": result}
 
 

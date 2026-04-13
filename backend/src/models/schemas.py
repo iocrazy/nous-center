@@ -80,12 +80,13 @@ class EngineInfo(BaseModel):
     name: str
     display_name: str
     type: str
-    status: Literal["loaded", "unloaded"]
+    status: Literal["loaded", "unloaded", "loading", "failed"]
     gpu: int | list[int]
     vram_gb: float
     resident: bool
     local_path: str | None = None
     local_exists: bool = False
+    status_detail: str | None = None
     # Remote metadata (from ModelScope / HuggingFace)
     organization: str | None = None
     model_size: str | None = None  # formatted: "494MB", "4.85GB"
@@ -104,7 +105,7 @@ class EngineInfo(BaseModel):
 
 class EngineLoadResponse(BaseModel):
     name: str
-    status: Literal["loaded", "unloaded"]
+    status: Literal["loaded", "unloaded", "loading", "failed"]
     load_time_seconds: float | None = None
 
 

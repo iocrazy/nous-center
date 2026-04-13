@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import signal
 import subprocess
 import time
 
 import psutil
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/monitor", tags=["monitor"])
 
@@ -58,8 +64,10 @@ def _gpu_stats_nvidia_smi() -> list[dict] | None:
         return None
 
 
-def _gpu_processes() -> dict[int, list[dict]]:
-    """Get per-GPU process memory usage via nvidia-smi."""
+def _gpu_processes(pid_map: dict[int, str] | None = None) -> dict[int, list[dict]]:
+    """Get per-GPU process memory usage via nvidia-smi, enriched with process info."""
+    if pid_map is None:
+        pid_map = {}
     try:
         result = subprocess.run(
             [
@@ -99,10 +107,33 @@ def _gpu_processes() -> dict[int, list[dict]]:
             gpu_idx = uuid_to_idx.get(gpu_uuid, -1)
             if gpu_idx < 0:
                 continue
+
+            pid = int(parts[1])
+            mem_mb = int(parts[2])
+
+            # Enrich with process name/command via psutil
+            name = ""
+            command = ""
+            try:
+                p = psutil.Process(pid)
+                name = p.name()
+                cmdline = p.cmdline()
+                command = " ".join(cmdline[:8])[:120] if cmdline else name
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+            managed = pid in pid_map
+            model_name = pid_map.get(pid)
+
             procs.setdefault(gpu_idx, []).append(
                 {
-                    "pid": int(parts[1]),
-                    "used_gpu_memory_mb": int(parts[2]),
+                    "pid": pid,
+                    "gpu": gpu_idx,
+                    "used_gpu_memory_mb": mem_mb,
+                    "name": name,
+                    "command": command,
+                    "managed": managed,
+                    "model_name": model_name,
                 }
             )
         return procs
@@ -133,14 +164,20 @@ def _top_processes(limit: int = 20) -> list[dict]:
 
 
 @router.get("/stats")
-async def get_system_stats():
+async def get_system_stats(request: Request):
     """Return real-time system resource usage."""
     # GPU stats via nvidia-smi
     gpus = _gpu_stats_nvidia_smi() or []
 
+    # Get PID map from ModelManager for managed/orphan detection
+    pid_map: dict[int, str] = {}
+    model_mgr = getattr(request.app.state, "model_manager", None)
+    if model_mgr is not None:
+        pid_map = model_mgr.get_pid_map()
+
     # Attach per-GPU process info
     if gpus:
-        gpu_procs = _gpu_processes()
+        gpu_procs = _gpu_processes(pid_map)
         for gpu in gpus:
             gpu["processes"] = gpu_procs.get(gpu["index"], [])
 
@@ -206,3 +243,59 @@ async def get_system_stats():
         "processes": processes,
         "uptime_seconds": int(uptime_seconds),
     }
+
+
+class KillProcessRequest(BaseModel):
+    pid: int
+
+
+@router.post("/kill-process")
+async def kill_gpu_process(req: KillProcessRequest, request: Request):
+    """Kill an orphan GPU process by PID."""
+    pid = req.pid
+
+    # 1. Verify PID is in GPU process list
+    gpu_procs = _gpu_processes()
+    all_gpu_pids = {p["pid"] for procs in gpu_procs.values() for p in procs}
+    if pid not in all_gpu_pids:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"PID {pid} not found in GPU process list"},
+        )
+
+    # 2. Verify not managed by ModelManager
+    model_mgr = getattr(request.app.state, "model_manager", None)
+    if model_mgr is not None:
+        pid_map = model_mgr.get_pid_map()
+        if pid in pid_map:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=409,
+                content={"detail": f"PID {pid} is managed model '{pid_map[pid]}'. Use the unload API instead."},
+            )
+
+    # 3. Kill with SIGTERM, fallback to SIGKILL
+    try:
+        os.kill(pid, signal.SIGTERM)
+        logger.info("Sent SIGTERM to GPU process %d", pid)
+        # Wait for process to exit
+        for _ in range(10):
+            time.sleep(0.5)
+            try:
+                os.kill(pid, 0)  # Check if still alive
+            except ProcessLookupError:
+                return {"killed": True, "pid": pid}
+        # Still alive, force kill
+        os.kill(pid, signal.SIGKILL)
+        logger.info("Sent SIGKILL to GPU process %d", pid)
+        return {"killed": True, "pid": pid}
+    except ProcessLookupError:
+        return {"killed": True, "pid": pid}  # Already dead
+    except Exception as e:
+        logger.warning("Failed to kill process %d: %s", pid, e)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Failed to kill process {pid}: {e}"},
+        )

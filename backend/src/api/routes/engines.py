@@ -15,9 +15,13 @@ from src.services.model_metadata_service import (
     get_all_metadata, sync_metadata, refresh_metadata, scan_local_models,
     _format_size,
 )
+from src.api.websocket import ws_manager
 from src.workers.tts_engines.registry import get_engine
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
+
+# In-memory loading state tracker: model_id -> {"status": "loading"|"failed", "detail": str}
+_loading_states: dict[str, dict[str, str]] = {}
 
 
 @router.get("/gpus")
@@ -72,11 +76,24 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
     local_path = cfg.get("local_path")
     local_exists = local_path in local_dirs if local_path else False
     loaded = _is_engine_loaded(key, request)
+
+    # Determine status: check loading states first, then fall back to loaded/unloaded
+    loading_state = _loading_states.get(key)
+    if loading_state:
+        status = loading_state["status"]
+        status_detail = loading_state.get("detail", "")
+    elif loaded:
+        status = "loaded"
+        status_detail = None
+    else:
+        status = "unloaded"
+        status_detail = None
+
     info = EngineInfo(
         name=key,
         display_name=cfg["name"],
         type=cfg["type"],
-        status="loaded" if loaded else "unloaded",
+        status=status,
         gpu=cfg.get("gpu", 1),
         vram_gb=cfg.get("vram_gb", 0),
         resident=cfg.get("resident", False),
@@ -85,6 +102,7 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         auto_detected=cfg.get("auto_detected", False),
         loaded_gpu=_get_loaded_gpu(key, request) if loaded else None,
         loaded_gpus=_get_loaded_gpus(key, request) if loaded else None,
+        status_detail=status_detail,
     )
     if meta:
         info.organization = meta.organization
@@ -166,15 +184,40 @@ async def load_engine(name: str, request: Request):
     if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
+    # Reject if already loading
+    if name in _loading_states and _loading_states[name]["status"] == "loading":
+        return EngineLoadResponse(name=name, status="loading")
+
     model_mgr = request.app.state.model_manager
+
+    # If already loaded, return immediately
+    if model_mgr.is_loaded(name):
+        return EngineLoadResponse(name=name, status="loaded")
+
+    # Start background loading
+    _loading_states[name] = {"status": "loading", "detail": "Starting..."}
+    asyncio.create_task(_load_in_background(name, model_mgr))
+
+    return EngineLoadResponse(name=name, status="loading")
+
+
+async def _load_in_background(name: str, model_mgr):
+    import logging
+    logger = logging.getLogger(__name__)
     start = time.monotonic()
     try:
+        _loading_states[name] = {"status": "loading", "detail": "Loading model..."}
+        await ws_manager.broadcast_model_status(name, "loading", "Loading model...")
         await model_mgr.load_model(name)
+        elapsed = round(time.monotonic() - start, 2)
+        # Clear loading state on success — the model is now truly loaded
+        _loading_states.pop(name, None)
+        await ws_manager.broadcast_model_status(name, "loaded", f"Ready ({elapsed}s)")
+        logger.info("Model %s loaded in %.2fs", name, elapsed)
     except Exception as e:
-        raise HTTPException(503, detail=f"加载失败: {e}")
-    elapsed = round(time.monotonic() - start, 2)
-
-    return EngineLoadResponse(name=name, status="loaded", load_time_seconds=elapsed)
+        _loading_states[name] = {"status": "failed", "detail": str(e)}
+        await ws_manager.broadcast_model_status(name, "failed", str(e))
+        logger.error("Model %s load failed: %s", name, e)
 
 
 @router.post("/{name}/unload", response_model=EngineLoadResponse, dependencies=[Depends(require_admin)])

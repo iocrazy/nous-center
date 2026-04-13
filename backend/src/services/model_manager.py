@@ -202,6 +202,15 @@ class ModelManager:
     def loaded_model_ids(self) -> list[str]:
         return [mid for mid, entry in self._models.items() if entry.adapter.is_loaded]
 
+    def get_pid_map(self) -> dict[int, str]:
+        """Return {pid: model_id} for all managed processes that have a PID."""
+        result: dict[int, str] = {}
+        for mid, entry in self._models.items():
+            pid = getattr(entry.adapter, "pid", None)
+            if pid is not None:
+                result[pid] = mid
+        return result
+
     def get_status(self) -> dict:
         """Return current model manager status."""
         return {

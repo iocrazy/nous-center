@@ -12,6 +12,7 @@ import { usePublishWorkflow, useUnpublishWorkflow } from '../../api/workflows'
 export default function Topbar() {
   const { tabs, activeTabId } = useWorkspaceStore()
   const getActiveWorkflow = useWorkspaceStore((s) => s.getActiveWorkflow)
+  const setWorkflow = useWorkspaceStore((s) => s.setWorkflow)
   const updateNode = useWorkspaceStore((s) => s.updateNode)
   const { activeOverlay } = usePanelStore()
   const navigate = useNavigate()
@@ -153,7 +154,12 @@ export default function Topbar() {
         {!activeOverlay && (
           <>
             <TopbarButton>Templates</TopbarButton>
-            <TopbarButton>Clear</TopbarButton>
+            <TopbarButton onClick={() => {
+              if (window.confirm('清空当前工作流的所有节点和连线？')) {
+                const wf = getActiveWorkflow()
+                setWorkflow({ ...wf, nodes: [], edges: [] })
+              }
+            }}>Clear</TopbarButton>
             <TopbarButton primary onClick={handleRun} disabled={isRunning}>
               {isRunning ? '⏳ Running...' : '▶ Run'}
             </TopbarButton>

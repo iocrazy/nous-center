@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { useToastStore } from '../stores/toast'
@@ -6,7 +7,7 @@ export interface EngineInfo {
   name: string
   display_name: string
   type: string
-  status: 'loaded' | 'unloaded'
+  status: 'loaded' | 'unloaded' | 'loading' | 'failed'
   gpu: number | number[]
   vram_gb: number
   resident: boolean
@@ -26,13 +27,37 @@ export interface EngineInfo {
   auto_detected: boolean
   loaded_gpu: number | null
   loaded_gpus: number[] | null
+  status_detail: string | null
 }
 
 export function useEngines() {
+  const qc = useQueryClient()
+
+  // Subscribe to model status WebSocket for real-time updates
+  useEffect(() => {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/models`)
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data)
+        if (data.event === 'model_status') {
+          qc.invalidateQueries({ queryKey: ['engines'] })
+          // Show toast for terminal states
+          if (data.status === 'loaded') {
+            useToastStore.getState().add(`${data.model} ${data.detail || '加载完成'}`, 'success')
+          } else if (data.status === 'failed') {
+            useToastStore.getState().add(`${data.model} 加载失败: ${data.detail}`, 'error')
+          }
+        }
+      } catch { /* ignore parse errors */ }
+    }
+    return () => ws.close()
+  }, [qc])
+
   return useQuery({
     queryKey: ['engines'],
     queryFn: () => apiFetch<EngineInfo[]>('/api/v1/engines'),
-    refetchInterval: (query) => query.state.status === 'error' ? 10_000 : 5000,
+    refetchInterval: (query) => query.state.status === 'error' ? 10_000 : 30_000,
     refetchOnWindowFocus: false,
     retry: false,
   })
@@ -44,8 +69,9 @@ export function useLoadEngine() {
     mutationFn: (name: string) =>
       apiFetch(`/api/v1/engines/${name}/load`, { method: 'POST' }),
     onSuccess: (_, name) => {
+      // Immediately invalidate to show "loading" status; terminal toast comes from WebSocket
       qc.invalidateQueries({ queryKey: ['engines'] })
-      useToastStore.getState().add(`${name} 加载成功`, 'success')
+      useToastStore.getState().add(`${name} 开始加载...`, 'info')
     },
     onError: (error: Error) => {
       useToastStore.getState().add(`加载失败: ${error.message}`, 'error')

@@ -24,6 +24,7 @@ async def call_llm(
     api_key: str | None = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    extra_body: dict | None = None,
 ) -> str:
     """Send a chat completion request and return the assistant reply."""
     messages: list[dict[str, str]] = []
@@ -37,17 +38,17 @@ async def call_llm(
 
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
 
+    body: dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if extra_body:
+        body.update(extra_body)
+
     client = _get_client()
-    resp = await client.post(
-        url,
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        headers=headers,
-    )
+    resp = await client.post(url, json=body, headers=headers)
     resp.raise_for_status()
     data = resp.json()
     return data["choices"][0]["message"]["content"]

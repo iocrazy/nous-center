@@ -1,5 +1,5 @@
-import { useState, useRef, useCallback } from 'react'
-import { Handle, Position } from '@xyflow/react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { Handle, Position, useUpdateNodeInternals, useReactFlow, useNodeId } from '@xyflow/react'
 import type { PortDef } from '../../models/workflow'
 
 const PORT_TYPE_COLORS: Record<string, string> = {
@@ -20,6 +20,25 @@ interface BaseNodeProps {
 
 export default function BaseNode({ title, badge, selected, inputs, outputs, children }: BaseNodeProps) {
   const [collapsed, setCollapsed] = useState(false)
+  const nodeId = useNodeId()
+  const updateNodeInternals = useUpdateNodeInternals()
+  const { setNodes } = useReactFlow()
+
+  // When collapsing: clear node height so wrapper auto-sizes
+  // When expanding: restore height so resize works
+  useEffect(() => {
+    if (!nodeId) return
+    if (collapsed) {
+      // Remove height constraints — let wrapper shrink to content
+      setNodes((nds) => nds.map((n) =>
+        n.id === nodeId
+          ? { ...n, height: undefined, style: { ...n.style, height: undefined } }
+          : n
+      ))
+    }
+    const t = setTimeout(() => updateNodeInternals(nodeId), 50)
+    return () => clearTimeout(t)
+  }, [collapsed, nodeId, updateNodeInternals, setNodes])
 
   // Build rows: merge input + output ports on same logical row index
   const maxPorts = Math.max(inputs.length, outputs.length)
@@ -32,6 +51,10 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
     <div
       style={{
         minWidth: 180,
+        width: '100%',
+        minHeight: collapsed ? undefined : '100%',
+        display: 'flex',
+        flexDirection: 'column',
         background: 'var(--card)',
         border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
         borderRadius: 8,
@@ -53,6 +76,7 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
           borderRadius: collapsed ? 8 : '8px 8px 0 0',
           cursor: 'pointer',
           userSelect: 'none',
+          position: 'relative',
         }}
       >
         <span
@@ -84,74 +108,84 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
         )}
       </div>
 
-      {/* Body */}
-      {!collapsed && (
-        <div>
-          {/* Port rows */}
-          {portRows.map((row, i) => (
-            <div
-              key={i}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                padding: '4px 10px',
-                position: 'relative',
-                minHeight: 24,
-                borderBottom: '1px solid rgba(255,255,255,0.02)',
-              }}
-            >
-              {row.input && (
-                <>
-                  <Handle
-                    type="target"
-                    position={Position.Left}
-                    id={row.input.id}
-                    style={{
-                      background: PORT_TYPE_COLORS[row.input.type] ?? 'var(--muted)',
-                      width: 10,
-                      height: 10,
-                      border: '2px solid var(--card)',
-                      left: -5,
-                      top: '50%',
-                    }}
-                  />
-                  <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>
-                    {row.input.label}
-                  </span>
-                </>
+      {/* Port rows — always rendered so Handle positions stay consistent */}
+      {portRows.map((row, i) => (
+        <div
+          key={i}
+          style={collapsed ? {
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            pointerEvents: 'none',
+          } : {
+            display: 'flex',
+            alignItems: 'center',
+            padding: '4px 10px',
+            position: 'relative',
+            minHeight: 24,
+            borderBottom: '1px solid rgba(255,255,255,0.02)',
+          }}
+        >
+          {row.input && (
+            <>
+              <Handle
+                type="target"
+                position={Position.Left}
+                id={row.input.id}
+                style={{
+                  background: PORT_TYPE_COLORS[row.input.type] ?? 'var(--muted)',
+                  width: 10,
+                  height: 10,
+                  border: '2px solid var(--card)',
+                  left: -5,
+                }}
+              />
+              {!collapsed && (
+                <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>
+                  {row.input.label}
+                </span>
               )}
-              {row.output && (
-                <>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: 'var(--muted)',
-                      marginLeft: 'auto',
-                      textAlign: 'right',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {row.output.label}
-                  </span>
-                  <Handle
-                    type="source"
-                    position={Position.Right}
-                    id={row.output.id}
-                    style={{
-                      background: PORT_TYPE_COLORS[row.output.type] ?? 'var(--muted)',
-                      width: 10,
-                      height: 10,
-                      border: '2px solid var(--card)',
-                      right: -5,
-                      top: '50%',
-                    }}
-                  />
-                </>
+            </>
+          )}
+          {row.output && (
+            <>
+              {!collapsed && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: 'var(--muted)',
+                    marginLeft: 'auto',
+                    textAlign: 'right',
+                    flexShrink: 0,
+                  }}
+                >
+                  {row.output.label}
+                </span>
               )}
-            </div>
-          ))}
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={row.output.id}
+                style={{
+                  background: PORT_TYPE_COLORS[row.output.type] ?? 'var(--muted)',
+                  width: 10,
+                  height: 10,
+                  border: '2px solid var(--card)',
+                  right: -5,
+                }}
+              />
+            </>
+          )}
+        </div>
+      ))}
 
-          {/* Widget children */}
+      {/* Widget children — hidden when collapsed */}
+      {!collapsed && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           {children}
         </div>
       )}
@@ -159,28 +193,34 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
   )
 }
 
-/** A widget row inside a node (label + control) */
+/** A widget row inside a node (label + control).
+ *  stretch=true makes this row expand to fill available vertical space (for textareas).
+ */
 export function NodeWidgetRow({
   label,
   children,
+  stretch,
 }: {
   label: string
   children: React.ReactNode
+  stretch?: boolean
 }) {
   return (
     <div
       style={{
         display: 'flex',
-        alignItems: 'center',
+        alignItems: stretch ? 'stretch' : 'center',
+        flexDirection: stretch ? 'column' : 'row',
         padding: '4px 10px',
         position: 'relative',
-        minHeight: 24,
+        minHeight: stretch ? 48 : 24,
         borderBottom: '1px solid rgba(255,255,255,0.02)',
-        gap: 6,
+        gap: stretch ? 2 : 6,
+        ...(stretch ? { flex: 1, minHeight: 0 } : {}),
       }}
     >
-      <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0, width: 110, textAlign: 'left' }}>{label}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+      <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0, ...(stretch ? {} : { width: 110 }), textAlign: 'left' }}>{label}</span>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>{children}</div>
     </div>
   )
 }
@@ -356,7 +396,8 @@ export function NodeTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaEle
       style={{
         width: '100%',
         resize: 'none',
-        height: 36,
+        minHeight: 36,
+        flex: 1,
         padding: '4px 7px',
         fontSize: 9,
         lineHeight: 1.4,

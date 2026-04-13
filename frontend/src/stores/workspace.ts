@@ -84,10 +84,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setActiveTab: (id) => set({ activeTabId: id }),
 
-  renameTab: (id, name) =>
+  renameTab: (id, name) => {
+    const tab = get().tabs.find((t) => t.id === id)
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === id ? { ...t, name } : t)),
-    })),
+      tabs: s.tabs.map((t) =>
+        t.id === id ? { ...t, name, workflow: { ...t.workflow, name } } : t
+      ),
+    }))
+    // Sync name to backend
+    if (tab?.dbId) {
+      apiFetch(`/api/v1/workflows/${tab.dbId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      }).catch((err) => console.error('Rename sync failed', err))
+    }
+  },
 
   loadFromDb: (wf: WorkflowFull) => {
     const tab: WorkflowTab = {
@@ -218,7 +229,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           // Existing workflow — PATCH
           await apiFetch(`/api/v1/workflows/${current.dbId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ nodes: current.workflow.nodes, edges: current.workflow.edges }),
+            body: JSON.stringify({ name: current.name, nodes: current.workflow.nodes, edges: current.workflow.edges }),
           })
           set((s) => ({
             tabs: s.tabs.map((t) =>

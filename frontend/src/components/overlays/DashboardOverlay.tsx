@@ -1,4 +1,5 @@
-import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, type SysGpuInfo } from '../../api/system'
+import { X } from 'lucide-react'
+import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, useKillProcess, type SysGpuInfo, type GpuProcessInfo } from '../../api/system'
 import { useEngines } from '../../api/engines'
 
 export default function DashboardOverlay() {
@@ -7,6 +8,7 @@ export default function DashboardOverlay() {
   const { data: sysStats } = useSysStats()
   const { data: procData } = useSysProcesses()
   const { data: monitorData } = useMonitorStats()
+  const killProcess = useKillProcess()
 
   const fmt = (n: number, d = 1) => n.toFixed(d)
   const formatUptime = (s: number) => {
@@ -38,6 +40,11 @@ export default function DashboardOverlay() {
                 key={gpu.index}
                 gpu={gpu}
                 chartColor={i === 0 ? 'var(--ok)' : 'var(--accent-2)'}
+                onKillProcess={(pid, mem) => {
+                  if (window.confirm(`Kill process PID ${pid}? This will free ~${(mem / 1024).toFixed(1)}G GPU memory.`)) {
+                    killProcess.mutate(pid)
+                  }
+                }}
               />
             ))
           ) : (
@@ -211,7 +218,7 @@ function SystemStatCard({ label, value, sub }: { label: string; value: string; s
   )
 }
 
-function GpuPanel({ gpu, chartColor }: { gpu: SysGpuInfo; chartColor: string }) {
+function GpuPanel({ gpu, chartColor, onKillProcess }: { gpu: SysGpuInfo; chartColor: string; onKillProcess: (pid: number, memMb: number) => void }) {
   const memPct = gpu.memory_total_mb > 0 ? (gpu.memory_used_mb / gpu.memory_total_mb) * 100 : 0
   const memUsedG = (gpu.memory_used_mb / 1024).toFixed(1)
   const memTotalG = (gpu.memory_total_mb / 1024).toFixed(0)
@@ -302,6 +309,17 @@ function GpuPanel({ gpu, chartColor }: { gpu: SysGpuInfo; chartColor: string }) 
           ))}
         </div>
       )}
+
+      {gpu.processes && gpu.processes.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            GPU Processes
+          </div>
+          {gpu.processes.map((proc) => (
+            <GpuProcessRow key={proc.pid} proc={proc} onKill={onKillProcess} />
+          ))}
+        </div>
+      )}
     </MonPanel>
   )
 }
@@ -348,6 +366,72 @@ function MonPanel({
         )}
       </div>
       {children}
+    </div>
+  )
+}
+
+function GpuProcessRow({ proc, onKill }: { proc: GpuProcessInfo; onKill: (pid: number, memMb: number) => void }) {
+  const memG = (proc.used_gpu_memory_mb / 1024).toFixed(1)
+  const isOrphan = !proc.managed
+
+  return (
+    <div
+      className="flex items-center gap-2"
+      style={{
+        padding: '3px 6px',
+        fontSize: 11,
+        fontFamily: 'var(--mono)',
+        color: isOrphan ? 'var(--warn)' : 'var(--muted)',
+        borderBottom: '1px solid var(--border)',
+      }}
+    >
+      <span style={{ width: 60, flexShrink: 0 }}>{proc.pid}</span>
+      <span style={{ width: 50, flexShrink: 0 }}>{memG}G</span>
+      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {proc.managed ? proc.model_name : proc.command}
+      </span>
+      {proc.managed ? (
+        <span style={{
+          fontSize: 9,
+          padding: '1px 5px',
+          borderRadius: 3,
+          background: 'color-mix(in srgb, var(--ok) 15%, transparent)',
+          color: 'var(--ok)',
+          flexShrink: 0,
+        }}>
+          managed
+        </span>
+      ) : (
+        <>
+          <span style={{
+            fontSize: 9,
+            padding: '1px 5px',
+            borderRadius: 3,
+            background: 'color-mix(in srgb, var(--warn) 15%, transparent)',
+            color: 'var(--warn)',
+            flexShrink: 0,
+          }}>
+            orphan
+          </span>
+          <button
+            onClick={() => onKill(proc.pid, proc.used_gpu_memory_mb)}
+            title={`Kill process ${proc.pid}`}
+            style={{
+              background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+              borderRadius: 3,
+              padding: '1px 4px',
+              cursor: 'pointer',
+              color: 'var(--accent)',
+              display: 'flex',
+              alignItems: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <X size={10} />
+          </button>
+        </>
+      )}
     </div>
   )
 }

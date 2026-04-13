@@ -1,5 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
+import { useToastStore } from '../stores/toast'
 
 // --- Python backend GPU summary (basic info, used by engines page) ---
 export interface GpuInfo {
@@ -24,6 +25,16 @@ export function useGpuStats() {
 
 // --- Unified monitor endpoint (replaces Rust sidecar) ---
 
+export interface GpuProcessInfo {
+  pid: number
+  gpu: number
+  used_gpu_memory_mb: number
+  name: string
+  command: string
+  managed: boolean
+  model_name: string | null
+}
+
 export interface SysGpuInfo {
   index: number
   name: string
@@ -36,7 +47,7 @@ export interface SysGpuInfo {
   memory_used_mb: number
   memory_total_mb: number
   memory_free_mb: number
-  processes: { pid: number; used_gpu_memory_mb: number }[]
+  processes: GpuProcessInfo[]
   loaded_models?: { name: string; type: string; vram_gb: number }[]
   low_memory?: boolean
 }
@@ -100,4 +111,23 @@ export function useSysStats() {
 export function useSysProcesses() {
   const q = useMonitorStats()
   return { ...q, data: q.data ? { processes: q.data.processes } : undefined }
+}
+
+export function useKillProcess() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (pid: number) =>
+      apiFetch<{ killed: boolean; pid: number }>('/api/v1/monitor/kill-process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid }),
+      }),
+    onSuccess: (_, pid) => {
+      qc.invalidateQueries({ queryKey: ['monitor-stats'] })
+      useToastStore.getState().add(`Process ${pid} killed`, 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`Kill failed: ${error.message}`, 'error')
+    },
+  })
 }

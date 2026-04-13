@@ -76,6 +76,9 @@ export default function NodeEditor() {
         type: n.type,
         position: n.position,
         data: n.data,
+        style: (n as any).style ?? { width: 320 },
+        ...((n as any).width != null ? { width: (n as any).width } : {}),
+        ...((n as any).height != null ? { height: (n as any).height } : {}),
         className: nodeStates[n.id] ? NODE_STATE_CLASS[nodeStates[n.id]] : undefined,
       })),
     [workflow.nodes, nodeStates],
@@ -98,8 +101,26 @@ export default function NodeEditor() {
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState(rfNodes)
   const [edges, setEdges, onEdgesChangeInternal] = useEdgesState(rfEdges)
 
-  // Sync Zustand store changes (e.g. widget edits) back to React Flow's internal state
-  useEffect(() => { setNodes(rfNodes) }, [rfNodes, setNodes])
+  // Keep a ref to always access latest React Flow nodes (avoids stale closures)
+  const nodesRef = useRef(nodes)
+  nodesRef.current = nodes
+
+  // Sync Zustand store changes back to React Flow, preserving resize dimensions
+  useEffect(() => {
+    setNodes((prev) =>
+      rfNodes.map((rfn) => {
+        const existing = prev.find((p) => p.id === rfn.id)
+        if (!existing) return rfn
+        // Preserve React Flow's resize state (width/height/style set by NodeResizer)
+        return {
+          ...rfn,
+          ...(existing.width != null ? { width: existing.width } : {}),
+          ...(existing.height != null ? { height: existing.height } : {}),
+          ...(existing.style ? { style: existing.style } : {}),
+        }
+      }),
+    )
+  }, [rfNodes, setNodes])
   useEffect(() => { setEdges(rfEdges) }, [rfEdges, setEdges])
 
   const onNodesChange = useCallback(
@@ -141,26 +162,41 @@ export default function NodeEditor() {
 
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
-      const sourceNode = nodes.find((n) => n.id === connection.source)
-      const targetNode = nodes.find((n) => n.id === connection.target)
+      const currentNodes = nodesRef.current
+      const sourceNode = currentNodes.find((n) => n.id === connection.source)
+      const targetNode = currentNodes.find((n) => n.id === connection.target)
       if (!sourceNode || !targetNode) return false
       const sourceType = getPortType(sourceNode.type ?? '', connection.sourceHandle)
       const targetType = getPortType(targetNode.type ?? '', connection.targetHandle)
       if (!sourceType || !targetType) return false
       return sourceType === targetType
     },
-    [nodes],
+    [],
   )
 
-  const syncPositionsToStore = useCallback(() => {
+  // Sync React Flow positions/sizes to Zustand store (uses ref to avoid stale closures)
+  const syncToStore = useCallback(() => {
+    const currentNodes = nodesRef.current
     setWorkflow({
       ...workflow,
       nodes: workflow.nodes.map((wn) => {
-        const rfNode = nodes.find((n) => n.id === wn.id)
-        return rfNode ? { ...wn, position: rfNode.position } : wn
+        const rfNode = currentNodes.find((n) => n.id === wn.id)
+        if (!rfNode) return wn
+        const updated: any = { ...wn, position: rfNode.position }
+        if (rfNode.style) updated.style = rfNode.style
+        if (rfNode.width != null) updated.width = rfNode.width
+        if (rfNode.height != null) updated.height = rfNode.height
+        return updated
       }),
     })
-  }, [nodes, workflow, setWorkflow])
+  }, [workflow, setWorkflow])
+
+  // Sync resize changes to store
+  useEffect(() => {
+    const handler = () => syncToStore()
+    window.addEventListener('node-resize-end', handler)
+    return () => window.removeEventListener('node-resize-end', handler)
+  }, [syncToStore])
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -180,7 +216,7 @@ export default function NodeEditor() {
         y: event.clientY - bounds.top,
       })
       const id = crypto.randomUUID().slice(0, 8)
-      const newNode: Node = { id, type, position, data: {} }
+      const newNode: Node = { id, type, position, data: {}, style: { width: 320 } }
       setNodes((nds) => [...nds, newNode])
       storeAddNode({ id, type, position, data: {} })
     },
@@ -212,7 +248,7 @@ export default function NodeEditor() {
           onInit={(instance) => { reactFlowInstance.current = instance }}
           onDragOver={onDragOver}
           onDrop={onDrop}
-          onNodeDragStop={syncPositionsToStore}
+          onNodeDragStop={syncToStore}
           onEdgeDoubleClick={(_event, edge) => {
             setEdges((eds) => eds.filter((e) => e.id !== edge.id))
             storeRemoveEdge(edge.id)

@@ -51,6 +51,7 @@ export default function ModelsOverlay() {
 
   const handleToggle = useCallback(
     (engine: EngineInfo) => {
+      if (engine.status === 'loading') return // ignore while loading
       if (engine.status === 'loaded') {
         unloadEngine.mutate(engine.name)
       } else {
@@ -72,8 +73,11 @@ export default function ModelsOverlay() {
   const menuItems: MenuItem[] = ctxMenu.model
     ? [
         {
-          label: ctxMenu.model.status === 'loaded' ? '卸载模型' : '加载模型',
+          label: ctxMenu.model.status === 'loaded' ? '卸载模型'
+            : ctxMenu.model.status === 'loading' ? '加载中...'
+            : '加载模型',
           onClick: () => handleToggle(ctxMenu.model!),
+          disabled: ctxMenu.model.status === 'loading',
         },
         {
           label: ctxMenu.model.resident ? '取消自动加载' : '设为自动加载',
@@ -357,24 +361,33 @@ function Tag({
 }
 
 function StatusBadge({ status, loadedGpus }: { status: string; loadedGpus?: number[] | null }) {
-  const isLoaded = status === 'loaded'
   const gpuLabel = loadedGpus && loadedGpus.length > 0
     ? ` · GPU ${loadedGpus.join(',')}`
     : ''
+
+  const config: Record<string, { color: string; label: string; animate?: boolean }> = {
+    loaded:   { color: 'var(--ok)',           label: `running${gpuLabel}` },
+    loading:  { color: 'var(--warn)',         label: 'loading...', animate: true },
+    failed:   { color: 'var(--accent)',       label: 'failed' },
+    unloaded: { color: 'var(--muted-strong)', label: 'idle' },
+  }
+  const { color, label, animate } = config[status] ?? config.unloaded
+
   return (
     <span
       className="flex items-center gap-1"
-      style={{ fontSize: 9, color: isLoaded ? 'var(--ok)' : 'var(--muted-strong)', flexShrink: 0 }}
+      style={{ fontSize: 9, color, flexShrink: 0 }}
     >
       <span
         className="inline-block rounded-full"
         style={{
           width: 6,
           height: 6,
-          background: isLoaded ? 'var(--ok)' : 'var(--muted-strong)',
+          background: color,
+          ...(animate ? { animation: 'loading-pulse 1.5s ease-in-out infinite' } : {}),
         }}
       />
-      {isLoaded ? `running${gpuLabel}` : 'idle'}
+      {label}
     </span>
   )
 }

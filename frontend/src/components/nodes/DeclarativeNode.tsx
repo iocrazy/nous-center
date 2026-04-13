@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { NodeProps } from '@xyflow/react'
+import { NodeResizer, type NodeProps } from '@xyflow/react'
 import { useQuery } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
@@ -185,8 +185,18 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
 
   if (!declDef || !portDef) return null
 
+  const handleResizeEnd = () => window.dispatchEvent(new Event('node-resize-end'))
+
   return (
-    <div style={{ width: 320 }}>
+    <>
+    <NodeResizer
+      isVisible={selected}
+      minWidth={220}
+      minHeight={80}
+      onResizeEnd={handleResizeEnd}
+      lineStyle={{ border: 'none' }}
+      handleStyle={{ width: 12, height: 12, background: 'transparent', border: 'none' }}
+    />
     <BaseNode
       title={declDef.label}
       badge={{
@@ -199,7 +209,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
       outputs={portDef.outputs}
     >
       {declDef.widgets.map((w) => (
-        <NodeWidgetRow key={w.name} label={w.label}>
+        <NodeWidgetRow key={w.name} label={w.label} stretch={w.widget === 'textarea'}>
           <WidgetRenderer
             widget={w}
             value={data[w.name] as unknown}
@@ -210,7 +220,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
       {streamText && (
         <div style={{
           padding: '6px 8px', margin: '4px 8px 8px', background: 'var(--bg)',
-          borderRadius: 4, fontSize: 11, maxHeight: 120, overflow: 'auto',
+          borderRadius: 4, fontSize: 11, flex: 1, minHeight: 40, overflow: 'auto',
           whiteSpace: 'pre-wrap', color: 'var(--text-secondary)',
           border: '1px solid var(--border)',
         }}>
@@ -219,6 +229,6 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         </div>
       )}
     </BaseNode>
-    </div>
+    </>
   )
 }

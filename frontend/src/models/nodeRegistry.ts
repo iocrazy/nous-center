@@ -36,7 +36,11 @@ export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
       { name: 'system', label: '系统提示', widget: 'textarea', rows: 3 },
       { name: 'model_key', label: '模型', widget: 'model_select', filter: 'llm' },
       { name: 'temperature', label: '温度', widget: 'slider', min: 0, max: 2, step: 0.1, precision: 1, default: 0.7 },
-      { name: 'max_tokens', label: '最大 Token', widget: 'slider', min: 1, max: 8192, step: 1, precision: 0, default: 2048 },
+      { name: 'max_tokens', label: '最大 Token', widget: 'slider', min: 1, max: 262144, step: 1, precision: 0, default: 4096 },
+      { name: 'enable_thinking', label: '思维模式', widget: 'select', options: [
+        { value: 'true', label: '开启' },
+        { value: 'false', label: '关闭' },
+      ], default: 'false' },
       { name: 'stream', label: '流式输出', widget: 'select', options: [
         { value: 'true', label: '开启' },
         { value: 'false', label: '关闭' },

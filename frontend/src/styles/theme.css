@@ -144,6 +144,18 @@ input[type="number"] {
   padding: 0 !important;
 }
 
+/* Invisible resize handles — only cursor changes (ComfyUI style) */
+.react-flow__resize-control.handle {
+  background: transparent !important;
+  border: none !important;
+  width: 14px !important;
+  height: 14px !important;
+  opacity: 1 !important;
+}
+.react-flow__resize-control.line {
+  border-color: transparent !important;
+}
+
 /* Node execution state styles */
 .react-flow__node.node-running > div {
   outline: 2px solid var(--ok) !important;
@@ -173,6 +185,11 @@ input[type="number"] {
 @keyframes node-pulse {
   0%, 100% { outline-color: var(--ok); }
   50% { outline-color: transparent; }
+}
+
+@keyframes loading-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 /* Node slider — ElevenLabs style range input */
