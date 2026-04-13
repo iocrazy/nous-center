@@ -116,6 +116,7 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     inputs: [
       { id: 'prompt', type: 'text', label: '提示' },
       { id: 'image', type: 'data', label: '图片' },
+      { id: 'audio', type: 'audio', label: '音频' },
     ],
     outputs: [{ id: 'text', type: 'text', label: '输出' }],
   },

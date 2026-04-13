@@ -225,6 +225,7 @@ async def _exec_multimodal_input(data: dict, inputs: dict) -> dict:
 async def _exec_ref_audio(data: dict, inputs: dict) -> dict:
     return {
         "audio_path": data.get("path", ""),
+        "audio": data.get("audio_data", ""),  # base64 data URL for LLM audio input
         "ref_text": data.get("ref_text", ""),
     }
 
@@ -305,18 +306,24 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     if system_msg:
         messages.append({"role": "system", "content": system_msg})
 
-    # Support multimodal: multiple images via "images" list, fallback to single "image"
+    # Support multimodal: images + audio
     images = inputs.get("images") or []
     if not images:
         single = inputs.get("image") or ""
         if single and single.startswith("data:"):
             images = [single]
 
-    if images:
+    audio = inputs.get("audio") or ""
+
+    has_media = bool(images) or (audio and audio.startswith("data:"))
+
+    if has_media:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for img in images:
             if img and img.startswith("data:"):
                 content.append({"type": "image_url", "image_url": {"url": img}})
+        if audio and audio.startswith("data:"):
+            content.append({"type": "input_audio", "input_audio": {"data": audio, "format": "wav"}})
         messages.append({"role": "user", "content": content})
     else:
         messages.append({"role": "user", "content": prompt})
