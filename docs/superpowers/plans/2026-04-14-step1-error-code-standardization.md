@@ -21,6 +21,7 @@
 - `frontend/src/api/errors.ts` — `NousApiError` class
 - `backend/tests/test_errors.py` — unit tests for NousError serialization
 - `backend/tests/test_api_errors.py` — integration tests for all 4 handlers + RequestID header
+- `backend/tests/conftest_logs.py` — fixture to isolate tests from the real `logs.db`
 
 **Modify:**
 - `backend/src/api/main.py` — register `RequestIdMiddleware` and 4 exception handlers (around line 246 where other middleware is added)
@@ -159,17 +160,81 @@ __all__ = ["RequestIdMiddleware"]
 
 - [ ] **Step 4: Register middleware in `backend/src/api/main.py`**
 
-Add near the other `app.add_middleware(...)` calls (around line 246):
+**⚠️ Middleware ordering:** Starlette's `add_middleware()` is LIFO — **last added runs first**. We want `RequestIdMiddleware` to run FIRST so `request.state.request_id` is populated before `AuditMiddleware` and `RequestLoggingMiddleware` inspect it. Therefore **add it LAST** in the `add_middleware` calls:
+
 ```python
+# In create_app(), AFTER the existing app.add_middleware(AuditMiddleware)
+# and app.add_middleware(RequestLoggingMiddleware) calls:
 from src.api.middleware import RequestIdMiddleware
-# Add FIRST so request_id is available to all downstream middleware / handlers
-app.add_middleware(RequestIdMiddleware)
+app.add_middleware(RequestIdMiddleware)  # LIFO — last added = first to run
 ```
 
-Note: FastAPI middleware runs in reverse order of `add_middleware` — last added runs first. Place `RequestIdMiddleware` **last** in the `add_middleware` calls so it runs first.
+**CORS `expose_headers`:** the existing `CORSMiddleware` registration (around line 232) has an `expose_headers` arg. Append `"X-Request-Id"` to that list so browser JS can read it via `resp.headers.get('x-request-id')`:
+```python
+# Modify the existing CORSMiddleware add_middleware call:
+app.add_middleware(
+    CORSMiddleware,
+    ...existing args...,
+    expose_headers=[..., "X-Request-Id"],  # add if missing
+)
+```
+If the current registration has no `expose_headers`, add `expose_headers=["X-Request-Id"]`.
+
+**Optional enhancement:** `RequestLoggingMiddleware` currently logs request rows without request_id. If straightforward, extend its schema to include `request_id` (new column in `request_logs`) in a follow-up PR — **out of scope for this Task**. Note in TODOS instead.
 
 - [ ] **Step 5: Run tests, confirm pass**
 - [ ] **Step 6: Commit** — `feat(api): add RequestIdMiddleware with X-Request-Id header echo`
+
+---
+
+## Task 2.5: Test isolation — prevent logs.db pollution
+
+**Why:** Tests in Task 3 deliberately trigger 500 errors. The `_unhandled` handler calls `logger.exception(...)`, which `DbLogHandler` buffers and writes to `backend/data/logs.db` — polluting the real log DB every test run (the "kaboom" test error would show up in the app's LogsOverlay UI).
+
+**Files:**
+- Create: `backend/tests/conftest_logs.py`
+- Modify: `backend/tests/conftest.py` (import the fixture)
+
+- [ ] **Step 1: Create isolation fixture**
+
+```python
+# backend/tests/conftest_logs.py
+import logging
+import pytest
+
+@pytest.fixture(autouse=True)
+def _silence_db_log_handler():
+    """Detach DbLogHandler from the root logger during tests so
+    error logs emitted by exception handlers don't hit backend/data/logs.db.
+
+    Test assertions that need to verify logging should attach a caplog fixture
+    or a MemoryHandler explicitly."""
+    root = logging.getLogger()
+    removed = [h for h in list(root.handlers) if h.__class__.__name__ == "DbLogHandler"]
+    for h in removed:
+        root.removeHandler(h)
+    yield
+    for h in removed:
+        root.addHandler(h)
+```
+
+- [ ] **Step 2: Import into conftest.py**
+
+Append to `backend/tests/conftest.py`:
+```python
+from .conftest_logs import _silence_db_log_handler  # noqa: F401  # autouse fixture
+```
+
+- [ ] **Step 3: Verify**
+
+```bash
+.venv/bin/pytest backend/tests/test_api_errors.py -v
+# Then check logs.db hasn't grown:
+sqlite3 backend/data/logs.db "SELECT COUNT(*) FROM app_logs WHERE message LIKE '%kaboom%'"
+# Expected: 0
+```
+
+- [ ] **Step 4: Commit** — `test: isolate test runs from logs.db pollution`
 
 ---
 
@@ -238,6 +303,27 @@ def test_httpexception_converted_to_openai_shape():
     assert body["error"]["message"] == "route raised 404"
     assert body["error"]["request_id"] == r.headers["x-request-id"]
 
+def test_httpexception_with_list_detail_preserves_param():
+    """When a route raises HTTPException(detail=[{'loc': [...], 'msg': ...}]),
+    the param should be extracted from loc, not lost in stringification."""
+    from fastapi import APIRouter, HTTPException
+    from src.api.main import create_app
+    app = create_app()
+    r = APIRouter()
+    @r.get("/__test__/http422-list")
+    async def _h():
+        raise HTTPException(
+            422,
+            detail=[{"loc": ["body", "messages", 0, "role"], "msg": "bad role"}],
+        )
+    app.include_router(r)
+    c = TestClient(app, raise_server_exceptions=False)
+    resp = c.get("/__test__/http422-list")
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["message"] == "bad role"
+    assert body["error"]["param"] == "messages.0.role"
+
 def test_validation_error_shape():
     r = _client_with_test_routes().post("/__test__/validate", json={})
     assert r.status_code == 400
@@ -285,13 +371,25 @@ _HTTP_STATUS_TO_ERROR = {
     429: RateLimitError,
 }
 
-def _detail_to_message(detail) -> str:
+def _detail_to_message_and_param(detail) -> tuple[str, str | None]:
+    """Return (message, param) from an HTTPException.detail.
+
+    Handles 3 forms:
+    - str: the message itself, no param
+    - list of Pydantic error dicts (from validation): extract msg + loc into param
+    - anything else: str() fallback
+    """
     if isinstance(detail, str):
-        return detail
-    if isinstance(detail, list):
-        return "; ".join(e.get("msg", str(e)) if isinstance(e, dict) else str(e)
-                          for e in detail)
-    return str(detail)
+        return detail, None
+    if isinstance(detail, list) and detail:
+        first = detail[0] if isinstance(detail[0], dict) else {}
+        msg = first.get("msg") or "; ".join(
+            e.get("msg", str(e)) if isinstance(e, dict) else str(e) for e in detail
+        )
+        loc = first.get("loc") or []
+        param = ".".join(str(x) for x in loc if x != "body") or None
+        return msg, param
+    return str(detail), None
 
 def _with_request_id(err: NousError, request) -> NousError:
     err.request_id = getattr(request.state, "request_id", None)
@@ -312,7 +410,8 @@ def _register_error_handlers(app):
         cls = _HTTP_STATUS_TO_ERROR.get(status)
         if cls is None:
             cls = InvalidRequestError if 400 <= status < 500 else APIError
-        err = cls(_detail_to_message(exc.detail))
+        msg, param = _detail_to_message_and_param(exc.detail)
+        err = cls(msg, param=param)
         err.http_status = status  # preserve original 4xx nuance (e.g. 409, 422 via HTTPException)
         return _response(_with_request_id(err, request))
 
@@ -330,13 +429,28 @@ def _register_error_handlers(app):
 
     @app.exception_handler(Exception)
     async def _unhandled(request, exc: Exception):
-        rid = getattr(request.state, "request_id", None)
-        logger.exception(
-            "unhandled exception | req_id=%s | %s %s",
-            rid, request.method, request.url.path,
-        )
-        err = APIError("Internal server error", code="internal_error", request_id=rid)
-        return _response(err)
+        # Outer safety net: this handler itself must never raise, or FastAPI
+        # falls through to a bare 500 with no X-Request-Id and no OpenAI shape.
+        rid = None
+        try:
+            rid = getattr(request.state, "request_id", None)
+            try:
+                logger.exception(
+                    "unhandled exception | req_id=%s | %s %s",
+                    rid, request.method, request.url.path,
+                )
+            except Exception:
+                pass  # logging must never crash the handler
+            err = APIError("Internal server error", code="internal_error", request_id=rid)
+            return _response(err)
+        except Exception:
+            # Last-resort fallback: hand-built response that bypasses .to_dict()
+            headers = {"X-Request-Id": rid} if rid else {}
+            return JSONResponse(
+                {"error": {"message": "Internal server error", "type": "api_error",
+                           "code": "internal_error"}},
+                status_code=500, headers=headers,
+            )
 ```
 
 Then in `create_app()` after middleware setup, call `_register_error_handlers(app)` before `return app`.
@@ -412,23 +526,40 @@ logger = logging.getLogger(__name__)
 
 async def sse_with_error_envelope(inner):
     """Wrap an async generator so any NousError/Exception is emitted as an
-    OpenAI-style SSE error chunk followed by [DONE] instead of crashing the stream."""
+    OpenAI-style SSE error chunk. Guarantees a single `data: [DONE]` closes the
+    stream whether inner finished normally, raised, or inner itself yielded [DONE].
+
+    Invariant: the inner generator MUST NOT yield its own `data: [DONE]` terminator.
+    All inner [DONE] emissions should be removed when this wrapper is adopted —
+    otherwise clients will see a duplicate [DONE] marker.
+    """
+    sent_done = False
     try:
         async for chunk in inner:
+            # Defensive: strip any stray [DONE] the inner generator tried to emit.
+            if chunk.strip() == "data: [DONE]":
+                continue
             yield chunk
     except NousError as e:
         yield f"data: {json.dumps(e.to_dict())}\n\n"
-        yield "data: [DONE]\n\n"
-    except Exception as e:
+    except Exception:
         logger.exception("SSE stream failure")
         err = APIError("Internal server error", code="internal_error")
         yield f"data: {json.dumps(err.to_dict())}\n\n"
-        yield "data: [DONE]\n\n"
+    finally:
+        if not sent_done:
+            yield "data: [DONE]\n\n"
+            sent_done = True
 ```
 
 - [ ] **Step 4: Wrap the existing SSE generator in `openai_compat.py`**
 
-Find the `StreamingResponse(...)` call in the chat/completions stream branch and replace the generator argument with `sse_with_error_envelope(existing_generator)`.
+1. Find the `StreamingResponse(...)` call in the `stream=true` branch of `/v1/chat/completions`.
+2. **Remove** any existing inline `yield "data: [DONE]\n\n"` inside the inner async generator — the wrapper now owns that terminator.
+3. **Remove** any existing error catch that yields a non-OpenAI-shape error payload — let exceptions bubble out of `inner` so `sse_with_error_envelope` can format them.
+4. Replace the generator argument: `StreamingResponse(sse_with_error_envelope(existing_generator), ...)`.
+
+**Why strict:** leaving old error/[DONE] code in the inner generator results in two different error formats visible to clients (legacy + wrapper) and potentially two `[DONE]` markers. Either fully delegate to the wrapper or don't use it at all.
 
 - [ ] **Step 5: Run tests, confirm pass**
 - [ ] **Step 6: Commit** — `feat(openai): emit OpenAI-style error chunk + [DONE] on SSE failure`
@@ -512,6 +643,16 @@ cd /media/heygo/Program/projects-code/_playground/nous-center/backend
 - [ ] **Step 2: Run all 5 curl cases from spec §Verification**
 
 Copy-paste from `docs/superpowers/specs/2026-04-14-step1-error-code-standardization-design.md` §Verification. Each case must match the "预期" comment.
+
+- [ ] **Step 2a: Verify CORS exposes X-Request-Id to browser**
+
+```bash
+curl --noproxy '*' -I -H "Origin: http://localhost:5173" \
+  http://localhost:8000/api/v1/instances 2>&1 | grep -i 'access-control-expose-headers'
+# Expected: the response header includes "X-Request-Id" (case-insensitive)
+```
+
+If missing, re-check Task 2 Step 4 CORS modification.
 
 - [ ] **Step 3: Inspect `logs.db` app_logs after a 500**
 
