@@ -16,12 +16,13 @@
 
 **Create:**
 - `backend/src/errors.py` — `NousError` base + 6 subclasses, `.to_dict()` serializer
-- `backend/src/api/middleware/__init__.py` — re-exports
-- `backend/src/api/middleware/request_id.py` — `RequestIdMiddleware`
 - `frontend/src/api/errors.ts` — `NousApiError` class
 - `backend/tests/test_errors.py` — unit tests for NousError serialization
 - `backend/tests/test_api_errors.py` — integration tests for all 4 handlers + RequestID header
 - `backend/tests/conftest_logs.py` — fixture to isolate tests from the real `logs.db`
+
+**Modify (⚠️ note: `src/api/middleware.py` is a FILE, not a package — do NOT create a `middleware/` directory):**
+- `backend/src/api/middleware.py` — append `RequestIdMiddleware` class to the existing module (alongside `RequestLoggingMiddleware` / `AuditMiddleware`)
 
 **Modify:**
 - `backend/src/api/main.py` — register `RequestIdMiddleware` and 4 exception handlers (around line 246 where other middleware is added)
@@ -109,14 +110,18 @@ class APIError(NousError):             type = "api_error";            http_statu
 ## Task 2: RequestIdMiddleware + unit test
 
 **Files:**
-- Create: `backend/src/api/middleware/__init__.py` (empty or re-exports)
-- Create: `backend/src/api/middleware/request_id.py`
+- Modify: `backend/src/api/middleware.py` — add `RequestIdMiddleware` class (⚠️ existing module file, not package — do not create `middleware/` directory)
 - Test: `backend/tests/test_api_errors.py` (start of this file; shared test module)
 
 - [ ] **Step 1: Write failing test**
 
 ```python
 # backend/tests/test_api_errors.py
+# NOTE: conftest.py provides a `client` fixture that wires app.state.model_manager.
+# Use it for routes that might dereference model_manager. Constructing a bare
+# TestClient(create_app()) is fine here because /__test__/* routes and /api/v1/engines
+# do not hit model_manager eagerly. If a future test hits a route that does,
+# switch to the shared client fixture or mirror the mock setup from conftest.py.
 from fastapi.testclient import TestClient
 from src.api.main import create_app
 
@@ -135,15 +140,17 @@ def test_request_id_echoed_when_provided():
 
 - [ ] **Step 2: Run tests, confirm they fail**
 
-- [ ] **Step 3: Implement middleware**
+- [ ] **Step 3: Append `RequestIdMiddleware` to `backend/src/api/middleware.py`**
+
+The module already exports `RequestLoggingMiddleware` and `AuditMiddleware`. Append (do not replace):
 
 ```python
-# backend/src/api/middleware/request_id.py
-import uuid
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+# In backend/src/api/middleware.py — add below the existing middleware classes
+import uuid  # only if not already imported
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Generate or propagate X-Request-Id. Must run FIRST (add LAST)."""
+
     async def dispatch(self, request: Request, call_next):
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex
         request.state.request_id = rid
@@ -152,11 +159,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 ```
 
-```python
-# backend/src/api/middleware/__init__.py
-from .request_id import RequestIdMiddleware
-__all__ = ["RequestIdMiddleware"]
-```
+Existing `from src.api.middleware import RequestLoggingMiddleware, AuditMiddleware` imports in `main.py` stay valid; add `RequestIdMiddleware` to that import line.
 
 - [ ] **Step 4: Register middleware in `backend/src/api/main.py`**
 
@@ -165,11 +168,13 @@ __all__ = ["RequestIdMiddleware"]
 ```python
 # In create_app(), AFTER the existing app.add_middleware(AuditMiddleware)
 # and app.add_middleware(RequestLoggingMiddleware) calls:
-from src.api.middleware import RequestIdMiddleware
+# RequestIdMiddleware is imported alongside the others — no new import.
 app.add_middleware(RequestIdMiddleware)  # LIFO — last added = first to run
 ```
 
-**CORS `expose_headers`:** the existing `CORSMiddleware` registration (around line 232) has an `expose_headers` arg. Append `"X-Request-Id"` to that list so browser JS can read it via `resp.headers.get('x-request-id')`:
+**Note:** As of today neither `AuditMiddleware` nor `RequestLoggingMiddleware` reads `request.state.request_id` — the ordering matters only for the global exception handlers (which are NOT middleware but need `request.state` populated). Still add LAST for consistency and to enable future use.
+
+**CORS `expose_headers`:** the existing `CORSMiddleware` registration (around line 232) currently has **no** `expose_headers` kwarg — browsers cannot read `X-Request-Id` from responses without this. Append `"X-Request-Id"` to that list so browser JS can read it via `resp.headers.get('x-request-id')`:
 ```python
 # Modify the existing CORSMiddleware add_middleware call:
 app.add_middleware(
@@ -202,20 +207,39 @@ If the current registration has no `expose_headers`, add `expose_headers=["X-Req
 import logging
 import pytest
 
+# DbLogHandler is attached to the "src" and "nous" named loggers in main.py
+# (inside lifespan), NOT the root logger. Detach from those specific loggers
+# so ERROR logs emitted by exception handlers during tests don't hit logs.db.
+_ATTACHED_LOGGERS = ("src", "nous")
+
+
 @pytest.fixture(autouse=True)
 def _silence_db_log_handler():
-    """Detach DbLogHandler from the root logger during tests so
-    error logs emitted by exception handlers don't hit backend/data/logs.db.
-
-    Test assertions that need to verify logging should attach a caplog fixture
-    or a MemoryHandler explicitly."""
-    root = logging.getLogger()
-    removed = [h for h in list(root.handlers) if h.__class__.__name__ == "DbLogHandler"]
-    for h in removed:
-        root.removeHandler(h)
-    yield
-    for h in removed:
-        root.addHandler(h)
+    """Neutralize DbLogHandler across all named loggers it may be attached to."""
+    saved: list[tuple[logging.Logger, logging.Handler]] = []
+    for name in _ATTACHED_LOGGERS:
+        lg = logging.getLogger(name)
+        for h in list(lg.handlers):
+            if h.__class__.__name__ == "DbLogHandler":
+                lg.removeHandler(h)
+                saved.append((lg, h))
+    # Extra guard: if the handler is added after the fixture runs (lifespan
+    # startup inside a later TestClient context), monkeypatch insert_app_log
+    # to a no-op so nothing reaches the DB.
+    try:
+        from src.services import log_db
+        original = log_db.insert_app_log
+        log_db.insert_app_log = lambda **kw: None
+    except Exception:
+        original = None
+    try:
+        yield
+    finally:
+        for lg, h in saved:
+            lg.addHandler(h)
+        if original is not None:
+            from src.services import log_db
+            log_db.insert_app_log = original
 ```
 
 - [ ] **Step 2: Import into conftest.py**
@@ -368,7 +392,15 @@ _HTTP_STATUS_TO_ERROR = {
     401: AuthenticationError,
     403: NousPermissionError,
     404: NotFoundError,
+    409: InvalidRequestError,  # fallback; handler adds code="conflict" below
+    422: InvalidRequestError,  # Pydantic / manual validation
     429: RateLimitError,
+}
+
+# Codes for statuses where the shared error type needs distinguishing in the payload
+_STATUS_DEFAULT_CODE = {
+    409: "conflict",
+    422: "validation_error",
 }
 
 def _detail_to_message_and_param(detail) -> tuple[str, str | None]:
@@ -411,8 +443,8 @@ def _register_error_handlers(app):
         if cls is None:
             cls = InvalidRequestError if 400 <= status < 500 else APIError
         msg, param = _detail_to_message_and_param(exc.detail)
-        err = cls(msg, param=param)
-        err.http_status = status  # preserve original 4xx nuance (e.g. 409, 422 via HTTPException)
+        err = cls(msg, param=param, code=_STATUS_DEFAULT_CODE.get(status))
+        err.http_status = status  # preserve original 4xx nuance
         return _response(_with_request_id(err, request))
 
     @app.exception_handler(RequestValidationError)
@@ -552,14 +584,48 @@ async def sse_with_error_envelope(inner):
             sent_done = True
 ```
 
-- [ ] **Step 4: Wrap the existing SSE generator in `openai_compat.py`**
+- [ ] **Step 4: Integrate wrapper into `_stream_proxy` in `openai_compat.py`** (the function around line 69)
 
-1. Find the `StreamingResponse(...)` call in the `stream=true` branch of `/v1/chat/completions`.
-2. **Remove** any existing inline `yield "data: [DONE]\n\n"` inside the inner async generator — the wrapper now owns that terminator.
-3. **Remove** any existing error catch that yields a non-OpenAI-shape error payload — let exceptions bubble out of `inner` so `sse_with_error_envelope` can format them.
-4. Replace the generator argument: `StreamingResponse(sse_with_error_envelope(existing_generator), ...)`.
+**Current behavior (read `openai_compat.py:69-105` before editing):**
+- `_stream_proxy` proxies upstream vLLM SSE lines verbatim (`yield line + "\n"` at line ~82)
+- Upstream emits its own `data: [DONE]` terminator which passes through
+- Upstream non-200 response body is yielded **as-is, unwrapped** (line ~77: `yield f"data: {error_body.decode()}\n\n"` then `return`) — **this is NOT OpenAI error shape and must be converted**
 
-**Why strict:** leaving old error/[DONE] code in the inner generator results in two different error formats visible to clients (legacy + wrapper) and potentially two `[DONE]` markers. Either fully delegate to the wrapper or don't use it at all.
+**Edit plan:**
+
+1. In `_stream_proxy`, replace the upstream-error branch:
+   ```python
+   # OLD (~line 76-78):
+   if resp.status_code != 200:
+       error_body = await resp.aread()
+       yield f"data: {error_body.decode()}\n\n"
+       return
+
+   # NEW:
+   if resp.status_code != 200:
+       error_text = (await resp.aread()).decode(errors="replace")
+       # Map upstream status to NousError so the wrapper formats it uniformly.
+       from src.errors import NotFoundError, APIError, InvalidRequestError
+       if resp.status_code == 404:
+           raise NotFoundError(error_text[:500], code="upstream_not_found")
+       if 400 <= resp.status_code < 500:
+           raise InvalidRequestError(error_text[:500], code="upstream_bad_request")
+       raise APIError("Upstream LLM error", code="upstream_error")
+   ```
+
+2. **Leave** the upstream-emitted `data: [DONE]` in place — the wrapper's defensive filter strips it and re-emits exactly one at the end. This is intentional: vLLM owns the terminator today; wrapper normalizes.
+
+3. Wrap the `StreamingResponse` call (around line 105):
+   ```python
+   return StreamingResponse(
+       sse_with_error_envelope(_stream_proxy()),
+       media_type="text/event-stream",
+   )
+   ```
+
+**Note on defensive filter correctness:** `(line + "\n").strip() == "data: [DONE]"` matches vLLM's terminator exactly. If upstream ever emits `data:[DONE]` (no space) or `event: done`, filter misses it and client sees double [DONE]. Acceptable for now since vLLM 0.19 uses the standard form; add a broader regex if we adopt another upstream engine.
+
+**Why strict:** today's upstream-error path bypasses our error envelope entirely (clients get raw vLLM JSON in an SSE chunk). Converting it to a NousError raise is what actually delivers the spec's SSE error protocol. The wrapper alone isn't enough.
 
 - [ ] **Step 5: Run tests, confirm pass**
 - [ ] **Step 6: Commit** — `feat(openai): emit OpenAI-style error chunk + [DONE] on SSE failure`
