@@ -1,3 +1,5 @@
+import { NousApiError } from './errors'
+
 const BASE = '' // proxied via vite config
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -7,7 +9,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   })
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}))
-    throw new Error(body.detail || `API error: ${resp.status}`)
+    const reqId = resp.headers.get('x-request-id') ?? undefined
+    throw new NousApiError(body, resp.status, reqId)
   }
   if (resp.status === 204) return undefined as T
   return resp.json()
