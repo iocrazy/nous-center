@@ -15,12 +15,38 @@ from pydantic import BaseModel, Field
 
 from src.api.deps_auth import verify_bearer_token
 from src.config import load_model_configs
+from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
 from src.models.service_instance import ServiceInstance
 from src.models.instance_api_key import InstanceApiKey
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["openai-compat"])
+
+
+async def sse_with_error_envelope(inner):
+    """Wrap an SSE async generator so any NousError/Exception is emitted as an
+    OpenAI-style error chunk followed by exactly one `data: [DONE]`.
+
+    - Strips stray `data: [DONE]` markers emitted by the inner generator so we
+      always emit exactly one terminator from the wrapper.
+    - Converts NousError via to_dict(); any other Exception becomes a generic
+      APIError (no traceback leak).
+    """
+    try:
+        async for chunk in inner:
+            if chunk.strip() == "data: [DONE]":
+                # wrapper owns the terminator
+                continue
+            yield chunk
+    except NousError as e:
+        yield f"data: {json.dumps(e.to_dict())}\n\n"
+    except Exception:
+        logger.exception("SSE stream failure")
+        err = APIError("Internal server error", code="internal_error")
+        yield f"data: {json.dumps(err.to_dict())}\n\n"
+    finally:
+        yield "data: [DONE]\n\n"
 
 
 # --- /v1/chat/completions ---
@@ -73,9 +99,14 @@ async def chat_completions(
                     "POST", f"{base_url.rstrip('/')}/v1/chat/completions", json=body
                 ) as resp:
                     if resp.status_code != 200:
-                        error_body = await resp.aread()
-                        yield f"data: {error_body.decode()}\n\n"
-                        return
+                        error_text = (await resp.aread()).decode(errors="replace")
+                        # Map upstream status to a NousError so the wrapper
+                        # formats it uniformly.
+                        if resp.status_code == 404:
+                            raise NotFoundError(error_text[:500], code="upstream_not_found")
+                        if 400 <= resp.status_code < 500:
+                            raise InvalidRequestError(error_text[:500], code="upstream_bad_request")
+                        raise APIError("Upstream LLM error", code="upstream_error")
                     async for line in resp.aiter_lines():
                         if not line:
                             continue
@@ -102,7 +133,10 @@ async def chat_completions(
                 api_key_id=api_key.id,
             )
 
-        return StreamingResponse(_stream_proxy(), media_type="text/event-stream")
+        return StreamingResponse(
+            sse_with_error_envelope(_stream_proxy()),
+            media_type="text/event-stream",
+        )
 
     else:
         # Non-streaming: proxy request, extract usage
