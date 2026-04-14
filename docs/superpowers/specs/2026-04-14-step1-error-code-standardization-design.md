@@ -31,9 +31,7 @@
 
 ```
 ┌───────────────── Request ─────────────────┐
-│                                           │
-│  X-Request-Id: <UUID>                     │
-│                                           │
+│  X-Request-Id: <UUID>  (可选)             │
 └───────────────────┬───────────────────────┘
                     ▼
         ┌──── RequestIdMiddleware ────┐
@@ -42,23 +40,32 @@
                        ▼
               ┌─── Route handler ───┐
               │  raises:            │
-              │  - NousError (new)  │
+              │  - NousError (新)   │
               │  - HTTPException    │
+              │  - RequestValidation│
+              │    Error (Pydantic) │
               │  - Exception 兜底   │
               └──────────┬──────────┘
                          ▼
-        ┌─── ExceptionHandler (全局) ───┐
-        │  转 OpenAI payload            │
-        │  注入 request_id              │
-        │  设置 HTTP status             │
-        │  写 logs.db (含 traceback)    │
-        └──────────────┬────────────────┘
-                       ▼
-┌───────────────── Response ────────────────┐
-│ X-Request-Id: <UUID>                      │
-│ Content-Type: application/json            │
-│ { "error": { ...OpenAI shape... } }       │
-└───────────────────────────────────────────┘
+     ┌───── 4 个 ExceptionHandler (全局) ─────┐
+     │  1. NousError → payload.to_dict()     │
+     │  2. HTTPException → 按 status 映射    │
+     │  3. RequestValidationError → 400      │
+     │  4. Exception → 500 + 日志 traceback  │
+     │                                       │
+     │  统一注入 request_id                  │
+     │  统一设置 X-Request-Id header         │
+     │  500 case: log → app_logs table       │
+     │           response: generic message    │
+     └──────────────┬────────────────────────┘
+                    ▼
+┌──────── Response (JSON 或 SSE) ────────┐
+│ X-Request-Id: <UUID>                   │
+│ { "error": { ...OpenAI shape... } }    │
+│                                        │
+│ (SSE 流式错误: data: {"error":{...}}\n │
+│              + data: [DONE]\n\n)       │
+└────────────────────────────────────────┘
 ```
 
 ## 关键文件
@@ -104,25 +111,60 @@ class APIError(NousError):             type = "api_error";            http_statu
 
 **HTTPException → NousError 映射（在 handler 里）：**
 
-| HTTP status | 转成的 NousError |
+| HTTP status | 转成的 NousError type |
 |---|---|
-| 400 | `InvalidRequestError` |
-| 401 | `AuthenticationError` |
-| 403 | `PermissionError` |
-| 404 | `NotFoundError` |
-| 429 | `RateLimitError` |
-| 其他 4xx | `InvalidRequestError` |
-| 5xx | `APIError` |
+| 400 | `invalid_request_error` |
+| 401 | `authentication_error` |
+| 403 | `permission_error` |
+| 404 | `not_found_error` |
+| 429 | `rate_limit_error` |
+| 其他 4xx | `invalid_request_error` |
+| 5xx | `api_error` |
+
+**`HTTPException.detail` 可能是 str 或 list**（Pydantic 错误时 FastAPI 会塞 list）。handler 需：
+```python
+if isinstance(exc.detail, str):
+    message = exc.detail
+elif isinstance(exc.detail, list):
+    # 通常是 [{"loc":[...], "msg":"...", "type":"..."}]
+    message = "; ".join(e.get("msg", str(e)) for e in exc.detail)
+else:
+    message = str(exc.detail)
+```
+
+**`RequestValidationError` 单独处理**（Pydantic 请求体校验失败，不会走 HTTPException 路径）：
+```python
+@app.exception_handler(RequestValidationError)
+async def validation_exc(request, exc):
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    loc = ".".join(str(x) for x in first.get("loc", []) if x != "body")
+    err = InvalidRequestError(
+        message=first.get("msg", "Invalid request"),
+        code="validation_error",
+        param=loc or None,
+    )
+    err.request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(err.to_dict(), status_code=400,
+                        headers={"X-Request-Id": err.request_id or ""})
+```
+
+**500 兜底 handler 的 traceback 策略（安全）：**
+- 响应 payload **只返 generic message**：`"Internal server error"`（绝不泄露 traceback / 数据库错误细节 / 内部路径）
+- 完整 traceback **只写进 `logs.db` 的 `app_logs` 表**（复用现有 schema：`level="ERROR"`, `module="api.exception_handler"`, `message=f"{request_id} {path} | {type(exc).__name__}: {exc}"`, `location=traceback.format_exc()[-2000:]`）
+- 支持线上排查：用户拿到 `request_id` 找客服 → 后端按 request_id 查 app_logs → 看 traceback
 
 ### 前端
 
 | 路径 | 说明 |
 |---|---|
-| `frontend/src/api/client.ts`（修改） | `apiFetch` 解析 OpenAI 错误 payload，抛出 `NousApiError` |
-| `frontend/src/api/errors.ts`（新） | `NousApiError` class：`message` / `type` / `code` / `param` / `requestId` |
-| `frontend/src/stores/toast.ts`（修改，可选） | 按 `error.type` 做差异化 UI（rate_limit 倒计时、auth 跳登录） |
+| `frontend/src/api/errors.ts`（新） | `NousApiError` class |
+| `frontend/src/api/client.ts`（**必须同批改**） | `apiFetch` 抛出 `NousApiError`；现有 `body.detail` 逻辑失效 |
+| `frontend/src/stores/toast.ts`（可选，后续） | 按 `error.type` 做差异化 UI |
 
-**`NousApiError`：**
+**⚠️ Breaking change：** 后端改完后，现有 `apiFetch` 的 `body.detail || ...` 会落到 fallback（所有错误 toast 变成 "API error: <status>"）。前端 client.ts 必须**和后端同一次 commit** 一起改。
+
+**`frontend/src/api/errors.ts`（新建）：**
 
 ```typescript
 export class NousApiError extends Error {
@@ -132,17 +174,81 @@ export class NousApiError extends Error {
   requestId?: string;
   httpStatus: number;
 
-  constructor(payload: any, httpStatus: number) {
+  constructor(payload: any, httpStatus: number, fallbackRequestId?: string) {
     const err = payload?.error ?? {};
     super(err.message ?? `HTTP ${httpStatus}`);
+    this.name = 'NousApiError';
     this.type = err.type ?? 'api_error';
     this.code = err.code;
     this.param = err.param;
-    this.requestId = err.request_id;
+    this.requestId = err.request_id ?? fallbackRequestId;
     this.httpStatus = httpStatus;
   }
 }
 ```
+
+**`frontend/src/api/client.ts`（改写）：**
+
+```typescript
+import { NousApiError } from './errors'
+
+const BASE = ''
+
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const resp = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...init,
+  })
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}))
+    const reqId = resp.headers.get('x-request-id') ?? undefined
+    throw new NousApiError(body, resp.status, reqId)
+  }
+  if (resp.status === 204) return undefined as T
+  return resp.json()
+}
+```
+
+**现有消费者兼容性：** `error.message` 访问依然有效（`NousApiError extends Error`），所以所有 `${error.message}` 的 toast 仍能正常显示。按 `type` 分支是新能力，现有代码无需改。
+
+### 流式响应错误（SSE）
+
+`/v1/chat/completions` + `stream=true` 的错误不能走 JSON handler。OpenAI SSE 协议：
+
+```
+data: {"error": {"message": "...", "type": "api_error", "request_id": "..."}}\n\n
+data: [DONE]\n\n
+```
+
+**实现：** `backend/src/api/routes/openai_compat.py` 的流式循环里 `try/except NousError` + `except Exception`，捕获后 yield 上面格式的 2 行，再正常关闭流。调用端（OpenAI SDK）会在 `chunk` 里看到 `chunk.get('error')` —— 符合 OpenAI 标准，客户端不用改。
+
+## 日志集成（复用现有 `logs.db`）
+
+不新建表，复用 `backend/src/services/log_db.py` 已有的 `app_logs` schema：
+
+```sql
+app_logs (id, timestamp, level, module, message, location)
+```
+
+500 handler 写法（复用已有的 `DbLogHandler` — 它捕获 stdlib logging，无需额外 API）：
+```python
+import logging, traceback
+logger = logging.getLogger(__name__)
+
+@app.exception_handler(Exception)
+async def unexpected_exc(request, exc):
+    req_id = getattr(request.state, "request_id", None)
+    # logger.exception() 会自动带 traceback；DbLogHandler 已注册，自动落盘 app_logs
+    logger.exception(
+        "unhandled exception | req_id=%s | %s %s",
+        req_id, request.method, request.url.path,
+    )
+    err = APIError("Internal server error", code="internal_error", request_id=req_id)
+    return JSONResponse(err.to_dict(), status_code=500,
+                        headers={"X-Request-Id": req_id or ""})
+```
+
+这样前端 `LogsOverlay` 查看 app_logs（level=ERROR）就能看到 `req_id` + 完整 traceback（存在 `message` 里，由 `logger.exception` 格式化后附加）。`location` 字段由 DbLogHandler 自动填 `filename:lineno`。
 
 ## 不做的事（YAGNI）
 
@@ -157,9 +263,24 @@ export class NousApiError extends Error {
 ```bash
 # 1. HTTPException 自动转换
 curl --noproxy '*' -sw "\n%{http_code}\n" http://localhost:8000/api/v1/instances/999999999
-# 预期输出:
-# {"error":{"message":"Instance not found","type":"not_found_error","request_id":"<uuid>"}}
-# 404
+# 预期: {"error":{"message":"Instance not found","type":"not_found_error","request_id":"<uuid>"}} + 404
+
+# 1a. Pydantic validation error (RequestValidationError path)
+curl --noproxy '*' -sw "\n%{http_code}\n" -X POST http://localhost:8000/api/v1/instances \
+  -H "Content-Type: application/json" -d '{"name":"no_source_type"}'
+# 预期: {"error":{"message":"Field required","type":"invalid_request_error","code":"validation_error","param":"source_type","request_id":"..."}} + 400
+
+# 1b. 500 兜底：traceback 不泄露
+# (触发 500 的方式：临时在某路由 raise RuntimeError 测试)
+# 预期响应: {"error":{"message":"Internal server error","type":"api_error","code":"internal_error","request_id":"..."}}
+# logs.db 的 app_logs 表里应有完整 traceback
+
+# 1c. 流式 SSE 错误
+curl --noproxy '*' -N -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-xxx" -H "Content-Type: application/json" \
+  -d '{"model":"nonexistent","messages":[{"role":"user","content":"hi"}],"stream":true}'
+# 预期: data: {"error":{"message":"...","type":"not_found_error","request_id":"..."}}
+#       data: [DONE]
 
 # 2. 无效 API Key
 curl --noproxy '*' -sw "\n%{http_code}\n" -X POST http://localhost:8000/v1/chat/completions \
