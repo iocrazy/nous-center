@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     import src.models.workflow  # noqa: F401
     import src.models.execution_task  # noqa: F401
     import src.models.workflow_app  # noqa: F401
+    import src.models.llm_usage  # noqa: F401
 
     engine = create_engine()
     async with engine.begin() as conn:

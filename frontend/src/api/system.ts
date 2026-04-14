@@ -113,6 +113,28 @@ export function useSysProcesses() {
   return { ...q, data: q.data ? { processes: q.data.processes } : undefined }
 }
 
+export interface UsageSummary {
+  today: {
+    llm_calls: number
+    llm_total_tokens: number
+    tts_calls: number
+    tts_characters: number
+    total_calls: number
+  }
+  all_time: {
+    llm_calls: number
+    llm_total_tokens: number
+  }
+}
+
+export function useUsageSummary() {
+  return useQuery({
+    queryKey: ['usage-summary'],
+    queryFn: () => apiFetch<UsageSummary>('/api/v1/monitor/usage/summary'),
+    refetchInterval: 10_000,
+  })
+}
+
 export function useKillProcess() {
   const qc = useQueryClient()
   return useMutation({

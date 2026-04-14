@@ -52,3 +52,36 @@ async def verify_instance_key(
     bcrypt.checkpw(token.encode(), _DUMMY_HASH.encode())
 
     raise HTTPException(401, detail="Invalid API key")
+
+
+async def verify_bearer_token(
+    authorization: str = Header(...),
+    session: AsyncSession = Depends(get_async_session),
+) -> tuple[ServiceInstance, InstanceApiKey]:
+    """Verify Bearer token without requiring instance_id in URL.
+
+    Looks up the API key by prefix across all active instances.
+    Used for /v1/chat/completions where the instance is implicit.
+    """
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, detail="Invalid authorization header")
+    token = authorization[7:]
+
+    key_prefix = token[:10]
+    result = await session.execute(
+        select(InstanceApiKey).where(
+            InstanceApiKey.key_prefix == key_prefix,
+            InstanceApiKey.is_active == True,  # noqa: E712
+        )
+    )
+    keys = result.scalars().all()
+
+    for key in keys:
+        if bcrypt.checkpw(token.encode(), key.key_hash.encode()):
+            instance = await session.get(ServiceInstance, key.instance_id)
+            if instance and instance.status == "active":
+                return instance, key
+            raise HTTPException(403, detail="Instance is inactive")
+
+    bcrypt.checkpw(token.encode(), _DUMMY_HASH.encode())
+    raise HTTPException(401, detail="Invalid API key")

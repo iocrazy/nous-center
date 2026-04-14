@@ -18,13 +18,15 @@ from src.models.schemas import (
 router = APIRouter(prefix="/api/v1/instances", tags=["instances"])
 
 
-async def _resolve_source_name(session: AsyncSession, source_type: str, source_id: int) -> str | None:
+async def _resolve_source_name(instance: ServiceInstance, session: AsyncSession) -> str | None:
     """Resolve a human-readable name for the instance source."""
-    if source_type == "preset":
-        preset = await session.get(VoicePreset, source_id)
+    if instance.source_type == "model":
+        return instance.source_name
+    if instance.source_type == "preset" and instance.source_id:
+        preset = await session.get(VoicePreset, instance.source_id)
         return preset.name if preset else None
-    if source_type == "workflow":
-        wf = await session.get(Workflow, source_id)
+    if instance.source_type == "workflow" and instance.source_id:
+        wf = await session.get(Workflow, instance.source_id)
         return wf.name if wf else None
     return None
 
@@ -62,12 +64,17 @@ async def create_instance(
         if not wf:
             raise HTTPException(404, detail="Source workflow not found")
         source_name = wf.name
+    elif data.source_type == "model":
+        source_name = data.source_name
+        if not source_name:
+            raise HTTPException(400, detail="source_name required for model type")
     else:
         raise HTTPException(400, detail=f"Unsupported source_type: {data.source_type}")
 
     instance = ServiceInstance(
         source_type=data.source_type,
         source_id=data.source_id,
+        source_name=source_name if data.source_type == "model" else None,
         name=data.name,
         type=data.type,
         params_override=data.params_override,
@@ -132,7 +139,7 @@ async def get_instance(
     instance = await session.get(ServiceInstance, instance_id)
     if not instance:
         raise HTTPException(404, detail="Instance not found")
-    source_name = await _resolve_source_name(session, instance.source_type, instance.source_id)
+    source_name = await _resolve_source_name(instance, session)
     return _instance_to_out(instance, source_name)
 
 
@@ -153,7 +160,7 @@ async def update_instance(
 
     await session.commit()
     await session.refresh(instance)
-    source_name = await _resolve_source_name(session, instance.source_type, instance.source_id)
+    source_name = await _resolve_source_name(instance, session)
     return _instance_to_out(instance, source_name)
 
 

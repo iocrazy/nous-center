@@ -10,8 +10,9 @@ class ServiceInstance(Base):
     __tablename__ = "service_instances"
 
     id = Column(BigInteger, primary_key=True, default=snowflake_id)
-    source_type = Column(String(20), nullable=False, default="preset")  # "preset" or "workflow"
-    source_id = Column(BigInteger, nullable=False, index=True)
+    source_type = Column(String(20), nullable=False, default="preset")  # "preset", "workflow", or "model"
+    source_id = Column(BigInteger, nullable=True, index=True)  # FK for preset/workflow
+    source_name = Column(String(128), nullable=True)  # engine name for source_type="model"
     name = Column(String(100), nullable=False)
     type = Column(String(20), default="tts", nullable=False)  # tts, image, inference
     status = Column(String(20), default="active", nullable=False)

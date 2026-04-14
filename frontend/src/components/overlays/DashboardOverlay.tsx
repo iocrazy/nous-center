@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, useKillProcess, type SysGpuInfo, type GpuProcessInfo } from '../../api/system'
+import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, useKillProcess, useUsageSummary, type SysGpuInfo, type GpuProcessInfo } from '../../api/system'
 import { useEngines } from '../../api/engines'
 
 export default function DashboardOverlay() {
@@ -8,6 +8,7 @@ export default function DashboardOverlay() {
   const { data: sysStats } = useSysStats()
   const { data: procData } = useSysProcesses()
   const { data: monitorData } = useMonitorStats()
+  const { data: usageData } = useUsageSummary()
   const killProcess = useKillProcess()
 
   const fmt = (n: number, d = 1) => n.toFixed(d)
@@ -27,9 +28,9 @@ export default function DashboardOverlay() {
         {/* Stats row */}
         <div className="grid grid-cols-4 gap-3 mb-3">
           <StatCard label="API Keys" value="3" sub="2 active" />
-          <StatCard label="Today Calls" value="--" sub="--" />
+          <StatCard label="Today Calls" value={usageData ? String(usageData.today.total_calls) : '--'} sub={usageData ? `LLM ${usageData.today.llm_calls} / TTS ${usageData.today.tts_calls}` : '--'} />
           <StatCard label="Uptime" value={monitorData ? formatUptime(monitorData.uptime_seconds) : '--'} sub="" />
-          <StatCard label="Token Usage" value="--" sub="--" />
+          <StatCard label="Token Usage" value={usageData ? (usageData.today.llm_total_tokens > 1000 ? `${(usageData.today.llm_total_tokens / 1000).toFixed(1)}K` : String(usageData.today.llm_total_tokens)) : '--'} sub={usageData ? `total ${(usageData.all_time.llm_total_tokens / 1000).toFixed(0)}K` : '--'} />
         </div>
 
         {/* GPU panels */}

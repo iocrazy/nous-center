@@ -5,6 +5,8 @@ import {
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
   type EngineInfo,
 } from '../../api/engines'
+import { apiFetch } from '../../api/client'
+import { useToastStore } from '../../stores/toast'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
 
 const TYPE_LABELS: Record<string, string> = {
@@ -101,6 +103,38 @@ export default function ModelsOverlay() {
               disabled: isCurrentGpu,
             }
           }),
+        },
+        { label: '', divider: true },
+        {
+          label: '创建 API 接入点',
+          onClick: async () => {
+            const model = ctxMenu.model!
+            try {
+              const instance = await apiFetch<{ id: string }>('/api/v1/instances', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  source_type: 'model',
+                  source_name: model.name,
+                  name: `${model.display_name} API`,
+                  type: model.type,
+                }),
+              })
+              // Auto-create an API key
+              const keyResult = await apiFetch<{ key: string; id: string }>(`/api/v1/instances/${instance.id}/keys`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label: 'default' }),
+              })
+              // Show the key
+              const info = `API Endpoint Created!\n\nBase URL: ${window.location.origin}/v1\nAPI Key: ${keyResult.key}\nModel: ${model.name}\n\nKey is shown only once. Copy it now.`
+              window.prompt('API Endpoint Info (Ctrl+C to copy):', keyResult.key)
+              useToastStore.getState().add(`接入点已创建: ${model.display_name}`, 'success')
+            } catch (e: any) {
+              useToastStore.getState().add(`创建失败: ${e.message}`, 'error')
+            }
+          },
+          disabled: ctxMenu.model.status !== 'loaded',
         },
         { label: '', divider: true },
         {

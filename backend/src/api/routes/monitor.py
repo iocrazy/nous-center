@@ -299,3 +299,24 @@ async def kill_gpu_process(req: KillProcessRequest, request: Request):
             status_code=500,
             content={"detail": f"Failed to kill process {pid}: {e}"},
         )
+
+
+@router.get("/usage/summary")
+async def usage_summary():
+    """Get aggregated usage stats for dashboard."""
+    from src.services.usage_service import get_usage_summary
+    return await get_usage_summary()
+
+
+@router.get("/usage/by-model")
+async def usage_by_model(since: str | None = None):
+    """Get per-model usage breakdown."""
+    from src.services.usage_service import get_usage_by_model
+    from datetime import datetime
+    since_dt = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return await get_usage_by_model(since=since_dt)
