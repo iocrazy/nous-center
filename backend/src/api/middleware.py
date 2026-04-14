@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -104,3 +105,19 @@ class AuditMiddleware(BaseHTTPMiddleware):
             return response
 
         return await call_next(request)
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Generate or propagate X-Request-Id header.
+
+    Must run FIRST so ``request.state.request_id`` is populated before any
+    downstream middleware or exception handler reads it. Starlette's
+    ``add_middleware`` is LIFO — add this LAST to run first.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+        request.state.request_id = rid
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = rid
+        return response

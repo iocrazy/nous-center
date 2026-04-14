@@ -4,8 +4,10 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs
 from src.api.websocket import ws_manager
@@ -240,11 +242,19 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Request-Id"],
     )
 
-    from src.api.middleware import RequestLoggingMiddleware, AuditMiddleware
+    from src.api.middleware import (
+        RequestLoggingMiddleware,
+        AuditMiddleware,
+        RequestIdMiddleware,
+    )
     app.add_middleware(AuditMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
+    # LIFO: RequestIdMiddleware added LAST so it runs FIRST, populating
+    # request.state.request_id before exception handlers inspect it.
+    app.add_middleware(RequestIdMiddleware)
 
     @app.get("/health")
     async def health_check():
@@ -338,7 +348,125 @@ def create_app() -> FastAPI:
         except WebSocketDisconnect:
             _ws_connections[instance_id].remove(websocket)
 
+    _register_error_handlers(app)
     return app
+
+
+# --------------------------------------------------------------------------- #
+# Global exception handlers — convert everything into OpenAI-style JSON
+# --------------------------------------------------------------------------- #
+
+from src.errors import (
+    NousError,
+    InvalidRequestError,
+    AuthenticationError,
+    PermissionError as NousPermissionError,
+    NotFoundError,
+    RateLimitError,
+    APIError,
+)
+
+_HTTP_STATUS_TO_ERROR = {
+    400: InvalidRequestError,
+    401: AuthenticationError,
+    403: NousPermissionError,
+    404: NotFoundError,
+    409: InvalidRequestError,
+    422: InvalidRequestError,
+    429: RateLimitError,
+}
+
+# Default `code` field for statuses where the shared error type needs disambiguation
+_STATUS_DEFAULT_CODE = {
+    409: "conflict",
+    422: "validation_error",
+}
+
+
+def _detail_to_message_and_param(detail) -> tuple[str, str | None]:
+    """Parse HTTPException.detail into (message, param).
+
+    detail can be str, list (Pydantic-style), or anything else.
+    """
+    if isinstance(detail, str):
+        return detail, None
+    if isinstance(detail, list) and detail:
+        first = detail[0] if isinstance(detail[0], dict) else {}
+        msg = first.get("msg") or "; ".join(
+            e.get("msg", str(e)) if isinstance(e, dict) else str(e) for e in detail
+        )
+        loc = first.get("loc") or []
+        param = ".".join(str(x) for x in loc if x != "body") or None
+        return msg, param
+    return str(detail), None
+
+
+def _response(err: NousError) -> JSONResponse:
+    headers = {"X-Request-Id": err.request_id} if err.request_id else {}
+    return JSONResponse(err.to_dict(), status_code=err.http_status, headers=headers)
+
+
+def _with_request_id(err: NousError, request) -> NousError:
+    err.request_id = getattr(request.state, "request_id", None)
+    return err
+
+
+def _register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(NousError)
+    async def _nous(request, exc: NousError):
+        return _response(_with_request_id(exc, request))
+
+    @app.exception_handler(HTTPException)
+    async def _http(request, exc: HTTPException):
+        status = exc.status_code
+        cls = _HTTP_STATUS_TO_ERROR.get(status)
+        if cls is None:
+            cls = InvalidRequestError if 400 <= status < 500 else APIError
+        msg, param = _detail_to_message_and_param(exc.detail)
+        err = cls(msg, param=param, code=_STATUS_DEFAULT_CODE.get(status))
+        err.http_status = status  # preserve original 4xx nuance
+        return _response(_with_request_id(err, request))
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(request, exc: RequestValidationError):
+        errors = exc.errors()
+        first = errors[0] if errors else {}
+        loc = ".".join(str(x) for x in first.get("loc", []) if x != "body")
+        err = InvalidRequestError(
+            message=first.get("msg", "Invalid request"),
+            code="validation_error",
+            param=loc or None,
+        )
+        return _response(_with_request_id(err, request))
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request, exc: Exception):
+        # Outer safety net: this handler itself must never raise.
+        rid = None
+        try:
+            rid = getattr(request.state, "request_id", None)
+            try:
+                logger.exception(
+                    "unhandled exception | req_id=%s | %s %s",
+                    rid, request.method, request.url.path,
+                )
+            except Exception:
+                pass  # logging failure must not crash the handler
+            err = APIError(
+                "Internal server error", code="internal_error", request_id=rid
+            )
+            return _response(err)
+        except Exception:
+            headers = {"X-Request-Id": rid} if rid else {}
+            return JSONResponse(
+                {"error": {
+                    "message": "Internal server error",
+                    "type": "api_error",
+                    "code": "internal_error",
+                }},
+                status_code=500,
+                headers=headers,
+            )
 
 
 app = create_app()

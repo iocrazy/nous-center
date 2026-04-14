@@ -97,3 +97,7 @@ async def db_session(tmp_path):
         yield session
 
     await engine.dispose()
+
+# Auto-use fixture: isolate tests from real logs.db
+from .conftest_logs import _silence_db_log_handler  # noqa: F401
+
