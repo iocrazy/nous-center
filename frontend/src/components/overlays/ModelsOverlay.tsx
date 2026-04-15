@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Copy, Check } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
@@ -306,7 +306,12 @@ function ModelCard({
             自动检测
           </span>
         )}
-        <StatusBadge status={model.status} loadedGpus={model.loaded_gpus} />
+        <StatusBadge
+          status={model.status}
+          loadedGpus={model.loaded_gpus}
+          modelName={model.name}
+          detail={model.status_detail}
+        />
       </div>
 
       {/* Row 2: Tags line */}
@@ -394,23 +399,63 @@ function Tag({
   )
 }
 
-function StatusBadge({ status, loadedGpus }: { status: string; loadedGpus?: number[] | null }) {
+// Per-model loading start times (module-scoped so they survive remounts within session)
+const _loadingStartedAt: Map<string, number> = new Map()
+
+function StatusBadge({
+  status,
+  loadedGpus,
+  modelName,
+  detail,
+}: {
+  status: string
+  loadedGpus?: number[] | null
+  modelName?: string
+  detail?: string | null
+}) {
+  const [, force] = useState(0)
+
+  // Track when loading started; tick every second to refresh elapsed
+  useEffect(() => {
+    if (!modelName) return
+    if (status === 'loading') {
+      if (!_loadingStartedAt.has(modelName)) {
+        _loadingStartedAt.set(modelName, Date.now())
+      }
+      const id = setInterval(() => force((n) => n + 1), 1000)
+      return () => clearInterval(id)
+    }
+    _loadingStartedAt.delete(modelName)
+  }, [status, modelName])
+
   const gpuLabel = loadedGpus && loadedGpus.length > 0
     ? ` · GPU ${loadedGpus.join(',')}`
     : ''
 
+  let elapsedLabel = 'loading...'
+  if (status === 'loading' && modelName) {
+    const startedAt = _loadingStartedAt.get(modelName)
+    if (startedAt) {
+      const s = Math.floor((Date.now() - startedAt) / 1000)
+      elapsedLabel = s < 60 ? `loading ${s}s` : `loading ${Math.floor(s / 60)}m${s % 60}s`
+    }
+  }
+
   const config: Record<string, { color: string; label: string; animate?: boolean }> = {
     loaded:   { color: 'var(--ok)',           label: `running${gpuLabel}` },
-    loading:  { color: 'var(--warn)',         label: 'loading...', animate: true },
+    loading:  { color: 'var(--warn)',         label: elapsedLabel, animate: true },
     failed:   { color: 'var(--accent)',       label: 'failed' },
     unloaded: { color: 'var(--muted-strong)', label: 'idle' },
   }
   const { color, label, animate } = config[status] ?? config.unloaded
 
+  const tooltip = detail || (status === 'failed' ? 'load failed' : status === 'loading' ? '正在加载' : undefined)
+
   return (
     <span
       className="flex items-center gap-1"
-      style={{ fontSize: 9, color, flexShrink: 0 }}
+      style={{ fontSize: 9, color, flexShrink: 0, cursor: tooltip ? 'help' : 'default' }}
+      title={tooltip}
     >
       <span
         className="inline-block rounded-full"
