@@ -267,3 +267,232 @@ class CreateResponseRequest(BaseModel):
     expire_at: int | None = None
     stream: bool = False
     text: _TextCfg = Field(default_factory=_TextCfg)
+
+
+# ---------- POST /v1/responses ---------- #
+
+@router.post("/v1/responses")
+async def create_response(
+    req: CreateResponseRequest,
+    request: Request,
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    session: AsyncSession = Depends(get_async_session),
+):
+    instance, api_key = auth
+    if instance.source_type != "model":
+        raise InvalidRequestError(
+            "Responses only supported on model-type instances",
+            code="not_a_model_instance",
+        )
+    engine_name = instance.source_name or str(instance.source_id)
+
+    # Adapter resolution
+    model_mgr = getattr(request.app.state, "model_manager", None)
+    if model_mgr is None:
+        raise APIError("Model manager unavailable", code="model_manager_missing")
+    adapter = model_mgr.get_adapter(engine_name)
+    if adapter is None or not adapter.is_loaded:
+        raise APIError(
+            f"Model '{engine_name}' is not loaded",
+            code="model_not_loaded",
+        )
+    base_url = getattr(adapter, "base_url", None)
+    if not base_url:
+        raise APIError(
+            "Model has no inference endpoint",
+            code="no_inference_endpoint",
+        )
+    max_model_len = getattr(adapter, "max_model_len", 4096) or 4096
+
+    # Step 3 cache resolution
+    cached_messages, _ttl = await resolve_for_request(
+        session,
+        context_id=req.context_id,
+        instance_id=instance.id,
+        engine_name=engine_name,
+    )
+
+    # Previous-chain walk
+    previous_messages: list[dict] = []
+    sess: ResponseSession | None = None
+    if req.previous_response_id:
+        previous_messages, sess = await assemble_history_for_response(
+            session, req.previous_response_id, instance_id=instance.id
+        )
+        if sess.model != engine_name:
+            raise InvalidRequestError(
+                f"Previous response was for '{sess.model}', not '{engine_name}'",
+                code="previous_response_model_mismatch",
+                param="model",
+            )
+        # Doc-convention warning if both context_id + previous_response_id
+        if req.context_id:
+            logger.warning(
+                "both context_id=%s and previous_response_id=%s provided; "
+                "chain already contains cache from first turn — skipping cache prepend",
+                req.context_id, req.previous_response_id,
+            )
+            cached_messages = None
+
+    # Normalize new input
+    new_input_messages = transform_inputs_to_chat_messages(
+        normalize_input(req.input)
+    )
+
+    # Assemble per MESSAGES_ORDER: context -> chain -> instructions -> input.
+    # Both previous history and new input may contain API-facing types
+    # (input_text / output_text) which vLLM doesn't understand — convert.
+    previous_messages_vllm = transform_inputs_to_chat_messages(previous_messages)
+    messages: list[dict] = []
+    if cached_messages:
+        messages.extend(cached_messages)
+    messages.extend(previous_messages_vllm)
+    if req.instructions:
+        messages.append({"role": "system", "content": req.instructions})
+    messages.extend(new_input_messages)
+
+    # Compaction
+    max_history_tokens = max_model_len - 2048
+    compacted, history_truncated = compact_messages(
+        messages, max_history_tokens=max_history_tokens
+    )
+    if approx_tokens(compacted) > max_history_tokens:
+        raise InvalidRequestError(
+            f"input alone exceeds max_history_tokens ({max_history_tokens})",
+            code="input_too_long_for_model",
+            param="input",
+        )
+    messages = compacted
+
+    # Session budget check (only if continuing a session)
+    estimated_input = approx_tokens(messages)
+    if sess is not None:
+        await check_session_budget(session, sess, estimated_new=estimated_input)
+    else:
+        # New session (not yet created; create now so writes have a target)
+        sess = await create_session(
+            session,
+            instance_id=instance.id,
+            api_key_id=api_key.id,
+            model=engine_name,
+            context_cache_id=req.context_id,
+        )
+
+    # Build vLLM body
+    vllm_body: dict = {
+        "model": "",
+        "messages": messages,
+        "max_tokens": 2048,  # TODO: read from req.max_output_tokens once added
+        "stream": req.stream,
+    }
+    # Step 2: thinking mapping — mutates body in place, returns None.
+    vllm_body["thinking"] = req.thinking.model_dump()
+    from src.api.routes.openai_compat import _maybe_inject_thinking
+    _maybe_inject_thinking(vllm_body, engine_name)
+    # text.format passthrough
+    if req.text.format.type == "json_schema" and req.text.format.json_schema:
+        vllm_body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": req.text.format.json_schema,
+        }
+    elif req.text.format.type == "json_object":
+        vllm_body["response_format"] = {"type": "json_object"}
+
+    request_id = getattr(request.state, "request_id", None)
+
+    # Reject streaming in 6a; 6b adds the branch
+    if req.stream:
+        raise InvalidRequestError(
+            "streaming not yet implemented",
+            code="streaming_pending",
+        )
+
+    # ---- Non-streaming path ----
+    async with httpx.AsyncClient(timeout=300, proxy=None) as client:
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            json=vllm_body,
+        )
+    if resp.status_code != 200:
+        err_text = resp.text[:500]
+        if 400 <= resp.status_code < 500:
+            raise InvalidRequestError(err_text, code="upstream_bad_request")
+        raise APIError("vLLM error", code="upstream_error")
+    data = resp.json()
+    choice = data["choices"][0]
+    assistant_text = choice["message"].get("content") or ""
+    finish_reason = choice.get("finish_reason", "stop")
+    usage = data.get("usage", {}) or {}
+
+    # Persist user + assistant turn pair
+    user_content = (
+        new_input_messages[-1]["content"] if new_input_messages else []
+    )
+    asst_content = [
+        {"type": "output_text", "text": assistant_text, "annotations": []}
+    ]
+    status = "completed"
+    incomplete_details = None
+    if finish_reason == "length":
+        status = "incomplete"
+        incomplete_details = {"reason": "max_output_tokens"}
+
+    _, asst_turn = await write_user_and_assistant_turns(
+        session,
+        sess=sess,
+        user_content=user_content,
+        assistant_content=asst_content,
+        usage={
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+            "input_tokens_details": {
+                "cached_tokens": (usage.get("prompt_tokens_details") or {}).get(
+                    "cached_tokens", 0
+                )
+            },
+        },
+        reasoning=None,
+        instructions=req.instructions,
+        text_format=req.text.model_dump(),
+        status=status,
+        incomplete_reason=(incomplete_details or {}).get("reason"),
+    )
+    await update_session_usage(
+        session, sess,
+        input_tokens=usage.get("prompt_tokens", 0),
+        output_tokens=usage.get("completion_tokens", 0),
+    )
+    from src.services.usage_service import record_llm_usage
+    await record_llm_usage(
+        model=engine_name,
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+        duration_ms=0,
+        instance_id=instance.id,
+        api_key_id=api_key.id,
+    )
+
+    return {
+        "id": asst_turn.id,
+        "object": "response",
+        "status": status,
+        "incomplete_details": incomplete_details,
+        "created_at": int(_to_utc(asst_turn.created_at).timestamp()),
+        "model": engine_name,
+        "previous_response_id": req.previous_response_id,
+        "instructions": req.instructions,
+        "store": req.store,
+        "expire_at": int(_to_utc(sess.expire_at).timestamp()),
+        "output": [
+            {
+                "type": "message",
+                "id": f"msg-{asst_turn.id[5:]}",
+                "role": "assistant",
+                "content": asst_content,
+            }
+        ],
+        "usage": asst_turn.usage_json,
+        "history_truncated": history_truncated,
+        "request_id": request_id,
+    }

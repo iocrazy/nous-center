@@ -352,6 +352,8 @@ def create_app() -> FastAPI:
     app.include_router(voices.router)
     app.include_router(openai_compat.router)
     app.include_router(context_cache_routes.router)
+    from src.api.routes import responses as responses_routes
+    app.include_router(responses_routes.router)
     app.include_router(settings.router)
     app.include_router(instances.router)
     app.include_router(instance_keys.router)
