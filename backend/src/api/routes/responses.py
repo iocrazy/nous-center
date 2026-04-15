@@ -400,11 +400,207 @@ async def create_response(
 
     request_id = getattr(request.state, "request_id", None)
 
-    # Reject streaming in 6a; 6b adds the branch
+    # ---- Streaming path (Task 6b) ----
     if req.stream:
-        raise InvalidRequestError(
-            "streaming not yet implemented",
-            code="streaming_pending",
+        vllm_body.setdefault("stream_options", {})["include_usage"] = True
+        accumulated_text = ""
+        latest_usage: dict = {}
+        completed_persist_done = False  # sentinel blocks partial-write race
+
+        async def inner():
+            nonlocal accumulated_text, latest_usage, completed_persist_done
+            first_byte = False
+            final_finish: str | None = None
+            async with httpx.AsyncClient(timeout=300, proxy=None) as client:
+                async with client.stream(
+                    "POST",
+                    f"{base_url.rstrip('/')}/v1/chat/completions",
+                    json=vllm_body,
+                ) as resp:
+                    if resp.status_code != 200:
+                        err_text = (await resp.aread()).decode(errors="replace")[:500]
+                        if 400 <= resp.status_code < 500:
+                            raise InvalidRequestError(
+                                err_text, code="upstream_bad_request"
+                            )
+                        raise APIError("vLLM error", code="upstream_error")
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(data_str)
+                        except Exception:
+                            continue
+
+                        # Capture usage whenever present (may arrive separately from finish)
+                        chunk_usage = chunk.get("usage")
+                        if chunk_usage:
+                            latest_usage = chunk_usage
+                        choices = chunk.get("choices") or []
+                        choice0 = choices[0] if choices else {}
+                        delta_text = (choice0.get("delta") or {}).get("content", "")
+                        finish = choice0.get("finish_reason")
+
+                        # On first byte (first delta OR first usage), emit created/added/part
+                        if not first_byte and (delta_text or chunk_usage):
+                            first_byte = True
+                            yield ("response.created", {
+                                "type": "response.created",
+                                "response": {
+                                    "id": "resp-pending",
+                                    "status": "in_progress",
+                                    "model": engine_name,
+                                },
+                            })
+                            yield ("response.output_item.added", {
+                                "type": "response.output_item.added",
+                                "output_index": 0,
+                                "item": {
+                                    "id": "msg-pending", "type": "message",
+                                    "role": "assistant", "content": [],
+                                },
+                            })
+                            yield ("response.content_part.added", {
+                                "type": "response.content_part.added",
+                                "item_id": "msg-pending",
+                                "output_index": 0, "content_index": 0,
+                                "part": {"type": "output_text", "text": ""},
+                            })
+
+                        if delta_text:
+                            accumulated_text += delta_text
+                            yield ("response.output_text.delta", {
+                                "type": "response.output_text.delta",
+                                "item_id": "msg-pending",
+                                "output_index": 0, "content_index": 0,
+                                "delta": delta_text,
+                            })
+
+                        # Remember finish; defer persist until stream ends so
+                        # the final usage-only chunk (include_usage) can land.
+                        if finish:
+                            final_finish = finish
+            # ---- Stream ended ----
+            if not first_byte:
+                return
+            stream_finish = final_finish or "stop"
+            from src.models.database import create_session_factory as _csf
+            from src.services.usage_service import record_llm_usage
+            async with _csf()() as wsess:
+                real_sess = (await wsess.execute(
+                    select(ResponseSession).where(
+                        ResponseSession.id == sess.id
+                    )
+                )).scalar_one()
+                asst_content = [{
+                    "type": "output_text",
+                    "text": accumulated_text,
+                    "annotations": [],
+                }]
+                user_content_local = (
+                    new_input_messages[-1]["content"]
+                    if new_input_messages else []
+                )
+                usage_data = {
+                    "input_tokens": (latest_usage or {}).get("prompt_tokens", 0),
+                    "output_tokens": (latest_usage or {}).get("completion_tokens", 0),
+                    "total_tokens": (latest_usage or {}).get("total_tokens", 0),
+                }
+                stream_status = (
+                    "incomplete" if stream_finish == "length" else "completed"
+                )
+                stream_incomplete = (
+                    "max_output_tokens" if stream_finish == "length" else None
+                )
+                _, stream_asst_turn = await write_user_and_assistant_turns(
+                    wsess, sess=real_sess,
+                    user_content=user_content_local,
+                    assistant_content=asst_content,
+                    usage=usage_data,
+                    reasoning=None,
+                    instructions=req.instructions,
+                    text_format=req.text.model_dump(),
+                    status=stream_status,
+                    incomplete_reason=stream_incomplete,
+                )
+                await update_session_usage(
+                    wsess, real_sess,
+                    input_tokens=usage_data["input_tokens"],
+                    output_tokens=usage_data["output_tokens"],
+                )
+            await record_llm_usage(
+                model=engine_name,
+                prompt_tokens=usage_data["input_tokens"],
+                completion_tokens=usage_data["output_tokens"],
+                duration_ms=0,
+                instance_id=instance.id,
+                api_key_id=api_key.id,
+            )
+            yield ("response.completed", {
+                "type": "response.completed",
+                "response": {
+                    "id": stream_asst_turn.id,
+                    "status": stream_status,
+                    "incomplete_details": (
+                        {"reason": stream_incomplete}
+                        if stream_incomplete else None
+                    ),
+                    "model": engine_name,
+                    "output": [{
+                        "type": "message",
+                        "id": f"msg-{stream_asst_turn.id[5:]}",
+                        "role": "assistant",
+                        "content": asst_content,
+                    }],
+                    "usage": usage_data,
+                    "history_truncated": history_truncated,
+                },
+            })
+            completed_persist_done = True
+
+        async def persist_partial(text, status, reason):
+            """Called from background worker on client disconnect."""
+            if completed_persist_done:
+                logger.info(
+                    "persist_partial skipped (completed already persisted)"
+                )
+                return
+            from src.models.database import create_session_factory as _csf
+            from src.services.usage_service import record_llm_usage
+            async with _csf()() as wsess:
+                real_sess = (await wsess.execute(
+                    select(ResponseSession).where(
+                        ResponseSession.id == sess.id
+                    )
+                )).scalar_one()
+                user_content_local = (
+                    new_input_messages[-1]["content"]
+                    if new_input_messages else []
+                )
+                await write_partial_assistant_turn(
+                    wsess, sess=real_sess,
+                    user_content=user_content_local,
+                    partial_text=text,
+                    status=status,
+                    incomplete_reason=reason,
+                    instructions=req.instructions,
+                    text_format=req.text.model_dump(),
+                )
+            await record_llm_usage(
+                model=engine_name,
+                prompt_tokens=(latest_usage or {}).get("prompt_tokens", 0),
+                completion_tokens=(latest_usage or {}).get("completion_tokens", 0),
+                duration_ms=0,
+                instance_id=instance.id,
+                api_key_id=api_key.id,
+            )
+
+        return StreamingResponse(
+            responses_sse_envelope(inner(), persist_partial, request_id),
+            media_type="text/event-stream",
         )
 
     # ---- Non-streaming path ----
