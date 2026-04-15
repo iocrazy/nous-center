@@ -32,7 +32,13 @@ OpenAI Responses API（火山方舟同名 API 抄过来）的核心改进是：*
 | 端点 | POST + GET + DELETE + LIST(cursor 分页)；不做 input_items | flattened 方案下 input_items 是冗余；offset 在高写入下漂移 |
 | 自动 compaction | 拼装 messages 时按 token 计数，超 `max_history_tokens` 丢最旧轮（保留 system / context_id 注入的内容） | 借鉴 Claude Code，避免长会话撞 vLLM `max_model_len` 直接报错 |
 | Session 总预算 | `response_sessions.total_input_tokens` + `total_output_tokens` 每轮累加；超 `MAX_SESSION_TOKENS`（默认 200000，可改）拒绝新轮 | 防止 chain 跑飞、bug 重试爆 token；与 OpenAI 现有 model 一致量级 |
-| 停止原因 | 顶层 `status: "completed" \| "incomplete"` + `incomplete_details: {reason}` | 对齐 OpenAI Responses API；区分 `max_output_tokens` / `content_filter` / `history_truncated` / `session_budget_exceeded` |
+| 停止原因 | 顶层 `status: "completed" \| "incomplete"` + `incomplete_details: {reason}` | 对齐 OpenAI Responses API；区分 `max_output_tokens` / `content_filter` / `history_truncated` / `session_budget_exceeded` / `connection_closed` |
+| 流式中断行为 | 写入 partial assistant turn + `status="incomplete"` + `incomplete_details.reason="connection_closed"` | 客户端断连后能查到部分内容；下次用 previous_response_id 继续不会失败 |
+| 并发写冲突 | UNIQUE(session_id, turn_idx) 撞了 → 409 `ConflictError` `code="session_concurrent_write"` | 需要 Step 1 errors.py 加 `ConflictError`（http_status=409） |
+| 单 input 超模型上限 | compaction 后仍超 → `InvalidRequestError code="input_too_long_for_model"` | 不发 vLLM；明确错误信息给用户 |
+| Gzip 解压上限 | `gzip.decompress(data, max_length=10_000_000)` | 防 zip bomb（虽然攻击面窄，零代价加固） |
+| `response.created` emit 时机 | 拼装 + vLLM 首字节成功后再发 | 失败时只发 error event，避免客户端 state machine 看到 created→error 序列困惑 |
+| PII 数据保留 | 文档显式警告 72h 保留期；redaction 列 TODO | 私有/小团队场景接受默认 expire_at + DELETE 端点；将来加 message-level redaction |
 
 ## 架构
 
@@ -288,12 +294,18 @@ def encode_content(content: list[dict]) -> bytes:
     return gzip.compress(json.dumps(content, ensure_ascii=False).encode("utf-8"))
 
 def decode_content(data: bytes) -> list[dict]:
-    return json.loads(gzip.decompress(data).decode("utf-8"))
+    # max_length caps decompressed output at 10MB; defends against zip bomb
+    # even though our writes are self-controlled (cheap insurance).
+    return json.loads(gzip.decompress(data, max_length=10_000_000).decode("utf-8"))
 ```
 
 短 content（< 500 字节）gzip 收益不大但也不亏，统一压便于 schema 一致。
 
-### 历史拼装
+### 历史拼装（注意 instructions 处理）
+
+**关键约束：** `instructions` 字段每轮独立，**不继承** previous（决策记录）。
+所以拼装时**只取 user / assistant turns**；instructions 只用本轮请求里传的（如有）放在最前。
+绝对不要把 previous turn 的 instructions（存在 `response_turns.instructions`）拼回 messages。
 
 ```python
 async def assemble_history_for_response(
@@ -318,6 +330,9 @@ async def assemble_history_for_response(
     rows = (await session.execute(stmt)).scalars().all()
     messages = []
     for r in rows:
+        if r.role not in ("user", "assistant"):
+            # Defense-in-depth: skip any non-conversational rows
+            continue
         messages.append({
             "role": r.role,
             "content": decode_content(r.content_compressed),
@@ -378,14 +393,34 @@ def resolve_image(item: dict) -> dict:
 
 新增 `responses_sse_wrapper` 而不是复用 chat 的：事件类型不同。但仍**走 Step 1 的 `sse_with_error_envelope` 风格**（finally 保证 `[DONE]`）。
 
+**`response.created` 时机：** 不在 wrapper 进入时立刻 emit。`inner` 应该在拼装历史 + vLLM 首字节都成功后再 yield 第一条 `response.created` 事件。理由：如果拼装失败（previous_response_id 404）或 vLLM 上游错误，客户端只会看到一个 `error` 事件，避免 created→error 的混乱状态机。
+
+**流式中断处理（`asyncio.CancelledError`）：** 客户端断连时 SSE generator 被取消。在 `except CancelledError` 分支里**写入 partial assistant turn**：
+- `status="incomplete"`, `incomplete_details.reason="connection_closed"`
+- 已收到的 delta 文本拼成 partial assistant content
+- 客户端下次用 `previous_response_id` 不会失败；可以从 partial 接着续
+
 ```python
-async def responses_sse_envelope(inner, response_id: str):
+async def responses_sse_envelope(inner, persist_partial_fn):
+    """
+    inner: async generator yielding ("event_type", payload_dict);
+           inner emits "response.created" after first vLLM byte.
+    persist_partial_fn: callable(text_so_far: str, status: str, reason: str)
+                        called from the CancelledError / Exception branch
+                        to write a partial assistant turn.
+    """
+    accumulated_text = ""
+    completed_normally = False
     try:
-        # First emit response.created
-        yield ("response.created",
-               {"type":"response.created","response":{"id":response_id,"status":"in_progress"}})
-        async for chunk in inner:  # inner yields ("event_type", payload_dict)
-            yield chunk
+        async for evt_type, payload in inner:
+            if evt_type == "response.output_text.delta":
+                accumulated_text += payload.get("delta", "")
+            yield (evt_type, payload)
+        completed_normally = True
+    except asyncio.CancelledError:
+        # Client disconnected mid-stream
+        await persist_partial_fn(accumulated_text, "incomplete", "connection_closed")
+        raise  # re-raise so Starlette knows the stream was cancelled
     except NousError as e:
         yield ("error", {"type":"error","error": e.to_dict()["error"]})
     except Exception:
@@ -394,8 +429,11 @@ async def responses_sse_envelope(inner, response_id: str):
         err = APIError("Internal server error", code="internal_error")
         yield ("error", {"type":"error","error": err.to_dict()["error"]})
     finally:
-        yield None  # signal terminator
+        if not completed_normally:
+            yield None  # signal [DONE] terminator
 ```
+
+**为什么 `persist_partial_fn` 在 CancelledError 分支：** asyncio 的取消语义下，取消信号到达时 generator 还能完成一次 await（PG INSERT）再抛出。CancelledError 重新 raise 让 Starlette 关闭流；persist 在取消和 re-raise 之间发生。
 
 实际 `StreamingResponse` 的字节流由一个外层 formatter 把 `(event, payload)` 元组转成 SSE wire format（`event: X\ndata: {...}\n\n`），`None` 转成 `data: [DONE]\n\n`。
 
@@ -449,6 +487,18 @@ def compact_messages(
 ```
 
 `max_history_tokens` 默认 = `adapter.max_model_len - 2048`（留 2K 给输出）。可改成请求级 query param 但 YAGNI。
+
+**单 input 超限兜底：** compaction 之后再做一次估算，如果**单轮 input alone** 超 `max_history_tokens`，**不发 vLLM**，直接抛：
+```python
+if _approx_tokens(messages_after_compaction) > max_history_tokens:
+    raise InvalidRequestError(
+        f"input alone ({_approx_tokens(messages)} tokens) exceeds "
+        f"max_history_tokens ({max_history_tokens})",
+        code="input_too_long_for_model",
+        param="input",
+    )
+```
+否则 vLLM 会回 context_length_exceeded，客户端拿到含糊的 upstream error。
 
 `history_truncated=True` 时：
 - 顶层 response 字段 `history_truncated: true`
@@ -508,11 +558,25 @@ async def write_response_turn(
         text_format=text_format,
     )
     session.add_all([user_turn, asst_turn])
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as e:
+        # UNIQUE(session_id, turn_idx) collision: another request grabbed the
+        # same idx between our SELECT max() and INSERT. Surface as 409 so the
+        # client can refetch the head and retry.
+        await session.rollback()
+        if "turn_idx" in str(e).lower() or "uniq" in str(e).lower():
+            raise ConflictError(
+                "concurrent write to the same session; refetch and retry",
+                code="session_concurrent_write",
+            )
+        raise
     return user_turn, asst_turn
 ```
 
 **对外返回的 `id` 是 `asst_turn.id`** —— 客户端拿这个作为下一轮的 `previous_response_id`。
+
+**Step 1 反向追加要求：** 需要在 `backend/src/errors.py` 加 `ConflictError` 子类（http_status=409, type="invalid_request_error" 或新 type "conflict_error"）。建议复用 `invalid_request_error` type + `code="conflict"`，与现有 409 处理（Step 1 的 `_HTTP_STATUS_TO_ERROR[409]`）一致；只是新增一个 raise-friendly 子类。
 
 ### Cursor pagination
 
@@ -559,6 +623,23 @@ async def list_responses(
 - `verify_bearer_token` — 鉴权
 - `fetch_active_cache`（Step 3） — context_id 解析
 - `JsonColumn = JSON().with_variant(JSONB, "postgresql")`（Step 3） — JSON 字段在 SQLite/PG 兼容
+
+## 数据保留与 PII 警告
+
+`response_turns.content_compressed` 存了用户与模型完整对话内容（gzip 压缩，**未加密**）。
+默认 `expire_at = created_at + 72h`，到期由 cleanup loop 物理删除。
+
+**用户应知道的：**
+- 对话内容在 PG 里保留至多 7 天（`expire_at` 上限）
+- 任何持有 instance API Key 的人都能 GET 历史 response（即使是别人的 chat）
+- **对话中请勿包含真实凭据 / API Keys / PII** —— 当前没有 message-level redaction
+
+**响应文档：** 4 个端点的对外文档（README / OpenAPI）必须显式说明这一点。
+
+**TODO（不在本 spec 范围内）：**
+- Message-level redaction: pre-write 扫描 content，把疑似 secrets 替换为 `[REDACTED]`
+- 加密静态存储（PG bytea + AES）—— 需要 KMS 集成
+- 立即清空入口（`POST /v1/sessions/clear-all`）—— 紧急合规场景
 
 ## 不做的事（YAGNI）
 
@@ -630,6 +711,21 @@ curl ... -X DELETE /v1/responses/$R1
 # 10. Session 预算超限
 # 累计跑超 200K token 的 chain
 # 下一个 POST → 429 + code=session_budget_exceeded
+
+# 11. 流式中断保留 partial
+# stream=true 调用，客户端在第 50 个 delta 时 SIGINT
+# 服务端日志应有 "partial assistant turn written, status=incomplete"
+# 之后 GET /v1/responses/{id} 应返回 status="incomplete",
+#   incomplete_details.reason="connection_closed", output 含已收到的文本
+
+# 12. 单 input 超模型上限
+# 构造 messages 含 100K token 的单条 user input（mock_model_len=4096 时）
+# POST → 400 + code=input_too_long_for_model
+# vLLM 不应被调用（log 里不该出现 vLLM upstream call）
+
+# 13. 并发写撞 UNIQUE
+# 用同一 previous_response_id 并发发 2 个 POST
+# 一个返回 200, 另一个返回 409 + code=session_concurrent_write
 ```
 
 ## 回滚
