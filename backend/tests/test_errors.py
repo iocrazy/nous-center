@@ -52,3 +52,17 @@ def test_to_dict_omits_none_fields():
     assert NotFoundError("x").to_dict() == {
         "error": {"message": "x", "type": "not_found_error"}
     }
+
+
+from src.errors import ConflictError
+
+
+def test_conflict_error_409():
+    e = ConflictError("dup write", code="session_concurrent_write")
+    assert e.http_status == 409
+    assert e.type == "invalid_request_error"
+    assert e.to_dict() == {"error": {
+        "message": "dup write",
+        "type": "invalid_request_error",
+        "code": "session_concurrent_write",
+    }}

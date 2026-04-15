@@ -70,3 +70,9 @@ class RateLimitError(NousError):
 class APIError(NousError):
     type = "api_error"
     http_status = 500
+
+
+class ConflictError(NousError):
+    # Matches main.py _HTTP_STATUS_TO_ERROR[409] -> InvalidRequestError type
+    type = "invalid_request_error"
+    http_status = 409
