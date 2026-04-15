@@ -45,3 +45,10 @@ checkpoints/
 
 # Runtime config
 settings.yaml
+
+# Step 5: Files API content-addressed blobs (not source)
+backend/data/files/
+# local SQLite dev DBs (PG is canonical)
+backend/data/*.db
+backend/data/*.db-shm
+backend/data/*.db-wal
