@@ -12,6 +12,7 @@ import {
   Monitor,
   ListTodo,
   ScrollText,
+  Package,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
@@ -26,6 +27,7 @@ const OVERLAY_ROUTES: Record<OverlayId, string> = {
   agents: '/agents',
   settings: '/settings',
   logs: '/logs',
+  'node-packages': '/node-packages',
   'preset-detail': '/', // no dedicated route
 }
 
@@ -117,6 +119,14 @@ export default function IconRail() {
       {/* Bottom section */}
       <div className="mt-auto flex flex-col items-center gap-1">
         <TaskRailButton />
+
+        <RailButton
+          active={activeOverlay === 'node-packages'}
+          onClick={() => navigateOverlay('node-packages')}
+          label="Node Packages"
+        >
+          <Package size={18} />
+        </RailButton>
 
         <RailButton
           active={activeOverlay === 'logs'}
