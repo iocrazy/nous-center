@@ -30,6 +30,9 @@ OpenAI Responses API（火山方舟同名 API 抄过来）的核心改进是：*
 | 鉴权 | Bearer API Key | 与全栈一致，不引入 Access Key |
 | 权限范围 | 绑定 `instance_id` | 与 Step 3 一致 |
 | 端点 | POST + GET + DELETE + LIST(cursor 分页)；不做 input_items | flattened 方案下 input_items 是冗余；offset 在高写入下漂移 |
+| 自动 compaction | 拼装 messages 时按 token 计数，超 `max_history_tokens` 丢最旧轮（保留 system / context_id 注入的内容） | 借鉴 Claude Code，避免长会话撞 vLLM `max_model_len` 直接报错 |
+| Session 总预算 | `response_sessions.total_input_tokens` + `total_output_tokens` 每轮累加；超 `MAX_SESSION_TOKENS`（默认 200000，可改）拒绝新轮 | 防止 chain 跑飞、bug 重试爆 token；与 OpenAI 现有 model 一致量级 |
+| 停止原因 | 顶层 `status: "completed" \| "incomplete"` + `incomplete_details: {reason}` | 对齐 OpenAI Responses API；区分 `max_output_tokens` / `content_filter` / `history_truncated` / `session_budget_exceeded` |
 
 ## 架构
 
@@ -86,6 +89,8 @@ OpenAI Responses API（火山方舟同名 API 抄过来）的核心改进是：*
 | `api_key_id` | `bigint` nullable | 创建者审计 |
 | `model` | `varchar(128)` | engine_name 快照（一个 session 内不可改 model） |
 | `context_cache_id` | `varchar(64)` nullable | 首轮 context_id 记录（用于审计，不溯源） |
+| `total_input_tokens` | `bigint` default 0 | 累计输入 token（含 cache 命中部分） |
+| `total_output_tokens` | `bigint` default 0 | 累计输出 token |
 | `expire_at` | `timestamptz`, indexed | 默认 now+72h，上限 +7d |
 | `created_at` | `timestamptz` default now | |
 
@@ -152,6 +157,8 @@ OpenAI Responses API（火山方舟同名 API 抄过来）的核心改进是：*
 {
   "id": "resp-aB3xKp...",
   "object": "response",
+  "status": "completed",
+  "incomplete_details": null,
   "created_at": 1776220176,
   "model": "qwen3.5-35b-a3b-gptq-int4",
   "previous_response_id": null,
@@ -172,10 +179,34 @@ OpenAI Responses API（火山方舟同名 API 抄过来）的核心改进是：*
     "input_tokens": 32,
     "output_tokens": 7,
     "total_tokens": 39,
-    "input_tokens_details": {"cached_tokens": 0}
-  }
+    "input_tokens_details": {"cached_tokens": 0},
+    "session_total_input_tokens": 132,
+    "session_total_output_tokens": 41
+  },
+  "history_truncated": false
 }
 ```
+
+**`status` 与 `incomplete_details`：**
+| status | incomplete_details.reason | 触发条件 |
+|---|---|---|
+| `completed` | `null` | 模型自然停止（finish_reason=stop） |
+| `incomplete` | `max_output_tokens` | 模型达到 max_tokens 截断（finish_reason=length） |
+| `incomplete` | `content_filter` | vLLM/safety 触发 |
+| `incomplete` | `history_truncated` | 拼装时 compaction 丢了旧轮（warning 信号） |
+
+**`history_truncated: true`** 是顶层 boolean，方便客户端快速检测；详细原因看 `incomplete_details`。
+
+**Session 预算超限：** 在新轮**开始前**检查 `total_input_tokens + estimated_new_input > MAX_SESSION_TOKENS`，超则不调用模型，直接返回：
+```json
+{"error": {
+  "message": "Session token budget exceeded (200000)",
+  "type": "rate_limit_error",
+  "code": "session_budget_exceeded",
+  "request_id": "..."
+}}
+```
+HTTP 429。客户端应该开新 session（不传 previous_response_id）。
 
 **响应（流式 stream=true）—— SSE 语义事件：**
 ```
@@ -368,6 +399,90 @@ async def responses_sse_envelope(inner, response_id: str):
 
 实际 `StreamingResponse` 的字节流由一个外层 formatter 把 `(event, payload)` 元组转成 SSE wire format（`event: X\ndata: {...}\n\n`），`None` 转成 `data: [DONE]\n\n`。
 
+### 自动 compaction（防止撞 max_model_len）
+
+历史拼装后、调用 vLLM 前，检查累计 token 数。超阈值则丢最旧的非系统轮：
+
+```python
+# src/services/responses_service.py
+
+def _approx_tokens(messages: list[dict]) -> int:
+    """Quick token estimate: 1 token ≈ 4 chars (Chinese: 1 char ≈ 1.5 tokens).
+    Slightly over-estimates to be safe. Real count comes from vLLM."""
+    total = 0
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, str):
+            total += len(c) // 3
+        elif isinstance(c, list):
+            for item in c:
+                t = item.get("text", "")
+                if isinstance(t, str):
+                    total += len(t) // 3
+                else:
+                    total += 100  # image / other content rough placeholder
+    return total
+
+def compact_messages(
+    messages: list[dict],
+    *,
+    max_history_tokens: int,
+    keep_system: bool = True,
+) -> tuple[list[dict], bool]:
+    """Drop oldest turns until token estimate fits.
+    Always keeps the first system message + the most recent user/assistant pair.
+    Returns (compacted_messages, was_truncated).
+    """
+    if _approx_tokens(messages) <= max_history_tokens:
+        return messages, False
+
+    system_msgs = [m for m in messages if m.get("role") == "system"] if keep_system else []
+    rest = [m for m in messages if m.get("role") != "system"]
+
+    # Keep dropping oldest non-system turns until under budget
+    while rest and _approx_tokens(system_msgs + rest) > max_history_tokens:
+        rest.pop(0)
+    # Safety: if even system + last turn overflows, force-keep last 1 turn anyway
+    if not rest and len(messages) > 0:
+        rest = messages[-1:]
+    return system_msgs + rest, True
+```
+
+`max_history_tokens` 默认 = `adapter.max_model_len - 2048`（留 2K 给输出）。可改成请求级 query param 但 YAGNI。
+
+`history_truncated=True` 时：
+- 顶层 response 字段 `history_truncated: true`
+- 如果同时模型也截断输出 → `status="incomplete"`, `incomplete_details.reason="history_truncated"`
+- 否则 status 仍可为 `completed`（只是历史变短了），但 `history_truncated` 提示用户
+
+### Session 预算检查
+
+```python
+SESSION_TOKEN_BUDGET = 200_000  # roughly 6x typical model context
+
+async def check_session_budget(
+    session: AsyncSession, sess: ResponseSession, estimated_new: int,
+) -> None:
+    projected = sess.total_input_tokens + sess.total_output_tokens + estimated_new
+    if projected > SESSION_TOKEN_BUDGET:
+        raise RateLimitError(
+            f"Session token budget exceeded ({SESSION_TOKEN_BUDGET})",
+            code="session_budget_exceeded",
+        )
+
+async def update_session_usage(
+    session: AsyncSession, sess: ResponseSession,
+    input_tokens: int, output_tokens: int,
+) -> None:
+    """Atomic UPDATE post-vLLM call."""
+    stmt = update(ResponseSession).where(ResponseSession.id == sess.id).values(
+        total_input_tokens=ResponseSession.total_input_tokens + input_tokens,
+        total_output_tokens=ResponseSession.total_output_tokens + output_tokens,
+    ).execution_options(synchronize_session=False)
+    await session.execute(stmt)
+    await session.commit()
+```
+
 ### 写入新轮（一次 POST 完成 user + assistant）
 
 ```python
@@ -506,6 +621,15 @@ curl ... "/v1/responses?limit=5&after=resp-y"  # 下一页
 # 8. DELETE + chain 阻断
 curl ... -X DELETE /v1/responses/$R1
 # 之后用 R1 做 previous_response_id → 404
+
+# 9. Auto-compaction 触发（短模型 + 长 chain）
+# 在 max_model_len ~ 4096 的小模型上跑 30 轮长 prompt，
+# 第 ~15 轮起响应应有 history_truncated: true
+# 但 status 仍为 completed（除非输出也被 length 截断）
+
+# 10. Session 预算超限
+# 累计跑超 200K token 的 chain
+# 下一个 POST → 429 + code=session_budget_exceeded
 ```
 
 ## 回滚
