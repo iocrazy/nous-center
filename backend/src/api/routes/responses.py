@@ -182,16 +182,41 @@ def normalize_input(input_field: Any) -> list[dict]:
     )
 
 
+async def _resolve_file_id_image(file_id: str, instance_id: int) -> dict:
+    """Load a Files API row, read bytes, return image_url data URL content part."""
+    import base64
+    from pathlib import Path
+    from src.models.database import create_session_factory as _csf
+    from src.models.file import File as FileRow
+
+    async with _csf()() as fs:
+        row = await fs.get(FileRow, file_id)
+        if row is None or row.instance_id != instance_id:
+            raise NotFoundError(
+                f"file '{file_id}' not found", code="file_not_found"
+            )
+        if not (row.mime_type or "").startswith("image/"):
+            raise InvalidRequestError(
+                f"file '{file_id}' is not an image (mime={row.mime_type})",
+                code="file_not_image",
+            )
+        data = Path(row.storage_path).read_bytes()
+    b64 = base64.b64encode(data).decode()
+    return {
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:{row.mime_type};base64,{b64}",
+            "detail": "auto",
+        },
+    }
+
+
 def resolve_image(item: dict) -> dict:
     """input_image -> chat/completions image_url message content.
-    file_id path reserved for Step 5 (Files API); raises 501."""
+    file_id path dispatched via _resolve_file_id_image during async transform."""
     if item.get("file_id"):
-        err = NousError(
-            "file_id input not supported until Step 5 (Files API)",
-            code="image_file_id_not_implemented",
-        )
-        err.http_status = 501
-        raise err
+        # Sentinel for async resolver; handled in transform stage with instance ctx.
+        return {"_pending_file_id": item["file_id"]}
     if item.get("image_url"):
         return {
             "type": "image_url",
@@ -205,6 +230,21 @@ def resolve_image(item: dict) -> dict:
         param="input_image",
         code="invalid_image_input",
     )
+
+
+async def resolve_pending_file_ids(
+    messages: list[dict], instance_id: int,
+) -> list[dict]:
+    """Second pass: swap {_pending_file_id: x} sentinels with real image_url parts."""
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for i, part in enumerate(content):
+            fid = isinstance(part, dict) and part.get("_pending_file_id")
+            if fid:
+                content[i] = await _resolve_file_id_image(fid, instance_id)
+    return messages
 
 
 def transform_inputs_to_chat_messages(inputs: list[dict]) -> list[dict]:
@@ -337,6 +377,9 @@ async def create_response(
     # Normalize new input
     new_input_messages = transform_inputs_to_chat_messages(
         normalize_input(req.input)
+    )
+    new_input_messages = await resolve_pending_file_ids(
+        new_input_messages, instance.id
     )
 
     # Assemble per MESSAGES_ORDER: context -> chain -> instructions -> input.
