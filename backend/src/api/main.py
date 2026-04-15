@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services.gpu_monitor import memory_guard_loop
@@ -226,7 +226,33 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(log_cleanup_loop())
 
-    yield
+    async def context_cache_cleanup_loop(interval_seconds: int = 3600):
+        from src.services.context_cache_service import cleanup_expired
+        from src.models.database import create_session_factory as _csf
+        sf = _csf()
+        while True:
+            try:
+                async with sf() as s:
+                    n = await cleanup_expired(s)
+                    if n:
+                        logger.info("context cache cleanup: %d expired rows", n)
+            except Exception:
+                logger.exception("context cache cleanup error")
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+
+    cache_cleanup_task = asyncio.create_task(context_cache_cleanup_loop())
+
+    try:
+        yield
+    finally:
+        cache_cleanup_task.cancel()
+        try:
+            await cache_cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 def create_app() -> FastAPI:
@@ -291,6 +317,7 @@ def create_app() -> FastAPI:
     app.include_router(audio.router)
     app.include_router(voices.router)
     app.include_router(openai_compat.router)
+    app.include_router(context_cache_routes.router)
     app.include_router(settings.router)
     app.include_router(instances.router)
     app.include_router(instance_keys.router)

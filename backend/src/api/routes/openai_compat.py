@@ -122,6 +122,62 @@ async def chat_completions(
     body = await request.json()
     body["model"] = ""  # vLLM uses its own model path
 
+    # Resolve context_id (top-level or extra_body.context_id)
+    context_id = body.pop("context_id", None)
+    if not context_id and isinstance(body.get("extra_body"), dict):
+        context_id = body["extra_body"].pop("context_id", None)
+        if not body["extra_body"]:
+            body.pop("extra_body", None)
+
+    if context_id:
+        from src.errors import (
+            InvalidRequestError as _IRE,
+            NotFoundError as _NF,
+            PermissionError as _NP,
+        )
+        from src.models.database import create_session_factory as _csf
+        from src.services.context_cache_service import (
+            fetch_active_cache as _fac,
+            fetch_cache_any_instance as _fcai,
+            increment_hit_and_extend as _ihe,
+        )
+
+        sf = _csf()
+        cached_ttl: int | None = None
+        async with sf() as cache_session:
+            cache = await _fac(cache_session, context_id, instance.id)
+            if cache is None:
+                other = await _fcai(cache_session, context_id)
+                if other is not None and other.instance_id != instance.id:
+                    raise _NP(
+                        "Cache belongs to another instance",
+                        code="context_wrong_instance",
+                    )
+                raise _NF(
+                    "Context cache not found or expired",
+                    code="context_not_found",
+                )
+            if cache.model != engine_name:
+                raise _IRE(
+                    f"Cache was created for '{cache.model}', not '{engine_name}'",
+                    code="context_model_mismatch",
+                    param="model",
+                )
+            # Snapshot primitives BEFORE leaving session scope (avoid dereferencing
+            # a potentially-detached ORM instance from inside _bump).
+            cached_ttl = cache.ttl_seconds
+            cached_messages = list(cache.messages_json)
+            body["messages"] = cached_messages + list(body.get("messages", []))
+
+        # Fire-and-forget hit-count update; loop persists across requests under uvicorn.
+        async def _bump(cid: str = context_id, ttl: int = cached_ttl):
+            try:
+                async with _csf()() as s2:
+                    await _ihe(s2, cid, ttl)
+            except Exception:
+                logger.exception("hit_count update failed for %s", cid)
+        asyncio.create_task(_bump())
+
     # OpenAI SDK extra_body.thinking → vLLM chat_template_kwargs.enable_thinking
     # Whitelist-driven; silent ignore for unsupported models (Step 2 spec).
     _maybe_inject_thinking(body, engine_name)
