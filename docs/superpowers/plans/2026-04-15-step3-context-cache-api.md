@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `POST /v1/context/create`, integrate `extra_body.context_id` (and top-level `context_id`) into `/v1/chat/completions`, plus `GET / DELETE /v1/context/{id}` for management. Backed by a new PG table `context_caches`. Cleans expired entries via a background loop.
+**Goal:** Add `POST /v1/context/create`, integrate `extra_body.context_id` (and top-level `context_id`) into `/v1/chat/completions`, plus `GET /v1/contexts` (list), `GET /v1/context/{id}` (detail), `DELETE /v1/context/{id}` for management. Backed by a new PG table `context_caches`. Cleans expired entries via a background loop.
 
 **Architecture:** vLLM already has prefix caching in GPU. We expose explicit lifecycle (create → use → expire) on top, persist metadata in PG, and pre-warm vLLM's prefix cache at create time so the first user-visible chat request gets cache hits. Cache scope is per `instance_id`; same-instance keys can share. Use resets TTL.
 
@@ -539,8 +539,8 @@ async def get_context(
     preview = []
     for m in (row.messages_json or [])[:5]:
         c = m.get("content", "")
-        if isinstance(c, str) and len(c) > 200:
-            c = c[:200] + "..."
+        if isinstance(c, str) and len(c) > 1000:
+            c = c[:1000] + "..."
         preview.append({"role": m.get("role"), "content": c})
 
     return {
@@ -557,6 +557,52 @@ async def get_context(
     }
 
 
+@router.get("/v1/contexts")
+async def list_contexts(
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """List all active (non-expired) caches for the caller's instance.
+
+    Returns metadata only (no messages_preview) — this is for inventory /
+    debugging, not for inspecting cache contents. Use GET /v1/context/{id}
+    for that.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from src.models.context_cache import ContextCache
+
+    instance, _ = auth
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(ContextCache)
+        .where(
+            ContextCache.instance_id == instance.id,
+            ContextCache.expires_at > now,
+        )
+        .order_by(ContextCache.created_at.desc())
+        .limit(200)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return {
+        "data": [
+            {
+                "id": r.id,
+                "model": r.model,
+                "mode": r.mode,
+                "ttl": r.ttl_seconds,
+                "expires_at": r.expires_at.isoformat(),
+                "created_at": r.created_at.isoformat(),
+                "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None,
+                "hit_count": r.hit_count,
+                "prompt_tokens": r.prompt_tokens,
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
 @router.delete("/v1/context/{cache_id}", status_code=204)
 async def delete_context(
     cache_id: str,
@@ -570,6 +616,27 @@ async def delete_context(
                                    code="context_wrong_instance")
     await delete_cache(session, cache_id, instance.id)  # idempotent
     return Response(status_code=204)
+```
+
+**Tests for new list endpoint:**
+```python
+def test_list_contexts_returns_only_active_for_instance(
+    client_with_real_engine, sample_api_key
+):
+    create_resp = client_with_real_engine.post("/v1/context/create",
+        headers={"Authorization": f"Bearer {sample_api_key}"},
+        json={"model": "qwen3.5-35b",
+              "messages": [{"role":"system","content":"x"}]})
+    ctx_id = create_resp.json()["id"]
+
+    list_resp = client_with_real_engine.get("/v1/contexts",
+        headers={"Authorization": f"Bearer {sample_api_key}"})
+    assert list_resp.status_code == 200
+    body = list_resp.json()
+    assert any(item["id"] == ctx_id for item in body["data"])
+    # No messages_preview / messages in list response
+    assert all("messages" not in item and "messages_preview" not in item
+               for item in body["data"])
 ```
 
 - [ ] **Step 3: Register router in `main.py`**
