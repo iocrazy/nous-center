@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
-import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, useKillProcess, useUsageSummary, type SysGpuInfo, type GpuProcessInfo } from '../../api/system'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts'
+import { useSysGpus, useSysStats, useSysProcesses, useMonitorStats, useKillProcess, useUsageSummary, useInferenceUsage, type SysGpuInfo, type GpuProcessInfo } from '../../api/system'
 import { useEngines } from '../../api/engines'
 
 export default function DashboardOverlay() {
@@ -173,6 +174,57 @@ export default function DashboardOverlay() {
           )}
         </MonPanel>
       </div>
+
+      {/* Inference usage (Ark-style) */}
+      <div className="grid grid-cols-1 gap-3 mt-3">
+        <UsageChartCard />
+      </div>
+    </div>
+  )
+}
+
+function UsageChartCard() {
+  const { data } = useInferenceUsage({ interval: 'day', group_by: 'Model' })
+  const rows = (data?.data ?? []).map(r => ({
+    day: (r.day ?? '').slice(5, 10),
+    model: r.model ?? 'unknown',
+    input: r.input_tokens,
+    output: r.output_tokens,
+    calls: r.req_cnt,
+  }))
+  return (
+    <div
+      className="rounded-md"
+      style={{ background: 'var(--card)', border: '1px solid var(--border)', padding: 14 }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-2)', marginBottom: 10 }}>
+        近 7 日推理用量（按模型 · 天粒度）
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 11, color: 'var(--muted)', padding: '20px 0', textAlign: 'center' }}>
+          暂无数据
+        </div>
+      ) : (
+        <div style={{ width: '100%', height: 260 }}>
+          <ResponsiveContainer>
+            <BarChart data={rows} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="day" stroke="var(--muted)" fontSize={11} />
+              <YAxis stroke="var(--muted)" fontSize={11} />
+              <Tooltip
+                contentStyle={{
+                  background: 'var(--card)',
+                  border: '1px solid var(--border)',
+                  fontSize: 11,
+                }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="input" stackId="t" fill="var(--accent-2)" name="Input tokens" />
+              <Bar dataKey="output" stackId="t" fill="var(--accent)" name="Output tokens" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   )
 }

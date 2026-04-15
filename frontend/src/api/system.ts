@@ -135,6 +135,45 @@ export function useUsageSummary() {
   })
 }
 
+export interface InferenceUsageRow {
+  day?: string
+  hour?: string
+  model?: string | null
+  instance?: number | null
+  apikey?: number | null
+  input_tokens: number
+  output_tokens: number
+  req_cnt: number
+}
+
+export interface InferenceUsage {
+  interval: 'day' | 'hour'
+  group_by: string
+  start: string
+  end: string
+  data: InferenceUsageRow[]
+}
+
+export function useInferenceUsage(params: {
+  interval?: 'day' | 'hour'
+  group_by?: 'Model' | 'Instance' | 'ApiKey'
+  instance_id?: number
+  model?: string
+} = {}) {
+  const qs = new URLSearchParams()
+  if (params.interval) qs.set('interval', params.interval)
+  if (params.group_by) qs.set('group_by', params.group_by)
+  if (params.instance_id) qs.set('instance_id', String(params.instance_id))
+  if (params.model) qs.set('model', params.model)
+  const url = `/api/v1/monitor/usage/inference?${qs.toString()}`
+  return useQuery({
+    queryKey: ['inference-usage', qs.toString()],
+    queryFn: () => apiFetch<InferenceUsage>(url),
+    refetchInterval: 30_000,
+  })
+}
+
+
 export function useKillProcess() {
   const qc = useQueryClient()
   return useMutation({
