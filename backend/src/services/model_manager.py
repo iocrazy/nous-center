@@ -56,6 +56,80 @@ class ModelManager:
         cls = getattr(module, class_name)
         return cls(model_path=spec.path, **spec.params)
 
+    def _detect_vllm_gpus_for_adapter(self, adapter) -> list[int]:
+        """Map the adapter's subprocess (and its children) to GPU indices
+        via nvidia-smi. Runs AFTER load() — before that, vLLM hasn't
+        allocated any devices yet."""
+        try:
+            # Collect pids belonging to this adapter: main process + descendants.
+            root_pid = None
+            proc = getattr(adapter, "_process", None)
+            if proc is not None:
+                root_pid = proc.pid
+            adopted = getattr(adapter, "_adopted_pid", None)
+            if adopted:
+                root_pid = adopted
+            if not root_pid:
+                return []
+
+            import subprocess
+            # Descendants (children + grandchildren); tp>1 spawns worker procs.
+            try:
+                out = subprocess.run(
+                    ["ps", "-o", "pid", "--no-headers", "--ppid", str(root_pid)],
+                    capture_output=True, text=True, timeout=3,
+                ).stdout
+                pids: set[int] = {root_pid}
+                for line in out.splitlines():
+                    s = line.strip()
+                    if s.isdigit():
+                        pids.add(int(s))
+                # One more hop (tp uses spawn → grandchildren)
+                for child in list(pids):
+                    out2 = subprocess.run(
+                        ["ps", "-o", "pid", "--no-headers", "--ppid", str(child)],
+                        capture_output=True, text=True, timeout=3,
+                    ).stdout
+                    for line in out2.splitlines():
+                        s = line.strip()
+                        if s.isdigit():
+                            pids.add(int(s))
+            except Exception:
+                pids = {root_pid}
+
+            result = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return []
+            gpu_result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            uuid_to_idx: dict[str, int] = {}
+            for line in gpu_result.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    uuid_to_idx[parts[1]] = int(parts[0])
+
+            hits: set[int] = set()
+            for line in result.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    pid_int = int(parts[0])
+                except ValueError:
+                    continue
+                if pid_int in pids:
+                    idx = uuid_to_idx.get(parts[1])
+                    if idx is not None:
+                        hits.add(idx)
+            return sorted(hits)
+        except Exception:
+            return []
+
     def _detect_vllm_gpus(self, spec: ModelSpec) -> list[int]:
         """Detect which GPUs vLLM is using by checking nvidia-smi."""
         try:
@@ -136,6 +210,7 @@ class ModelManager:
                 return
 
             # Determine device and GPU indices
+            detect_after_load = False
             if spec.gpu is not None:
                 # Use configured GPU(s)
                 if isinstance(spec.gpu, list):
@@ -147,10 +222,13 @@ class ModelManager:
             elif spec.vram_mb > 0:
                 gpu_index = self._allocator.get_best_gpu(spec.vram_mb)
                 gpu_indices = [gpu_index] if gpu_index >= 0 else []
+                detect_after_load = False
             else:
-                # External service (e.g. vLLM) — detect GPUs from running process
+                # External service (e.g. vLLM) — detect GPUs AFTER the process
+                # has actually claimed them (pre-load nvidia-smi returns nothing).
                 gpu_index = 0
-                gpu_indices = self._detect_vllm_gpus(spec)
+                gpu_indices = []
+                detect_after_load = True
 
             device = f"cuda:{gpu_index}" if gpu_index >= 0 else "cpu"
 
@@ -161,6 +239,11 @@ class ModelManager:
                 adapter = self._instantiate_adapter(spec)
 
             await adapter.load(device)
+
+            if detect_after_load:
+                gpu_indices = self._detect_vllm_gpus_for_adapter(adapter) or [0]
+                gpu_index = gpu_indices[0] if gpu_indices else 0
+
             self._models[model_id] = LoadedModel(
                 spec=spec,
                 adapter=adapter,
