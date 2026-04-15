@@ -7,6 +7,7 @@ from fastapi import Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.errors import AuthenticationError
 from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
@@ -67,8 +68,8 @@ async def verify_instance_key(
     for key in keys:
         if bcrypt.checkpw(token.encode(), key.key_hash.encode()):
             if _key_expired(key):
-                raise HTTPException(
-                    401, detail={"code": "api_key_expired", "message": "API key expired"}
+                raise AuthenticationError(
+                    "API key expired", code="api_key_expired",
                 )
             await _enforce_instance_limits(instance)
             return instance, key
@@ -106,9 +107,8 @@ async def verify_bearer_token(
             instance = await session.get(ServiceInstance, key.instance_id)
             if instance and instance.status == "active":
                 if _key_expired(key):
-                    raise HTTPException(
-                        401,
-                        detail={"code": "api_key_expired", "message": "API key expired"},
+                    raise AuthenticationError(
+                        "API key expired", code="api_key_expired",
                     )
                 await _enforce_instance_limits(instance)
                 return instance, key
