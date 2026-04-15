@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Column, DateTime, JSON, String, Index
+from sqlalchemy import BigInteger, Column, DateTime, Integer, JSON, String, Index
 
 from src.models.database import Base
 from src.utils.snowflake import snowflake_id
@@ -18,6 +18,8 @@ class ServiceInstance(Base):
     status = Column(String(20), default="active", nullable=False)
     endpoint_path = Column(String(200), nullable=True)
     params_override = Column(JSON, default=dict)
+    rate_limit_rpm = Column(Integer, nullable=True)
+    rate_limit_tpm = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime(timezone=True),

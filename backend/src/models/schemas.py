@@ -263,6 +263,8 @@ class ServiceInstanceCreate(BaseModel):
 class ServiceInstanceUpdate(BaseModel):
     name: str | None = None
     params_override: dict | None = None
+    rate_limit_rpm: int | None = None
+    rate_limit_tpm: int | None = None
 
 
 class ServiceInstanceOut(BaseModel):

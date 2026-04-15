@@ -35,6 +35,11 @@ async def record_llm_usage(
         )
         session.add(usage)
         await session.commit()
+    if instance_id is not None:
+        from src.services.rate_limiter import get_rate_limiter
+        await get_rate_limiter().record(
+            instance_id, prompt_tokens + completion_tokens
+        )
 
 
 async def record_tts_usage(

@@ -157,6 +157,10 @@ async def update_instance(
         instance.name = data.name
     if data.params_override is not None:
         instance.params_override = data.params_override
+    if data.rate_limit_rpm is not None:
+        instance.rate_limit_rpm = data.rate_limit_rpm or None
+    if data.rate_limit_tpm is not None:
+        instance.rate_limit_tpm = data.rate_limit_tpm or None
 
     await session.commit()
     await session.refresh(instance)

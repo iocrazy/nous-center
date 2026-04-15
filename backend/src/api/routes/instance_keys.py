@@ -2,9 +2,11 @@
 
 import os
 import re
+from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,11 @@ from src.models.schemas import (
     InstanceApiKeyCreated,
     InstanceApiKeyOut,
 )
+
+
+class TemporaryKeyRequest(BaseModel):
+    label: str = "temporary"
+    duration_seconds: int = Field(3600, ge=60, le=30 * 86400)
 
 router = APIRouter(prefix="/api/v1/instances", tags=["instance-keys"])
 
@@ -73,6 +80,37 @@ async def list_keys(
         .order_by(InstanceApiKey.created_at)
     )
     return result.scalars().all()
+
+
+@router.post("/{instance_id}/keys/temporary", status_code=201)
+async def create_temporary_key(
+    instance_id: int,
+    data: TemporaryKeyRequest,
+    session: AsyncSession = Depends(get_async_session),
+):
+    instance = await session.get(ServiceInstance, instance_id)
+    if not instance:
+        raise HTTPException(404, detail="Instance not found")
+    full_key, key_hash, key_prefix = _generate_key(instance.name)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=data.duration_seconds)
+    api_key = InstanceApiKey(
+        instance_id=instance_id,
+        label=data.label,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        expires_at=expires_at,
+    )
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+    return {
+        "id": api_key.id,
+        "key": full_key,
+        "label": api_key.label,
+        "key_prefix": api_key.key_prefix,
+        "expires_at": expires_at.isoformat(),
+        "duration_seconds": data.duration_seconds,
+    }
 
 
 @router.delete("/{instance_id}/keys/{key_id}", status_code=204)

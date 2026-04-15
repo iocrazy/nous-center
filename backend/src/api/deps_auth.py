@@ -1,5 +1,7 @@
 """Bearer Token authentication for instance service endpoints."""
 
+from datetime import datetime, timezone
+
 import bcrypt
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy import select
@@ -8,9 +10,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
+from src.services.rate_limiter import get_rate_limiter
 
 # Pre-computed dummy hash for constant-time rejection (prevents timing attacks)
 _DUMMY_HASH = bcrypt.hashpw(b"dummy", bcrypt.gensalt()).decode()
+
+
+def _key_expired(key: InstanceApiKey) -> bool:
+    if key.expires_at is None:
+        return False
+    exp = key.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp < datetime.now(timezone.utc)
+
+
+async def _enforce_instance_limits(instance: ServiceInstance) -> None:
+    await get_rate_limiter().check(
+        instance.id,
+        getattr(instance, "rate_limit_rpm", None),
+        getattr(instance, "rate_limit_tpm", None),
+    )
 
 
 async def verify_instance_key(
@@ -46,6 +66,11 @@ async def verify_instance_key(
 
     for key in keys:
         if bcrypt.checkpw(token.encode(), key.key_hash.encode()):
+            if _key_expired(key):
+                raise HTTPException(
+                    401, detail={"code": "api_key_expired", "message": "API key expired"}
+                )
+            await _enforce_instance_limits(instance)
             return instance, key
 
     # Always do one bcrypt round to prevent timing-based probing
@@ -80,6 +105,12 @@ async def verify_bearer_token(
         if bcrypt.checkpw(token.encode(), key.key_hash.encode()):
             instance = await session.get(ServiceInstance, key.instance_id)
             if instance and instance.status == "active":
+                if _key_expired(key):
+                    raise HTTPException(
+                        401,
+                        detail={"code": "api_key_expired", "message": "API key expired"},
+                    )
+                await _enforce_instance_limits(instance)
                 return instance, key
             raise HTTPException(403, detail="Instance is inactive")
 
