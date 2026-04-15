@@ -144,3 +144,43 @@ async def cleanup_expired(session: AsyncSession) -> int:
     result = await session.execute(stmt)
     await session.commit()
     return result.rowcount or 0
+
+
+async def resolve_for_request(
+    session: AsyncSession,
+    *,
+    context_id: str | None,
+    instance_id: int,
+    engine_name: str,
+) -> tuple[list[dict] | None, int | None]:
+    """Common cache lookup for chat_completions and responses endpoints.
+
+    Returns (messages, ttl_seconds) or (None, None) if context_id is None.
+    Raises NotFoundError / PermissionError / InvalidRequestError on validation.
+    """
+    from src.errors import (
+        InvalidRequestError,
+        NotFoundError,
+        PermissionError as NousPermissionError,
+    )
+    if not context_id:
+        return None, None
+    cache = await fetch_active_cache(session, context_id, instance_id)
+    if cache is None:
+        other = await fetch_cache_any_instance(session, context_id)
+        if other is not None and other.instance_id != instance_id:
+            raise NousPermissionError(
+                "Cache belongs to another instance",
+                code="context_wrong_instance",
+            )
+        raise NotFoundError(
+            "Context cache not found or expired",
+            code="context_not_found",
+        )
+    if cache.model != engine_name:
+        raise InvalidRequestError(
+            f"Cache was created for '{cache.model}', not '{engine_name}'",
+            code="context_model_mismatch",
+            param="model",
+        )
+    return list(cache.messages_json), cache.ttl_seconds

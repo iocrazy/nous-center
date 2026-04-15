@@ -130,43 +130,21 @@ async def chat_completions(
             body.pop("extra_body", None)
 
     if context_id:
-        from src.errors import (
-            InvalidRequestError as _IRE,
-            NotFoundError as _NF,
-            PermissionError as _NP,
-        )
         from src.models.database import create_session_factory as _csf
         from src.services.context_cache_service import (
-            fetch_active_cache as _fac,
-            fetch_cache_any_instance as _fcai,
             increment_hit_and_extend as _ihe,
+            resolve_for_request,
         )
 
         sf = _csf()
-        cached_ttl: int | None = None
         async with sf() as cache_session:
-            cache = await _fac(cache_session, context_id, instance.id)
-            if cache is None:
-                other = await _fcai(cache_session, context_id)
-                if other is not None and other.instance_id != instance.id:
-                    raise _NP(
-                        "Cache belongs to another instance",
-                        code="context_wrong_instance",
-                    )
-                raise _NF(
-                    "Context cache not found or expired",
-                    code="context_not_found",
-                )
-            if cache.model != engine_name:
-                raise _IRE(
-                    f"Cache was created for '{cache.model}', not '{engine_name}'",
-                    code="context_model_mismatch",
-                    param="model",
-                )
-            # Snapshot primitives BEFORE leaving session scope (avoid dereferencing
-            # a potentially-detached ORM instance from inside _bump).
-            cached_ttl = cache.ttl_seconds
-            cached_messages = list(cache.messages_json)
+            cached_messages, cached_ttl = await resolve_for_request(
+                cache_session,
+                context_id=context_id,
+                instance_id=instance.id,
+                engine_name=engine_name,
+            )
+        if cached_messages:
             body["messages"] = cached_messages + list(body.get("messages", []))
 
         # Fire-and-forget hit-count update; loop persists across requests under uvicorn.
