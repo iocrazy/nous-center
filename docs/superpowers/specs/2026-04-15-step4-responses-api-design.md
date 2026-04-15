@@ -116,7 +116,7 @@ OpenAI Responses API（火山方舟同名 API 抄过来）的核心改进是：*
 | `created_at` | `timestamptz` default now | |
 
 约束：
-- `response_sessions.expire_at` CHECK：`> created_at AND <= created_at + interval '7 days'`
+- `response_sessions.expire_at` CHECK：`> created_at`（仅基础约束；上限 7 天在 application 层强制，避免 PG `interval` 语法在 SQLite test fixture 失败）
 - `UNIQUE(session_id, turn_idx)`
 - `INDEX(session_id, turn_idx)` —— 拼装历史的主查询
 - `INDEX(expire_at)` 在 `response_sessions` 上，用于清理
@@ -215,21 +215,33 @@ OpenAI Responses API（火山方舟同名 API 抄过来）的核心改进是：*
 HTTP 429。客户端应该开新 session（不传 previous_response_id）。
 
 **响应（流式 stream=true）—— SSE 语义事件：**
+
+字段对齐 OpenAI Responses SDK 的事件 schema（`item_id`, `output_index`, `content_index` 必须有，否则 SDK 不识别）：
 ```
 event: response.created
-data: {"type":"response.created","response":{"id":"resp-x","status":"in_progress",...}}
+data: {"type":"response.created","response":{"id":"resp-x","status":"in_progress","model":"...","created_at":...}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg-x","type":"message","role":"assistant","content":[]}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","item_id":"msg-x","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}
 
 event: response.output_text.delta
-data: {"type":"response.output_text.delta","response_id":"resp-x","delta":"你好"}
+data: {"type":"response.output_text.delta","item_id":"msg-x","output_index":0,"content_index":0,"delta":"你好"}
 
 event: response.output_text.delta
-data: {"type":"response.output_text.delta","response_id":"resp-x","delta":"啊"}
+data: {"type":"response.output_text.delta","item_id":"msg-x","output_index":0,"content_index":0,"delta":"啊"}
 
 event: response.completed
-data: {"type":"response.completed","response":{...full response object...}}
+data: {"type":"response.completed","response":{...full response object with output[]...}}
 
 data: [DONE]
 ```
+
+`item_id` / `output_index` / `content_index` 现在都填 0 / `msg-x`（单 output item, 单 content part），但 schema 提前留好；将来 tool calls / multi-output 时这些索引才有意义。
+
+**`request_id` 注入**：wrapper 自动给每个 event payload 的顶层加 `request_id` 字段（来自 RequestIdMiddleware），客户端可对接日志追踪。
 
 错误中途出现时（复用 Step 1 SSE wrapper 的格式）：
 ```
@@ -249,7 +261,7 @@ data: [DONE]
 
 ### 2. `GET /v1/responses/{id}`
 
-返回与 POST 响应相同的完整 response object（解压 `messages_compressed`，重构 `output` 字段）。
+返回与 POST 响应相同的完整 response object（解压 `content_compressed`，重构 `output` 字段）。
 
 **Errors:** 404 / 403（同 Context Cache）。
 
@@ -293,10 +305,19 @@ import gzip, json
 def encode_content(content: list[dict]) -> bytes:
     return gzip.compress(json.dumps(content, ensure_ascii=False).encode("utf-8"))
 
-def decode_content(data: bytes) -> list[dict]:
-    # max_length caps decompressed output at 10MB; defends against zip bomb
-    # even though our writes are self-controlled (cheap insurance).
-    return json.loads(gzip.decompress(data, max_length=10_000_000).decode("utf-8"))
+def decode_content(data: bytes, max_size: int = 10_000_000) -> list[dict]:
+    # NOTE: gzip.decompress() in Py3.12 has NO max_length kwarg.
+    # Use streaming GzipFile + bounded read to enforce the cap.
+    import io
+    with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
+        out = gz.read(max_size + 1)
+    if len(out) > max_size:
+        from src.errors import InvalidRequestError
+        raise InvalidRequestError(
+            "decompressed payload too large",
+            code="payload_too_large",
+        )
+    return json.loads(out.decode("utf-8"))
 ```
 
 短 content（< 500 字节）gzip 收益不大但也不亏，统一压便于 schema 一致。
@@ -391,49 +412,106 @@ def resolve_image(item: dict) -> dict:
 
 ### Streaming SSE wrapper
 
-新增 `responses_sse_wrapper` 而不是复用 chat 的：事件类型不同。但仍**走 Step 1 的 `sse_with_error_envelope` 风格**（finally 保证 `[DONE]`）。
+新增 `responses_sse_envelope` 而不是复用 chat 的：事件类型不同。**关键三件事：**
 
-**`response.created` 时机：** 不在 wrapper 进入时立刻 emit。`inner` 应该在拼装历史 + vLLM 首字节都成功后再 yield 第一条 `response.created` 事件。理由：如果拼装失败（previous_response_id 404）或 vLLM 上游错误，客户端只会看到一个 `error` 事件，避免 created→error 的混乱状态机。
-
-**流式中断处理（`asyncio.CancelledError`）：** 客户端断连时 SSE generator 被取消。在 `except CancelledError` 分支里**写入 partial assistant turn**：
-- `status="incomplete"`, `incomplete_details.reason="connection_closed"`
-- 已收到的 delta 文本拼成 partial assistant content
-- 客户端下次用 `previous_response_id` 不会失败；可以从 partial 接着续
+1. **wrapper 直接 yield 完整 SSE 字符串**（不是 tuple），与 Step 1 的 `sse_with_error_envelope` 输出格式保持一致 —— Starlette `StreamingResponse` 直接吃 string/bytes 生成器，不需要外层 formatter。
+2. **`response.created` 时机：** 由 `inner` 在拿到 vLLM 首字节后才 yield，wrapper 不主动注入。失败时只有 `error` 事件，避免 `created→error` 的混乱状态机。
+3. **`asyncio.CancelledError` 持久化：** 取消语义下，await PG INSERT **可能本身被立即取消**。不能依赖 except CancelledError 分支里 await。改用**模块级 background task queue**（在 lifespan 启动时拉起 worker）接收 partial-write 任务。
 
 ```python
-async def responses_sse_envelope(inner, persist_partial_fn):
-    """
-    inner: async generator yielding ("event_type", payload_dict);
-           inner emits "response.created" after first vLLM byte.
-    persist_partial_fn: callable(text_so_far: str, status: str, reason: str)
-                        called from the CancelledError / Exception branch
-                        to write a partial assistant turn.
+import json
+from src.errors import APIError, NousError
+
+# Module-level queue + worker — survives request cancellation
+_partial_write_queue: asyncio.Queue | None = None
+
+async def _partial_write_worker():
+    """Started in lifespan. Drains partial-write requests serially."""
+    while True:
+        item = await _partial_write_queue.get()
+        if item is None:  # shutdown sentinel
+            break
+        try:
+            persist_fn, args = item
+            await persist_fn(*args)
+        except Exception:
+            logger.exception("partial-write worker failed")
+        finally:
+            _partial_write_queue.task_done()
+
+def schedule_partial_write(persist_fn, *args):
+    """Fire-and-forget; survives request task cancellation."""
+    if _partial_write_queue is not None:
+        try:
+            _partial_write_queue.put_nowait((persist_fn, args))
+        except asyncio.QueueFull:
+            logger.error("partial-write queue full, dropping")
+
+
+def _sse_format(evt: str, payload: dict) -> str:
+    return f"event: {evt}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def responses_sse_envelope(inner, persist_partial_fn, request_id: str | None):
+    """Wrap an async-generator that yields ('event_type', dict) tuples and
+    serialize to SSE wire format. Always emits exactly one `data: [DONE]\\n\\n`.
+
+    Args:
+      inner: async iter of (evt_type, payload_dict). MUST emit response.created
+             AFTER first vLLM byte (not at start).
+      persist_partial_fn: async callable(text_so_far, status, reason); enqueued
+             onto background worker queue on cancellation.
+      request_id: injected into every event payload as 'request_id' field.
     """
     accumulated_text = ""
-    completed_normally = False
+    sent_done = False
     try:
         async for evt_type, payload in inner:
+            payload = dict(payload)  # don't mutate caller's dict
+            if request_id and "request_id" not in payload:
+                payload["request_id"] = request_id
             if evt_type == "response.output_text.delta":
                 accumulated_text += payload.get("delta", "")
-            yield (evt_type, payload)
-        completed_normally = True
+            yield _sse_format(evt_type, payload)
     except asyncio.CancelledError:
-        # Client disconnected mid-stream
-        await persist_partial_fn(accumulated_text, "incomplete", "connection_closed")
-        raise  # re-raise so Starlette knows the stream was cancelled
+        # Client disconnected mid-stream. Hand off to background worker because
+        # awaiting PG inside this except block is unreliable under cancellation.
+        schedule_partial_write(
+            persist_partial_fn,
+            accumulated_text,
+            "incomplete",
+            "connection_closed",
+        )
+        raise
     except NousError as e:
-        yield ("error", {"type":"error","error": e.to_dict()["error"]})
+        err_payload = {"type": "error", "error": e.to_dict()["error"]}
+        if request_id:
+            err_payload["request_id"] = request_id
+        yield _sse_format("error", err_payload)
     except Exception:
         logger.exception("responses stream failure")
-        from src.errors import APIError
         err = APIError("Internal server error", code="internal_error")
-        yield ("error", {"type":"error","error": err.to_dict()["error"]})
+        err_payload = {"type": "error", "error": err.to_dict()["error"]}
+        if request_id:
+            err_payload["request_id"] = request_id
+        yield _sse_format("error", err_payload)
     finally:
-        if not completed_normally:
-            yield None  # signal [DONE] terminator
+        if not sent_done:
+            yield "data: [DONE]\n\n"
+            sent_done = True
 ```
 
-**为什么 `persist_partial_fn` 在 CancelledError 分支：** asyncio 的取消语义下，取消信号到达时 generator 还能完成一次 await（PG INSERT）再抛出。CancelledError 重新 raise 让 Starlette 关闭流；persist 在取消和 re-raise 之间发生。
+**lifespan 集成：** `main.py` 的 `lifespan` 启动时初始化 queue 和 worker，shutdown 时发 sentinel + await worker：
+```python
+import src.api.routes.responses as responses_routes
+responses_routes._partial_write_queue = asyncio.Queue(maxsize=1000)
+worker = asyncio.create_task(responses_routes._partial_write_worker())
+try:
+    yield
+finally:
+    await responses_routes._partial_write_queue.put(None)  # sentinel
+    await asyncio.wait_for(worker, timeout=5.0)
+```
 
 实际 `StreamingResponse` 的字节流由一个外层 formatter 把 `(event, payload)` 元组转成 SSE wire format（`event: X\ndata: {...}\n\n`），`None` 转成 `data: [DONE]\n\n`。
 
@@ -445,20 +523,31 @@ async def responses_sse_envelope(inner, persist_partial_fn):
 # src/services/responses_service.py
 
 def _approx_tokens(messages: list[dict]) -> int:
-    """Quick token estimate: 1 token ≈ 4 chars (Chinese: 1 char ≈ 1.5 tokens).
-    Slightly over-estimates to be safe. Real count comes from vLLM."""
+    """Quick OVER-estimate of token count, kept conservative.
+
+    Calibration: BPE tokenizers vary, but for safety we assume the worst:
+    - English-heavy text: ~1 token per 4 chars (so len/4 underestimates;
+      we use len/2 to over-estimate by ~2x).
+    - Chinese text: ~1.5 tokens per char. len/2 is still safe (overshoots
+      by ~25%).
+    - Mixed text: covered by len/2.
+
+    Result: we may compact MORE aggressively than necessary, which means
+    the model gets less context but never crashes on context_length_exceeded.
+    For an exact count, fetch from adapter.tokenizer when available.
+    """
     total = 0
     for m in messages:
         c = m.get("content")
         if isinstance(c, str):
-            total += len(c) // 3
+            total += len(c) // 2 + 4  # +4 for role/format overhead
         elif isinstance(c, list):
             for item in c:
                 t = item.get("text", "")
                 if isinstance(t, str):
-                    total += len(t) // 3
+                    total += len(t) // 2 + 4
                 else:
-                    total += 100  # image / other content rough placeholder
+                    total += 200  # image / other content placeholder (vision tokens vary)
     return total
 
 def compact_messages(
@@ -576,7 +665,13 @@ async def write_response_turn(
 
 **对外返回的 `id` 是 `asst_turn.id`** —— 客户端拿这个作为下一轮的 `previous_response_id`。
 
-**Step 1 反向追加要求：** 需要在 `backend/src/errors.py` 加 `ConflictError` 子类（http_status=409, type="invalid_request_error" 或新 type "conflict_error"）。建议复用 `invalid_request_error` type + `code="conflict"`，与现有 409 处理（Step 1 的 `_HTTP_STATUS_TO_ERROR[409]`）一致；只是新增一个 raise-friendly 子类。
+**Step 1 反向追加要求：** 在 `backend/src/errors.py` 加：
+```python
+class ConflictError(NousError):
+    type = "invalid_request_error"  # match _HTTP_STATUS_TO_ERROR[409]
+    http_status = 409
+```
+不需要改 `main.py`。`_nous` exception handler 已经从 `exc.http_status` 取状态码，409 会正确返回。`code` 在 raise 处指定（如 `code="session_concurrent_write"`），不在 class 上设默认值。
 
 ### Cursor pagination
 
@@ -600,8 +695,13 @@ async def list_responses(
         anchor = await session.get(ResponseTurn, after)
         if anchor is None:
             raise InvalidRequestError("invalid cursor", param="after", code="invalid_cursor")
+        # IMPORTANT: must use sqlalchemy.tuple_ for row-constructor comparison.
+        # Bare Python tuple comparison is NOT translated to SQL — it would
+        # compare Column objects in Python, producing nonsense.
+        from sqlalchemy import tuple_
         stmt = stmt.where(
-            (ResponseTurn.created_at, ResponseTurn.id) < (anchor.created_at, anchor.id)
+            tuple_(ResponseTurn.created_at, ResponseTurn.id)
+            < tuple_(anchor.created_at, anchor.id)
         )
     stmt = stmt.order_by(
         ResponseTurn.created_at.desc(), ResponseTurn.id.desc()
@@ -614,6 +714,42 @@ async def list_responses(
 ### 后台清理
 
 复用 Step 3 的 cleanup loop 风格：每小时一次 DELETE WHERE expire_at < now。可以合到同一个 cleanup task 里减少 task 数。
+
+### 抽取共享 context 解析 helper（避免代码重复）
+
+`openai_compat.py:132-179` 现有的 `context_id` 处理和 Step 4 即将写的几乎一样（约 50 行）。**重构到 `services/context_cache_service.py`**：
+
+```python
+async def resolve_for_request(
+    session: AsyncSession,
+    *,
+    context_id: str | None,
+    instance_id: int,
+    engine_name: str,
+) -> tuple[list[dict] | None, int | None]:
+    """Common helper: lookup context cache, validate, return (messages, ttl).
+    Raises NotFoundError / PermissionError / InvalidRequestError on failure.
+    Used by both /v1/chat/completions and /v1/responses.
+    """
+    if not context_id:
+        return None, None
+    cache = await fetch_active_cache(session, context_id, instance_id)
+    if cache is None:
+        other = await fetch_cache_any_instance(session, context_id)
+        if other is not None and other.instance_id != instance_id:
+            raise PermissionError("...", code="context_wrong_instance")
+        raise NotFoundError("Context cache not found or expired",
+                            code="context_not_found")
+    if cache.model != engine_name:
+        raise InvalidRequestError(
+            f"Cache was created for '{cache.model}', not '{engine_name}'",
+            code="context_model_mismatch",
+            param="model",
+        )
+    return list(cache.messages_json), cache.ttl_seconds
+```
+
+Step 4 的 chat 集成调用这个 helper；Step 1 实施时把 openai_compat.py 内联那段也替换为调用 helper。**减重约 50 行**。
 
 ### 关键复用
 
