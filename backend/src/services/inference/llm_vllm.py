@@ -176,6 +176,13 @@ class VLLMAdapter(InferenceAdapter):
                 s.bind(("", 0))
                 port = s.getsockname()[1]
 
+        # 12. Detect multimodal (vision-language) models
+        archs = model_config.get("architectures") or []
+        is_multimodal = any(
+            "VL" in a or "Vision" in a or "Multimodal" in a or "Omni" in a
+            for a in archs
+        ) or model_config.get("vision_config") is not None
+
         return {
             "port": port,
             "tp": tp,
@@ -186,6 +193,7 @@ class VLLMAdapter(InferenceAdapter):
             "max_num_seqs": max_num_seqs,
             "gpu_idx": gpu_idx,
             "model_size_gb": round(model_size_gb, 2),
+            "is_multimodal": is_multimodal,
         }
 
     async def load(self, device: str | None = None) -> None:
@@ -247,6 +255,14 @@ class VLLMAdapter(InferenceAdapter):
             cmd += ["--dtype", dtype]
         if max_num_seqs:
             cmd += ["--max-num-seqs", str(max_num_seqs)]
+        if auto.get("is_multimodal"):
+            # Allow up to 4 images per prompt by default (override via params later).
+            # vLLM ≥0.6 also accepts video=N; only image needed for VL-Instruct.
+            cmd += ["--limit-mm-per-prompt", "image=4"]
+            self.is_multimodal = True
+            logger.info("Detected multimodal model — enabling --limit-mm-per-prompt image=4")
+        else:
+            self.is_multimodal = False
 
         # Set cache directories to persistent storage (avoid re-compilation)
         env = dict(os.environ)

@@ -62,6 +62,11 @@ models:
   id: gemma-4-26b-a4b-it-awq-4bit
   path: llm/gemma-4-26B-A4B-it-AWQ-4bit
   type: llm
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
+  id: qwen2_5_vl_7b_instruct
+  path: llm/Qwen2.5-VL-7B-Instruct
+  resident: false
+  type: llm
 - adapter: src.workers.tts_engines.voxcpm2.VoxCPM2Engine
   gpu: 0
   id: voxcpm2
