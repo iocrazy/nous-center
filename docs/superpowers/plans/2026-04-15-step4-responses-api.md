@@ -275,44 +275,54 @@ async def test_create_session_and_write_turns(db_session, sample_instance):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_turn_write_raises_conflict(db_session, sample_instance):
+async def test_concurrent_turn_write_raises_conflict(
+    db_session, sample_instance, monkeypatch,
+):
+    """Simulate the TOCTOU race: SELECT max(turn_idx) returns N; before our
+    INSERT lands, another writer takes idx N+1. Our commit then violates
+    UNIQUE and the service maps to ConflictError."""
     sess = await create_session(db_session,
         instance_id=sample_instance.id, api_key_id=None, model="m",
         context_cache_id=None)
-    # First write succeeds
-    await write_user_and_assistant_turns(db_session, sess=sess,
-        user_content=[{"text": "a"}], assistant_content=[{"text": "b"}],
-        usage={}, reasoning=None, instructions=None, text_format=None)
-    # Manually insert a row at idx 2,3 to simulate concurrent winner
+    # Pre-seed turns at idx 0 and 1 to be the "concurrent winner"
     db_session.add(ResponseTurn(
-        id=new_turn_id(), session_id=sess.id, turn_idx=2,
+        id=new_turn_id(), session_id=sess.id, turn_idx=0,
         role="user", content_compressed=encode_content([{"text": "x"}]),
     ))
     db_session.add(ResponseTurn(
-        id=new_turn_id(), session_id=sess.id, turn_idx=3,
+        id=new_turn_id(), session_id=sess.id, turn_idx=1,
         role="assistant", content_compressed=encode_content([{"text": "y"}]),
     ))
     await db_session.commit()
-    # Our next write computes max_idx=3, tries to insert idx 4,5 — should succeed
-    # To force a conflict, insert at idx 4 first then call our write
+    # Monkeypatch the SELECT max() to return -1 so write_user_and_assistant_turns
+    # tries to insert at idx 0,1 — which already exist -> IntegrityError -> ConflictError
+    from src.services import responses_service as svc
+    real_func = svc.write_user_and_assistant_turns
+    # Easier: just call write_user_and_assistant_turns; max() returns 1 -> tries 2,3 OK.
+    # To force collision, we manually reset by inserting at idx 2 too:
     db_session.add(ResponseTurn(
-        id=new_turn_id(), session_id=sess.id, turn_idx=4,
+        id=new_turn_id(), session_id=sess.id, turn_idx=2,
         role="user", content_compressed=encode_content([{"text": "z"}]),
     ))
     await db_session.commit()
-    # Now write_user_and_assistant_turns sees max_idx=4 -> tries idx 5,6 OK
-    # To trigger ConflictError, we need to mock max_idx detection vs actual UNIQUE
-    # Simpler: directly use atomic INSERT with explicit idx that collides
-    from sqlalchemy.exc import IntegrityError
-    db_session.add(ResponseTurn(
-        id=new_turn_id(), session_id=sess.id, turn_idx=4,  # collide
-        role="user", content_compressed=encode_content([{"text": "dup"}]),
-    ))
-    with pytest.raises(IntegrityError):
-        await db_session.commit()
-    await db_session.rollback()
-    # The service-level wrapper should map this to ConflictError;
-    # full E2E covered in test_api_responses.py.
+    # Now max = 2; our service computes idx 3,4 — fine, no race here.
+    # To genuinely trigger: patch func.max to return a stale value
+    from unittest.mock import patch
+    with patch("src.services.responses_service.func.max",
+               lambda col: type("M", (), {"label": lambda *a, **k: 0})()):
+        # crude — alt: patch select() directly. Real test harness should
+        # use respx-like SQL injection. For now, accept that this single
+        # test verifies the *mapping* (IntegrityError -> ConflictError);
+        # the real race is covered by the E2E test in test_api_responses.py.
+        with pytest.raises(ConflictError) as ex:
+            await svc.write_user_and_assistant_turns(
+                db_session, sess=sess,
+                user_content=[{"text": "race-user"}],
+                assistant_content=[{"text": "race-assistant"}],
+                usage={}, reasoning=None, instructions=None, text_format=None,
+            )
+    assert ex.value.code == "session_concurrent_write"
+    assert ex.value.http_status == 409
 
 
 @pytest.mark.asyncio
@@ -421,13 +431,15 @@ Implement `backend/src/services/responses_service.py` with all functions importe
   session.add_all([user_turn, asst_turn])
   try:
       await session.commit()
-  except IntegrityError as e:
+  except IntegrityError:
+      # Any integrity violation on this insert path is a concurrent-write race
+      # (only constraint that can fire here is UNIQUE(session_id, turn_idx)).
+      # SQLite + PG produce different error message strings, so don't filter
+      # on substring — just map.
       await session.rollback()
-      if "turn_idx" in str(e).lower() or "uniq" in str(e).lower():
-          raise ConflictError(
-              "concurrent write to the same session; refetch and retry",
-              code="session_concurrent_write")
-      raise
+      raise ConflictError(
+          "concurrent write to the same session; refetch and retry",
+          code="session_concurrent_write")
   return user_turn, asst_turn
   ```
 - `write_partial_assistant_turn(sess, accumulated_text, status, reason)` — writes a single assistant turn with the streamed text-so-far + status + incomplete_reason. Used by the partial-write worker.
@@ -518,12 +530,49 @@ All Step 3 tests should still pass.
 
 - [ ] **Step 1: Implement wrapper + worker queue (no endpoints yet)**
 
-Create `backend/src/api/routes/responses.py`:
+Create `backend/src/api/routes/responses.py` with **complete imports needed for Tasks 5-7**:
 ```python
 from __future__ import annotations
-import asyncio, json, logging
-from fastapi import APIRouter
-from src.errors import APIError, NousError
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import select, tuple_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.api.deps_auth import verify_bearer_token
+from src.errors import (
+    APIError, ConflictError, InvalidRequestError, NotFoundError,
+    NousError, PermissionError as NousPermissionError,
+)
+from src.models.database import get_async_session
+from src.models.instance_api_key import InstanceApiKey
+from src.models.response_session import ResponseSession, ResponseTurn
+from src.models.service_instance import ServiceInstance
+from src.services.context_cache_service import resolve_for_request
+from src.services.responses_service import (
+    SESSION_TOKEN_BUDGET,
+    approx_tokens, assemble_history_for_response,
+    check_session_budget, compact_messages, create_session,
+    decode_content, update_session_usage,
+    write_partial_assistant_turn, write_user_and_assistant_turns,
+)
+
+
+def _to_utc(dt: datetime | None) -> datetime | None:
+    """SQLite stores tz-naive; PG returns tz-aware. Normalize to UTC-aware
+    for safe comparisons. Returns None unchanged."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["responses"])
@@ -576,7 +625,7 @@ async def responses_sse_envelope(inner, persist_partial_fn, request_id: str | No
     On client disconnect, accumulated text is enqueued for background persistence.
     """
     accumulated_text = ""
-    sent_done = False
+    cancelled = False
     try:
         async for evt_type, payload in inner:
             payload = dict(payload)
@@ -586,6 +635,8 @@ async def responses_sse_envelope(inner, persist_partial_fn, request_id: str | No
                 accumulated_text += payload.get("delta", "")
             yield _sse_format(evt_type, payload)
     except asyncio.CancelledError:
+        cancelled = True
+        # schedule_partial_write is sync (put_nowait) — safe under cancellation
         schedule_partial_write(
             persist_partial_fn,
             accumulated_text,
@@ -606,9 +657,9 @@ async def responses_sse_envelope(inner, persist_partial_fn, request_id: str | No
             err_payload["request_id"] = request_id
         yield _sse_format("error", err_payload)
     finally:
-        if not sent_done:
+        # Don't emit DONE on cancellation (socket already gone; would error on yield)
+        if not cancelled:
             yield "data: [DONE]\n\n"
-            sent_done = True
 ```
 
 - [ ] **Step 2: Wire into `main.py` lifespan**
@@ -657,7 +708,17 @@ Expected: 3 SSE-formatted strings + `data: [DONE]\n\n` at end.
 
 ---
 
-## Task 6: POST /v1/responses (non-streaming + streaming)
+## Task 6: POST /v1/responses
+
+**⚠️ Split note:** This is the largest task. Break into commits:
+- **Task 6a**: Pydantic schema + helpers + non-streaming path → ship + test
+- **Task 6b**: streaming inner generator + persist_partial → ship + test
+
+Two commits prevent monolithic 350-line diff. 6a is independently shippable; users without streaming get value first. 6b layers on top.
+
+---
+
+### Task 6a: POST /v1/responses (non-streaming only)
 
 **Files:**
 - Modify: `backend/src/api/routes/responses.py` — add the endpoint + inner generator
@@ -754,6 +815,10 @@ def transform_inputs_to_chat_messages(inputs: list[dict]) -> list[dict]:
                     transformed.append({"type": "text", "text": item.get("text", "")})
                 elif t == "input_image":
                     transformed.append(resolve_image(item))
+                elif t == "output_text":
+                    # Replaying a prior assistant turn (e.g. chain bootstrap).
+                    # vLLM expects 'text' content type, not 'output_text'.
+                    transformed.append({"type": "text", "text": item.get("text", "")})
                 else:
                     # Unknown type — pass through; vLLM will reject if bad
                     transformed.append(item)
@@ -817,13 +882,16 @@ async def create_response(
     new_input_messages = transform_inputs_to_chat_messages(
         normalize_input(req.input))
 
-    # Assemble: context (if first turn) + previous chain + instructions + new input
+    # Assemble per MESSAGES_ORDER constant: context → chain → instructions → input.
+    # NOTE: instructions go BEFORE new_input but AFTER the cache+chain prefix
+    # (insert at the boundary, not at position 0). This way previous system from
+    # cache stays at the head; per-request instructions are a recent override.
     messages: list[dict] = []
     if cached_messages:
         messages.extend(cached_messages)
     messages.extend(previous_messages)
     if req.instructions:
-        messages.insert(0, {"role": "system", "content": req.instructions})
+        messages.append({"role": "system", "content": req.instructions})
     messages.extend(new_input_messages)
 
     # Compaction
@@ -850,13 +918,16 @@ async def create_response(
     vllm_body = {
         "model": "",
         "messages": messages,
-        "max_tokens": req.expire_at and (max_model_len // 2) or 2048,
-        "temperature": 0.7,  # default; could be req field later
+        "max_tokens": 2048,  # TODO: read from req.max_output_tokens once added
         "stream": req.stream,
     }
-    # Step 2: thinking mapping
+    # Step 2: thinking mapping. _maybe_inject_thinking mutates body in-place
+    # and returns None, so it must be called on the actual vllm_body, not a
+    # throwaway dict. Set the input field on vllm_body first.
+    vllm_body["thinking"] = req.thinking.model_dump()
     from src.api.routes.openai_compat import _maybe_inject_thinking
-    _maybe_inject_thinking({"thinking": req.thinking.model_dump()}, engine_name)
+    _maybe_inject_thinking(vllm_body, engine_name)
+    # _maybe_inject_thinking pops `thinking` key after processing.
     if req.text.format and req.text.format.type == "json_schema" and req.text.format.schema:
         vllm_body["response_format"] = {
             "type": "json_schema",
@@ -946,12 +1017,32 @@ async def create_response(
             "history_truncated": history_truncated,
         }
 
+    # ↑↑↑ Task 6a stops here. If req.stream=True, return 400 not_implemented
+    # (or just skip the if-not-stream guard and add the streaming branch in 6b).
+    if req.stream:
+        raise InvalidRequestError("streaming not yet implemented in 6a",
+                                   code="streaming_pending")
+
+```
+
+- [ ] **Step 4a: Commit Task 6a**
+- [ ] **Step 5a: Run integration test (non-streaming POST)**
+
+---
+
+### Task 6b: POST /v1/responses streaming branch
+
+Add the `if req.stream:` branch BELOW the non-streaming `return`. Append to the same `create_response` function:
+
+```python
     # ---- Streaming path ----
     # Inner generator: do vLLM streaming, yield (evt_type, payload).
     accumulated_text = ""
+    latest_usage = {}
+    completed_persist_done = False  # sentinel to prevent partial-write race
 
     async def inner():
-        nonlocal accumulated_text
+        nonlocal accumulated_text, latest_usage, completed_persist_done
         first_byte = False
         async with httpx.AsyncClient(timeout=300, proxy=None) as client:
             async with client.stream(
@@ -1006,11 +1097,17 @@ async def create_response(
                             "output_index": 0, "content_index": 0,
                             "delta": delta,
                         })
-                    # Capture final usage chunk
-                    usage = chunk.get("usage")
+                    # Capture usage when present; persist ONLY on finish_reason.
+                    # vLLM may send usage in one chunk and finish_reason later (or both
+                    # together). We must not persist twice or persist before stream ends.
+                    chunk_usage = chunk.get("usage")
+                    if chunk_usage:
+                        latest_usage = chunk_usage  # remember for final persist
                     finish = chunk.get("choices", [{}])[0].get("finish_reason")
-                    if finish or usage:
-                        # Persist completed turns now (before emitting completed event)
+                    if not finish:
+                        continue
+                    usage = latest_usage  # use accumulated usage at completion time
+                    if True:  # was: if finish or usage
                         asst_content = [{
                             "type": "output_text",
                             "text": accumulated_text,
@@ -1068,10 +1165,17 @@ async def create_response(
                                 "history_truncated": history_truncated,
                             },
                         })
+                        completed_persist_done = True  # block persist_partial race
                         return
 
-    # Persist-partial callback for client disconnect
+    # Persist-partial callback for client disconnect.
+    # CRITICAL: must check completed_persist_done sentinel — if the completed
+    # event fired before cancellation, we already wrote the turn pair; another
+    # write would collide on UNIQUE(session_id, turn_idx).
     async def persist_partial(text, status, reason):
+        if completed_persist_done:
+            logger.info("persist_partial skipped (completed already persisted)")
+            return
         from src.models.database import create_session_factory as _csf
         async with _csf()() as wsess:
             from sqlalchemy import select as _sel
@@ -1084,6 +1188,12 @@ async def create_response(
                 user_content=user_content, partial_text=text,
                 status=status, incomplete_reason=reason,
                 instructions=req.instructions, text_format=req.text.model_dump())
+            # Also record llm_usage with whatever we have (may be 0 input/output)
+            from src.services.usage_service import record_llm_usage
+            await record_llm_usage(model=engine_name,
+                prompt_tokens=latest_usage.get("prompt_tokens", 0),
+                completion_tokens=latest_usage.get("completion_tokens", 0),
+                duration_ms=0, instance_id=instance.id, api_key_id=api_key.id)
 
     return StreamingResponse(
         responses_sse_envelope(inner(), persist_partial, request_id),
@@ -1091,9 +1201,9 @@ async def create_response(
     )
 ```
 
-- [ ] **Step 4: Register router in main.py** (alongside other `app.include_router` calls)
+- [ ] **Step 4b: Register router in main.py** (alongside other `app.include_router` calls)
 
-- [ ] **Step 5: Manual smoke**
+- [ ] **Step 5b: Manual smoke (both paths)**
 ```bash
 KEY=<api-key-for-qwen-instance>
 
@@ -1108,7 +1218,7 @@ curl --noproxy '*' -N -X POST http://localhost:8000/v1/responses \
   -d '{"model":"qwen3.5","input":"讲个笑话","stream":true,"thinking":{"type":"disabled"}}'
 ```
 
-- [ ] **Step 6: Commit** — `feat(responses): POST /v1/responses (sync + streaming with semantic SSE events)`
+- [ ] **Step 6b: Commit Task 6b** — `feat(responses): POST /v1/responses streaming with semantic SSE events`
 
 ---
 
@@ -1130,7 +1240,7 @@ async def get_response(
     if turn is None or turn.role != "assistant":
         raise NotFoundError("response not found", code="response_not_found")
     sess = await session.get(ResponseSession, turn.session_id)
-    if sess is None or sess.expire_at < datetime.now(timezone.utc):
+    if sess is None or _to_utc(sess.expire_at) < datetime.now(timezone.utc):
         raise NotFoundError("response not found or expired", code="response_not_found")
     if sess.instance_id != instance.id:
         raise NousPermissionError("response belongs to another instance",
@@ -1173,6 +1283,8 @@ async def list_responses(
          .join(ResponseSession, ResponseTurn.session_id == ResponseSession.id)
          .where(
              ResponseSession.instance_id == instance.id,
+             # NOTE: PG side, no _to_utc needed in WHERE; SQL handles tz-aware compare.
+             # Tests on SQLite require running pytest with PG, not aiosqlite.
              ResponseSession.expire_at > now,
              ResponseTurn.role == "assistant",
          ))
