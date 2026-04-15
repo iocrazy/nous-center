@@ -236,6 +236,64 @@ async def unload_engine(name: str, request: Request, force: bool = False):
     return EngineLoadResponse(name=name, status="unloaded")
 
 
+_install_states: dict[str, dict[str, str]] = {}  # engine -> {status, detail}
+
+
+@router.get("/deps")
+async def list_engine_deps():
+    """Return install/probe status for every TTS engine in the manifest."""
+    from src.services.tts_deps import list_manifest
+    data = list_manifest()
+    # overlay any in-flight install state
+    for k, v in _install_states.items():
+        if k in data:
+            data[k]["install_state"] = v
+    return data
+
+
+@router.post("/{name}/install_deps", dependencies=[Depends(require_admin)])
+async def install_engine_deps(name: str):
+    """Install pip deps for a TTS engine (background). Status pushed via ws."""
+    from src.services.tts_deps import get as get_dep
+    if get_dep(name) is None:
+        raise HTTPException(404, detail=f"No dep manifest for engine: {name}")
+    state = _install_states.get(name)
+    if state and state.get("status") == "installing":
+        return {"name": name, "status": "installing"}
+    _install_states[name] = {"status": "installing", "detail": "Starting..."}
+    asyncio.create_task(_install_in_background(name))
+    return {"name": name, "status": "installing"}
+
+
+async def _install_in_background(name: str):
+    import logging as _lg
+    from src.services.tts_deps import install
+    log = _lg.getLogger(__name__)
+    await ws_manager.broadcast_model_status(name, "installing", "Installing deps...")
+
+    async def _push(line: str):
+        # Throttle: only push lines that look meaningful (avoid noise)
+        if any(k in line.lower() for k in ("collecting", "downloading", "installing", "successfully", "error")):
+            _install_states[name] = {"status": "installing", "detail": line[:200]}
+            await ws_manager.broadcast_model_status(name, "installing", line[:200])
+
+    try:
+        ok, output = await install(name, on_log=_push)
+        if ok:
+            _install_states[name] = {"status": "installed", "detail": "Install complete"}
+            await ws_manager.broadcast_model_status(name, "installed", "Install complete")
+            log.info("TTS deps installed for %s", name)
+        else:
+            tail = "\n".join(output.splitlines()[-5:])
+            _install_states[name] = {"status": "install_failed", "detail": tail}
+            await ws_manager.broadcast_model_status(name, "install_failed", tail)
+            log.error("TTS dep install failed for %s: %s", name, tail)
+    except Exception as e:
+        _install_states[name] = {"status": "install_failed", "detail": str(e)}
+        await ws_manager.broadcast_model_status(name, "install_failed", str(e))
+        log.exception("TTS dep install crashed for %s", name)
+
+
 @router.patch("/{name}/resident", dependencies=[Depends(require_admin)])
 async def set_resident(name: str, resident: bool = True):
     """Toggle auto-load on startup for an engine."""
