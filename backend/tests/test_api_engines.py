@@ -53,14 +53,29 @@ async def test_unload_unknown_engine(client):
 
 
 async def test_load_engine_success(client):
+    """Endpoint kicks off background load and returns 'loading' immediately.
+    The background task eventually calls model_manager.load_model."""
+    import asyncio
+    from src.api.routes import engines as engines_route
+
     mock_mgr = client._transport.app.state.model_manager
     mock_mgr.load_model = AsyncMock()
+    mock_mgr.is_loaded = MagicMock(return_value=False)
+    # Reset loading-state cache so prior tests can't poison this one
+    engines_route._loading_states.pop("cosyvoice2", None)
+
     resp = await client.post("/api/v1/engines/cosyvoice2/load")
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "cosyvoice2"
-    assert data["status"] == "loaded"
-    mock_mgr.load_model.assert_called_once_with("cosyvoice2")
+    assert data["status"] == "loading"
+
+    # Yield to the loop so the background task can run + await load_model
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+        if mock_mgr.load_model.await_count > 0:
+            break
+    mock_mgr.load_model.assert_awaited_once_with("cosyvoice2")
 
 
 async def test_unload_non_loaded_engine(client):
