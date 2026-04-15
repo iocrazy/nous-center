@@ -246,14 +246,47 @@ async def lifespan(app: FastAPI):
 
     cache_cleanup_task = asyncio.create_task(context_cache_cleanup_loop())
 
+    # Step 4: expired-session cleanup + partial-write background worker
+    async def response_cleanup_loop(interval_seconds: int = 3600):
+        from src.services.responses_service import cleanup_expired_sessions
+        from src.models.database import create_session_factory as _csf
+        sf = _csf()
+        while True:
+            try:
+                async with sf() as s:
+                    n = await cleanup_expired_sessions(s)
+                    if n:
+                        logger.info("response cleanup: %d expired sessions", n)
+            except Exception:
+                logger.exception("response cleanup error")
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+
+    response_cleanup_task = asyncio.create_task(response_cleanup_loop())
+
+    from src.api.routes import responses as responses_routes
+    responses_routes._set_queue(asyncio.Queue(maxsize=1000))
+    partial_worker = asyncio.create_task(responses_routes.partial_write_worker())
+
     try:
         yield
     finally:
         cache_cleanup_task.cancel()
-        try:
-            await cache_cleanup_task
-        except asyncio.CancelledError:
-            pass
+        response_cleanup_task.cancel()
+        for t in (cache_cleanup_task, response_cleanup_task):
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        # Drain partial-write worker
+        if responses_routes._partial_write_queue is not None:
+            await responses_routes._partial_write_queue.put(None)
+            try:
+                await asyncio.wait_for(partial_worker, timeout=5.0)
+            except asyncio.TimeoutError:
+                partial_worker.cancel()
 
 
 def create_app() -> FastAPI:
