@@ -49,6 +49,48 @@ async def sse_with_error_envelope(inner):
         yield "data: [DONE]\n\n"
 
 
+# --- thinking-mode model whitelist ---
+# Models whose chat template honors `chat_template_kwargs.enable_thinking`.
+# Match is by case-insensitive substring on the engine name. If a model is not
+# listed, the `extra_body.thinking` field is silently ignored (per Step 2 spec
+# decision C+A: whitelist with silent fallback).
+_THINKING_MODEL_PATTERNS = (
+    "qwen3",  # qwen3.5-35b, qwen3-8b, etc.
+    "deepseek-r1",
+    "deepseek-v3",
+    "doubao-seed-1.8",
+    "doubao-seed-2",
+)
+
+
+def _supports_thinking(engine_name: str) -> bool:
+    n = (engine_name or "").lower()
+    return any(p in n for p in _THINKING_MODEL_PATTERNS)
+
+
+def _maybe_inject_thinking(body: dict, engine_name: str) -> None:
+    """Translate `body['thinking'] = {'type': enabled|disabled|auto}` into
+    `body['chat_template_kwargs']['enable_thinking'] = bool` for vLLM.
+
+    - Pops `thinking` from body either way (vLLM rejects unknown top-level fields).
+    - If model isn't whitelisted, silently drop (per Ark `extra_body` semantics:
+      non-standard fields are best-effort, not hard contract).
+    - `auto` = leave unset, let model default.
+    """
+    thinking = body.pop("thinking", None)
+    if not isinstance(thinking, dict):
+        return
+    t = thinking.get("type")
+    if t not in ("enabled", "disabled", "auto"):
+        return
+    if not _supports_thinking(engine_name):
+        return
+    if t == "auto":
+        return
+    kwargs = body.setdefault("chat_template_kwargs", {})
+    kwargs["enable_thinking"] = (t == "enabled")
+
+
 # --- /v1/chat/completions ---
 
 @router.post("/v1/chat/completions")
@@ -79,6 +121,10 @@ async def chat_completions(
     # Parse request body
     body = await request.json()
     body["model"] = ""  # vLLM uses its own model path
+
+    # OpenAI SDK extra_body.thinking → vLLM chat_template_kwargs.enable_thinking
+    # Whitelist-driven; silent ignore for unsupported models (Step 2 spec).
+    _maybe_inject_thinking(body, engine_name)
 
     # Clamp max_tokens
     max_model_len = getattr(adapter, "max_model_len", 4096) or 4096
