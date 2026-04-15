@@ -145,3 +145,100 @@ async def get_usage_by_model(since: datetime | None = None) -> list[dict]:
             }
             for row in result
         ]
+
+
+async def get_inference_usage(
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    interval: str = "day",
+    group_by: str = "Model",
+    instance_id: int | None = None,
+    model: str | None = None,
+    columnar: bool = False,
+) -> dict:
+    """Ark-style inference usage query.
+
+    interval: "day" | "hour" — bucket width.
+    group_by: "Model" | "Instance" | "ApiKey".
+    Dialect note: uses `date_trunc` (PG). SQLite tests should mock.
+    """
+    if end is None:
+        end = datetime.now(timezone.utc)
+    if start is None:
+        start = end - timedelta(days=7)
+    if interval not in ("day", "hour"):
+        raise ValueError("interval must be 'day' or 'hour'")
+    group_by = group_by.lower()
+    group_col_map = {
+        "model": LLMUsage.model,
+        "instance": LLMUsage.instance_id,
+        "apikey": LLMUsage.api_key_id,
+    }
+    if group_by not in group_col_map:
+        raise ValueError("group_by must be Model|Instance|ApiKey")
+    gcol = group_col_map[group_by]
+
+    bucket = func.date_trunc(interval, LLMUsage.created_at).label("bucket")
+
+    sf = create_session_factory()
+    async with sf() as session:
+        stmt = (
+            select(
+                bucket,
+                gcol.label("group_key"),
+                func.count().label("req_cnt"),
+                func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("output_tokens"),
+            )
+            .where(LLMUsage.created_at >= start, LLMUsage.created_at < end)
+            .group_by(bucket, gcol)
+            .order_by(bucket.asc())
+        )
+        if instance_id is not None:
+            stmt = stmt.where(LLMUsage.instance_id == instance_id)
+        if model is not None:
+            stmt = stmt.where(LLMUsage.model == model)
+
+        rows = (await session.execute(stmt)).all()
+
+    time_field = "Day" if interval == "day" else "Hour"
+    group_field = {"model": "Model", "instance": "Instance", "apikey": "ApiKey"}[group_by]
+
+    if columnar:
+        return {
+            "Fields": [
+                {"Name": time_field, "Type": "DATE" if interval == "day" else "DATETIME"},
+                {"Name": group_field, "Type": "STRING"},
+                {"Name": "InputTokens", "Type": "BIGINT"},
+                {"Name": "OutputTokens", "Type": "BIGINT"},
+                {"Name": "ReqCnt", "Type": "BIGINT"},
+            ],
+            "Data": [
+                [
+                    r.bucket.isoformat() if r.bucket else None,
+                    str(r.group_key) if r.group_key is not None else None,
+                    int(r.input_tokens),
+                    int(r.output_tokens),
+                    int(r.req_cnt),
+                ]
+                for r in rows
+            ],
+            "DataCount": len(rows),
+        }
+    return {
+        "interval": interval,
+        "group_by": group_field,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "data": [
+            {
+                time_field.lower(): r.bucket.isoformat() if r.bucket else None,
+                group_field.lower(): r.group_key,
+                "input_tokens": int(r.input_tokens),
+                "output_tokens": int(r.output_tokens),
+                "req_cnt": int(r.req_cnt),
+            }
+            for r in rows
+        ],
+    }

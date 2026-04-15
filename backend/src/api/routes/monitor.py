@@ -320,3 +320,41 @@ async def usage_by_model(since: str | None = None):
         except ValueError:
             pass
     return await get_usage_by_model(since=since_dt)
+
+
+@router.get("/usage/inference")
+async def usage_inference(
+    start: str | None = None,
+    end: str | None = None,
+    interval: str = "day",
+    group_by: str = "Model",
+    instance_id: int | None = None,
+    model: str | None = None,
+    format: str = "json",
+):
+    """Ark-style inference usage query.
+
+    - interval: day | hour
+    - group_by: Model | Instance | ApiKey
+    - format: json (default, idiomatic list) | columnar (Ark Fields+Data)
+    """
+    from src.services.usage_service import get_inference_usage
+    from datetime import datetime
+
+    def _parse(s):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    return await get_inference_usage(
+        start=_parse(start),
+        end=_parse(end),
+        interval=interval,
+        group_by=group_by,
+        instance_id=instance_id,
+        model=model,
+        columnar=(format == "columnar"),
+    )
