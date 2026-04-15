@@ -102,3 +102,55 @@ async def db_session(tmp_path):
 # Auto-use fixture: isolate tests from real logs.db
 from .conftest_logs import _silence_db_log_handler  # noqa: F401
 
+
+@pytest.fixture
+async def sample_instance(db_session):
+    from src.models.service_instance import ServiceInstance
+    inst = ServiceInstance(
+        source_type="model",
+        source_name="qwen3.5-35b-test",
+        name="test instance",
+        type="llm",
+        status="active",
+    )
+    db_session.add(inst)
+    await db_session.commit()
+    await db_session.refresh(inst)
+    return inst
+
+
+@pytest.fixture
+async def other_instance(db_session):
+    from src.models.service_instance import ServiceInstance
+    inst = ServiceInstance(
+        source_type="model",
+        source_name="other-model",
+        name="other instance",
+        type="llm",
+        status="active",
+    )
+    db_session.add(inst)
+    await db_session.commit()
+    await db_session.refresh(inst)
+    return inst
+
+
+@pytest.fixture
+async def sample_api_key(db_session, sample_instance):
+    """Returns the plaintext key string. Inserts the bcrypt-hashed row."""
+    import bcrypt
+    import secrets as _secrets
+    from src.models.instance_api_key import InstanceApiKey
+
+    raw = f"sk-test-{_secrets.token_hex(8)}"
+    k = InstanceApiKey(
+        instance_id=sample_instance.id,
+        label="test",
+        key_hash=bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode(),
+        key_prefix=raw[:10],
+        is_active=True,
+    )
+    db_session.add(k)
+    await db_session.commit()
+    return raw
+
