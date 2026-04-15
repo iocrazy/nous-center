@@ -692,3 +692,132 @@ async def create_response(
         "history_truncated": history_truncated,
         "request_id": request_id,
     }
+
+
+# ---------- GET / LIST / DELETE ---------- #
+
+def _render_response(turn: ResponseTurn, sess: ResponseSession) -> dict:
+    content = decode_content(turn.content_compressed)
+    return {
+        "id": turn.id,
+        "object": "response",
+        "status": turn.status,
+        "incomplete_details": (
+            {"reason": turn.incomplete_reason} if turn.incomplete_reason else None
+        ),
+        "created_at": int(_to_utc(turn.created_at).timestamp()),
+        "model": sess.model,
+        "instructions": turn.instructions,
+        "expire_at": int(_to_utc(sess.expire_at).timestamp()),
+        "output": [
+            {
+                "type": "message",
+                "id": f"msg-{turn.id[5:]}",
+                "role": "assistant",
+                "content": content,
+            }
+        ],
+        "usage": turn.usage_json,
+    }
+
+
+@router.get("/v1/responses/{response_id}")
+async def get_response(
+    response_id: str,
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    session: AsyncSession = Depends(get_async_session),
+):
+    instance, _ = auth
+    turn = await session.get(ResponseTurn, response_id)
+    if turn is None or turn.role != "assistant":
+        raise NotFoundError(
+            "response not found", code="response_not_found"
+        )
+    sess = await session.get(ResponseSession, turn.session_id)
+    if sess is None:
+        raise NotFoundError(
+            "response not found (session missing)", code="response_not_found"
+        )
+    if sess.instance_id != instance.id:
+        raise NousPermissionError(
+            "response belongs to another instance",
+            code="response_wrong_instance",
+        )
+    if _to_utc(sess.expire_at) < datetime.now(timezone.utc):
+        raise NotFoundError("response expired", code="response_not_found")
+    return _render_response(turn, sess)
+
+
+@router.get("/v1/responses")
+async def list_responses(
+    request: Request,
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    session: AsyncSession = Depends(get_async_session),
+    limit: int = 20,
+    after: str | None = None,
+):
+    instance, _ = auth
+    limit = max(1, min(limit, 100))
+
+    stmt = (
+        select(ResponseTurn, ResponseSession)
+        .join(ResponseSession, ResponseTurn.session_id == ResponseSession.id)
+        .where(
+            ResponseSession.instance_id == instance.id,
+            ResponseTurn.role == "assistant",
+        )
+        .order_by(ResponseTurn.created_at.desc(), ResponseTurn.id.desc())
+        .limit(limit + 1)
+    )
+    if after:
+        anchor = await session.get(ResponseTurn, after)
+        if anchor is None:
+            raise InvalidRequestError(
+                "after cursor not found", code="invalid_cursor", param="after"
+            )
+        stmt = (
+            select(ResponseTurn, ResponseSession)
+            .join(ResponseSession, ResponseTurn.session_id == ResponseSession.id)
+            .where(
+                ResponseSession.instance_id == instance.id,
+                ResponseTurn.role == "assistant",
+                tuple_(ResponseTurn.created_at, ResponseTurn.id)
+                < (anchor.created_at, anchor.id),
+            )
+            .order_by(ResponseTurn.created_at.desc(), ResponseTurn.id.desc())
+            .limit(limit + 1)
+        )
+
+    rows = (await session.execute(stmt)).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    data = [_render_response(t, s) for t, s in rows]
+    return {
+        "object": "list",
+        "data": data,
+        "has_more": has_more,
+        "last_id": data[-1]["id"] if data else None,
+    }
+
+
+@router.delete("/v1/responses/{response_id}")
+async def delete_response(
+    response_id: str,
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Delete the whole session that the response belongs to (FK cascade
+    removes all turns). Mirrors OpenAI: deleting any response removes the thread."""
+    instance, _ = auth
+    turn = await session.get(ResponseTurn, response_id)
+    if turn is None:
+        raise NotFoundError("response not found", code="response_not_found")
+    sess = await session.get(ResponseSession, turn.session_id)
+    if sess is None or sess.instance_id != instance.id:
+        raise NousPermissionError(
+            "response belongs to another instance",
+            code="response_wrong_instance",
+        )
+    await session.delete(sess)
+    await session.commit()
+    return {"id": response_id, "object": "response.deleted", "deleted": True}
