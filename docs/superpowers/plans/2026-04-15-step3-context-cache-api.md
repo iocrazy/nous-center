@@ -73,8 +73,12 @@ from sqlalchemy import (
     BigInteger, Column, DateTime, ForeignKey, Integer, String, Text,
     CheckConstraint, Index,
 )
+from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from src.models.database import Base
+
+# JSONB on Postgres, plain JSON on SQLite (test fixture uses sqlite+aiosqlite)
+JsonColumn = JSON().with_variant(JSONB(), "postgresql")
 
 
 def _expires_at_default():
@@ -91,7 +95,7 @@ class ContextCache(Base):
     api_key_id = Column(BigInteger, nullable=True)  # audit only, not FK to allow key deletion
     model = Column(String(128), nullable=False)
     mode = Column(String(32), nullable=False, default="common_prefix")
-    messages_json = Column(JSONB, nullable=False)
+    messages_json = Column(JsonColumn, nullable=False)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     ttl_seconds = Column(Integer, nullable=False, default=86400)
     expires_at = Column(DateTime(timezone=True), nullable=False,
@@ -109,9 +113,21 @@ class ContextCache(Base):
     )
 ```
 
-- [ ] **Step 3: Make sure model is imported on startup so create_all sees it**
+- [ ] **Step 3: Add explicit model imports to register with Base.metadata**
 
-If main.py does explicit imports for create_all, add `from src.models import context_cache` in the appropriate spot. Verify by reading main.py around the lifespan / create_all call.
+Two places use the same explicit-import pattern (Python noqa F401):
+
+1. `backend/src/api/main.py` (around line 40, after the existing `import src.models.llm_usage`):
+```python
+import src.models.context_cache  # noqa: F401
+```
+
+2. `backend/tests/conftest.py` (around line 27, after existing model imports):
+```python
+import src.models.context_cache  # noqa: F401 — register model
+```
+
+Without these, `Base.metadata.create_all` won't see the new table and (a) the table won't auto-materialize on a fresh dev box, (b) every test that touches the DB will fail with `relation "context_caches" does not exist`.
 
 - [ ] **Step 4: Manual migration (one-time apply against running PG)**
 
@@ -226,7 +242,74 @@ async def test_cleanup_deletes_only_expired(db_session, sample_instance):
     assert await fetch_active_cache(db_session, stale.id, sample_instance.id) is None
 ```
 
-You'll need fixtures `sample_instance` and `other_instance` in `conftest.py` if absent (insert `ServiceInstance` rows). Reuse `db_session` if it exists; otherwise add a session fixture using `nous_center` test DB or transaction rollback pattern.
+**Fixture audit:** `conftest.py` currently has only `app`, `client`, `db_client`, `db_session`. The fixtures below are NEW and must be added — copy/adapt this skeleton:
+
+```python
+# Append to backend/tests/conftest.py
+import bcrypt
+import secrets
+
+@pytest.fixture
+async def sample_instance(db_session):
+    from src.models.service_instance import ServiceInstance
+    inst = ServiceInstance(
+        source_type="model",
+        source_name="qwen3.5-35b-test",
+        name="test instance",
+        type="llm",
+        status="active",
+    )
+    db_session.add(inst)
+    await db_session.commit()
+    await db_session.refresh(inst)
+    return inst
+
+@pytest.fixture
+async def other_instance(db_session):
+    from src.models.service_instance import ServiceInstance
+    inst = ServiceInstance(
+        source_type="model", source_name="other", name="other",
+        type="llm", status="active",
+    )
+    db_session.add(inst)
+    await db_session.commit()
+    await db_session.refresh(inst)
+    return inst
+
+@pytest.fixture
+async def sample_api_key(db_session, sample_instance):
+    """Returns the plaintext key string. Inserts the bcrypt-hashed row."""
+    from src.models.instance_api_key import InstanceApiKey
+    raw = f"sk-test-{secrets.token_hex(8)}"
+    k = InstanceApiKey(
+        instance_id=sample_instance.id,
+        label="test",
+        key_hash=bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode(),
+        key_prefix=raw[:10],
+        is_active=True,
+    )
+    db_session.add(k)
+    await db_session.commit()
+    return raw  # tests use this in Authorization: Bearer <raw>
+
+@pytest.fixture
+def client_with_real_engine():
+    """Skip-marker for tests requiring a real loaded vLLM engine."""
+    import httpx
+    try:
+        r = httpx.get("http://localhost:8000/api/v1/engines", timeout=2)
+        loaded = [e for e in r.json() if e.get("status") == "loaded"]
+        if not loaded:
+            pytest.skip("no LLM engine loaded; integration test skipped")
+    except Exception:
+        pytest.skip("backend not running on :8000; integration test skipped")
+    # Use a TestClient against create_app() — the model_manager from conftest's
+    # `app` fixture provides a mock; for true integration override or use
+    # httpx.Client against the live :8000.
+    return httpx.Client(base_url="http://localhost:8000", trust_env=False)
+```
+
+Use `db_session` from existing conftest. Note that the existing `db_session` uses `sqlite+aiosqlite` (line 91); the JSON column variant on the model handles both PG and SQLite.
 
 - [ ] **Step 2: Run tests, confirm they fail (module does not exist)**
 
@@ -250,8 +333,9 @@ logger = logging.getLogger(__name__)
 
 
 def _new_cache_id() -> str:
-    # 16-char URL-safe token; collision probability with PG PK constraint is fine.
-    return f"ctx-{secrets.token_urlsafe(12)[:16]}"
+    # token_urlsafe(12) produces exactly 16 base64url chars; PK constraint
+    # catches the (astronomically rare) collision.
+    return f"ctx-{secrets.token_urlsafe(12)}"
 
 
 async def create_cache_row(
@@ -321,18 +405,23 @@ async def increment_hit_and_extend(
     session: AsyncSession,
     cache_id: str,
     ttl_seconds: int,
+    instance_id: int | None = None,
 ) -> None:
-    """Atomic UPDATE: hit_count +=1, expires_at = now+ttl, last_used_at = now."""
+    """Atomic UPDATE: hit_count += 1, expires_at = now+ttl, last_used_at = now.
+
+    Caller may pass instance_id for defense-in-depth; the chat path always
+    verified ownership via fetch_active_cache before calling this, so this is
+    belt-and-suspenders against future misuse.
+    """
     now = datetime.now(timezone.utc)
     new_exp = now + timedelta(seconds=ttl_seconds)
-    stmt = (
-        update(ContextCache)
-        .where(ContextCache.id == cache_id)
-        .values(
-            hit_count=ContextCache.hit_count + 1,
-            expires_at=new_exp,
-            last_used_at=now,
-        )
+    stmt = update(ContextCache).where(ContextCache.id == cache_id)
+    if instance_id is not None:
+        stmt = stmt.where(ContextCache.instance_id == instance_id)
+    stmt = stmt.values(
+        hit_count=ContextCache.hit_count + 1,
+        expires_at=new_exp,
+        last_used_at=now,
     )
     await session.execute(stmt)
     await session.commit()
@@ -487,11 +576,19 @@ async def create_context(
             resp = await client.post(
                 f"{base_url.rstrip('/')}/v1/chat/completions", json=warm_body
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Map upstream error class to ours (mirror _stream_proxy semantics).
+                # 4xx = user's messages malformed -> InvalidRequest, not 5xx APIError.
+                from src.errors import InvalidRequestError as _IRE
+                err_text = resp.text[:500]
+                if 400 <= resp.status_code < 500:
+                    raise _IRE(err_text, code="context_warm_rejected")
+                raise APIError("vLLM pre-warm failed", code="warm_failed")
             warm_data = resp.json()
             prompt_tokens = warm_data.get("usage", {}).get("prompt_tokens", 0)
     except httpx.HTTPError as e:
-        raise APIError(f"vLLM pre-warm failed: {e}", code="warm_failed")
+        raise APIError(f"vLLM pre-warm transport error: {e}",
+                       code="warm_transport_failed")
 
     # Persist
     row = await create_cache_row(
@@ -728,6 +825,7 @@ if context_id:
         PermissionError as NP,
     )
     sf = create_session_factory()
+    cached_ttl: int | None = None  # snapshot for _bump closure
     async with sf() as cache_session:
         cache = await fetch_active_cache(cache_session, context_id, instance.id)
         if cache is None:
@@ -742,17 +840,22 @@ if context_id:
                 f"Cache was created for '{cache.model}', not '{engine_name}'",
                 code="context_model_mismatch", param="model",
             )
-        # Prepend cached messages
-        body["messages"] = list(cache.messages_json) + list(body.get("messages", []))
+        # Snapshot primitives BEFORE leaving session scope so the closure in
+        # _bump doesn't dereference a (potentially detached) ORM instance.
+        cached_ttl = cache.ttl_seconds
+        cached_messages = list(cache.messages_json)
+        body["messages"] = cached_messages + list(body.get("messages", []))
 
-    # Schedule hit-count update fire-and-forget (won't block chat latency)
-    async def _bump():
+    # Schedule hit-count update fire-and-forget. Default args bind primitives
+    # at task creation; even if the request handler returns first, the loop
+    # keeps the task alive under uvicorn (lost on --reload restart, acceptable).
+    async def _bump(cid: str = context_id, ttl: int = cached_ttl):
         try:
             sf2 = create_session_factory()
             async with sf2() as s2:
-                await increment_hit_and_extend(s2, context_id, cache.ttl_seconds)
+                await increment_hit_and_extend(s2, cid, ttl)
         except Exception:
-            logger.exception("hit_count update failed for %s", context_id)
+            logger.exception("hit_count update failed for %s", cid)
     import asyncio as _asyncio
     _asyncio.create_task(_bump())
 ```
@@ -782,6 +885,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         cleanup_task.cancel()
+        try:
+            await cleanup_task  # let it finish handling CancelledError cleanly
+        except asyncio.CancelledError:
+            pass
         # ... existing shutdown ...
 
 async def _context_cache_cleanup_loop(interval_seconds: int = 3600):
