@@ -163,13 +163,69 @@ function hasPluginNodes(nodes: WorkflowNode[]): boolean {
  * Used for workflows containing plugin nodes.
  */
 async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
-  const result = await apiFetch<{ outputs: Record<string, Record<string, unknown>> }>(
-    '/api/v1/workflows/execute',
-    {
-      method: 'POST',
-      body: JSON.stringify({ nodes: workflow.nodes, edges: workflow.edges, name: workflow.name }),
+  // Mark all nodes pending so the UI has visible state before the first
+  // node_start event lands.
+  const exec = useExecutionStore.getState()
+  for (const n of workflow.nodes) exec.setNodeState(n.id, 'pending')
+
+  // Open a progress channel. Server pushes node_start/complete/error into
+  // this bucket; ws must be connected BEFORE the POST so events aren't lost.
+  const channelId = `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const ws = await openProgressChannel(channelId)
+
+  try {
+    const result = await apiFetch<{ outputs: Record<string, Record<string, unknown>> }>(
+      '/api/v1/workflows/execute',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          nodes: workflow.nodes,
+          edges: workflow.edges,
+          name: workflow.name,
+          channel_id: channelId,
+        }),
+      }
+    )
+    return unwrapOutputs(result, workflow)
+  } finally {
+    ws.close()
+  }
+}
+
+
+function openProgressChannel(channelId: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/workflow/${channelId}`)
+    const exec = useExecutionStore.getState()
+    ws.onopen = () => resolve(ws)
+    ws.onerror = (e) => reject(new Error(`ws open failed: ${String(e)}`))
+    ws.onmessage = (ev) => {
+      try {
+        const d = JSON.parse(ev.data)
+        if (d.type === 'node_start') {
+          exec.setNodeState(d.node_id, 'running')
+          exec.setCurrentNode(d.node_id, d.node_type ?? null)
+          if (typeof d.progress === 'number') exec.setProgress(d.progress)
+        } else if (d.type === 'node_complete') {
+          exec.setNodeState(d.node_id, 'completed')
+          if (typeof d.progress === 'number') exec.setProgress(d.progress)
+        } else if (d.type === 'node_error') {
+          exec.setNodeState(d.node_id, 'error')
+        } else if (d.type === 'complete') {
+          exec.setProgress(100)
+          exec.setCurrentNode(null, null)
+        }
+      } catch { /* ignore parse errors */ }
     }
-  )
+  })
+}
+
+
+function unwrapOutputs(
+  result: { outputs: Record<string, Record<string, unknown>> },
+  workflow: Workflow,
+): ExecutionResult {
 
   // Find output node result — support both audio output and text output
   const audioOutputNode = workflow.nodes.find((n) => n.type === 'output')

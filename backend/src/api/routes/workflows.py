@@ -193,10 +193,30 @@ async def execute_workflow_direct(
     await session.refresh(task)
 
     start = time.monotonic()
-    executor = WorkflowExecutor({"nodes": nodes, "edges": edges})
+
+    # Progress channel: client opens /ws/workflow/{channel_id} *before* POST
+    # and we push node_start/complete/error events into that bucket.
+    channel_id = body.get("channel_id")
+
+    async def broadcast_progress(event: dict):
+        if not channel_id:
+            return
+        from src.api.main import _ws_connections
+        for ws in list(_ws_connections.get(channel_id, [])):
+            try:
+                await ws.send_json(event)
+            except Exception:
+                pass
+
+    executor = WorkflowExecutor(
+        {"nodes": nodes, "edges": edges},
+        on_progress=broadcast_progress if channel_id else None,
+    )
 
     try:
         result = await executor.execute()
+        if channel_id:
+            await broadcast_progress({"type": "complete", "progress": 100})
         elapsed = int((time.monotonic() - start) * 1000)
         task.status = "completed"
         task.result = result
