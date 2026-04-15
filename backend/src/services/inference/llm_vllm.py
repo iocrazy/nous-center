@@ -256,11 +256,11 @@ class VLLMAdapter(InferenceAdapter):
         if max_num_seqs:
             cmd += ["--max-num-seqs", str(max_num_seqs)]
         if auto.get("is_multimodal"):
-            # Allow up to 4 images per prompt by default (override via params later).
-            # vLLM ≥0.6 also accepts video=N; only image needed for VL-Instruct.
-            cmd += ["--limit-mm-per-prompt", "image=4"]
+            # vLLM >=0.6 parses this value with json.loads — must be JSON, not key=val.
+            # Allow up to 4 images per prompt by default.
+            cmd += ["--limit-mm-per-prompt", '{"image":4}']
             self.is_multimodal = True
-            logger.info("Detected multimodal model — enabling --limit-mm-per-prompt image=4")
+            logger.info('Detected multimodal model — enabling --limit-mm-per-prompt {"image":4}')
         else:
             self.is_multimodal = False
 
