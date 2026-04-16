@@ -12,12 +12,20 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from nodes import get_all_definitions, get_packages, scan_packages
+from src.api.deps_admin import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/nodes", tags=["nodes"])
+# All endpoints require admin — install/uninstall paths execute arbitrary
+# Python (via package executor.py) and run `pip install` from requirements.txt.
+# Without auth, any HTTP caller can RCE the backend process.
+router = APIRouter(
+    prefix="/api/v1/nodes",
+    tags=["nodes"],
+    dependencies=[Depends(require_admin)],
+)
 
 _PACKAGE_DIR = Path(__file__).resolve().parents[3] / "nodes"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,40}$", re.IGNORECASE)

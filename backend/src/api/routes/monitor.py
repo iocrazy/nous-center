@@ -9,8 +9,10 @@ import subprocess
 import time
 
 import psutil
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
+
+from src.api.deps_admin import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -249,9 +251,9 @@ class KillProcessRequest(BaseModel):
     pid: int
 
 
-@router.post("/kill-process")
+@router.post("/kill-process", dependencies=[Depends(require_admin)])
 async def kill_gpu_process(req: KillProcessRequest, request: Request):
-    """Kill an orphan GPU process by PID."""
+    """Kill an orphan GPU process by PID. Admin only — can disrupt any GPU worker."""
     pid = req.pid
 
     # 1. Verify PID is in GPU process list
