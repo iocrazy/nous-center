@@ -169,8 +169,6 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   const declDef = DECLARATIVE_NODES[nodeType]
   const portDef = NODE_DEFS[nodeType]
 
-  const [streamText, setStreamText] = useState('')
-
   // Token stats state
   const [tokenStats, setTokenStats] = useState<{
     phase: 'streaming' | 'done'
@@ -204,7 +202,6 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
     const handler = (event: CustomEvent) => {
       const data = event.detail
       if (data.type === 'node_stream' && data.node_id === id) {
-        setStreamText((prev) => prev + data.token)
         tokenCountRef.current++
         if (!firstTokenAtRef.current && tokenCountRef.current === 1) {
           firstTokenAtRef.current = performance.now()
@@ -223,7 +220,6 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         setTokenStats(null)
       }
       if (data.type === 'node_complete' && data.node_id === id) {
-        setStreamText('')
         if (throttleRef.current) {
           clearTimeout(throttleRef.current)
           throttleRef.current = null
@@ -295,17 +291,9 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
           />
         </NodeWidgetRow>
       ))}
-      {streamText && (
-        <div style={{
-          padding: '6px 8px', margin: '4px 8px 8px', background: 'var(--bg)',
-          borderRadius: 4, fontSize: 11, flex: 1, minHeight: 40, overflow: 'auto',
-          whiteSpace: 'pre-wrap', color: 'var(--text-secondary)',
-          border: '1px solid var(--border)',
-        }}>
-          {streamText}
-          <span style={{ animation: 'blink 1s infinite' }}>▍</span>
-        </div>
-      )}
+      {/* Streaming text intentionally rendered ONLY in the downstream
+          TextOutput node (data flows along edges). LLM node keeps only
+          token stats below. */}
       {tokenStats && (
         <div
           className="flex items-center gap-1.5"

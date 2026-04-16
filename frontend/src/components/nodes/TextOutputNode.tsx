@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Copy, Check } from 'lucide-react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
 import { NODE_DEFS } from '../../models/workflow'
+import { useWorkspaceStore } from '../../stores/workspace'
 import BaseNode from './BaseNode'
 
 export default function TextOutputNode({ id, data, selected }: NodeProps) {
@@ -9,20 +10,36 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
   const [streamText, setStreamText] = useState('')
   const [copied, setCopied] = useState(false)
 
-  // Listen for streaming tokens
+  // Find the upstream node that feeds this TextOutput's "text" input.
+  // Streaming tokens are emitted with that upstream node's id (e.g. LLM),
+  // not ours — we need to listen for the upstream id.
+  const tabs = useWorkspaceStore((s) => s.tabs)
+  const activeTabId = useWorkspaceStore((s) => s.activeTabId)
+  const upstreamNodeId = useMemo(() => {
+    const wf = tabs.find((t) => t.id === activeTabId)?.workflow
+    const edge = wf?.edges.find((e) => e.target === id)
+    return edge?.source ?? null
+  }, [tabs, activeTabId, id])
+
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail
-      if (detail.type === 'node_stream' && detail.node_id === id) {
+      const streamSource = upstreamNodeId
+      if (!streamSource) return
+      if (detail.type === 'node_start' && detail.node_id === streamSource) {
+        setStreamText('')
+      }
+      if (detail.type === 'node_stream' && detail.node_id === streamSource) {
         setStreamText((prev) => prev + detail.token)
       }
-      if (detail.type === 'node_complete' && detail.node_id === id) {
-        setStreamText('')
+      if (detail.type === 'node_complete' && detail.node_id === streamSource) {
+        // Leave streamText in place — final data.text from workflow will
+        // take over on next render via the text fallback below.
       }
     }
     window.addEventListener('node-progress', handler)
     return () => window.removeEventListener('node-progress', handler)
-  }, [id])
+  }, [upstreamNodeId])
 
   const text = (data.text as string) || streamText || ''
 
