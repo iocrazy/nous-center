@@ -8,6 +8,7 @@ import BaseNode from './BaseNode'
 export default function TextOutputNode({ id, data, selected }: NodeProps) {
   const def = NODE_DEFS.text_output
   const [streamText, setStreamText] = useState('')
+  const [isStreaming, setIsStreaming] = useState(false)
   const [copied, setCopied] = useState(false)
 
   // Find the upstream node that feeds this TextOutput's "text" input.
@@ -28,20 +29,25 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
       if (!streamSource) return
       if (detail.type === 'node_start' && detail.node_id === streamSource) {
         setStreamText('')
+        setIsStreaming(true)
       }
       if (detail.type === 'node_stream' && detail.node_id === streamSource) {
         setStreamText((prev) => prev + detail.token)
       }
       if (detail.type === 'node_complete' && detail.node_id === streamSource) {
-        // Leave streamText in place — final data.text from workflow will
-        // take over on next render via the text fallback below.
+        setIsStreaming(false)
       }
     }
     window.addEventListener('node-progress', handler)
     return () => window.removeEventListener('node-progress', handler)
   }, [upstreamNodeId])
 
-  const text = (data.text as string) || streamText || ''
+  // While streaming is active, prefer the rolling streamText so the output
+  // node updates in real time. Once streaming ends, fall back to data.text
+  // (which the executor updates with the final stripped result).
+  const text = isStreaming
+    ? streamText
+    : ((data.text as string) || streamText || '')
 
   return (
     <>
