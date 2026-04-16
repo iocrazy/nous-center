@@ -25,6 +25,7 @@ export interface ExecutionState {
 
   // Node-level actions
   setNodeState: (nodeId: string, state: NodeExecState) => void
+  clearNodeState: (nodeId: string) => void
   setCurrentNode: (nodeId: string | null, nodeType: string | null) => void
   resetNodeStates: () => void
 
@@ -61,6 +62,12 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 
   setNodeState: (nodeId, state) =>
     set((s) => ({ nodeStates: { ...s.nodeStates, [nodeId]: state } })),
+
+  clearNodeState: (nodeId) =>
+    set((s) => {
+      const { [nodeId]: _drop, ...rest } = s.nodeStates
+      return { nodeStates: rest }
+    }),
 
   setCurrentNode: (nodeId, nodeType) =>
     set({ currentNodeId: nodeId, currentNodeType: nodeType }),

@@ -208,7 +208,9 @@ function openProgressChannel(channelId: string): Promise<WebSocket> {
           exec.setCurrentNode(d.node_id, d.node_type ?? null)
           if (typeof d.progress === 'number') exec.setProgress(d.progress)
         } else if (d.type === 'node_complete') {
-          exec.setNodeState(d.node_id, 'completed')
+          // Restore to original look once the node is done — only the
+          // currently-running node stays highlighted (ComfyUI-style).
+          exec.clearNodeState(d.node_id)
           if (typeof d.progress === 'number') exec.setProgress(d.progress)
         } else if (d.type === 'node_error') {
           exec.setNodeState(d.node_id, 'error')
@@ -309,7 +311,8 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
     try {
       const result = await executor(node, inputs)
       outputs.set(node.id, result)
-      exec.setNodeState(node.id, 'completed')
+      // Clear once done — only the currently-running node stays highlighted.
+      exec.clearNodeState(node.id)
     } catch (e) {
       exec.setNodeState(node.id, 'error')
       const elapsed = Math.round(performance.now() - startTime)
