@@ -47,7 +47,7 @@ if client.models.get("qwen3.5").capabilities.tool_use:
 
 ## 实施计划（3 波发布）
 
-### Wave 1 · Platform Contracts（~4.5 天）
+### Wave 1 · Platform Contracts（~7.5 天，Eng Review 升级后）
 
 **一次性立好所有 ABC，上游 app 接入不用等后续波。**
 
