@@ -315,7 +315,8 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
             base_url = adapter.base_url
 
     if not base_url:
-        base_url = "http://localhost:8100"
+        from src.config import get_settings
+        base_url = get_settings().VLLM_BASE_URL
 
     _validate_llm_url(base_url)
 

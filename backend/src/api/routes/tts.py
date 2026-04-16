@@ -18,12 +18,17 @@ from src.models.schemas import (
     SynthesizeResponse,
     TTSRequest,
 )
+from src.api.deps_admin import require_admin
 from src.models.voice_preset import VoicePreset
 from src.workers.tts_worker import generate_tts_task
 import redis.asyncio as aioredis
 from src.services.tts_cache import make_cache_key, TTSCacheService
 
-router = APIRouter(prefix="/api/v1/tts", tags=["tts"])
+router = APIRouter(
+    prefix="/api/v1/tts",
+    tags=["tts"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 # Module-level lazy Redis + cache

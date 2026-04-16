@@ -1,8 +1,9 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from src.api.deps_admin import require_admin
 from src.models.schemas import (
     ImageGenerateRequest,
     VideoGenerateRequest,
@@ -10,7 +11,10 @@ from src.models.schemas import (
 from src.workers.image_worker import generate_image_task
 from src.workers.video_worker import generate_video_task
 
-router = APIRouter(prefix="/api/v1/generate")
+router = APIRouter(
+    prefix="/api/v1/generate",
+    dependencies=[Depends(require_admin)],
+)
 
 TASK_MAP = {
     "image": generate_image_task,

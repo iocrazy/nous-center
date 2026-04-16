@@ -317,6 +317,10 @@ def create_app() -> FastAPI:
     # request.state.request_id before exception handlers inspect it.
     app.add_middleware(RequestIdMiddleware)
 
+    @app.get("/healthz")
+    async def healthz():
+        return {"status": "ok"}
+
     @app.get("/health")
     async def health_check():
         checks: dict = {"status": "ok"}

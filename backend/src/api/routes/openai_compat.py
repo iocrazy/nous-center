@@ -264,7 +264,10 @@ CONTENT_TYPE_MAP = {
 
 
 @router.post("/v1/audio/speech")
-async def create_speech(req: SpeechRequest):
+async def create_speech(
+    req: SpeechRequest,
+    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+):
     """Generate audio from text (OpenAI TTS compatible)."""
     from src.workers.tts_engines import registry
 

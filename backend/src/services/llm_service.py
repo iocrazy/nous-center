@@ -16,9 +16,14 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
+def _default_base_url() -> str:
+    from src.config import get_settings
+    return get_settings().VLLM_BASE_URL
+
+
 async def call_llm(
     prompt: str,
-    base_url: str = "http://localhost:8100",
+    base_url: str | None = None,
     model: str = "",
     system: str | None = None,
     api_key: str | None = None,
@@ -36,7 +41,7 @@ async def call_llm(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    url = f"{(base_url or _default_base_url()).rstrip('/')}/v1/chat/completions"
 
     body: dict = {
         "model": model,
@@ -56,7 +61,7 @@ async def call_llm(
 
 async def call_llm_with_tools(
     messages: list[dict],
-    base_url: str = "http://localhost:8100",
+    base_url: str | None = None,
     model: str = "",
     api_key: str | None = None,
     tools: list[dict] | None = None,
@@ -71,7 +76,7 @@ async def call_llm_with_tools(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    url = f"{(base_url or _default_base_url()).rstrip('/')}/v1/chat/completions"
 
     body: dict = {
         "model": model,
