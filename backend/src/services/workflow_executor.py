@@ -373,8 +373,11 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
 
     import time as _time
 
-    # Use streaming when requested and a progress callback is available
-    if data.get("stream") and _on_progress_ref is not None:
+    # Streaming is the UX default (widget defaults to 'true'). Only skip it
+    # when explicitly disabled OR no progress channel exists.
+    _stream_raw = data.get("stream")
+    _stream_on = _stream_raw is None or str(_stream_raw).lower() not in ("false", "0", "no", "off")
+    if _stream_on and _on_progress_ref is not None:
         node_id = data.get("_node_id", "")
         on_progress = _on_progress_ref
 
