@@ -88,6 +88,10 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
   // @ mention popup
   const [showAtPopup, setShowAtPopup] = useState(false)
   const [atPos, setAtPos] = useState({ top: 0, left: 0 })
+  // Index of the `@` char in the textarea at the moment the popup opened —
+  // we replace that exact `@` on select, not whatever the cursor points to
+  // later (clicking the popup moves focus + changes selectionStart).
+  const atCharIndexRef = useRef<number | null>(null)
 
   const handleTextChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -97,6 +101,7 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
       // Check if user just typed @
       const pos = e.target.selectionStart
       if (pos > 0 && val[pos - 1] === '@' && images.length > 0) {
+        atCharIndexRef.current = pos - 1
         // Position popup near cursor
         const ta = e.target
         const rect = ta.getBoundingClientRect()
@@ -111,6 +116,7 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
         setShowAtPopup(true)
       } else {
         setShowAtPopup(false)
+        atCharIndexRef.current = null
       }
     },
     [id, updateNode, images.length],
@@ -120,16 +126,30 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
     (idx: number) => {
       const ta = textareaRef.current
       if (!ta) return
-      const pos = ta.selectionStart
+      const anchor = atCharIndexRef.current
       const val = ta.value
-      // Replace the @ with @imgN
-      const before = val.slice(0, pos)
-      const after = val.slice(pos)
-      const tag = `img${idx + 1} `
+      const tag = `@img${idx + 1} `
+
+      // Replace exactly the tracked `@` with the full tag, keep everything
+      // else intact. If anchor is lost, fall back to inserting at caret.
+      let before: string
+      let after: string
+      let caret: number
+      if (anchor !== null && val[anchor] === '@') {
+        before = val.slice(0, anchor)
+        after = val.slice(anchor + 1)
+        caret = before.length + tag.length
+      } else {
+        const pos = ta.selectionStart ?? val.length
+        before = val.slice(0, pos)
+        after = val.slice(pos)
+        caret = pos + tag.length
+      }
       updateNode(id, { text: before + tag + after })
       setShowAtPopup(false)
+      atCharIndexRef.current = null
       setTimeout(() => {
-        ta.selectionStart = ta.selectionEnd = pos + tag.length
+        ta.selectionStart = ta.selectionEnd = caret
         ta.focus()
       }, 0)
     },
