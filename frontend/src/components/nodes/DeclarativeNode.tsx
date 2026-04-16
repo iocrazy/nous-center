@@ -183,7 +183,6 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   const tokenCountRef = useRef(0)
   const firstTokenAtRef = useRef<number | null>(null)
   const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const updateStreamingStats = useCallback(() => {
     const count = tokenCountRef.current
@@ -217,6 +216,12 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
           }, 250)
         }
       }
+      if (data.type === 'node_start' && data.node_id === id) {
+        // New run on this node — clear previous run's stats
+        tokenCountRef.current = 0
+        firstTokenAtRef.current = null
+        setTokenStats(null)
+      }
       if (data.type === 'node_complete' && data.node_id === id) {
         setStreamText('')
         if (throttleRef.current) {
@@ -245,15 +250,14 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         })
         tokenCountRef.current = 0
         firstTokenAtRef.current = null
-        if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-        fadeTimerRef.current = setTimeout(() => setTokenStats(null), 8000)
+        // Keep the final stats visible until the next run of this node
+        // triggers node_start; no auto-hide timer.
       }
     }
     window.addEventListener('node-progress', handler as any)
     return () => {
       window.removeEventListener('node-progress', handler as any)
       if (throttleRef.current) clearTimeout(throttleRef.current)
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
     }
   }, [id, updateStreamingStats])
 
