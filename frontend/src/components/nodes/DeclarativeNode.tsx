@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
+import { Zap, Check } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
@@ -170,19 +171,91 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
 
   const [streamText, setStreamText] = useState('')
 
+  // Token stats state
+  const [tokenStats, setTokenStats] = useState<{
+    phase: 'streaming' | 'done'
+    outputTokens: number
+    inputTokens: number
+    totalTokens: number
+    tokensPerSec: number
+    durationSec: number
+  } | null>(null)
+  const tokenCountRef = useRef(0)
+  const firstTokenAtRef = useRef<number | null>(null)
+  const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const updateStreamingStats = useCallback(() => {
+    const count = tokenCountRef.current
+    const first = firstTokenAtRef.current
+    if (count < 2 || !first) return
+    const elapsed = (performance.now() - first) / 1000
+    const rate = elapsed > 0 ? (count - 1) / elapsed : 0
+    setTokenStats({
+      phase: 'streaming',
+      outputTokens: count,
+      inputTokens: 0,
+      totalTokens: 0,
+      tokensPerSec: Math.round(rate * 10) / 10,
+      durationSec: Math.round(elapsed * 10) / 10,
+    })
+  }, [])
+
   useEffect(() => {
     const handler = (event: CustomEvent) => {
       const data = event.detail
       if (data.type === 'node_stream' && data.node_id === id) {
         setStreamText((prev) => prev + data.token)
+        tokenCountRef.current++
+        if (!firstTokenAtRef.current && tokenCountRef.current === 1) {
+          firstTokenAtRef.current = performance.now()
+        }
+        if (!throttleRef.current) {
+          throttleRef.current = setTimeout(() => {
+            throttleRef.current = null
+            updateStreamingStats()
+          }, 250)
+        }
       }
       if (data.type === 'node_complete' && data.node_id === id) {
         setStreamText('')
+        if (throttleRef.current) {
+          clearTimeout(throttleRef.current)
+          throttleRef.current = null
+        }
+        const usage = data.usage
+        const durationMs = data.duration_ms
+        const first = firstTokenAtRef.current
+        const elapsed = durationMs
+          ? durationMs / 1000
+          : first
+            ? (performance.now() - first) / 1000
+            : 0
+        const outTok = usage?.completion_tokens ?? usage?.output_tokens ?? tokenCountRef.current
+        const inTok = usage?.prompt_tokens ?? usage?.input_tokens ?? 0
+        const total = usage?.total_tokens ?? inTok + outTok
+        const rate = elapsed > 0 ? outTok / elapsed : 0
+        setTokenStats({
+          phase: 'done',
+          outputTokens: outTok,
+          inputTokens: inTok,
+          totalTokens: total,
+          tokensPerSec: Math.round(rate * 10) / 10,
+          durationSec: Math.round(elapsed * 10) / 10,
+        })
+        tokenCountRef.current = 0
+        firstTokenAtRef.current = null
+        if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+        fadeTimerRef.current = setTimeout(() => setTokenStats(null), 8000)
       }
     }
     window.addEventListener('node-progress', handler as any)
-    return () => window.removeEventListener('node-progress', handler as any)
-  }, [id])
+    return () => {
+      window.removeEventListener('node-progress', handler as any)
+      if (throttleRef.current) clearTimeout(throttleRef.current)
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+    }
+  }, [id, updateStreamingStats])
 
   if (!declDef || !portDef) return null
 
@@ -227,6 +300,33 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         }}>
           {streamText}
           <span style={{ animation: 'blink 1s infinite' }}>▍</span>
+        </div>
+      )}
+      {tokenStats && (
+        <div
+          className="flex items-center gap-1.5"
+          style={{
+            fontSize: 9,
+            color: 'var(--muted)',
+            padding: '4px 10px 6px',
+            transition: 'opacity 0.5s',
+            opacity: tokenStats.phase === 'done' ? 0.7 : 1,
+          }}
+        >
+          {tokenStats.phase === 'streaming' ? (
+            <Zap size={10} style={{ color: 'var(--warn)', flexShrink: 0 }} />
+          ) : (
+            <Check size={10} style={{ color: 'var(--ok)', flexShrink: 0 }} />
+          )}
+          {tokenStats.phase === 'streaming' ? (
+            <span>
+              生成中 · {tokenStats.tokensPerSec} tok/s · 输出 {tokenStats.outputTokens}
+            </span>
+          ) : (
+            <span>
+              输入 {tokenStats.inputTokens} · 输出 {tokenStats.outputTokens} · 合计 {tokenStats.totalTokens} · {tokenStats.tokensPerSec} tok/s · {tokenStats.durationSec}s
+            </span>
+          )}
         </div>
       )}
     </BaseNode>

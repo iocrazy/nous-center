@@ -26,11 +26,17 @@ def set_model_manager(mgr: ModelManager) -> None:
     _model_manager = mgr
 
 
+_last_stream_usage: dict | None = None
+
+
 async def _stream_llm(base_url: str, params: dict, on_token=None) -> str:
-    """Stream LLM response, calling on_token for each chunk. Returns full text."""
+    """Stream LLM response, calling on_token for each chunk. Returns full text.
+    Captures final usage in module-level _last_stream_usage (include_usage)."""
+    global _last_stream_usage
     import json as _json
 
     full_text = ""
+    _last_stream_usage = None
     async with httpx.AsyncClient(timeout=300, proxy=None) as client:
         async with client.stream(
             "POST",
@@ -54,11 +60,16 @@ async def _stream_llm(base_url: str, params: dict, on_token=None) -> str:
                     break
                 try:
                     chunk = _json.loads(payload)
-                    delta = chunk["choices"][0].get("delta", {})
-                    token = delta.get("content", "")
-                    if token and on_token:
-                        await on_token(token)
-                    full_text += token
+                    choices = chunk.get("choices") or []
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        token = delta.get("content", "")
+                        if token and on_token:
+                            await on_token(token)
+                        full_text += token
+                    usage = chunk.get("usage")
+                    if usage:
+                        _last_stream_usage = usage
                 except Exception:
                     pass
     return full_text
@@ -171,13 +182,19 @@ class WorkflowExecutor:
                 ) from e
 
             if self._on_progress:
-                await self._on_progress({
+                complete_event: dict = {
                     "type": "node_complete",
                     "node_id": node_id,
                     "step": i + 1,
                     "total": total,
                     "progress": round(((i + 1) / total) * 100),
-                })
+                }
+                if isinstance(output, dict):
+                    if "usage" in output:
+                        complete_event["usage"] = output["usage"]
+                    if "duration_ms" in output:
+                        complete_event["duration_ms"] = output["duration_ms"]
+                await self._on_progress(complete_event)
 
         return {"outputs": self._outputs}
 
@@ -354,6 +371,8 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     if max_tokens > safe_max:
         max_tokens = safe_max
 
+    import time as _time
+
     # Use streaming when requested and a progress callback is available
     if data.get("stream") and _on_progress_ref is not None:
         node_id = data.get("_node_id", "")
@@ -371,12 +390,15 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
             "messages": messages,
             "temperature": data.get("temperature", 0.7),
             "max_tokens": max_tokens,
+            "stream_options": {"include_usage": True},
         }
         if enable_thinking:
             params["chat_template_kwargs"] = {"enable_thinking": True}
+        t0 = _time.monotonic()
         result = await _stream_llm(base_url, params, on_token=_push_token)
+        duration_ms = int((_time.monotonic() - t0) * 1000)
         result = _strip_thinking(result)
-        return {"text": result}
+        return {"text": result, "usage": _last_stream_usage, "duration_ms": duration_ms}
 
     # Non-streaming path — use raw httpx to support vision format
     extra_body: dict[str, Any] = {}
@@ -397,6 +419,7 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    t0 = _time.monotonic()
     async with httpx.AsyncClient(timeout=300, proxy=None) as _client:
         resp = await _client.post(f"{base_url.rstrip('/')}/v1/chat/completions", json=body, headers=headers)
         if resp.status_code != 200:
@@ -408,8 +431,10 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
             raise ExecutionError(f"LLM API error ({resp.status_code}): {detail}")
         resp_data = resp.json()
         result = resp_data["choices"][0]["message"]["content"]
+    duration_ms = int((_time.monotonic() - t0) * 1000)
     result = _strip_thinking(result)
-    return {"text": result}
+    usage = resp_data.get("usage")
+    return {"text": result, "usage": usage, "duration_ms": duration_ms}
 
 
 async def _exec_prompt_template(data: dict, inputs: dict) -> dict:
