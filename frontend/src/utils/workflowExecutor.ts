@@ -203,13 +203,15 @@ function openProgressChannel(channelId: string): Promise<WebSocket> {
     ws.onmessage = (ev) => {
       try {
         const d = JSON.parse(ev.data)
+        // Dispatch window CustomEvent so DeclarativeNode / TextOutputNode
+        // can pick up node_stream / node_complete for streaming text + stats.
+        window.dispatchEvent(new CustomEvent('node-progress', { detail: d }))
+
         if (d.type === 'node_start') {
           exec.setNodeState(d.node_id, 'running')
           exec.setCurrentNode(d.node_id, d.node_type ?? null)
           if (typeof d.progress === 'number') exec.setProgress(d.progress)
         } else if (d.type === 'node_complete') {
-          // Restore to original look once the node is done — only the
-          // currently-running node stays highlighted (ComfyUI-style).
           exec.clearNodeState(d.node_id)
           if (typeof d.progress === 'number') exec.setProgress(d.progress)
         } else if (d.type === 'node_error') {
