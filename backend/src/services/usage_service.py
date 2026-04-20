@@ -19,6 +19,7 @@ async def record_llm_usage(
     duration_ms: int | None = None,
     instance_id: int | None = None,
     api_key_id: int | None = None,
+    agent_id: str | None = None,
 ) -> None:
     """Record an LLM inference event."""
     sf = create_session_factory()
@@ -31,6 +32,7 @@ async def record_llm_usage(
             duration_ms=duration_ms,
             instance_id=instance_id,
             api_key_id=api_key_id,
+            agent_id=agent_id,
         )
         session.add(usage)
         await session.commit()
