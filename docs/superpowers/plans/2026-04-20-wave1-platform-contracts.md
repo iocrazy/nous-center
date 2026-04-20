@@ -959,7 +959,13 @@ class GzipCompactContextEngine(ContextEngine):
         system_msgs = [m for m in messages if m.get("role") == "system"]
         rest = [m for m in messages if m.get("role") != "system"]
 
+        # Never pop the last user message — it's the current turn's input.
+        # If dropping the oldest would leave us with nothing that includes
+        # a user turn, break out and let the overflow check raise below.
         while rest and _approx_tokens(system_msgs + rest) > max_tokens:
+            # Stop if remaining rest is just [last_user] (or shorter)
+            if len(rest) <= 1:
+                break
             rest.pop(0)
 
         compacted = system_msgs + rest
