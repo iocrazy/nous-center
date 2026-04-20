@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     NOUS_CENTER_HOME: str = "~/.nous-center"
 
+    NOUS_ENABLE_AGENT_INJECTION: bool = False  # feature flag for agent/skill system prompt injection
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
