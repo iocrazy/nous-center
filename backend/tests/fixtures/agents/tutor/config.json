@@ -1,0 +1,6 @@
+{
+  "display_name": "Tutor",
+  "model": "qwen3.5",
+  "skills": ["search", "summarize"],
+  "status": "active"
+}
