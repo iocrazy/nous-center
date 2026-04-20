@@ -132,7 +132,6 @@ async def test_concurrent_turn_write_raises_conflict(db_session, sample_instance
     # Monkeypatch func.max(...).where(...) to report no rows — forces idx 0 collision.
     # Easier: temporarily swap the select() builder.
     from src.services import responses_service as svc
-    from sqlalchemy import func as _func
 
     original_execute = db_session.execute
 

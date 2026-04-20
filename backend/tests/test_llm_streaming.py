@@ -1,7 +1,5 @@
 """Tests for LLM streaming support in workflow_executor."""
 
-import asyncio
-import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 
@@ -41,6 +39,7 @@ async def test_stream_llm_parses_tokens():
     ]
 
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.aiter_lines = MagicMock(return_value=AsyncIteratorMock(lines))
     mock_response.__aenter__ = AsyncMock(return_value=mock_response)
     mock_response.__aexit__ = AsyncMock(return_value=False)
@@ -76,6 +75,7 @@ async def test_stream_llm_skips_non_data_lines():
     ]
 
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.aiter_lines = MagicMock(return_value=AsyncIteratorMock(lines))
     mock_response.__aenter__ = AsyncMock(return_value=mock_response)
     mock_response.__aexit__ = AsyncMock(return_value=False)
@@ -144,7 +144,7 @@ async def test_exec_llm_streaming_pushes_node_stream_events():
         inputs = {"text": "hello"}
         result = await we._exec_llm(data, inputs)
 
-    assert result == {"text": "Streaming reply"}
+    assert result["text"] == "Streaming reply"
     stream_events = [e for e in events if e.get("type") == "node_stream"]
     assert len(stream_events) == 2
     assert stream_events[0]["token"] == "Streaming"

@@ -4,7 +4,6 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.llm_usage import LLMUsage
 from src.models.tts_usage import TTSUsage

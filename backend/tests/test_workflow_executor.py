@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from src.services.workflow_executor import WorkflowExecutor, ExecutionError
@@ -113,11 +113,11 @@ async def test_prompt_template_substitution():
 
 @pytest.mark.asyncio
 async def test_llm_node():
-    """text_input -> llm -> output, mock call_llm."""
+    """text_input -> llm -> output, mock the non-streaming httpx call."""
     wf = {
         "nodes": [
             {"id": "n1", "type": "text_input", "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
-            {"id": "n2", "type": "llm", "data": {"model": "test-model", "base_url": "http://localhost:8100"}, "position": {"x": 200, "y": 0}},
+            {"id": "n2", "type": "llm", "data": {"model": "test-model", "base_url": "http://localhost:8100", "stream": False}, "position": {"x": 200, "y": 0}},
             {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
         ],
         "edges": [
@@ -125,15 +125,35 @@ async def test_llm_node():
             {"id": "e2", "source": "n2", "sourceHandle": "text", "target": "n3", "targetHandle": "text"},
         ],
     }
-    with patch("src.services.workflow_executor.call_llm", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = "LLM reply"
+
+    # Mock httpx response: /v1/models probe (skipped when adapter is None falls through)
+    # and POST /v1/chat/completions returning an OpenAI-compatible reply.
+    post_resp = MagicMock()
+    post_resp.status_code = 200
+    post_resp.json = MagicMock(return_value={
+        "choices": [{"message": {"content": "LLM reply"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+    })
+
+    get_resp = MagicMock()
+    get_resp.status_code = 200
+    get_resp.json = MagicMock(return_value={"data": [{"max_model_len": 4096}]})
+
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(return_value=post_resp)
+    mock_client.get = AsyncMock(return_value=get_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.services.workflow_executor.httpx.AsyncClient", return_value=mock_client):
         executor = WorkflowExecutor(wf)
         result = await executor.execute()
 
     assert result["outputs"]["n2"]["text"] == "LLM reply"
-    mock_llm.assert_called_once()
-    assert mock_llm.call_args.kwargs["prompt"] == "hello"
-    assert mock_llm.call_args.kwargs["model"] == "test-model"
+    mock_client.post.assert_awaited_once()
+    call_body = mock_client.post.await_args.kwargs["json"]
+    assert call_body["model"] == "test-model"
+    assert call_body["messages"][-1]["content"] == "hello"
 
 
 # --- if_else tests ---

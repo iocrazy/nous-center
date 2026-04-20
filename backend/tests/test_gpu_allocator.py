@@ -1,4 +1,3 @@
-import pytest
 from src.services.gpu_allocator import GPUAllocator
 
 def _fake_stats():

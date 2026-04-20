@@ -13,7 +13,6 @@ import json
 import logging
 import secrets
 from datetime import datetime, timezone, timedelta
-from typing import Any
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError

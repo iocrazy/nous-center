@@ -55,9 +55,6 @@ class VoxCPM2Engine(TTSEngine):
         if self._voxcpm is None:
             raise RuntimeError("VoxCPM2 model not loaded")
 
-        import time
-        start = time.monotonic()
-
         kwargs = {
             "text": text,
             "cfg_value": 2.0,
@@ -70,7 +67,9 @@ class VoxCPM2Engine(TTSEngine):
 
         # Voice cloning: use reference audio
         if reference_audio:
-            import tempfile, base64, os
+            import tempfile
+            import base64
+            import os
             # Save reference audio to temp file
             if reference_audio.startswith("data:"):
                 _, b64 = reference_audio.split(",", 1)
@@ -100,7 +99,6 @@ class VoxCPM2Engine(TTSEngine):
             wav = self._voxcpm.generate(**kwargs)
 
         sr = self._voxcpm.tts_model.sample_rate
-        elapsed = time.monotonic() - start
 
         # Convert to WAV bytes
         if wav.ndim > 1:

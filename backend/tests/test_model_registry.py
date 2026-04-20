@@ -1,6 +1,6 @@
 import pytest
 import yaml
-from src.services.inference.registry import ModelRegistry, ModelSpec
+from src.services.inference.registry import ModelRegistry
 
 @pytest.fixture
 def registry_yaml(tmp_path):

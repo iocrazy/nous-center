@@ -1,4 +1,3 @@
-import uuid
 from src.models.schemas import (
     ImageGenerateRequest,
     TTSRequest,

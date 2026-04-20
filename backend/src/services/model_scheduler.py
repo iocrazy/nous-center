@@ -5,7 +5,6 @@ import logging
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 from src.config import load_model_configs, get_settings
 from src.gpu.detector import get_device_for_engine
@@ -69,9 +68,16 @@ async def load_model(model_key: str) -> None:
     # (done outside _lock to avoid deadlock — check_and_evict acquires _lock)
     from src.services.gpu_monitor import get_gpu_free_mb, check_and_evict
 
-    gpu_idx = cfg.get("gpu", 0)
-    if isinstance(gpu_idx, list):
-        gpu_idx = gpu_idx[0]
+    settings = get_settings()
+    model_type = cfg.get("type", "")
+    # Resolve device FIRST — the detector may auto-pick a different GPU than
+    # the raw cfg["gpu"] hint (e.g. to avoid the display GPU). The VRAM check
+    # below must probe whichever card we actually plan to load onto.
+    device = get_device_for_engine(cfg)
+    try:
+        gpu_idx = int(device.split(":")[-1]) if device.startswith("cuda") else 0
+    except (ValueError, IndexError):
+        gpu_idx = 0
     needed_mb = int(cfg.get("vram_gb", 0) * 1024)
     free_mb = get_gpu_free_mb(gpu_idx)
 
@@ -87,10 +93,6 @@ async def load_model(model_key: str) -> None:
             raise ValueError(
                 f"GPU {gpu_idx} 显存不足: 需要 {needed_mb}MB, 可用 {free_mb}MB"
             )
-
-    settings = get_settings()
-    model_type = cfg.get("type", "")
-    device = get_device_for_engine(cfg)
 
     # Perform actual model loading outside the lock (long-running I/O)
     if model_type == "tts":

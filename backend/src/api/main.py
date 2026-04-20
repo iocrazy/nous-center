@@ -178,7 +178,6 @@ async def lifespan(app: FastAPI):
 
     # Auto-load disabled — models are loaded manually from the UI
     # Resident flag only prevents auto-unload by idle checker
-    from src.api.routes.engines import _loading_states
 
     # Re-register model references for published workflows
     from sqlalchemy import select

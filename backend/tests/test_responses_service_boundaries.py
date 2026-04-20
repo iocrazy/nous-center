@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 from src.errors import (
-    ConflictError, InvalidRequestError, NotFoundError,
+    NotFoundError,
     PermissionError as NousPermissionError,
 )
 from src.services.responses_service import (

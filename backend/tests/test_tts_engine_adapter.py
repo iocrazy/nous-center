@@ -1,4 +1,3 @@
-import pytest
 from src.services.inference.base import InferenceAdapter, InferenceResult
 from src.workers.tts_engines.base import TTSEngine, TTSResult
 

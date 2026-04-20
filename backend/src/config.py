@@ -87,7 +87,9 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
             result[model_id] = {
                 "name": model_id,
                 "type": entry.get("type", ""),
-                "gpu": entry.get("gpu", 0),
+                # `gpu` stays None when unset so the GPU detector can auto-pick
+                # a non-display card instead of defaulting to cuda:0.
+                "gpu": entry.get("gpu"),
                 "vram_gb": round(entry.get("vram_mb", 0) / 1024, 1),
                 "resident": entry.get("resident", False),
                 "local_path": entry.get("path", ""),

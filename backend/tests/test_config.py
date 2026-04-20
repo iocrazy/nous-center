@@ -1,5 +1,3 @@
-import os
-from pathlib import Path
 
 from src.config import Settings, load_model_configs, _resolve_path
 

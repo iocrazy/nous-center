@@ -14,7 +14,7 @@ async def list_models():
             name: {
                 "type": cfg["type"],
                 "loaded": manager.is_loaded(name),
-                "gpu": cfg["gpu"],
+                "gpu": cfg.get("gpu"),
                 "vram_gb": cfg["vram_gb"],
             }
             for name, cfg in manager._configs.items()

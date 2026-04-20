@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from unittest.mock import MagicMock
 from src.services.inference.base import InferenceAdapter, InferenceResult

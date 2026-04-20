@@ -1,4 +1,3 @@
-import pytest
 
 
 async def test_logs_endpoints_exist(client):
@@ -17,7 +16,4 @@ async def test_frontend_log_report(client):
 
 
 def test_all_log_imports():
-    from src.services.log_db import init_log_db, insert_request_log, insert_app_log, insert_frontend_log, insert_audit_log, query_logs, cleanup_logs
-    from src.services.log_collector import DbLogHandler
-    from src.api.middleware import RequestLoggingMiddleware, AuditMiddleware, derive_audit_action
     assert True

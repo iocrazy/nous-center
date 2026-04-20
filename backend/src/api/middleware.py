@@ -1,6 +1,5 @@
 """Request logging and audit middleware."""
 import asyncio
-import json
 import logging
 import re
 import time

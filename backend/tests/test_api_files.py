@@ -80,7 +80,8 @@ async def test_get_unknown_file_404(file_client):
 
 async def test_other_instance_blocked_403(db_client, sample_api_key, sample_instance, db_session):
     """A file uploaded by instance A must not be GETtable by instance B."""
-    import bcrypt, secrets as _sec
+    import bcrypt
+    import secrets as _sec
     from src.models.instance_api_key import InstanceApiKey
     from src.models.service_instance import ServiceInstance
 

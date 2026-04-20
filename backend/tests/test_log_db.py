@@ -1,6 +1,5 @@
-import os
 import pytest
-from src.services.log_db import init_log_db, insert_request_log, insert_app_log, insert_frontend_log, insert_audit_log, query_logs, get_log_db_path
+from src.services.log_db import init_log_db, insert_request_log, insert_app_log, insert_frontend_log, insert_audit_log, query_logs
 
 
 @pytest.fixture

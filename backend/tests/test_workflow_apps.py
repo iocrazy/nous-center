@@ -1,4 +1,3 @@
-import pytest
 
 
 async def test_publish_creates_app(db_client):

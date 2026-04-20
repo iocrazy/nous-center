@@ -27,7 +27,11 @@ class ModelManager:
         if config is None:
             return False
 
-        gpus = config["gpu"] if isinstance(config["gpu"], list) else [config["gpu"]]
+        raw_gpu = config.get("gpu")
+        if raw_gpu is None:
+            # Detector picks at load time; track as GPU 0 for accounting.
+            raw_gpu = 0
+        gpus = raw_gpu if isinstance(raw_gpu, list) else [raw_gpu]
         vram = config["vram_gb"]
 
         if config.get("exclusive"):
@@ -45,7 +49,11 @@ class ModelManager:
         if config is None:
             return False
 
-        gpus = config["gpu"] if isinstance(config["gpu"], list) else [config["gpu"]]
+        raw_gpu = config.get("gpu")
+        if raw_gpu is None:
+            # Detector picks at load time; track as GPU 0 for accounting.
+            raw_gpu = 0
+        gpus = raw_gpu if isinstance(raw_gpu, list) else [raw_gpu]
         vram_per_gpu = config["vram_gb"] / len(gpus)
 
         with self._lock:
@@ -63,7 +71,11 @@ class ModelManager:
         if config is None or model_name not in self._loaded:
             return
 
-        gpus = config["gpu"] if isinstance(config["gpu"], list) else [config["gpu"]]
+        raw_gpu = config.get("gpu")
+        if raw_gpu is None:
+            # Detector picks at load time; track as GPU 0 for accounting.
+            raw_gpu = 0
+        gpus = raw_gpu if isinstance(raw_gpu, list) else [raw_gpu]
         with self._lock:
             for gpu in gpus:
                 self._tracker.release(gpu, model_name)

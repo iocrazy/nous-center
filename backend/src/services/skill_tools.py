@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import Any
 
 from src.services import skill_manager
 

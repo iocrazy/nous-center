@@ -7,9 +7,8 @@ conftest autouse fixture detaches DbLogHandler so these tests (which trigger
 
 from __future__ import annotations
 
-import json
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 

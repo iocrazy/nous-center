@@ -5,7 +5,7 @@ import importlib
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Callable
 
 from src.services.inference.base import InferenceAdapter
 from src.services.inference.registry import ModelRegistry, ModelSpec

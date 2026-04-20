@@ -83,9 +83,6 @@ def _get_conn(db_path: str | None = None) -> sqlite3.Connection:
 def init_log_db(db_path: str | None = None) -> str:
     global _db_path
     if db_path is None:
-        from src.config import get_settings
-        settings = get_settings()
-        home = Path(settings.NOUS_CENTER_HOME).expanduser()
         data_dir = Path(__file__).resolve().parent.parent.parent / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         db_path = str(data_dir / "logs.db")

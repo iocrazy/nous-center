@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 from src.services.task_queue import TaskQueue
 
 

@@ -20,14 +20,14 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_auth import verify_bearer_token
 from src.errors import (
-    APIError, ConflictError, InvalidRequestError, NotFoundError,
+    APIError, InvalidRequestError, NotFoundError,
     NousError, PermissionError as NousPermissionError,
 )
 from src.models.database import get_async_session
@@ -36,7 +36,6 @@ from src.models.response_session import ResponseSession, ResponseTurn
 from src.models.service_instance import ServiceInstance
 from src.services.context_cache_service import resolve_for_request
 from src.services.responses_service import (
-    SESSION_TOKEN_BUDGET,
     approx_tokens,
     assemble_history_for_response,
     check_session_budget,

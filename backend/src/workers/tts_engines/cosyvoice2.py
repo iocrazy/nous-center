@@ -1,6 +1,5 @@
 import io
 import logging
-import struct
 import sys
 from pathlib import Path
 
@@ -127,7 +126,6 @@ class CosyVoice2Engine(TTSEngine):
 
         # Convert tensor to WAV bytes using soundfile (avoids torchcodec issues)
         import soundfile as sf
-        import numpy as np
         audio_np = speech.squeeze(0).cpu().numpy()
         buf = io.BytesIO()
         sf.write(buf, audio_np, sample_rate, format="WAV", subtype="PCM_16")

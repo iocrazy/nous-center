@@ -1,41 +1,35 @@
 models:
 - adapter: src.workers.tts_engines.cosyvoice2.CosyVoice2Engine
-  gpu: 1
   id: cosyvoice2
   path: tts/cosyvoice2-0.5b
   resident: false
   type: tts
   vram_mb: 3000
 - adapter: src.workers.tts_engines.indextts2.IndexTTS2Engine
-  gpu: 1
   id: indextts2
   path: tts/indextts-2
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.moss_tts.MOSSTTSEngine
-  gpu: 1
   id: moss_tts
   path: tts/moss-tts
   resident: false
   type: tts
   vram_mb: 8000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSBaseEngine
-  gpu: 0
   id: qwen3_tts_base
   path: tts/qwen3-tts-1.7b-base
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSCustomVoiceEngine
-  gpu: 1
   id: qwen3_tts_customvoice
   path: tts/qwen3-tts-1.7b-customvoice
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSVoiceDesignEngine
-  gpu: 1
   id: qwen3_tts_voicedesign
   path: tts/qwen3-tts-1.7b-voicedesign
   resident: false
@@ -68,7 +62,6 @@ models:
   resident: false
   type: llm
 - adapter: src.workers.tts_engines.voxcpm2.VoxCPM2Engine
-  gpu: 0
   id: voxcpm2
   path: tts/VoxCPM2
   resident: false

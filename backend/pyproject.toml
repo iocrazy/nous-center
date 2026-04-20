@@ -41,3 +41,13 @@ testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# Late imports are intentional — either for model registration order,
+# circular-import avoidance, or post-`create_app` exception handler wiring.
+"src/api/main.py" = ["E402"]
+"src/api/routes/workflows.py" = ["E402"]
+"src/services/log_db.py" = ["E402"]
+"src/workers/tts_engines/voxcpm2.py" = ["E402"]
+"tests/conftest.py" = ["E402"]
+"tests/test_errors.py" = ["E402"]

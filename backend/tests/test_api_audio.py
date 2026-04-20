@@ -1,6 +1,5 @@
 # Uses shared `client` fixture from conftest.py
 from unittest.mock import patch
-from pathlib import Path
 import struct
 
 

@@ -1,5 +1,5 @@
 import pytest
-from src.services.log_db import init_log_db, query_logs
+from src.services.log_db import init_log_db
 from src.api.middleware import derive_audit_action
 
 

@@ -1,4 +1,4 @@
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 from src.workers.tts_engines.base import TTSResult
 
@@ -103,10 +103,13 @@ async def test_stream_endpoint_exists(client):
 
 
 async def test_stream_validates_request(client):
-    """POST /tts/stream should reject invalid speed."""
+    """POST /tts/stream should reject invalid speed.
+
+    App remaps RequestValidationError to 400 (OpenAI-style InvalidRequestError).
+    """
     resp = await client.post("/api/v1/tts/stream", json={
         "engine": "cosyvoice2",
         "text": "hello",
         "speed": 999,
     })
-    assert resp.status_code == 422
+    assert resp.status_code == 400

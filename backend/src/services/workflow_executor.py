@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from src.services import agent_manager
-from src.services.llm_service import call_llm
+from src.services.llm_service import call_llm  # noqa: F401 — re-exported for test patching
 from src.services.model_manager import ModelManager
 from src.utils.constants import ALLOWED_LLM_HOSTS
 

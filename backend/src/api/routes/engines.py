@@ -6,9 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
-from src.config import get_settings
 from src.services.model_scanner import scan_models
-from src.gpu.detector import get_device_for_engine, gpu_summary
+from src.gpu.detector import gpu_summary
 from src.models.database import get_async_session
 from src.models.schemas import EngineInfo, EngineLoadResponse
 from src.services.model_metadata_service import (
@@ -16,7 +15,6 @@ from src.services.model_metadata_service import (
     _format_size,
 )
 from src.api.websocket import ws_manager
-from src.workers.tts_engines.registry import get_engine
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
 

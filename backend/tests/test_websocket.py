@@ -15,7 +15,7 @@ async def test_websocket_endpoint():
     app = create_app()
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    ):
         # Just verify the websocket route is registered
         routes = [r.path for r in app.routes]
         assert "/ws/tasks/{task_id}" in routes

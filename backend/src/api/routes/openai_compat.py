@@ -1,12 +1,11 @@
 """OpenAI-compatible endpoints: chat/completions, audio/speech, models."""
 
 import asyncio
-import base64
 import io
 import json
 import logging
 import time
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -303,7 +302,6 @@ async def create_speech(
 
 def _convert_audio(audio_bytes: bytes, src_fmt: str, dst_fmt: str, sample_rate: int) -> bytes:
     """Convert audio format using soundfile."""
-    import numpy as np
     import soundfile as sf
 
     buf_in = io.BytesIO(audio_bytes)
