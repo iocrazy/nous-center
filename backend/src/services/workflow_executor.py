@@ -15,6 +15,22 @@ from src.services.llm_service import call_llm  # noqa: F401 — re-exported for 
 from src.services.model_manager import ModelManager
 from src.utils.constants import ALLOWED_LLM_HOSTS
 
+EVENT_TYPES: tuple[str, ...] = (
+    # Existing events
+    "node_start",
+    "node_stream",
+    "node_complete",
+    "node_error",
+    "complete",
+    # Wave 1 new events (coze-style)
+    "node_end_streaming",        # 流式最后一个 chunk 发出后触发（vs node_complete 是逻辑完成点）
+    "workflow_interrupt",        # QA 节点等需要 human-in-the-loop 时触发（本波只占位，不实现节点）
+    "workflow_resume",           # 从 interrupt 恢复时触发
+    "function_call",             # LLM 发起 tool call 时触发（预留 tool-use 事件）
+    "tool_response",             # tool 返回结果
+    "tool_streaming_response",   # tool 流式返回
+)
+
 logger = logging.getLogger(__name__)
 
 _model_manager: ModelManager | None = None
