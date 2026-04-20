@@ -1,7 +1,7 @@
 import type { NodeProps } from '@xyflow/react'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS } from '../../models/workflow'
-import BaseNode, { NodeWidgetRow, NodeTextarea } from './BaseNode'
+import BaseNode from './BaseNode'
 
 export default function TextInputNode({ id, data, selected }: NodeProps) {
   const updateNode = useWorkspaceStore((s) => s.updateNode)

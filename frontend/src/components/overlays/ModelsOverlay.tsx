@@ -127,7 +127,6 @@ export default function ModelsOverlay() {
                 body: JSON.stringify({ label: 'default' }),
               })
               // Show the key
-              const info = `API Endpoint Created!\n\nBase URL: ${window.location.origin}/v1\nAPI Key: ${keyResult.key}\nModel: ${model.name}\n\nKey is shown only once. Copy it now.`
               window.prompt('API Endpoint Info (Ctrl+C to copy):', keyResult.key)
               useToastStore.getState().add(`接入点已创建: ${model.display_name}`, 'success')
             } catch (e: any) {

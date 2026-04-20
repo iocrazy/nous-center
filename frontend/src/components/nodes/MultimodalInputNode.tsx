@@ -87,7 +87,7 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
 
   // @ mention popup
   const [showAtPopup, setShowAtPopup] = useState(false)
-  const [atPos, setAtPos] = useState({ top: 0, left: 0 })
+  const [, setAtPos] = useState({ top: 0, left: 0 })
   // Index of the `@` char in the textarea at the moment the popup opened —
   // we replace that exact `@` on select, not whatever the cursor points to
   // later (clicking the popup moves focus + changes selectionStart).

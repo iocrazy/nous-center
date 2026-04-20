@@ -212,7 +212,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   markDirty: (tabId?: string) => {
     const activeTabId = tabId ?? get().activeTabId
-    const tab = get().tabs.find((t) => t.id === activeTabId)
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId ? { ...t, isDirty: true } : t

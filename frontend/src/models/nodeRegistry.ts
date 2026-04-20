@@ -1,6 +1,6 @@
 import { NODE_DEFS, type PortDef, type NodeType } from './workflow'
 
-export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'agent_select' | 'model_select'
+export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'checkbox' | 'agent_select' | 'model_select'
 
 export interface WidgetDef {
   name: string

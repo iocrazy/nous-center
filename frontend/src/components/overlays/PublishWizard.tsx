@@ -20,7 +20,7 @@ export default function PublishWizard({ workflowId, onClose }: Props) {
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
   const [inputs, setInputs] = useState<ExposedParam[]>([])
-  const [outputs, setOutputs] = useState<ExposedParam[]>([])
+  const [outputs] = useState<ExposedParam[]>([])
   const [copied, setCopied] = useState(false)
   const toast = useToastStore((s) => s.add)
   const publish = usePublishApp()
