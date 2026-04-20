@@ -1018,7 +1018,7 @@ git commit -m "feat(db): agent_id column on response_sessions + llm_usage"
 ## Task 8: usage_recorder 接受 agent_id
 
 **Files:**
-- Modify: `backend/src/services/usage_recorder.py`
+- Modify: `backend/src/services/usage_service.py`
 - Test: 读现有 usage 测试找最相近的，扩展
 
 - [ ] **Step 1: 读现有 record_llm_usage 签名**
@@ -1091,7 +1091,7 @@ Expected: 所有现有 usage 测试仍通过（因为 agent_id 是 optional）
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/src/services/usage_recorder.py backend/tests/test_usage_recorder_agent_id.py
+git add backend/src/services/usage_service.py backend/tests/test_usage_recorder_agent_id.py
 git commit -m "feat(usage): record_llm_usage accepts optional agent_id"
 ```
 
