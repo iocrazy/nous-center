@@ -13,6 +13,7 @@ class LLMUsage(Base):
     instance_id = Column(BigInteger, nullable=True)
     api_key_id = Column(BigInteger, nullable=True)
     model = Column(String(128), nullable=False)
+    agent_id = Column(String(128), nullable=True, index=True)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
