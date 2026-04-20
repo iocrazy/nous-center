@@ -21,8 +21,11 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync deps (skip vllm on CI — CPU-only runner)
-        run: uv sync --frozen --no-install-package vllm
+      - name: Sync deps
+        # vllm is a pytest dep via conftest stubs — it gets pulled regardless
+        # of --no-install-package during transitive resolution, so just let it
+        # install. The tests that ACTUALLY touch vllm are ignored below.
+        run: uv sync --frozen
 
       - name: Lint (ruff)
         run: uv run ruff check src tests
@@ -37,7 +40,10 @@ jobs:
         run: |
           uv run pytest -rfE --tb=short --maxfail=50 -p no:cacheprovider \
             --ignore=tests/test_integration_smoke.py \
-            --ignore=tests/test_tts_engine_adapter.py
+            --ignore=tests/test_tts_engine_adapter.py \
+            --ignore=tests/test_vllm_adapter.py \
+            --ignore=tests/test_workers.py \
+            --ignore=tests/test_ws_tts.py
         env:
           DATABASE_URL: "sqlite+aiosqlite:///:memory:"
           REDIS_URL: "redis://localhost:6379/0"
