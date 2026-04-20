@@ -207,13 +207,25 @@ from src.services.prompt_composer._persona import PersonaBundle, load_persona
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _clear_settings_and_persona_cache():
+    """Clear get_settings() + _load_cached lru_cache so monkeypatch.setenv takes effect."""
+    from src import config
+    from src.services.prompt_composer import _persona
+    config.get_settings.cache_clear()
+    _persona._load_cached.cache_clear()
+    yield
+    config.get_settings.cache_clear()
+    _persona._load_cached.cache_clear()
+
+
 def test_load_persona_all_three_files(monkeypatch):
     monkeypatch.setenv("NOUS_CENTER_HOME", str(FIXTURES))
     bundle = load_persona("tutor")
     assert bundle.identity.startswith("你是 Tutor")
     assert "温和" in bundle.soul
     assert "由浅入深" in bundle.agent
-    assert bundle.skills == ["search", "summarize"]
+    assert bundle.skills == ("search", "summarize")  # tuple, frozen dataclass
 
 
 def test_load_persona_missing_agent_raises(monkeypatch, tmp_path):
@@ -235,7 +247,7 @@ def test_load_persona_empty_files(monkeypatch, tmp_path):
     assert bundle.identity == ""
     assert bundle.soul == ""
     assert bundle.agent == ""
-    assert bundle.skills == []
+    assert bundle.skills == ()
 
 
 def test_load_persona_corrupt_config_raises_agent_load_failed(monkeypatch, tmp_path):
