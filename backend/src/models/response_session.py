@@ -35,6 +35,7 @@ class ResponseSession(Base):
     )
     api_key_id = Column(BigInteger, nullable=True)
     model = Column(String(128), nullable=False)
+    agent_id = Column(String(128), nullable=True, index=True)
     context_cache_id = Column(String(64), nullable=True)
     total_input_tokens = Column(BigInteger, nullable=False, default=0)
     total_output_tokens = Column(BigInteger, nullable=False, default=0)
