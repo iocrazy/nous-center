@@ -186,3 +186,20 @@ def test_compose_agent_not_found_raises(monkeypatch, tmp_path):
     from src.services.prompt_composer._persona import AgentNotFound
     with pytest.raises(AgentNotFound):
         compose(agent_id="ghost", instructions=None)
+
+
+GOLDEN = Path(__file__).parent / "golden"
+
+
+def test_compose_golden_tutor_full(monkeypatch):
+    """Byte-exact comparison against golden file.
+
+    If this fails after an intentional format change, regenerate golden:
+        NOUS_CENTER_HOME=backend/tests/fixtures python -c \\
+          "from src.services.prompt_composer import compose; \\
+           print(compose('tutor', None))" > backend/tests/golden/tutor_full.txt
+    """
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(FIXTURES))
+    result = compose(agent_id="tutor", instructions=None)
+    expected = (GOLDEN / "tutor_full.txt").read_text(encoding="utf-8").rstrip("\n")
+    assert result == expected
