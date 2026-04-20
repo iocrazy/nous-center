@@ -53,3 +53,41 @@ async def test_llm_stream_emits_node_end_streaming(mock_llm_stream, on_progress_
         "completion_tokens": 2,
         "total_tokens": 4,
     }
+
+
+def test_ws_handler_is_passthrough():
+    """ws handler forwards event dicts verbatim (no type-based filter).
+
+    Confirmed by reading:
+      - backend/src/api/routes/workflows.py :: execute_workflow_direct
+        -> `broadcast_progress(event)` loops `_ws_connections[channel_id]`
+        and calls `ws.send_json(event)` unconditionally.
+      - backend/src/api/routes/instance_service.py :: broadcast_progress
+        -> same pattern, `ws.send_json(data)` with no type check.
+      - backend/src/api/main.py :: workflow_progress_ws
+        -> endpoint only accepts connection and stores the WebSocket,
+        performs no event-level filtering.
+
+    If anyone ever adds a `if event["type"] in {...}` whitelist, this test
+    must fail so the whitelist is forced to cover the full EVENT_TYPES set.
+    """
+    import inspect
+
+    from src.services.workflow_executor import EVENT_TYPES  # noqa: F401  (documents intent)
+    from src.api import main as api_main
+    from src.api.routes import instance_service, workflows
+
+    for module in (workflows, instance_service, api_main):
+        src = inspect.getsource(module)
+        assert 'event["type"] in' not in src, (
+            f"{module.__name__} has a ws type whitelist on event['type']; "
+            "replace the literal set with EVENT_TYPES from workflow_executor."
+        )
+        assert "event.get('type') in " not in src, (
+            f"{module.__name__} has a ws type whitelist on event.get('type'); "
+            "replace the literal set with EVENT_TYPES from workflow_executor."
+        )
+        assert 'event.get("type") in ' not in src, (
+            f"{module.__name__} has a ws type whitelist on event.get(\"type\"); "
+            "replace the literal set with EVENT_TYPES from workflow_executor."
+        )
