@@ -27,12 +27,15 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check src tests
 
-      - name: Tests (forked per-file to survive segfaults)
-        # `--forked` runs each test in a subprocess so a SIGSEGV in one file
-        # (heavy GPU-adjacent imports) does not kill the whole run.
-        # Integration smoke needs a live vLLM and is excluded from CI.
+      - name: Tests
+        # CI runners have no GPU, so the heavy torch/vllm stubs in conftest.py
+        # are enough — no need for --forked (which OOMs on a 7GB runner when
+        # spawning ~286 subprocesses). Integration smoke needs a live vLLM.
+        # `--tb=short -rfE` ensures failure summary prints even if pytest exits
+        # with non-zero; `--maxfail=50` prevents one broken file from hiding
+        # the rest of the report.
         run: |
-          uv run pytest -q --forked -p no:cacheprovider \
+          uv run pytest -rfE --tb=short --maxfail=50 -p no:cacheprovider \
             --ignore=tests/test_integration_smoke.py \
             --ignore=tests/test_tts_engine_adapter.py
         env:
