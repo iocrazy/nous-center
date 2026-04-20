@@ -152,6 +152,54 @@ async def other_instance(db_session):
 
 
 @pytest.fixture
+def on_progress_capture(monkeypatch):
+    """Capture all events emitted via workflow_executor._on_progress_ref.
+
+    Used by Wave 1 event-type tests. Resets the module-level reference so the
+    LLM node's streaming branch routes events through our capture callable.
+    """
+    class _Cap:
+        def __init__(self):
+            self.events: list[dict] = []
+
+        async def __call__(self, ev):
+            self.events.append(ev)
+
+    cap = _Cap()
+    from src.services import workflow_executor
+    monkeypatch.setattr(workflow_executor, "_on_progress_ref", cap)
+    return cap
+
+
+@pytest.fixture
+def mock_llm_stream(monkeypatch):
+    """Replace workflow_executor._stream_llm with a deterministic 3-chunk stream.
+
+    `_stream_llm` is a module-level coroutine with signature
+    `(base_url, params, on_token=None) -> str`. It pushes each token via
+    `on_token` and writes the final usage dict into the module-level
+    `_last_stream_usage` (what `_exec_llm` reads after awaiting). The fake
+    replicates that contract without any HTTP.
+    """
+    from src.services import workflow_executor
+
+    async def _fake_stream(base_url, params, on_token=None):
+        tokens = ["hel", "lo"]
+        for tok in tokens:
+            if on_token is not None:
+                await on_token(tok)
+        workflow_executor._last_stream_usage = {
+            "prompt_tokens": 2,
+            "completion_tokens": 2,
+            "total_tokens": 4,
+        }
+        return "".join(tokens)
+
+    monkeypatch.setattr(workflow_executor, "_stream_llm", _fake_stream)
+    return _fake_stream
+
+
+@pytest.fixture
 async def sample_api_key(db_session, sample_instance):
     """Returns the plaintext key string. Inserts the bcrypt-hashed row."""
     import bcrypt
