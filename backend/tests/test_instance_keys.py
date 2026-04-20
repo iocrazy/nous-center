@@ -168,7 +168,8 @@ async def test_bearer_auth_no_header(db_client):
         "/v1/instances/12345/synthesize",
         json={"text": "hello"},
     )
-    assert resp.status_code == 422
+    # App remaps RequestValidationError to 400 (OpenAI-style InvalidRequestError)
+    assert resp.status_code == 400
 
 
 async def test_bearer_auth_inactive_instance(db_client):
@@ -275,7 +276,8 @@ async def test_create_instance_invalid_source_type(db_client):
         "source_id": 12345,
         "name": "bad-instance",
     })
-    assert resp.status_code == 422  # Literal["preset", "workflow"] validation
+    # App remaps RequestValidationError to 400 (OpenAI-style InvalidRequestError)
+    assert resp.status_code == 400  # Literal["preset", "workflow"] validation
 
 
 async def test_create_instance_nonexistent_source(db_client):

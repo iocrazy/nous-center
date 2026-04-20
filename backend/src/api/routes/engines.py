@@ -87,12 +87,23 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         status = "unloaded"
         status_detail = None
 
+    # `gpu` can be None when the YAML leaves the slot to the detector. For
+    # display, resolve via the detector so the UI shows the real assignment.
+    gpu_field = cfg.get("gpu")
+    if gpu_field is None:
+        from src.gpu.detector import get_device_for_engine
+        device = get_device_for_engine(cfg)
+        try:
+            gpu_field = int(device.split(":")[-1]) if device.startswith("cuda") else 0
+        except (ValueError, IndexError):
+            gpu_field = 0
+
     info = EngineInfo(
         name=key,
         display_name=cfg["name"],
         type=cfg["type"],
         status=status,
-        gpu=cfg.get("gpu", 1),
+        gpu=gpu_field,
         vram_gb=cfg.get("vram_gb", 0),
         resident=cfg.get("resident", False),
         local_path=local_path,
