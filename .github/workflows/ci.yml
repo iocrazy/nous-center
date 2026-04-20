@@ -28,12 +28,10 @@ jobs:
         run: uv run ruff check src tests
 
       - name: Tests (forked per-file to survive segfaults)
-        # `-p no:cacheprovider` avoids writing to .pytest_cache in read-only CI
-        # fs. `--forked` runs each test in a subprocess so a SIGSEGV in one
-        # file (heavy GPU-adjacent imports) does not kill the whole run.
+        # `--forked` runs each test in a subprocess so a SIGSEGV in one file
+        # (heavy GPU-adjacent imports) does not kill the whole run.
         # Integration smoke needs a live vLLM and is excluded from CI.
         run: |
-          uv pip install pytest-forked
           uv run pytest -q --forked -p no:cacheprovider \
             --ignore=tests/test_integration_smoke.py \
             --ignore=tests/test_tts_engine_adapter.py

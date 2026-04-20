@@ -192,12 +192,23 @@ async def get_system_stats(request: Request):
     # Add loaded models to GPU info
     from src.services import model_scheduler
     from src.config import load_model_configs
+    from src.gpu.detector import get_device_for_engine
 
     configs = load_model_configs()
     loaded = model_scheduler.get_status()["loaded"]
     for model_key in loaded:
         cfg = configs.get(model_key, {})
         gpu_idx = cfg.get("gpu")
+        # If the config didn't pin a GPU, resolve via detector (same logic the
+        # scheduler used at load time, so the answer matches where the engine
+        # actually landed).
+        if gpu_idx is None:
+            device = get_device_for_engine(cfg)
+            if device.startswith("cuda:"):
+                try:
+                    gpu_idx = int(device.split(":")[-1])
+                except ValueError:
+                    gpu_idx = None
         if isinstance(gpu_idx, int):
             # Find the GPU in our list and add the model
             for g in gpus:
