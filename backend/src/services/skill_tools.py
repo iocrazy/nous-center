@@ -88,13 +88,69 @@ def _extract_params(body: str) -> dict:
     return params
 
 
-async def execute_tool(tool_name: str, arguments: str | dict) -> str:
+def skill_tool_schema() -> dict:
+    """Return the OpenAI function-tool schema for the Skill tool.
+
+    This is the single tool that replaces per-skill function generation
+    (cf. ``skills_to_tools``). The model calls ``Skill(skill=<name>, args=?)``
+    and receives the SKILL.md body as the tool_result.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": "Skill",
+            "description": "Load a local skill definition and its instructions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "Skill name from <available_skills>.",
+                    },
+                    "args": {
+                        "type": "string",
+                        "description": "Optional arguments to pass to the skill.",
+                    },
+                },
+                "required": ["skill"],
+            },
+        },
+    }
+
+
+async def _execute_skill_tool(args: dict | None) -> str:
+    """Execute the Skill tool. Returns a JSON string for ``tool_result``."""
+    args = args or {}  # model may send null
+    name = (args.get("skill") or "").strip()
+    if not name:
+        return json.dumps({"error": "skill name required"})
+    try:
+        sk = skill_manager.get_skill(name)
+    except FileNotFoundError:
+        return json.dumps({"error": f"unknown skill: {name}"})
+    return json.dumps(
+        {
+            "skill": name,
+            "description": sk.get("description", ""),
+            "prompt": sk.get("body", ""),
+            "args": args.get("args"),
+        },
+        ensure_ascii=False,
+    )
+
+
+async def execute_tool(tool_name: str, arguments: str | dict | None) -> str:
     """Execute a tool by name with given arguments."""
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments)
         except json.JSONDecodeError:
             arguments = {"input": arguments}
+
+    # Lazy-readable Skill tool (Claude Code style): dispatched before
+    # execute_python so a skill named "execute_python" can't shadow it.
+    if tool_name == "Skill":
+        return await _execute_skill_tool(arguments if isinstance(arguments, dict) else None)
 
     # Built-in tools
     if tool_name == "execute_python":
