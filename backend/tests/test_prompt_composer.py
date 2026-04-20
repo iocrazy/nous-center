@@ -92,3 +92,44 @@ def test_load_persona_corrupt_config_raises_agent_load_failed(monkeypatch, tmp_p
     from src.services.prompt_composer._persona import AgentLoadFailed
     with pytest.raises(AgentLoadFailed):
         load_persona("broken")
+
+
+from src.services.prompt_composer._skills_catalog import build_skills_catalog
+
+
+def test_build_skills_catalog_with_two_skills(monkeypatch):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(FIXTURES))
+    xml = build_skills_catalog(["search", "summarize"])
+    assert "<available_skills>" in xml
+    assert "<name>search</name>" in xml
+    assert "<description>网页搜索，返回可引用链接</description>" in xml
+    assert "<name>summarize</name>" in xml
+    # 不应暴露 location
+    assert "<location>" not in xml
+
+
+def test_build_skills_catalog_empty_list_returns_empty():
+    assert build_skills_catalog([]) == ""
+
+
+def test_build_skills_catalog_missing_skill_is_skipped(monkeypatch, caplog):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(FIXTURES))
+    import logging
+    caplog.set_level(logging.WARNING)
+    xml = build_skills_catalog(["search", "nonexistent_skill"])
+    assert "<name>search</name>" in xml
+    assert "nonexistent_skill" not in xml
+    assert any("nonexistent_skill" in r.message for r in caplog.records)
+
+
+def test_build_skills_catalog_escapes_xml_in_description(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(tmp_path))
+    skill_dir = tmp_path / "skills" / "xss"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: xss\ndescription: 'a <script> & b'\n---\nbody"
+    )
+    xml = build_skills_catalog(["xss"])
+    assert "&lt;script&gt;" in xml
+    assert "&amp;" in xml
+    assert "<script>" not in xml
