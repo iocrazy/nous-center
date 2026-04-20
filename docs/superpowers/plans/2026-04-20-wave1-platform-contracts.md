@@ -545,13 +545,16 @@ class _FakeMemoryProvider(MemoryProvider):
             raise MemoryProviderInternalError("simulated db fail")
         ids: list[int] = []
         for e in entries:
+            # Per-entry context_key takes precedence; fall back to outer kwarg
+            entry_ck = e.get("context_key")
+            effective_ck = entry_ck if entry_ck is not None else context_key
             row = {
                 "id": self._next_id,
                 "instance_id": instance_id,
                 "api_key_id": api_key_id,
                 "category": e["category"],
                 "content": e["content"],
-                "context_key": context_key,
+                "context_key": effective_ck,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             self._store.append(row)
