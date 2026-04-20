@@ -1,9 +1,28 @@
 ---
-status: DRAFT
+status: SUPERSEDED
 date: 2026-04-20
 branch: feature/nous-center-v2
+superseded_by: 战略定位调整 — agent/skill 在 mediahub 层实现，nous-center 保持干净推理 infra
 ---
-# Agent / Skill 注入设计
+
+> **2026-04-20 战略决策**：经 CEO review 后确认，agent/skill 语义**不在 nous-center 实现**。
+>
+> **nous-center 的定位**：干净的推理基础设施（本地托管、OpenAI 协议兼容 + 协议级扩展如 Files / Responses session / Context cache / Memory ABC）。
+>
+> **mediahub 的定位**：agent / skill / persona 的实现层，通过标准 OpenAI 协议调用 nous-center。
+>
+> **理由**：
+> 1. 对齐 OpenClaw / Claude Code 范式（agent 在应用层，不在 infra 层）
+> 2. 避免双层 agent 抽象（mediahub 和 nous-center 都有 agent 概念会冲突）
+> 3. 让 mediahub 可切换到别的 infra 零成本，nous-center 的差异化聚焦到"本地跑 + 协议级扩展"
+>
+> **本文档的价值**：Skill = Lazy-readable File（OpenClaw 路线）+ Claude Code 风格 `Skill` tool 的对比结论，迁移到 mediahub 的 agent/skill 设计时可直接复用。
+>
+> **下一步**：进 Wave 1（`docs/superpowers/specs/2026-04-16-wave1-platform-contracts-design.md`），专注 MemoryProvider ABC / ContextEngine ABC / 事件扩展等**协议级契约**。本 spec 作为设计演进记录保留，不再实施。
+
+---
+
+# Agent / Skill 注入设计（SUPERSEDED）
 
 ## 背景
 
