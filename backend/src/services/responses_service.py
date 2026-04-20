@@ -337,3 +337,38 @@ async def cleanup_expired_sessions(session: AsyncSession) -> int:
     result = await session.execute(stmt)
     await session.commit()
     return result.rowcount or 0
+
+
+# ---------- agent binding ---------- #
+
+def assert_agent_matches_session(
+    sess: ResponseSession, request_agent: str | None
+) -> str | None:
+    """Validate request's agent against session's bound agent_id.
+
+    Returns the effective agent_id to use, or raises 400 on mismatch.
+    Called by continuation requests (with previous_response_id).
+    """
+    from fastapi import HTTPException
+
+    if request_agent is None:
+        return sess.agent_id  # 从 session 恢复（可能为 None）
+    if sess.agent_id is None:
+        raise HTTPException(
+            400,
+            {
+                "error": "agent_session_mismatch",
+                "message": f"session has no agent binding; got {request_agent!r}",
+            },
+        )
+    if request_agent != sess.agent_id:
+        raise HTTPException(
+            400,
+            {
+                "error": "agent_session_mismatch",
+                "message": (
+                    f"session bound to {sess.agent_id!r}, got {request_agent!r}"
+                ),
+            },
+        )
+    return sess.agent_id
