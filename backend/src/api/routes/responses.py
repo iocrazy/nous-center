@@ -34,18 +34,23 @@ from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.response_session import ResponseSession, ResponseTurn
 from src.models.service_instance import ServiceInstance
+from src.services.context.base import ContextOverflowError
+from src.services.context.gzip_compact import GzipCompactContextEngine
 from src.services.context_cache_service import resolve_for_request
 from src.services.responses_service import (
     approx_tokens,
     assemble_history_for_response,
     check_session_budget,
-    compact_messages,
     create_session,
     decode_content,
     update_session_usage,
     write_partial_assistant_turn,
     write_user_and_assistant_turns,
 )
+
+# Module-level engine instance. GzipCompactContextEngine is stateless
+# (per ContextEngine ABC contract), so a singleton is safe.
+_context_engine = GzipCompactContextEngine()
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["responses"])
@@ -395,12 +400,13 @@ async def create_response(
 
     # Compaction
     max_history_tokens = max_model_len - 2048
-    compacted, history_truncated = compact_messages(
-        messages, max_history_tokens=max_history_tokens
-    )
-    if approx_tokens(compacted) > max_history_tokens:
+    try:
+        compacted, history_truncated = await _context_engine.compress(
+            messages=messages, max_tokens=max_history_tokens
+        )
+    except ContextOverflowError as e:
         raise InvalidRequestError(
-            f"input alone exceeds max_history_tokens ({max_history_tokens})",
+            f"input alone exceeds max_history_tokens ({max_history_tokens}): {e}",
             code="input_too_long_for_model",
             param="input",
         )
