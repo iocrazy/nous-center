@@ -418,6 +418,17 @@ async def _exec_llm(data: dict, inputs: dict) -> dict:
         result = await _stream_llm(base_url, params, on_token=_push_token)
         duration_ms = int((_time.monotonic() - t0) * 1000)
         result = _strip_thinking(result)
+
+        # Emit node_end_streaming once the stream has drained and usage is
+        # resolved. This marks the end-of-stream delivery boundary; it is
+        # distinct from node_complete (logical completion of the node).
+        if _on_progress_ref is not None:
+            await _on_progress_ref({
+                "type": "node_end_streaming",
+                "node_id": node_id,
+                "usage": _last_stream_usage,
+            })
+
         return {"text": result, "usage": _last_stream_usage, "duration_ms": duration_ms}
 
     # Non-streaming path — use raw httpx to support vision format
