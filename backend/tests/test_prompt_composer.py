@@ -133,3 +133,56 @@ def test_build_skills_catalog_escapes_xml_in_description(monkeypatch, tmp_path):
     assert "&lt;script&gt;" in xml
     assert "&amp;" in xml
     assert "<script>" not in xml
+
+
+from src.services.prompt_composer import compose
+
+
+def test_compose_full_agent_has_all_sections(monkeypatch):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(FIXTURES))
+    result = compose(agent_id="tutor", instructions=None)
+    assert result is not None
+    # 顺序：IDENTITY → SOUL → AGENT → Available Skills → CACHE_BOUNDARY
+    idx_identity = result.index("你是 Tutor")
+    idx_soul = result.index("温和")
+    idx_agent = result.index("由浅入深")
+    idx_skills = result.index("<available_skills>")
+    idx_boundary = result.index("<!-- CACHE_BOUNDARY -->")
+    assert idx_identity < idx_soul < idx_agent < idx_skills < idx_boundary
+
+
+def test_compose_soul_persona_instruction_appended(monkeypatch):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(FIXTURES))
+    result = compose(agent_id="tutor", instructions=None)
+    assert "Embody" in result
+
+
+def test_compose_with_instructions_appears_after_boundary(monkeypatch):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(FIXTURES))
+    result = compose(agent_id="tutor", instructions="本轮请用英文回答")
+    assert "本轮请用英文回答" in result
+    assert result.index("<!-- CACHE_BOUNDARY -->") < result.index("本轮请用英文回答")
+
+
+def test_compose_no_agent_returns_none():
+    assert compose(agent_id=None, instructions=None) is None
+    assert compose(agent_id=None, instructions="foo") is None  # instructions alone 走现有路径，不经 composer
+
+
+def test_compose_empty_agent_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(tmp_path))
+    agent_dir = tmp_path / "agents" / "blank"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "config.json").write_text('{"skills": []}')
+    for fn in ("IDENTITY.md", "SOUL.md", "AGENT.md"):
+        (agent_dir / fn).write_text("")
+    result = compose(agent_id="blank", instructions=None)
+    assert result is None
+
+
+def test_compose_agent_not_found_raises(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(tmp_path))
+    import pytest
+    from src.services.prompt_composer._persona import AgentNotFound
+    with pytest.raises(AgentNotFound):
+        compose(agent_id="ghost", instructions=None)
