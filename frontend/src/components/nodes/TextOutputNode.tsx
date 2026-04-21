@@ -32,10 +32,18 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
         setIsStreaming(true)
       }
       if (detail.type === 'node_stream' && detail.node_id === streamSource) {
-        // Wave 1 renamed the stream chunk field from `token` to `content`
-        // (workflow_executor dispatch layer). Fall back to `token` for any
-        // legacy plugin executor that still emits the old shape.
-        const chunk = (detail.content ?? detail.token ?? '') as string
+        // Wave 1 renamed the chunk field from `token` → `content`
+        // (workflow_executor dispatch layer). Also tolerate `delta` / `text`
+        // used by a few plugin executors. Defensively coerce away `undefined`
+        // so we never paint the literal string "undefined" into the buffer.
+        const raw = detail.content ?? detail.token ?? detail.delta ?? detail.text
+        const chunk = typeof raw === 'string' ? raw : ''
+        if (!chunk && detail.content === undefined && detail.token === undefined) {
+          // One-time diagnostic: the backend event shape drifted again.
+          // Look at this in devtools to find the new field name.
+          // eslint-disable-next-line no-console
+          console.warn('[TextOutputNode] node_stream with no known chunk field:', detail)
+        }
         if (chunk) setStreamText((prev) => prev + chunk)
       }
       if (detail.type === 'node_complete' && detail.node_id === streamSource) {
