@@ -47,6 +47,10 @@ export function useEngines() {
             useToastStore.getState().add(`${data.model} ${data.detail || '加载完成'}`, 'success')
           } else if (data.status === 'failed') {
             useToastStore.getState().add(`${data.model} 加载失败: ${data.detail}`, 'error')
+          } else if (data.status === 'installed') {
+            useToastStore.getState().add(`${data.model} 依赖安装完成`, 'success')
+          } else if (data.status === 'install_failed') {
+            useToastStore.getState().add(`${data.model} 依赖安装失败: ${data.detail}`, 'error')
           }
         }
       } catch { /* ignore parse errors */ }

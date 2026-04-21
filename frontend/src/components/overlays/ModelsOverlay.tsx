@@ -414,10 +414,10 @@ function StatusBadge({
 }) {
   const [, force] = useState(0)
 
-  // Track when loading started; tick every second to refresh elapsed
+  // Track when loading/installing started; tick every second to refresh elapsed
   useEffect(() => {
     if (!modelName) return
-    if (status === 'loading') {
+    if (status === 'loading' || status === 'installing') {
       if (!_loadingStartedAt.has(modelName)) {
         _loadingStartedAt.set(modelName, Date.now())
       }
@@ -432,23 +432,34 @@ function StatusBadge({
     : ''
 
   let elapsedLabel = 'loading...'
-  if (status === 'loading' && modelName) {
+  if ((status === 'loading' || status === 'installing') && modelName) {
     const startedAt = _loadingStartedAt.get(modelName)
     if (startedAt) {
       const s = Math.floor((Date.now() - startedAt) / 1000)
-      elapsedLabel = s < 60 ? `loading ${s}s` : `loading ${Math.floor(s / 60)}m${s % 60}s`
+      const verb = status === 'installing' ? 'installing' : 'loading'
+      elapsedLabel = s < 60 ? `${verb} ${s}s` : `${verb} ${Math.floor(s / 60)}m${s % 60}s`
+    } else {
+      elapsedLabel = status === 'installing' ? 'installing...' : 'loading...'
     }
   }
 
   const config: Record<string, { color: string; label: string; animate?: boolean }> = {
-    loaded:   { color: 'var(--ok)',           label: `running${gpuLabel}` },
-    loading:  { color: 'var(--warn)',         label: elapsedLabel, animate: true },
-    failed:   { color: 'var(--accent)',       label: 'failed' },
-    unloaded: { color: 'var(--muted-strong)', label: 'idle' },
+    loaded:         { color: 'var(--ok)',           label: `running${gpuLabel}` },
+    loading:        { color: 'var(--warn)',         label: elapsedLabel, animate: true },
+    failed:         { color: 'var(--accent)',       label: 'failed' },
+    installing:     { color: 'var(--warn)',         label: elapsedLabel, animate: true },
+    installed:      { color: 'var(--muted-strong)', label: 'installed' },
+    install_failed: { color: 'var(--accent)',       label: 'install failed' },
+    unloaded:       { color: 'var(--muted-strong)', label: 'idle' },
   }
   const { color, label, animate } = config[status] ?? config.unloaded
 
-  const tooltip = detail || (status === 'failed' ? 'load failed' : status === 'loading' ? '正在加载' : undefined)
+  const tooltip = detail || ({
+    failed: 'load failed',
+    loading: '正在加载',
+    installing: '正在安装依赖',
+    install_failed: 'dep install failed',
+  } as Record<string, string>)[status]
 
   return (
     <span
