@@ -21,7 +21,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import Integer, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
@@ -426,19 +426,28 @@ async def services_catalog(
     )).scalars().all()
 
     # Per-instance aggregates: grant counts + pack sums.
-    grant_counts_stmt = (
-        select(
-            ApiKeyGrant.instance_id,
-            func.count(ApiKeyGrant.id).label("total_grants"),
-            func.sum(
-                (ApiKeyGrant.status == "active").cast(Integer)
-            ).label("active_grants"),
-        )
+    # Split into two scalar queries to keep portability between PG and
+    # SQLite (boolean-to-int casting works differently across drivers).
+    totals_stmt = (
+        select(ApiKeyGrant.instance_id, func.count(ApiKeyGrant.id))
         .group_by(ApiKeyGrant.instance_id)
     )
+    totals = {
+        inst_id: count
+        for inst_id, count in (await session.execute(totals_stmt)).all()
+    }
+    actives_stmt = (
+        select(ApiKeyGrant.instance_id, func.count(ApiKeyGrant.id))
+        .where(ApiKeyGrant.status == "active")
+        .group_by(ApiKeyGrant.instance_id)
+    )
+    actives = {
+        inst_id: count
+        for inst_id, count in (await session.execute(actives_stmt)).all()
+    }
     grant_counts = {
-        row.instance_id: (row.total_grants or 0, row.active_grants or 0)
-        for row in (await session.execute(grant_counts_stmt)).all()
+        inst_id: (totals.get(inst_id, 0), actives.get(inst_id, 0))
+        for inst_id in set(totals) | set(actives)
     }
 
     pack_sums_stmt = (
