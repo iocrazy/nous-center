@@ -165,18 +165,16 @@ class LLMNode:
         enable_thinking = str(data.get("enable_thinking", "false")).lower() == "true"
         max_tokens = await _clamp_max_tokens(data, base_url, adapter)
 
-        extra_body: dict[str, Any] = {}
-        if enable_thinking:
-            extra_body["chat_template_kwargs"] = {"enable_thinking": True}
-
         body: dict[str, Any] = {
             "model": data.get("model", ""),
             "messages": messages,
             "temperature": data.get("temperature", 0.7),
             "max_tokens": max_tokens,
+            # Always pass explicit value — Qwen3's chat template defaults to
+            # thinking=True, so omitting the flag when UI picks 关闭 still
+            # produces reasoning traces in the output.
+            "chat_template_kwargs": {"enable_thinking": enable_thinking},
         }
-        if extra_body:
-            body.update(extra_body)
 
         headers: dict[str, str] = {}
         api_key = data.get("api_key")
@@ -235,9 +233,9 @@ class LLMNode:
             "temperature": data.get("temperature", 0.7),
             "max_tokens": max_tokens,
             "stream_options": {"include_usage": True},
+            # Always explicit — see invoke() comment.
+            "chat_template_kwargs": {"enable_thinking": enable_thinking},
         }
-        if enable_thinking:
-            params["chat_template_kwargs"] = {"enable_thinking": True}
 
         t0 = _time.monotonic()
         # Pass on_token through directly — the helper already awaits per chunk.
