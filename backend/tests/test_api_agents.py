@@ -91,3 +91,69 @@ async def test_save_prompt(client, agent_home):
     assert resp.status_code == 200
     stored = (agent_home / "agents" / "frank" / "AGENT.md").read_text()
     assert stored == "你是一个助手"
+
+
+# ---------- Task 13: GET /api/v1/agents/{name}/preview ---------- #
+#
+# Uses the `api_client` / `bearer_headers` / `fixtures_home` fixtures from
+# conftest.py (same trio as test_responses_agent_binding.py) because the
+# preview endpoint needs NOUS_CENTER_HOME pointed at tests/fixtures where the
+# `tutor` agent lives. Project conftest does not expose an `admin_headers`
+# fixture — ADMIN_TOKEN is empty by default so `require_admin` is a no-op,
+# which is why returns_system_message / not_found just reuse bearer_headers.
+# For the "requires admin" case we set ADMIN_TOKEN via monkeypatch and send
+# a mismatched bearer to force 403.
+
+
+@pytest.mark.anyio
+async def test_agent_preview_returns_system_message(
+    api_client, bearer_headers, fixtures_home
+):
+    resp = await api_client.get(
+        "/api/v1/agents/tutor/preview",
+        headers=bearer_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["agent"] == "tutor"
+    assert "system_message" in data
+    assert "你是 Tutor" in data["system_message"]
+    assert "<available_skills>" in data["system_message"]
+
+
+@pytest.mark.anyio
+async def test_agent_preview_requires_admin(
+    monkeypatch, api_client, fixtures_home
+):
+    # Enable admin auth and hit endpoint with a mismatched token → 403.
+    monkeypatch.setenv("ADMIN_TOKEN", "s3cret-admin-token")
+    from src.config import get_settings
+    get_settings.cache_clear()
+    try:
+        resp = await api_client.get(
+            "/api/v1/agents/tutor/preview",
+            headers={"Authorization": "Bearer not-the-admin-token"},
+        )
+        assert resp.status_code in (401, 403)
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_agent_preview_not_found(
+    monkeypatch, api_client, bearer_headers, tmp_path
+):
+    monkeypatch.setenv("NOUS_CENTER_HOME", str(tmp_path))
+    from src.config import get_settings
+    from src.services.prompt_composer import _persona as _persona_mod
+    get_settings.cache_clear()
+    _persona_mod._load_cached.cache_clear()
+    try:
+        resp = await api_client.get(
+            "/api/v1/agents/ghost/preview",
+            headers=bearer_headers,
+        )
+        assert resp.status_code == 404
+    finally:
+        get_settings.cache_clear()
+        _persona_mod._load_cached.cache_clear()
