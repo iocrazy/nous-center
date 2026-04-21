@@ -22,9 +22,10 @@ jobs:
           enable-cache: true
 
       - name: Sync deps
-        # vllm is a pytest dep via conftest stubs — it gets pulled regardless
-        # of --no-install-package during transitive resolution, so just let it
-        # install. The tests that ACTUALLY touch vllm are ignored below.
+        # vllm + modelscope now live in [project.optional-dependencies].inference
+        # (see backend/pyproject.toml). API server code does NOT import them,
+        # so CI test venv stays small. Integration tests that genuinely need
+        # vllm are in the ignore list below.
         run: uv sync --frozen
 
       - name: Lint (ruff)
