@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, ollama_compat, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services.gpu_monitor import memory_guard_loop
@@ -390,6 +390,7 @@ def create_app() -> FastAPI:
     app.include_router(audio.router)
     app.include_router(voices.router)
     app.include_router(openai_compat.router)
+    app.include_router(ollama_compat.router)
     app.include_router(context_cache_routes.router)
     app.include_router(files_routes.router)
     from src.api.routes import responses as responses_routes
