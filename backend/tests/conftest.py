@@ -42,6 +42,8 @@ import src.models.execution_task  # noqa: F401 — register model
 import src.models.workflow_app  # noqa: F401 — register model
 import src.models.context_cache  # noqa: F401 — register model
 import src.models.response_session  # noqa: F401 — register model
+import src.models.memory  # noqa: F401 — register model
+import src.models.api_gateway  # noqa: F401 — register model
 
 
 def _mock_model_manager():

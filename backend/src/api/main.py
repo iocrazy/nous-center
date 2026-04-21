@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
     import src.models.context_cache  # noqa: F401
     import src.models.response_session  # noqa: F401
     import src.models.memory  # noqa: F401
+    import src.models.api_gateway  # noqa: F401
 
     engine = create_engine()
     async with engine.begin() as conn:
