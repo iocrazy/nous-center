@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
+from src.api.deps_auth import verify_bearer_token
 from src.models.database import get_async_session
 from src.models.schemas import WorkflowAppPublish, WorkflowAppOut
 from src.models.workflow import Workflow
@@ -77,13 +78,20 @@ async def delete_app(
     await session.commit()
 
 
-@router.post("/v1/apps/{app_name}", dependencies=[Depends(require_admin)])
+@router.post("/v1/apps/{app_name}")
 async def execute_app(
     app_name: str,
     body: dict,
     session: AsyncSession = Depends(get_async_session),
+    auth: tuple = Depends(verify_bearer_token),
 ):
-    """External endpoint: merge user params into snapshot and execute workflow."""
+    """External endpoint: merge user params into snapshot and execute workflow.
+
+    Auth: Bearer <InstanceApiKey>. Any active key on any active instance
+    works — the workflow snapshot is the authz boundary. Admin token is NOT
+    required; this path is meant for external integrations that hold only
+    a per-instance API key (same auth as /v1/chat/completions).
+    """
     from src.services.workflow_executor import WorkflowExecutor, ExecutionError
     from src.models.execution_task import ExecutionTask
 
