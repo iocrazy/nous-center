@@ -69,3 +69,23 @@ async def save_prompt(name: str, filename: str, request: Request):
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     return {"ok": True}
+
+
+@router.get("/{name}/preview", dependencies=[Depends(require_admin)])
+def preview_agent(name: str):
+    """Preview the system message that compose() produces for this agent.
+
+    Admin-only debug endpoint. Does not execute any LLM call.
+    """
+    from src.services.prompt_composer import (
+        AgentLoadFailed,
+        AgentNotFound,
+        compose,
+    )
+    try:
+        msg = compose(agent_id=name, instructions=None)
+    except AgentNotFound:
+        raise HTTPException(404, f"agent not found: {name}")
+    except AgentLoadFailed as e:
+        raise HTTPException(500, f"agent load failed: {e}")
+    return {"agent": name, "system_message": msg or ""}
