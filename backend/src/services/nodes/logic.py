@@ -27,11 +27,16 @@ class PromptTemplateNode:
 class AgentNode:
     async def invoke(self, data: dict, inputs: dict) -> dict:
         """Execute agent with multi-turn tool call loop."""
-        from src.services import agent_manager
+        # Import via workflow_executor module so tests that patch
+        # src.services.workflow_executor.agent_manager (legacy seam) keep
+        # working after the class-dispatch migration (Wave 1 Task 4.5).
+        from src.services import workflow_executor as we
         from src.services.llm_service import call_llm_with_tools
         from src.services.skill_tools import skills_to_tools, execute_tool
         from src.services.workflow_executor import ExecutionError, _validate_llm_url
         from src.config import get_settings
+
+        agent_manager = we.agent_manager
 
         agent_name = data.get("agent_name", "")
         input_text = inputs.get("text", "")

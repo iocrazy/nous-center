@@ -16,6 +16,10 @@ class TextOutputNode:
 
 
 @register("passthrough")
+@register("resample")
+@register("mixer")
+@register("concat")
+@register("bgm_mix")
 class PassthroughNode:
     async def invoke(self, data: dict, inputs: dict) -> dict:
         return dict(inputs)
