@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     import src.models.llm_usage  # noqa: F401
     import src.models.context_cache  # noqa: F401
     import src.models.response_session  # noqa: F401
+    import src.models.memory  # noqa: F401
 
     engine = create_engine()
     async with engine.begin() as conn:
@@ -64,6 +65,18 @@ async def lifespan(app: FastAPI):
     # Auto-sync model metadata for any new engines
     from src.models.database import create_session_factory
     from src.services.model_metadata_service import sync_metadata
+
+    # Wave 1 MemoryProvider: init PGMemoryProvider + expose via app.state
+    from src.services.memory.pg_provider import PGMemoryProvider
+    try:
+        app.state.memory_provider = PGMemoryProvider(
+            session_factory=create_session_factory()
+        )
+        await app.state.memory_provider.initialize()
+        logger.info("MemoryProvider initialized (pg)")
+    except Exception as e:
+        logger.warning("MemoryProvider init failed (non-fatal): %s", e)
+
     try:
         sf = create_session_factory()
         async with sf() as session:
@@ -392,6 +405,8 @@ def create_app() -> FastAPI:
     app.include_router(execution_tasks.router)
     app.include_router(apps.router)
     app.include_router(logs.router)
+    from src.api.routes import memory as memory_routes
+    app.include_router(memory_routes.router)
 
     @app.websocket("/ws/tasks/{task_id}")
     async def websocket_task(websocket: WebSocket, task_id: str):
