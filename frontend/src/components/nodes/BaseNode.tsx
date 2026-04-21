@@ -242,6 +242,8 @@ export function NodeInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
         color: 'var(--text)',
         fontFamily: 'var(--font)',
         outline: 'none',
+        // IME fix: see NodeTextarea comment.
+        transform: 'translateZ(0)',
         ...props.style,
       }}
     />
@@ -407,6 +409,9 @@ export function NodeTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaEle
         color: 'var(--text)',
         fontFamily: 'var(--font)',
         outline: 'none',
+        // IME fix: React Flow viewport 的 CSS transform 会让 Chromium 输入法候选窗
+        // 定位错误（飘到画布原点）。提升为合成层使 IME 查询到正确屏幕坐标。
+        transform: 'translateZ(0)',
         ...props.style,
       }}
     />
