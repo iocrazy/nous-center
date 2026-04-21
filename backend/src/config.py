@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     INDEXTTS_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/index-tts"
 
     VLLM_BASE_URL: str = "http://localhost:8100"
+    VL_MODEL: str = "Qwen2.5-VL-7B-Instruct"  # default model for /api/v1/understand
 
     GPU_IMAGE: int = 0
     GPU_TTS: int = 1

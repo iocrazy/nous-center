@@ -53,6 +53,7 @@ class TTSRequest(BaseModel):
 class ImageUnderstandRequest(BaseModel):
     image_url: str
     question: str = "Describe this image in detail."
+    model: str | None = None  # Override default VL model (settings.VL_MODEL)
 
 
 # --- Responses ---
