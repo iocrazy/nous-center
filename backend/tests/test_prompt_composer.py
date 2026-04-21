@@ -33,7 +33,7 @@ import pytest
 
 from src import config as _config
 from src.services.prompt_composer import _persona as _persona_mod
-from src.services.prompt_composer._persona import PersonaBundle, load_persona
+from src.services.prompt_composer._persona import load_persona
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
