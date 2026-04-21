@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { X, Plus } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -19,9 +19,25 @@ export default function WorkflowTabs() {
 
   const [menu, setMenu] = useState<TabMenuState>({ visible: false, position: { x: 0, y: 0 }, tabId: '' })
 
+  // Keep URL in sync with active tab's dbId.
+  // When a freshly-created tab first saves (markDirty → POST creates the
+  // backend row and populates dbId), bump the URL from /workflows to
+  // /workflows/:dbId so the session becomes bookmarkable.
+  const activeTab = tabs.find((t) => t.id === activeTabId)
+  const activeDbId = activeTab?.dbId ?? null
+  useEffect(() => {
+    if (!activeDbId) return
+    const target = `/workflows/${activeDbId}`
+    if (location.pathname !== target && location.pathname.startsWith('/workflows')) {
+      navigate(target, { replace: true })
+    }
+  }, [activeDbId, location.pathname, navigate])
+
   const handleTabClick = (id: string) => {
     setActiveTab(id)
-    if (location.pathname !== '/') navigate('/')
+    const tab = tabs.find((t) => t.id === id)
+    const target = tab?.dbId ? `/workflows/${tab.dbId}` : '/workflows'
+    if (location.pathname !== target) navigate(target)
   }
 
   const closeMenu = useCallback(() => setMenu((m) => ({ ...m, visible: false })), [])
@@ -173,7 +189,11 @@ export default function WorkflowTabs() {
           </div>
         ))}
         <button
-          onClick={() => addTab()}
+          onClick={() => {
+            addTab()
+            // New tab has no dbId yet — URL goes to /workflows until first save.
+            if (location.pathname !== '/workflows') navigate('/workflows')
+          }}
           className="flex items-center justify-center shrink-0"
           style={{
             width: 28,

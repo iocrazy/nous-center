@@ -81,6 +81,10 @@ interface WorkspaceState {
   redo: () => void
   canUndo: () => boolean
   canRedo: () => boolean
+
+  /** Activate an existing tab by its DB-backed workflow id. Returns true if
+   *  found; false means caller should fetch from backend + loadFromDb(). */
+  activateByDbId: (dbId: string) => boolean
 }
 
 const initialTab: WorkflowTab = createTab('新工作流', createDefaultWorkflow('基础合成'))
@@ -288,6 +292,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   canRedo: () => {
     const t = get().tabs.find((x) => x.id === get().activeTabId)
     return !!t && t.future.length > 0
+  },
+
+  activateByDbId: (dbId) => {
+    const tab = get().tabs.find((t) => t.dbId === dbId)
+    if (!tab) return false
+    set({ activeTabId: tab.id })
+    return true
   },
 
   markDirty: (tabId?: string) => {

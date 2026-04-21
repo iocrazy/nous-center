@@ -1,11 +1,15 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import IconRail from './components/layout/IconRail'
 import Topbar from './components/layout/Topbar'
 import WorkflowTabs from './components/layout/WorkflowTabs'
 import NodeEditor from './components/nodes/NodeEditor'
 import ToastContainer from './components/common/ToastContainer'
 import { usePanelStore, type OverlayId } from './stores/panel'
+import { useWorkspaceStore } from './stores/workspace'
+import { apiFetch } from './api/client'
+import type { WorkflowFull } from './api/workflows'
+import { useToastStore } from './stores/toast'
 
 const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/models': 'models',
@@ -23,20 +27,44 @@ function RouteSync() {
   const setOverlay = usePanelStore((s) => s.setOverlay)
 
   useEffect(() => {
-    const overlay = ROUTE_TO_OVERLAY[location.pathname] ?? null
-    usePanelStore.getState().activeOverlay !== overlay && setOverlay(overlay)
+    // `/workflows` and `/workflows/:id` share the workflow editor (no overlay).
+    const overlay = location.pathname.startsWith('/workflows')
+      ? null
+      : (ROUTE_TO_OVERLAY[location.pathname] ?? null)
+    if (usePanelStore.getState().activeOverlay !== overlay) setOverlay(overlay)
   }, [location.pathname, setOverlay])
 
   return null
 }
 
-function MainLayout() {
+/** When URL is /workflows/:id, activate (or fetch + load) that workflow. */
+function WorkflowRouteLoader() {
+  const { id } = useParams<{ id: string }>()
+  const activateByDbId = useWorkspaceStore((s) => s.activateByDbId)
+  const loadFromDb = useWorkspaceStore((s) => s.loadFromDb)
+
+  useEffect(() => {
+    if (!id) return
+    if (activateByDbId(id)) return
+    // Not yet in tabs — fetch from backend and open as a new tab.
+    apiFetch<WorkflowFull>(`/api/v1/workflows/${encodeURIComponent(id)}`)
+      .then(loadFromDb)
+      .catch((err) => {
+        useToastStore.getState().add(`加载工作流失败: ${err.message ?? err}`, 'error')
+      })
+  }, [id, activateByDbId, loadFromDb])
+
+  return null
+}
+
+function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
   const activeOverlay = usePanelStore((s) => s.activeOverlay)
   const isWorkflowView = !activeOverlay
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
       <RouteSync />
+      {workflowRoute && <WorkflowRouteLoader />}
       <IconRail />
       <div className="flex-1 flex flex-col overflow-hidden">
         {isWorkflowView && <WorkflowTabs />}
@@ -53,6 +81,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<MainLayout />} />
+        <Route path="/workflows" element={<MainLayout />} />
+        <Route path="/workflows/:id" element={<MainLayout workflowRoute />} />
         <Route path="/models" element={<MainLayout />} />
         <Route path="/agents" element={<MainLayout />} />
         <Route path="/settings" element={<MainLayout />} />
