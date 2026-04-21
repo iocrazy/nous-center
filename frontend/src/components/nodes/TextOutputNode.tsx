@@ -32,7 +32,11 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
         setIsStreaming(true)
       }
       if (detail.type === 'node_stream' && detail.node_id === streamSource) {
-        setStreamText((prev) => prev + detail.token)
+        // Wave 1 renamed the stream chunk field from `token` to `content`
+        // (workflow_executor dispatch layer). Fall back to `token` for any
+        // legacy plugin executor that still emits the old shape.
+        const chunk = (detail.content ?? detail.token ?? '') as string
+        if (chunk) setStreamText((prev) => prev + chunk)
       }
       if (detail.type === 'node_complete' && detail.node_id === streamSource) {
         setIsStreaming(false)
@@ -56,8 +60,14 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
       minWidth={220}
       minHeight={80}
       onResizeEnd={() => window.dispatchEvent(new Event('node-resize-end'))}
-      lineStyle={{ border: 'none' }}
-      handleStyle={{ width: 12, height: 12, background: 'transparent', border: 'none' }}
+      lineStyle={{ borderColor: 'var(--accent)', borderWidth: 1 }}
+      handleStyle={{
+        width: 10,
+        height: 10,
+        background: 'var(--accent)',
+        border: '2px solid var(--card)',
+        borderRadius: 2,
+      }}
     />
     <BaseNode
       title={def.label}
