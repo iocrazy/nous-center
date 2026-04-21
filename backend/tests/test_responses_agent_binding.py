@@ -1,5 +1,6 @@
 """Integration tests: /v1/responses with agent field."""
 
+import pytest
 from httpx import AsyncClient
 
 
@@ -119,3 +120,46 @@ async def test_flag_off_ignores_agent_field(
     async with api_client.app.state.async_session_factory() as db:
         sess = (await db.execute(select(ResponseSession))).scalar_one()
         assert sess.agent_id is None
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_with_agent_injects_system_message(
+    monkeypatch, api_client, bearer_headers, fixtures_home, mock_vllm
+):
+    monkeypatch.setenv("NOUS_ENABLE_AGENT_INJECTION", "true")
+    from src.config import get_settings
+    get_settings.cache_clear()
+    resp = await api_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5",
+            "agent": "tutor",
+            "messages": [{"role": "user", "content": "你好"}],
+        },
+        headers=bearer_headers,
+    )
+    assert resp.status_code == 200
+    sent = mock_vllm.last_request_body["messages"]
+    # 首条应是 agent system message
+    assert sent[0]["role"] == "system"
+    assert "你是 Tutor" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_no_agent_unchanged(
+    monkeypatch, api_client, bearer_headers, mock_vllm
+):
+    monkeypatch.setenv("NOUS_ENABLE_AGENT_INJECTION", "true")
+    from src.config import get_settings
+    get_settings.cache_clear()
+    resp = await api_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers=bearer_headers,
+    )
+    assert resp.status_code == 200
+    sent = mock_vllm.last_request_body["messages"]
+    assert sent == [{"role": "user", "content": "hi"}]

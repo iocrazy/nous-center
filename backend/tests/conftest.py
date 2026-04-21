@@ -331,10 +331,18 @@ def mock_vllm(monkeypatch):
     recorder = _Recorder()
 
     async def _patched_post(self, url, *args, **kwargs):
-        # vLLM calls target adapter.base_url ("http://test-vllm.invalid").
-        # ASGI transport calls target "http://test" (see api_client).
-        url_str = str(url)
-        if "test-vllm.invalid" in url_str or "/v1/chat/completions" in url_str:
+        # Distinguish outbound (upstream vLLM) vs inbound (ASGI test transport)
+        # by looking at the full request URL. Inbound api_client.post uses the
+        # AsyncClient's base_url "http://test", so the resolved URL has host
+        # "test" — never "test-vllm.invalid". httpx merges client.base_url with
+        # relative paths, and the "url" arg to AsyncClient.post can be a bare
+        # path — we must inspect the merged absolute form, not the raw arg.
+        from httpx import URL as _URL
+        base = getattr(self, "base_url", None)
+        raw = _URL(url) if not isinstance(url, _URL) else url
+        full = base.join(raw) if base else raw
+        host = full.host or ""
+        if host == "test-vllm.invalid" or (not host and "test-vllm.invalid" in str(url)):
             body = kwargs.get("json")
             recorder.last_request_body = body
             return httpx.Response(
