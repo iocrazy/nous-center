@@ -1,5 +1,14 @@
 import json
 import pytest
+
+# Skip this entire file when vllm is not installed (main deps don't include it;
+# use `uv sync --extra inference` to enable). test_load_fails_if_no_vllm_and_bad_model
+# spawns a real subprocess via subprocess.Popen which, without vllm, enters a state
+# that can hang the NVIDIA driver / X session on dual-GPU hosts — so avoid running
+# it at all in non-inference environments. When vllm IS installed (inference host),
+# this test runs normally and validates the adapter's subprocess lifecycle.
+pytest.importorskip("vllm")
+
 from unittest.mock import AsyncMock, patch, MagicMock
 from src.services.inference.llm_vllm import VLLMAdapter
 from src.services.inference.base import InferenceAdapter, InferenceResult
