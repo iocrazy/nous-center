@@ -22,31 +22,59 @@ def test_existing_event_types_preserved():
 
 
 @pytest.mark.asyncio
-async def test_llm_stream_emits_node_end_streaming(mock_llm_stream, on_progress_capture):
-    """After _exec_llm streams all chunks and resolves usage, node_end_streaming fires."""
-    from src.services.workflow_executor import _exec_llm
+async def test_llm_stream_emits_node_end_streaming(mock_llm_stream):
+    """WorkflowExecutor dispatch emits node_end_streaming after LLMNode.stream()
+    returns, carrying the final usage dict that the streaming helper captured.
 
-    data = {
-        "_node_id": "llm-1",
-        "model": "qwen3.5",
-        "base_url": "http://localhost:8100",
-        "stream": "true",
-        "max_tokens": 128,
+    This contract is load-bearing for the frontend token-stats UI and for Wave 1
+    coze-style event consumers. Dispatch emits the event — LLMNode.stream does
+    not; see workflow_executor._execute_node.
+    """
+    from src.services.workflow_executor import WorkflowExecutor
+
+    events: list[dict] = []
+
+    async def on_progress(ev: dict) -> None:
+        events.append(ev)
+
+    # LLMNode reads inputs.prompt or inputs.text. Feed it via a text_input node.
+    workflow = {
+        "nodes": [
+            {
+                "id": "in",
+                "type": "text_input",
+                "data": {"text": "hi"},
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "llm-1",
+                "type": "llm",
+                "data": {
+                    "model": "qwen3.5",
+                    "base_url": "http://localhost:8100",
+                    "stream": True,
+                    "max_tokens": 128,
+                },
+                "position": {"x": 1, "y": 0},
+            },
+        ],
+        "edges": [
+            {"source": "in", "target": "llm-1",
+             "sourceHandle": "text", "targetHandle": "text"},
+        ],
     }
-    inputs = {"prompt": "hi"}
-    await _exec_llm(data, inputs)
+    executor = WorkflowExecutor(workflow, on_progress=on_progress)
+    await executor.execute()
 
-    event_types = [e["type"] for e in on_progress_capture.events]
+    event_types = [e["type"] for e in events]
     assert "node_stream" in event_types, f"expected node_stream events, got {event_types}"
     assert "node_end_streaming" in event_types, f"expected node_end_streaming, got {event_types}"
 
-    # Order: all node_stream tokens first, then node_end_streaming
     idx_stream = next(i for i, t in enumerate(event_types) if t == "node_stream")
     idx_end = event_types.index("node_end_streaming")
     assert idx_stream < idx_end
 
-    # node_end_streaming payload carries node_id and final usage
-    end_ev = next(e for e in on_progress_capture.events if e["type"] == "node_end_streaming")
+    end_ev = next(e for e in events if e["type"] == "node_end_streaming")
     assert end_ev["node_id"] == "llm-1"
     assert end_ev["usage"] == {
         "prompt_tokens": 2,

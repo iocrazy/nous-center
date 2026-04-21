@@ -18,7 +18,12 @@ from src.models.database import Base
 class MemoryEntryModel(Base):
     __tablename__ = "memory_entries"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # SQLite needs plain INTEGER for autoincrement to work; PG uses BIGSERIAL.
+    id = Column(
+        BigInteger().with_variant(Integer(), "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     instance_id = Column(
         BigInteger,
         ForeignKey("service_instances.id", ondelete="CASCADE"),
