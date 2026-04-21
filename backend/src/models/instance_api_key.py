@@ -10,10 +10,14 @@ class InstanceApiKey(Base):
     __tablename__ = "instance_api_keys"
 
     id = Column(BigInteger, primary_key=True, default=snowflake_id)
+    # API-gateway transition (2026-04-21): instance_id is now nullable.
+    # Legacy 1:1 binding when set (pre-existing keys); new M:N binding when
+    # null, with grants living in api_key_grants. verify_bearer_token
+    # handles both paths for backward compat.
     instance_id = Column(
         BigInteger,
         ForeignKey("service_instances.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     label = Column(String(100), nullable=False)
