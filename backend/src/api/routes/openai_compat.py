@@ -12,17 +12,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.deps_auth import verify_bearer_token
+from src.api.deps_auth import verify_bearer_token, verify_bearer_token_any
 from src.config import get_settings, load_model_configs
 from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
 from src.models.service_instance import ServiceInstance
 from src.models.instance_api_key import InstanceApiKey
+from src.models.database import get_async_session
+from src.services.model_resolver import ModelNotFound, resolve_target_instance
 from src.services.prompt_composer import (
     AgentLoadFailed,
     AgentNotFound,
     compose as compose_agent_prompt,
 )
 from src.services.skill_tools import skill_tool_schema
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,35 @@ def _supports_thinking(engine_name: str) -> bool:
     return any(p in n for p in _THINKING_MODEL_PATTERNS)
 
 
+async def _post_consume_quota(api_key_id: int, instance_id: int, units: int) -> None:
+    """Charge `units` against the (api_key, instance) grant post-inference.
+
+    Best-effort: legacy keys (no grant) are silently skipped; exhaustion is
+    logged but does not fail the already-completed request. A pre-flight
+    check belongs in a follow-up; for now the next call fails at
+    pre-flight once that lands.
+    """
+    if units <= 0:
+        return
+    from src.models.database import create_session_factory
+    from src.services.quota_gate import NoActiveGrant, consume_for_request
+    from src.services.resource_pack import QuotaExhausted
+
+    sf = create_session_factory()
+    async with sf() as s:
+        try:
+            await consume_for_request(
+                s, api_key_id=api_key_id, instance_id=instance_id, units=units,
+            )
+        except NoActiveGrant:
+            return
+        except QuotaExhausted:
+            logger.warning(
+                "grant exhausted post-inference for api_key=%s instance=%s",
+                api_key_id, instance_id,
+            )
+
+
 def _maybe_inject_thinking(body: dict, engine_name: str) -> None:
     """Translate `body['thinking'] = {'type': enabled|disabled|auto}` into
     `body['chat_template_kwargs']['enable_thinking'] = bool` for vLLM.
@@ -101,14 +133,53 @@ def _maybe_inject_thinking(body: dict, engine_name: str) -> None:
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    session: AsyncSession = Depends(get_async_session),
 ):
-    """OpenAI-compatible chat completions with token metering."""
+    """OpenAI-compatible chat completions with token metering.
+
+    Dispatch:
+      - Legacy keys (instance_id bound) → use that instance, ignore body.model
+      - M:N keys → look up active ApiKeyGrant by body.model (ServiceInstance.name)
+
+    After resolution, instance.source_type selects the handler:
+      - "model"    → vllm subprocess (below)
+      - "workflow" → WorkflowExecutor (not yet wired; 501)
+      - "app"      → WorkflowApp execute (not yet wired; 501)
+    """
     instance, api_key = auth
 
-    # Resolve engine from instance
+    body = await request.json()
+    requested_model = body.get("model") or None
+
+    # Resolve target instance. For legacy keys the resolver is a no-op
+    # (returns the already-bound instance); for M:N keys it picks by name.
+    if instance is None:
+        try:
+            instance = await resolve_target_instance(
+                session, api_key=api_key, requested_model=requested_model,
+            )
+        except ModelNotFound as e:
+            raise NotFoundError(str(e), code="model_not_found")
+        if instance.status != "active":
+            raise HTTPException(403, detail="Instance is inactive")
+
+    # Dispatch by source_type
+    if instance.source_type == "workflow":
+        raise HTTPException(
+            501,
+            detail="workflow-backed chat/completions not yet implemented",
+        )
+    if instance.source_type == "app":
+        raise HTTPException(
+            501,
+            detail="app-backed chat/completions not yet implemented",
+        )
     if instance.source_type != "model":
-        raise HTTPException(400, detail="This endpoint only supports model-type instances")
+        raise HTTPException(
+            400,
+            detail=f"Unsupported instance source_type: {instance.source_type}",
+        )
 
     engine_name = instance.source_name or str(instance.source_id)
     model_mgr = getattr(request.app.state, "model_manager", None)
@@ -123,8 +194,6 @@ async def chat_completions(
     if not base_url:
         raise HTTPException(500, detail="Model has no inference endpoint")
 
-    # Parse request body
-    body = await request.json()
     body["model"] = ""  # vLLM uses its own model path
 
     # Resolve agent (top-level or extra_body.agent). vLLM rejects unknown
@@ -254,6 +323,9 @@ async def chat_completions(
                 api_key_id=api_key.id,
                 agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
             )
+            await _post_consume_quota(
+                api_key.id, instance.id, usage.get("total_tokens", 0),
+            )
 
         return StreamingResponse(
             sse_with_error_envelope(_stream_proxy()),
@@ -283,6 +355,9 @@ async def chat_completions(
             instance_id=instance.id,
             api_key_id=api_key.id,
             agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
+        )
+        await _post_consume_quota(
+            api_key.id, instance.id, usage.get("total_tokens", 0),
         )
 
         return Response(content=resp.content, media_type="application/json")
