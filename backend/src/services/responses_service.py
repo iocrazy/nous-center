@@ -113,6 +113,7 @@ async def create_session(
     api_key_id: int | None,
     model: str,
     context_cache_id: str | None = None,
+    agent_id: str | None = None,
     ttl_seconds: int = 72 * 3600,
 ) -> ResponseSession:
     if not (60 <= ttl_seconds <= 604800):
@@ -126,6 +127,7 @@ async def create_session(
         instance_id=instance_id,
         api_key_id=api_key_id,
         model=model,
+        agent_id=agent_id,
         context_cache_id=context_cache_id,
         total_input_tokens=0,
         total_output_tokens=0,

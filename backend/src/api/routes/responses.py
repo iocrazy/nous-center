@@ -26,6 +26,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_auth import verify_bearer_token
+from src.config import get_settings
 from src.errors import (
     APIError, InvalidRequestError, NotFoundError,
     NousError, PermissionError as NousPermissionError,
@@ -37,9 +38,15 @@ from src.models.service_instance import ServiceInstance
 from src.services.context.base import ContextOverflowError
 from src.services.context.gzip_compact import GzipCompactContextEngine
 from src.services.context_cache_service import resolve_for_request
+from src.services.prompt_composer import (
+    AgentLoadFailed,
+    AgentNotFound,
+    compose as compose_agent_prompt,
+)
 from src.services.responses_service import (
     approx_tokens,
     assemble_history_for_response,
+    assert_agent_matches_session,
     check_session_budget,
     create_session,
     decode_content,
@@ -47,6 +54,7 @@ from src.services.responses_service import (
     write_partial_assistant_turn,
     write_user_and_assistant_turns,
 )
+from src.services.skill_tools import skill_tool_schema
 
 # Module-level engine instance. GzipCompactContextEngine is stateless
 # (per ContextEngine ABC contract), so a singleton is safe.
@@ -302,6 +310,7 @@ class _TextCfg(BaseModel):
 class CreateResponseRequest(BaseModel):
     model: str
     input: str | list[Any]
+    agent: str | None = None  # optional agent id (feature-flagged)
     previous_response_id: str | None = None
     context_id: str | None = None
     instructions: str | None = None
@@ -311,6 +320,7 @@ class CreateResponseRequest(BaseModel):
     expire_at: int | None = None
     stream: bool = False
     text: _TextCfg = Field(default_factory=_TextCfg)
+    tools: list[dict] | None = None
 
 
 # ---------- POST /v1/responses ---------- #
@@ -386,11 +396,41 @@ async def create_response(
         new_input_messages, instance.id
     )
 
-    # Assemble per MESSAGES_ORDER: context -> chain -> instructions -> input.
+    # --- agent/skill 装配 ---
+    settings = get_settings()
+    effective_agent: str | None = None
+
+    if settings.NOUS_ENABLE_AGENT_INJECTION:
+        if sess is not None:
+            # 续请求：从 session 绑定校验
+            effective_agent = assert_agent_matches_session(sess, req.agent)
+        else:
+            # 首请求
+            effective_agent = req.agent
+
+    agent_sys: str | None = None
+    if effective_agent:
+        try:
+            agent_sys = compose_agent_prompt(effective_agent, None)
+        except AgentNotFound:
+            raise InvalidRequestError(
+                f"agent not found: {effective_agent}",
+                code="agent_not_found",
+            )
+        except AgentLoadFailed as e:
+            logger.error("agent load failed: %s", e)
+            raise APIError(
+                f"failed to load agent {effective_agent}",
+                code="agent_load_failed",
+            )
+
+    # Assemble per MESSAGES_ORDER: agent -> context -> chain -> instructions -> input.
     # Both previous history and new input may contain API-facing types
     # (input_text / output_text) which vLLM doesn't understand — convert.
     previous_messages_vllm = transform_inputs_to_chat_messages(previous_messages)
     messages: list[dict] = []
+    if agent_sys is not None:
+        messages.append({"role": "system", "content": agent_sys})
     if cached_messages:
         messages.extend(cached_messages)
     messages.extend(previous_messages_vllm)
@@ -423,6 +463,7 @@ async def create_response(
             instance_id=instance.id,
             api_key_id=api_key.id,
             model=engine_name,
+            agent_id=effective_agent,
             context_cache_id=req.context_id,
         )
 
@@ -433,6 +474,14 @@ async def create_response(
         "max_tokens": 2048,  # TODO: read from req.max_output_tokens once added
         "stream": req.stream,
     }
+    # tools: inject Skill tool when an agent is active.
+    tools_list: list[dict] = []
+    if effective_agent:
+        tools_list.append(skill_tool_schema())
+    if req.tools:
+        tools_list.extend(req.tools)
+    if tools_list:
+        vllm_body["tools"] = tools_list
     # Step 2: thinking mapping — mutates body in place, returns None.
     vllm_body["thinking"] = req.thinking.model_dump()
     from src.api.routes.openai_compat import _maybe_inject_thinking
@@ -586,6 +635,7 @@ async def create_response(
                 duration_ms=0,
                 instance_id=instance.id,
                 api_key_id=api_key.id,
+                agent_id=effective_agent,
             )
             yield ("response.completed", {
                 "type": "response.completed",
@@ -644,6 +694,7 @@ async def create_response(
                 duration_ms=0,
                 instance_id=instance.id,
                 api_key_id=api_key.id,
+                agent_id=effective_agent,
             )
 
         return StreamingResponse(
@@ -715,6 +766,7 @@ async def create_response(
         duration_ms=0,
         instance_id=instance.id,
         api_key_id=api_key.id,
+        agent_id=effective_agent,
     )
 
     return {
