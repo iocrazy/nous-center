@@ -52,7 +52,19 @@ _MANIFEST: dict[str, EngineDeps] = {
         engine="qwen3_tts_base",
         probe_module="qwen_tts",
         pip_specs=("qwen-tts",),
-        note="PyPI 官方包",
+        note="PyPI 官方包（共用 qwen-tts，与 customvoice/voicedesign 同一依赖）",
+    ),
+    "qwen3_tts_customvoice": EngineDeps(
+        engine="qwen3_tts_customvoice",
+        probe_module="qwen_tts",
+        pip_specs=("qwen-tts",),
+        note="共用 qwen-tts 包；9 个内置 speaker + instruction 控制",
+    ),
+    "qwen3_tts_voicedesign": EngineDeps(
+        engine="qwen3_tts_voicedesign",
+        probe_module="qwen_tts",
+        pip_specs=("qwen-tts",),
+        note="共用 qwen-tts 包；文字描述生成 voice",
     ),
     "moss_tts": EngineDeps(
         engine="moss_tts",
