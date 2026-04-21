@@ -83,13 +83,15 @@ class PGMemoryProvider(MemoryProvider):
 
         try:
             async with self._sf() as s:
+                # Per-entry context_key takes precedence over the batch-level
+                # parameter (mirrors _FakeMemoryProvider contract in W-T2.2).
                 rows = [
                     MemoryEntryModel(
                         instance_id=instance_id,
                         api_key_id=api_key_id,
                         category=e["category"],
                         content=e["content"],
-                        context_key=context_key,
+                        context_key=e.get("context_key") if e.get("context_key") is not None else context_key,
                     )
                     for e in entries
                 ]
