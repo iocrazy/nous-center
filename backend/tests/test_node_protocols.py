@@ -1,13 +1,10 @@
 from src.services.nodes.base import (
-    CollectableNode,
     InvokableNode,
     StreamableNode,
-    TransformableNode,
 )
 
 
 def test_protocols_are_runtime_checkable():
-    from typing import runtime_checkable
     # 验证 Protocol 声明了 @runtime_checkable
     assert hasattr(InvokableNode, "_is_runtime_protocol")
 
