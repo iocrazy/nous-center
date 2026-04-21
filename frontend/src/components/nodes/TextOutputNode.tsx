@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Copy, Check } from 'lucide-react'
-import { NodeResizer, type NodeProps } from '@xyflow/react'
+import { NodeResizer, NodeResizeControl, type NodeProps } from '@xyflow/react'
 import { NODE_DEFS } from '../../models/workflow'
 import { useWorkspaceStore } from '../../stores/workspace'
 import BaseNode from './BaseNode'
@@ -70,13 +70,48 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
       onResizeEnd={() => window.dispatchEvent(new Event('node-resize-end'))}
       lineStyle={{ borderColor: 'var(--accent)', borderWidth: 1 }}
       handleStyle={{
-        width: 10,
-        height: 10,
+        width: 8,
+        height: 8,
         background: 'var(--accent)',
         border: '2px solid var(--card)',
         borderRadius: 2,
       }}
     />
+    {/* Always-visible bottom-right resize grip — the generic NodeResizer
+        handles only show while selected and sit outside the visible card
+        border (confusing when inner content has overflow:auto). This grip
+        lives inside the node's own bounds so its position is unambiguous. */}
+    <NodeResizeControl
+      position="bottom-right"
+      minWidth={220}
+      minHeight={80}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        width: 16,
+        height: 16,
+      }}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 14 14"
+        style={{
+          position: 'absolute',
+          right: 2,
+          bottom: 2,
+          pointerEvents: 'none',
+          color: 'var(--muted-strong)',
+        }}
+      >
+        <path
+          d="M13 5 L5 13 M13 9 L9 13 M13 13 L13 13"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      </svg>
+    </NodeResizeControl>
     <BaseNode
       title={def.label}
       badge={{ label: 'IO', bg: 'rgba(59,130,246,0.15)', color: 'var(--info)' }}
