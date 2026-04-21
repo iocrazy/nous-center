@@ -55,6 +55,8 @@ export default function NodeEditor() {
   const storeRemoveEdge = useWorkspaceStore((s) => s.removeEdge)
   const storeAddNode = useWorkspaceStore((s) => s.addNode)
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
+  const undo = useWorkspaceStore((s) => s.undo)
+  const redo = useWorkspaceStore((s) => s.redo)
   const { activePanel, activeOverlay, panelWidth } = usePanelStore()
   const nodeStates = useExecutionStore((s) => s.nodeStates)
   const taskPanelOpen = useExecutionStore((s) => s.taskPanelOpen)
@@ -62,6 +64,31 @@ export default function NodeEditor() {
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
+
+  // Cmd/Ctrl+Z undo; Cmd/Ctrl+Shift+Z (or Ctrl+Y) redo. Swallow when the
+  // event target is an input/textarea/contenteditable so native text edit
+  // history keeps working inside the portal editor, node inputs, etc.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const tgt = e.target as HTMLElement | null
+      if (tgt) {
+        const tag = tgt.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tgt.isContentEditable) return
+      }
+      const k = e.key.toLowerCase()
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undo()
+      } else if ((k === 'z' && e.shiftKey) || k === 'y') {
+        e.preventDefault()
+        redo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [undo, redo])
 
   const NODE_STATE_CLASS: Record<string, string> = {
     pending: 'node-pending',

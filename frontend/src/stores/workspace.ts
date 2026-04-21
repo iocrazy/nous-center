@@ -6,12 +6,30 @@ import type { WorkflowFull } from '../api/workflows'
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
+const HISTORY_LIMIT = 50
+
 export interface WorkflowTab {
   id: string
   name: string
   workflow: Workflow
   isDirty: boolean
   dbId: string | null
+  /** Undo stack (past snapshots of `workflow`). Newest at the end. */
+  past: Workflow[]
+  /** Redo stack (snapshots undone from current). Newest at the end. */
+  future: Workflow[]
+}
+
+function snapshot(wf: Workflow): Workflow {
+  // Shallow clone of the arrays — node/edge objects themselves are treated as
+  // immutable by every mutation below, so we don't need a deep clone.
+  return { ...wf, nodes: [...wf.nodes], edges: [...wf.edges] }
+}
+
+function pushHistory(tab: WorkflowTab): WorkflowTab {
+  const past = [...tab.past, snapshot(tab.workflow)]
+  if (past.length > HISTORY_LIMIT) past.shift()
+  return { ...tab, past, future: [] }
 }
 
 function createDefaultWorkflow(name: string): Workflow {
@@ -20,6 +38,18 @@ function createDefaultWorkflow(name: string): Workflow {
     name,
     nodes: [],
     edges: [],
+  }
+}
+
+function createTab(name: string, workflow: Workflow, dbId: string | null = null): WorkflowTab {
+  return {
+    id: uid(),
+    name,
+    workflow,
+    isDirty: false,
+    dbId,
+    past: [],
+    future: [],
   }
 }
 
@@ -45,15 +75,15 @@ interface WorkspaceState {
   addEdge: (edge: WorkflowEdge) => void
   removeEdge: (edgeId: string) => void
   markDirty: () => void
+
+  // Undo / redo (structural changes only — add/remove node + edge)
+  undo: () => void
+  redo: () => void
+  canUndo: () => boolean
+  canRedo: () => boolean
 }
 
-const initialTab: WorkflowTab = {
-  id: uid(),
-  name: '新工作流',
-  workflow: createDefaultWorkflow('基础合成'),
-  isDirty: false,
-  dbId: null,
-}
+const initialTab: WorkflowTab = createTab('新工作流', createDefaultWorkflow('基础合成'))
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   tabs: [initialTab],
@@ -61,13 +91,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   addTab: (name) => {
     const tabName = name ?? `工作流 ${get().tabs.length + 1}`
-    const tab: WorkflowTab = {
-      id: uid(),
-      name: tabName,
-      workflow: createDefaultWorkflow(tabName),
-      isDirty: false,
-      dbId: null,
-    }
+    const tab = createTab(tabName, createDefaultWorkflow(tabName))
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }))
   },
 
@@ -101,10 +125,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   loadFromDb: (wf: WorkflowFull) => {
-    const tab: WorkflowTab = {
-      id: uid(),
-      name: wf.name,
-      workflow: {
+    const tab = createTab(
+      wf.name,
+      {
         id: wf.id,
         name: wf.name,
         description: wf.description ?? undefined,
@@ -113,9 +136,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         is_template: wf.is_template,
         status: wf.status as 'draft' | 'published',
       },
-      isDirty: false,
-      dbId: wf.id,
-    }
+      wf.id,
+    )
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }))
   },
 
@@ -155,7 +177,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
-          ? { ...t, isDirty: true, workflow: { ...t.workflow, nodes: [...t.workflow.nodes, node] } }
+          ? {
+              ...pushHistory(t),
+              isDirty: true,
+              workflow: { ...t.workflow, nodes: [...t.workflow.nodes, node] },
+            }
           : t
       ),
     }))
@@ -167,7 +193,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
           ? {
-              ...t,
+              ...pushHistory(t),
               isDirty: true,
               workflow: {
                 ...t.workflow,
@@ -185,7 +211,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
-          ? { ...t, isDirty: true, workflow: { ...t.workflow, edges: [...t.workflow.edges, edge] } }
+          ? {
+              ...pushHistory(t),
+              isDirty: true,
+              workflow: { ...t.workflow, edges: [...t.workflow.edges, edge] },
+            }
           : t
       ),
     }))
@@ -197,7 +227,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId
           ? {
-              ...t,
+              ...pushHistory(t),
               isDirty: true,
               workflow: {
                 ...t.workflow,
@@ -208,6 +238,56 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ),
     }))
     get().markDirty()
+  },
+
+  undo: () => {
+    const t = get().tabs.find((x) => x.id === get().activeTabId)
+    if (!t || t.past.length === 0) return
+    const prev = t.past[t.past.length - 1]
+    set((s) => ({
+      tabs: s.tabs.map((x) =>
+        x.id === s.activeTabId
+          ? {
+              ...x,
+              past: x.past.slice(0, -1),
+              future: [...x.future, snapshot(x.workflow)],
+              workflow: prev,
+              isDirty: true,
+            }
+          : x,
+      ),
+    }))
+    get().markDirty()
+  },
+
+  redo: () => {
+    const t = get().tabs.find((x) => x.id === get().activeTabId)
+    if (!t || t.future.length === 0) return
+    const next = t.future[t.future.length - 1]
+    set((s) => ({
+      tabs: s.tabs.map((x) =>
+        x.id === s.activeTabId
+          ? {
+              ...x,
+              past: [...x.past, snapshot(x.workflow)],
+              future: x.future.slice(0, -1),
+              workflow: next,
+              isDirty: true,
+            }
+          : x,
+      ),
+    }))
+    get().markDirty()
+  },
+
+  canUndo: () => {
+    const t = get().tabs.find((x) => x.id === get().activeTabId)
+    return !!t && t.past.length > 0
+  },
+
+  canRedo: () => {
+    const t = get().tabs.find((x) => x.id === get().activeTabId)
+    return !!t && t.future.length > 0
   },
 
   markDirty: (tabId?: string) => {
