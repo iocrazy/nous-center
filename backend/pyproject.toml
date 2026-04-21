@@ -67,5 +67,8 @@ target-version = "py312"
 "src/api/routes/workflows.py" = ["E402"]
 "src/services/log_db.py" = ["E402"]
 "src/workers/tts_engines/voxcpm2.py" = ["E402"]
-"tests/conftest.py" = ["E402"]
-"tests/test_errors.py" = ["E402"]
+# Tests commonly append fixtures/imports as suites grow (TDD flow), so allow
+# module-level imports after other statements. `conftest.py` additionally needs
+# to set env vars (CUDA_VISIBLE_DEVICES, NOUS_DISABLE_BG_TASKS) before any src
+# import to protect the test session from driver-level crashes.
+"tests/**/*.py" = ["E402"]
