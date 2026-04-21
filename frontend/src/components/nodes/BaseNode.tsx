@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, useReactFlow, useNodeId } from '@xyflow/react'
 import type { PortDef } from '../../models/workflow'
+import TextareaPortalEditor from './TextareaPortalEditor'
 
 const PORT_TYPE_COLORS: Record<string, string> = {
   text: 'var(--ok)',
@@ -389,31 +390,57 @@ export function NodeNumberDrag({
   )
 }
 
-/** Styled inline widget textarea */
-export function NodeTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+/** Styled inline widget textarea. Double-click to open a portal editor that
+ *  lives outside the React Flow transform subtree — avoids Chromium IME
+ *  candidate popup drifting to the top bar on Linux (fcitx/ibus). */
+export function NodeTextarea({
+  portalTitle,
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  portalTitle?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const value = (props.value ?? '') as string
   return (
-    <textarea
-      {...props}
-      className="nodrag"
-      style={{
-        width: '100%',
-        resize: 'none',
-        minHeight: 36,
-        flex: 1,
-        padding: '4px 7px',
-        fontSize: 9,
-        lineHeight: 1.4,
-        background: 'var(--bg)',
-        border: '1px solid var(--border)',
-        borderRadius: 3,
-        color: 'var(--text)',
-        fontFamily: 'var(--font)',
-        outline: 'none',
-        // IME fix: React Flow viewport 的 CSS transform 会让 Chromium 输入法候选窗
-        // 定位错误（飘到画布原点）。提升为合成层使 IME 查询到正确屏幕坐标。
-        transform: 'translateZ(0)',
-        ...props.style,
-      }}
-    />
+    <>
+      <textarea
+        {...props}
+        className="nodrag"
+        onDoubleClick={(e) => {
+          props.onDoubleClick?.(e)
+          if (!e.defaultPrevented) setOpen(true)
+        }}
+        style={{
+          width: '100%',
+          resize: 'none',
+          minHeight: 36,
+          flex: 1,
+          padding: '4px 7px',
+          fontSize: 9,
+          lineHeight: 1.4,
+          background: 'var(--bg)',
+          border: '1px solid var(--border)',
+          borderRadius: 3,
+          color: 'var(--text)',
+          fontFamily: 'var(--font)',
+          outline: 'none',
+          transform: 'translateZ(0)',
+          ...props.style,
+        }}
+      />
+      <TextareaPortalEditor
+        open={open}
+        initialValue={value}
+        title={portalTitle || '编辑文本'}
+        onSave={(v) => {
+          props.onChange?.({
+            target: { value: v },
+            currentTarget: { value: v },
+          } as unknown as React.ChangeEvent<HTMLTextAreaElement>)
+          setOpen(false)
+        }}
+        onCancel={() => setOpen(false)}
+      />
+    </>
   )
 }
