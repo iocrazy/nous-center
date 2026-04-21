@@ -1,4 +1,3 @@
-import pytest
 
 from tests.evals.compact.scorer import score_response
 
