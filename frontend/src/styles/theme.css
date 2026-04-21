@@ -144,16 +144,19 @@ input[type="number"] {
   padding: 0 !important;
 }
 
-/* Invisible resize handles — only cursor changes (ComfyUI style) */
+/* Invisible resize handles by default — only cursor changes (ComfyUI style).
+ * Individual nodes can opt in to visible grips via inline handleStyle or a
+ * nested <NodeResizeControl> with its own painted UI. Using `unset` instead
+ * of `!important` so inline styles can override. */
 .react-flow__resize-control.handle {
-  background: transparent !important;
-  border: none !important;
-  width: 14px !important;
-  height: 14px !important;
-  opacity: 1 !important;
+  background: transparent;
+  border: none;
+  width: 14px;
+  height: 14px;
+  opacity: 1;
 }
 .react-flow__resize-control.line {
-  border-color: transparent !important;
+  border-color: transparent;
 }
 
 /* Node execution state styles */

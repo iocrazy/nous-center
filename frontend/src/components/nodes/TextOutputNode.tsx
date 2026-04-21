@@ -77,41 +77,6 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
         borderRadius: 2,
       }}
     />
-    {/* Always-visible bottom-right resize grip — the generic NodeResizer
-        handles only show while selected and sit outside the visible card
-        border (confusing when inner content has overflow:auto). This grip
-        lives inside the node's own bounds so its position is unambiguous. */}
-    <NodeResizeControl
-      position="bottom-right"
-      minWidth={220}
-      minHeight={80}
-      style={{
-        background: 'transparent',
-        border: 'none',
-        width: 16,
-        height: 16,
-      }}
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 14 14"
-        style={{
-          position: 'absolute',
-          right: 2,
-          bottom: 2,
-          pointerEvents: 'none',
-          color: 'var(--muted-strong)',
-        }}
-      >
-        <path
-          d="M13 5 L5 13 M13 9 L9 13 M13 13 L13 13"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        />
-      </svg>
-    </NodeResizeControl>
     <BaseNode
       title={def.label}
       badge={{ label: 'IO', bg: 'rgba(59,130,246,0.15)', color: 'var(--info)' }}
@@ -119,7 +84,7 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
       inputs={def.inputs}
       outputs={def.outputs}
     >
-      <div style={{ padding: '4px 10px', minHeight: 40, flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '4px 10px', minHeight: 40, flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         {text ? (
           <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column' }}>
             <button
@@ -184,6 +149,44 @@ export default function TextOutputNode({ id, data, selected }: NodeProps) {
             等待文本输入...
           </div>
         )}
+        {/* Always-visible grip pinned to the CARD's own bottom-right corner.
+            Absolute-positioned inside this relative wrapper (which sits
+            inside BaseNode), so its position follows the visible card edge
+            regardless of the outer React Flow node wrapper size. */}
+        <NodeResizeControl
+          position="bottom-right"
+          minWidth={220}
+          minHeight={80}
+          style={{
+            position: 'absolute',
+            right: 0,
+            bottom: 0,
+            background: 'transparent',
+            border: 'none',
+            width: 16,
+            height: 16,
+          }}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            style={{
+              position: 'absolute',
+              right: 2,
+              bottom: 2,
+              pointerEvents: 'none',
+              color: 'var(--muted-strong)',
+            }}
+          >
+            <path
+              d="M11 4 L4 11 M11 7 L7 11 M11 10 L10 11"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+        </NodeResizeControl>
       </div>
     </BaseNode>
     </>
