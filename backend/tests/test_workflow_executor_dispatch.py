@@ -24,3 +24,13 @@ async def test_executor_dispatches_via_registry():
     exe = WorkflowExecutor(workflow, on_progress=on_progress)
     result = await exe.execute()
     assert result["outputs"]["n1"] == {"text": "hi"}
+
+
+def test_on_progress_ref_not_used_by_builtin_nodes():
+    """Builtin 12 nodes must NOT reference the global _on_progress_ref."""
+    import inspect
+    from src.services.nodes import text_io, audio, logic, llm as llm_module
+    for mod in (text_io, audio, logic, llm_module):
+        src = inspect.getsource(mod)
+        assert "_on_progress_ref" not in src, \
+            f"{mod.__name__} should not reference global _on_progress_ref"
