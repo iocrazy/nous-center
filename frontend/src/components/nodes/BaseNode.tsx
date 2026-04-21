@@ -390,29 +390,37 @@ export function NodeNumberDrag({
   )
 }
 
-/** Styled inline widget textarea. Double-click to open a portal editor that
- *  lives outside the React Flow transform subtree — avoids Chromium IME
- *  candidate popup drifting to the top bar on Linux (fcitx/ibus). */
+/** Inline widget "textarea" — read-only preview that opens a portal editor
+ *  on click. Necessary because inline <textarea> inside React Flow's
+ *  transformed viewport breaks Chromium IME on Linux (fcitx/ibus candidate
+ *  popup drifts to top bar). The portal renders at document.body, outside
+ *  the transform subtree, so IME works natively.
+ *
+ *  API-compatible with a real textarea's value/onChange/placeholder.
+ */
 export function NodeTextarea({
   portalTitle,
-  ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  value,
+  onChange,
+  placeholder,
+  style,
+}: {
   portalTitle?: string
+  value?: string | number | readonly string[]
+  onChange?: React.ChangeEventHandler<HTMLTextAreaElement>
+  placeholder?: string
+  style?: React.CSSProperties
 }) {
   const [open, setOpen] = useState(false)
-  const value = (props.value ?? '') as string
+  const text = typeof value === 'string' ? value : String(value ?? '')
   return (
     <>
-      <textarea
-        {...props}
-        className="nodrag"
-        onDoubleClick={(e) => {
-          props.onDoubleClick?.(e)
-          if (!e.defaultPrevented) setOpen(true)
-        }}
+      <div
+        className="nodrag nowheel"
+        onClick={() => setOpen(true)}
+        title="点击编辑"
         style={{
           width: '100%',
-          resize: 'none',
           minHeight: 36,
           flex: 1,
           padding: '4px 7px',
@@ -421,19 +429,25 @@ export function NodeTextarea({
           background: 'var(--bg)',
           border: '1px solid var(--border)',
           borderRadius: 3,
-          color: 'var(--text)',
+          color: text ? 'var(--text)' : 'var(--muted)',
           fontFamily: 'var(--font)',
           outline: 'none',
-          transform: 'translateZ(0)',
-          ...props.style,
+          cursor: 'text',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          overflow: 'auto',
+          maxHeight: 160,
+          ...style,
         }}
-      />
+      >
+        {text || placeholder || '点击编辑…'}
+      </div>
       <TextareaPortalEditor
         open={open}
-        initialValue={value}
+        initialValue={text}
         title={portalTitle || '编辑文本'}
         onSave={(v) => {
-          props.onChange?.({
+          onChange?.({
             target: { value: v },
             currentTarget: { value: v },
           } as unknown as React.ChangeEvent<HTMLTextAreaElement>)

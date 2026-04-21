@@ -20,13 +20,16 @@ export default function TextInputNode({ id, data, selected }: NodeProps) {
       outputs={def.outputs}
     >
       <div style={{ padding: '4px 10px', position: 'relative' }}>
-        <textarea
+        {/* Read-only preview. Clicking opens the portal editor — the inline
+            <textarea> used to live here but it sits inside React Flow's
+            transformed viewport, and Chromium + fcitx/ibus cannot reliably
+            report the caret rect under a transformed ancestor, so Chinese IME
+            candidate popups drift to the browser top bar. The portal editor
+            renders at document.body → no transformed ancestors → IME works. */}
+        <div
           className="nodrag nowheel"
-          value={text}
-          onChange={(e) => updateNode(id, { text: e.target.value })}
-          onDoubleClick={() => setEditorOpen(true)}
-          placeholder="输入文本…（双击展开编辑，避免画布变换下的输入法飘位）"
-          rows={5}
+          onClick={() => setEditorOpen(true)}
+          title="点击编辑文本"
           style={{
             width: '100%',
             minHeight: 100,
@@ -34,14 +37,19 @@ export default function TextInputNode({ id, data, selected }: NodeProps) {
             borderRadius: 4,
             border: '1px solid var(--border)',
             background: 'var(--bg)',
-            color: 'var(--text)',
+            color: text ? 'var(--text)' : 'var(--muted)',
             fontSize: 13,
             lineHeight: 1.5,
-            resize: 'vertical',
             fontFamily: 'inherit',
-            transform: 'translateZ(0)',
+            cursor: 'text',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            overflow: 'auto',
+            maxHeight: 200,
           }}
-        />
+        >
+          {text || '点击编辑文本…'}
+        </div>
       </div>
       <TextareaPortalEditor
         open={editorOpen}
