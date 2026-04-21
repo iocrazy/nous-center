@@ -19,18 +19,21 @@ export default function WorkflowTabs() {
 
   const [menu, setMenu] = useState<TabMenuState>({ visible: false, position: { x: 0, y: 0 }, tabId: '' })
 
-  // Keep URL in sync with active tab's dbId.
-  // When a freshly-created tab first saves (markDirty → POST creates the
-  // backend row and populates dbId), bump the URL from /workflows to
-  // /workflows/:dbId so the session becomes bookmarkable.
+  // Keep URL in sync with active tab's dbId:
+  // - at mount / after full refresh on `/`, push URL to /workflows/:dbId
+  // - when a freshly-created tab first auto-saves and gets its dbId, same
+  // - when switching between saved tabs (handleTabClick also does this;
+  //   this effect covers setActiveTab called from elsewhere)
+  // Only touch the URL when we're on the workflow-editor surface (/, /workflows,
+  // or /workflows/*) — don't stomp on /models, /agents, /settings, etc.
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const activeDbId = activeTab?.dbId ?? null
   useEffect(() => {
-    if (!activeDbId) return
-    const target = `/workflows/${activeDbId}`
-    if (location.pathname !== target && location.pathname.startsWith('/workflows')) {
-      navigate(target, { replace: true })
-    }
+    const p = location.pathname
+    const onEditor = p === '/' || p === '/workflows' || p.startsWith('/workflows/')
+    if (!onEditor) return
+    const target = activeDbId ? `/workflows/${activeDbId}` : '/workflows'
+    if (p !== target) navigate(target, { replace: true })
   }, [activeDbId, location.pathname, navigate])
 
   const handleTabClick = (id: string) => {
