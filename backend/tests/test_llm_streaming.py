@@ -112,69 +112,76 @@ async def test_exec_llm_injects_node_id():
     assert "n1" in result["outputs"]
 
 
-async def test_exec_llm_streaming_pushes_node_stream_events():
-    """When stream=True and on_progress is set, _exec_llm should push node_stream events."""
+async def test_llm_streaming_dispatch_pushes_node_stream_events():
+    """End-to-end: WorkflowExecutor dispatch + LLMNode.stream should emit one
+    node_stream event per streamed token (with content=<token>, node_id=<id>),
+    and a terminal node_end_streaming carrying the resolved usage dict.
+
+    This replaces the old _exec_llm test: the event shape and responsibility
+    boundary moved in W-T4.5 — LLMNode only pumps tokens; the dispatcher wraps
+    them as events.
+    """
     from src.services import workflow_executor as we
+    from src.services.workflow_executor import WorkflowExecutor
+
+    async def fake_stream_llm(base_url, params, on_token=None):
+        for token in ["Streaming", " reply"]:
+            if on_token:
+                await on_token(token)
+        we._last_stream_usage = {
+            "prompt_tokens": 1,
+            "completion_tokens": 2,
+            "total_tokens": 3,
+        }
+        return "Streaming reply"
 
     events: list[dict] = []
 
     async def on_progress(event: dict) -> None:
         events.append(event)
 
-    # Patch _stream_llm to return a known result without real HTTP
-    async def fake_stream_llm(base_url, params, on_token=None):
-        for token in ["Streaming", " reply"]:
-            if on_token:
-                await on_token(token)
-        return "Streaming reply"
-
-    # Patch call_llm so non-streaming path is also safe
-    async def fake_call_llm(**kwargs):
-        return "non-stream reply"
-
-    with patch.object(we, "_stream_llm", fake_stream_llm), \
-         patch.object(we, "call_llm", fake_call_llm):
-        we._on_progress_ref = on_progress
-        data = {
-            "stream": True,
-            "_node_id": "llm_node_1",
-            "model": "test",
-            "base_url": "http://localhost:8100",
-        }
-        inputs = {"text": "hello"}
-        result = await we._exec_llm(data, inputs)
-
-    assert result["text"] == "Streaming reply"
-    stream_events = [e for e in events if e.get("type") == "node_stream"]
-    assert len(stream_events) == 2
-    assert stream_events[0]["token"] == "Streaming"
-    assert stream_events[1]["token"] == " reply"
-    assert all(e["node_id"] == "llm_node_1" for e in stream_events)
-
-
-async def test_on_progress_ref_set_during_execute():
-    """WorkflowExecutor._execute_node should set _on_progress_ref to self._on_progress."""
-    from src.services import workflow_executor as we
-    from src.services.workflow_executor import WorkflowExecutor
-
-    progress_calls: list[dict] = []
-
-    async def on_progress(event: dict) -> None:
-        progress_calls.append(event)
-
     workflow = {
         "nodes": [
             {
-                "id": "n_text",
+                "id": "in",
                 "type": "text_input",
-                "data": {"text": "test"},
+                "data": {"text": "hello"},
                 "position": {"x": 0, "y": 0},
-            }
+            },
+            {
+                "id": "llm_node_1",
+                "type": "llm",
+                "data": {
+                    "model": "test",
+                    "base_url": "http://localhost:8100",
+                    "stream": True,
+                },
+                "position": {"x": 1, "y": 0},
+            },
         ],
-        "edges": [],
+        "edges": [
+            {"source": "in", "target": "llm_node_1",
+             "sourceHandle": "text", "targetHandle": "text"},
+        ],
     }
-    executor = WorkflowExecutor(workflow, on_progress=on_progress)
-    await executor.execute()
 
-    # After execution _on_progress_ref should have been set to the instance callback
-    assert we._on_progress_ref is on_progress
+    with patch.object(we, "_stream_llm", fake_stream_llm):
+        executor = WorkflowExecutor(workflow, on_progress=on_progress)
+        result = await executor.execute()
+
+    assert result["outputs"]["llm_node_1"]["text"] == "Streaming reply"
+
+    stream_events = [e for e in events if e.get("type") == "node_stream"
+                     and e.get("node_id") == "llm_node_1"]
+    assert len(stream_events) == 2
+    assert stream_events[0]["content"] == "Streaming"
+    assert stream_events[1]["content"] == " reply"
+
+    end_events = [e for e in events if e.get("type") == "node_end_streaming"]
+    assert len(end_events) == 1
+    assert end_events[0]["node_id"] == "llm_node_1"
+    assert end_events[0]["usage"] == {
+        "prompt_tokens": 1,
+        "completion_tokens": 2,
+        "total_tokens": 3,
+    }
