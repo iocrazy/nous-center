@@ -1,6 +1,30 @@
-version: "3.9"
-
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mindcenter
+      POSTGRES_PASSWORD: mindcenter
+      POSTGRES_DB: mindcenter
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mindcenter -d mindcenter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -11,8 +35,15 @@ services:
       - ${LOCAL_MODELS_PATH:-./models}:/models
       - nous-data:/app/data
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///data/nous.db
+      # Override to sqlite+aiosqlite:///data/nous.db for single-container dev.
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://mindcenter:mindcenter@postgres:5432/mindcenter}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - LOCAL_MODELS_PATH=/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     deploy:
       resources:
         reservations:
@@ -34,3 +65,5 @@ services:
 
 volumes:
   nous-data:
+  pg-data:
+  redis-data:
