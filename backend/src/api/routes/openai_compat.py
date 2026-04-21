@@ -13,10 +13,16 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.deps_auth import verify_bearer_token
-from src.config import load_model_configs
+from src.config import get_settings, load_model_configs
 from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
 from src.models.service_instance import ServiceInstance
 from src.models.instance_api_key import InstanceApiKey
+from src.services.prompt_composer import (
+    AgentLoadFailed,
+    AgentNotFound,
+    compose as compose_agent_prompt,
+)
+from src.services.skill_tools import skill_tool_schema
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +127,42 @@ async def chat_completions(
     body = await request.json()
     body["model"] = ""  # vLLM uses its own model path
 
+    # Resolve agent (top-level or extra_body.agent). vLLM rejects unknown
+    # top-level fields, so always pop — even when injection is disabled.
+    agent_id = body.pop("agent", None)
+    if not agent_id and isinstance(body.get("extra_body"), dict):
+        agent_id = body["extra_body"].pop("agent", None)
+        if not body["extra_body"]:
+            body.pop("extra_body", None)
+
+    # Compose agent system message (chat/completions has no session concept,
+    # so there's no binding check — every request is independent).
+    settings = get_settings()
+    agent_sys: str | None = None
+    if settings.NOUS_ENABLE_AGENT_INJECTION and agent_id:
+        try:
+            agent_sys = compose_agent_prompt(agent_id, None)
+        except AgentNotFound:
+            raise InvalidRequestError(
+                f"agent not found: {agent_id}",
+                code="agent_not_found",
+            )
+        except AgentLoadFailed as e:
+            logger.error("agent load failed: %s", e)
+            raise APIError(
+                f"failed to load agent {agent_id}",
+                code="agent_load_failed",
+            )
+
+    if agent_sys is not None:
+        messages = list(body.get("messages") or [])
+        messages.insert(0, {"role": "system", "content": agent_sys})
+        body["messages"] = messages
+        # Inject Skill tool schema when an agent is active.
+        tools_list = list(body.get("tools") or [])
+        tools_list.insert(0, skill_tool_schema())
+        body["tools"] = tools_list
+
     # Resolve context_id (top-level or extra_body.context_id)
     context_id = body.pop("context_id", None)
     if not context_id and isinstance(body.get("extra_body"), dict):
@@ -210,6 +252,7 @@ async def chat_completions(
                 duration_ms=duration,
                 instance_id=instance.id,
                 api_key_id=api_key.id,
+                agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
             )
 
         return StreamingResponse(
@@ -239,6 +282,7 @@ async def chat_completions(
             duration_ms=duration,
             instance_id=instance.id,
             api_key_id=api_key.id,
+            agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
         )
 
         return Response(content=resp.content, media_type="application/json")
