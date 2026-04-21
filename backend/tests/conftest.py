@@ -1,3 +1,19 @@
+import os
+
+# CRITICAL SAFETY: disable lifespan background tasks BEFORE any app import.
+# The default set includes memory_guard_loop which polls nvidia-smi via
+# subprocess every 5s. When test files using starlette/fastapi TestClient
+# trigger lifespan (test_ws_tts.py, test_api_errors.py), concurrent
+# nvidia-smi calls can crash the NVIDIA driver → X session logout. This
+# env var (consumed in src/api/main.py lifespan) gates all asyncio.create_task
+# calls so tests never spawn those loops.
+os.environ.setdefault("NOUS_DISABLE_BG_TASKS", "1")
+
+# CRITICAL SAFETY: hide CUDA so any torch/vllm import sees zero devices,
+# preventing libcudart dlopen / CUDA context init during tests.
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["NVIDIA_VISIBLE_DEVICES"] = ""
+
 import sys
 from unittest.mock import MagicMock
 

@@ -192,100 +192,122 @@ async def lifespan(app: FastAPI):
                 model_mgr.add_reference(dep["key"], str(wf.id))
                 wf_model_deps.append({"key": dep["key"], "wf_id": wf.id})
 
-    # Load workflow dependencies in background (non-blocking)
-    async def _load_wf_deps():
-        for dep in wf_model_deps:
-            try:
-                await model_mgr.load_model(dep["key"])
-            except Exception as e:
-                logger.warning("Failed to load model %s for workflow %s: %s", dep["key"], dep["wf_id"], e)
+    # NOUS_DISABLE_BG_TASKS=1 → skip all background tasks.
+    # CRITICAL for tests: the default background set includes memory_guard_loop
+    # which polls `nvidia-smi` via subprocess every 5s. When multiple test
+    # processes simultaneously trigger lifespan (via TestClient), concurrent
+    # nvidia-smi invocations contend with gnome-shell's GPU compositor, which
+    # can crash the NVIDIA driver and log out the X session. conftest.py sets
+    # this env var at the top so `uv run pytest` never spawns these loops.
+    import os as _os
+    _bg_tasks_disabled = _os.getenv("NOUS_DISABLE_BG_TASKS") == "1"
 
-    if wf_model_deps:
-        asyncio.create_task(_load_wf_deps())
+    cache_cleanup_task = None
+    response_cleanup_task = None
+    partial_worker = None
 
-    # Start idle model checker background task
-    async def idle_checker():
-        while True:
-            await asyncio.sleep(60)
-            try:
-                await model_mgr.check_idle_models()
-            except Exception as e:
-                logger.warning("Idle model check failed: %s", e)
+    if not _bg_tasks_disabled:
+        # Load workflow dependencies in background (non-blocking)
+        async def _load_wf_deps():
+            for dep in wf_model_deps:
+                try:
+                    await model_mgr.load_model(dep["key"])
+                except Exception as e:
+                    logger.warning("Failed to load model %s for workflow %s: %s", dep["key"], dep["wf_id"], e)
 
-    asyncio.create_task(idle_checker())
-    asyncio.create_task(memory_guard_loop(reserved_gb=4.0))
+        if wf_model_deps:
+            asyncio.create_task(_load_wf_deps())
 
-    async def log_cleanup_loop():
-        while True:
-            await asyncio.sleep(3600)  # Every hour
-            try:
-                from src.services.log_db import cleanup_logs
-                cleanup_logs()
-            except Exception as e:
-                logger.warning("Log cleanup failed: %s", e)
+        # Start idle model checker background task
+        async def idle_checker():
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    await model_mgr.check_idle_models()
+                except Exception as e:
+                    logger.warning("Idle model check failed: %s", e)
 
-    asyncio.create_task(log_cleanup_loop())
+        asyncio.create_task(idle_checker())
+        asyncio.create_task(memory_guard_loop(reserved_gb=4.0))
 
-    async def context_cache_cleanup_loop(interval_seconds: int = 3600):
-        from src.services.context_cache_service import cleanup_expired
-        from src.models.database import create_session_factory as _csf
-        sf = _csf()
-        while True:
-            try:
-                async with sf() as s:
-                    n = await cleanup_expired(s)
-                    if n:
-                        logger.info("context cache cleanup: %d expired rows", n)
-            except Exception:
-                logger.exception("context cache cleanup error")
-            try:
-                await asyncio.sleep(interval_seconds)
-            except asyncio.CancelledError:
-                break
+        async def log_cleanup_loop():
+            while True:
+                await asyncio.sleep(3600)  # Every hour
+                try:
+                    from src.services.log_db import cleanup_logs
+                    cleanup_logs()
+                except Exception as e:
+                    logger.warning("Log cleanup failed: %s", e)
 
-    cache_cleanup_task = asyncio.create_task(context_cache_cleanup_loop())
+        asyncio.create_task(log_cleanup_loop())
 
-    # Step 4: expired-session cleanup + partial-write background worker
-    async def response_cleanup_loop(interval_seconds: int = 3600):
-        from src.services.responses_service import cleanup_expired_sessions
-        from src.models.database import create_session_factory as _csf
-        sf = _csf()
-        while True:
-            try:
-                async with sf() as s:
-                    n = await cleanup_expired_sessions(s)
-                    if n:
-                        logger.info("response cleanup: %d expired sessions", n)
-            except Exception:
-                logger.exception("response cleanup error")
-            try:
-                await asyncio.sleep(interval_seconds)
-            except asyncio.CancelledError:
-                break
+        async def context_cache_cleanup_loop(interval_seconds: int = 3600):
+            from src.services.context_cache_service import cleanup_expired
+            from src.models.database import create_session_factory as _csf
+            sf = _csf()
+            while True:
+                try:
+                    async with sf() as s:
+                        n = await cleanup_expired(s)
+                        if n:
+                            logger.info("context cache cleanup: %d expired rows", n)
+                except Exception:
+                    logger.exception("context cache cleanup error")
+                try:
+                    await asyncio.sleep(interval_seconds)
+                except asyncio.CancelledError:
+                    break
 
-    response_cleanup_task = asyncio.create_task(response_cleanup_loop())
+        cache_cleanup_task = asyncio.create_task(context_cache_cleanup_loop())
 
-    from src.api.routes import responses as responses_routes
-    responses_routes._set_queue(asyncio.Queue(maxsize=1000))
-    partial_worker = asyncio.create_task(responses_routes.partial_write_worker())
+        # Step 4: expired-session cleanup + partial-write background worker
+        async def response_cleanup_loop(interval_seconds: int = 3600):
+            from src.services.responses_service import cleanup_expired_sessions
+            from src.models.database import create_session_factory as _csf
+            sf = _csf()
+            while True:
+                try:
+                    async with sf() as s:
+                        n = await cleanup_expired_sessions(s)
+                        if n:
+                            logger.info("response cleanup: %d expired sessions", n)
+                except Exception:
+                    logger.exception("response cleanup error")
+                try:
+                    await asyncio.sleep(interval_seconds)
+                except asyncio.CancelledError:
+                    break
+
+        response_cleanup_task = asyncio.create_task(response_cleanup_loop())
+
+        from src.api.routes import responses as responses_routes
+        responses_routes._set_queue(asyncio.Queue(maxsize=1000))
+        partial_worker = asyncio.create_task(responses_routes.partial_write_worker())
 
     try:
         yield
     finally:
-        cache_cleanup_task.cancel()
-        response_cleanup_task.cancel()
+        # Gracefully shut down background tasks (only if they were started)
+        if cache_cleanup_task is not None:
+            cache_cleanup_task.cancel()
+        if response_cleanup_task is not None:
+            response_cleanup_task.cancel()
         for t in (cache_cleanup_task, response_cleanup_task):
+            if t is None:
+                continue
             try:
                 await t
             except asyncio.CancelledError:
                 pass
         # Drain partial-write worker
-        if responses_routes._partial_write_queue is not None:
-            await responses_routes._partial_write_queue.put(None)
-            try:
-                await asyncio.wait_for(partial_worker, timeout=5.0)
-            except asyncio.TimeoutError:
-                partial_worker.cancel()
+        if partial_worker is not None:
+            from src.api.routes import responses as responses_routes
+            if responses_routes._partial_write_queue is not None:
+                await responses_routes._partial_write_queue.put(None)
+                try:
+                    await asyncio.wait_for(partial_worker, timeout=5.0)
+                except asyncio.TimeoutError:
+                    partial_worker.cancel()
 
 
 def create_app() -> FastAPI:
