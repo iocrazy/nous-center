@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 export type PanelId = 'nodes' | 'workflows' | 'presets'
-export type OverlayId = 'dashboard' | 'models' | 'settings' | 'preset-detail' | 'api-management' | 'agents' | 'logs' | 'node-packages'
+export type OverlayId = 'dashboard' | 'models' | 'settings' | 'preset-detail' | 'api-management' | 'agents' | 'logs' | 'node-packages' | 'services' | 'apps'
 
 export interface ApiManagementOptions {
   presetId?: string

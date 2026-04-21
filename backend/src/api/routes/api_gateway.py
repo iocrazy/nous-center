@@ -21,7 +21,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import Integer, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
@@ -391,6 +391,89 @@ class MyServiceOut(BaseModel):
     total_units: int
     used_units: int
     remaining_units: int
+
+
+class CatalogServiceOut(BaseModel):
+    instance_id: int
+    instance_name: str
+    type: str
+    category: str | None
+    meter_dim: str | None
+    status: str
+    total_grants: int
+    active_grants: int
+    total_units: int
+    used_units: int
+    remaining_units: int
+
+
+@router.get(
+    "/services/catalog",
+    response_model=list[CatalogServiceOut],
+    dependencies=[Depends(require_admin)],
+)
+async def services_catalog(
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Admin catalog: every ServiceInstance + aggregate quota across all
+    grants. Used by the admin /services page to render a full-system
+    overview. Bearer-token users should hit /services/me instead."""
+    from sqlalchemy import func
+
+    # Collect all instances first.
+    instances = (await session.execute(
+        select(ServiceInstance).order_by(ServiceInstance.name)
+    )).scalars().all()
+
+    # Per-instance aggregates: grant counts + pack sums.
+    grant_counts_stmt = (
+        select(
+            ApiKeyGrant.instance_id,
+            func.count(ApiKeyGrant.id).label("total_grants"),
+            func.sum(
+                (ApiKeyGrant.status == "active").cast(Integer)
+            ).label("active_grants"),
+        )
+        .group_by(ApiKeyGrant.instance_id)
+    )
+    grant_counts = {
+        row.instance_id: (row.total_grants or 0, row.active_grants or 0)
+        for row in (await session.execute(grant_counts_stmt)).all()
+    }
+
+    pack_sums_stmt = (
+        select(
+            ApiKeyGrant.instance_id,
+            func.coalesce(func.sum(ResourcePack.total_units), 0).label("total_units"),
+            func.coalesce(func.sum(ResourcePack.used_units), 0).label("used_units"),
+        )
+        .select_from(ResourcePack)
+        .join(ApiKeyGrant, ApiKeyGrant.id == ResourcePack.grant_id)
+        .group_by(ApiKeyGrant.instance_id)
+    )
+    pack_sums = {
+        row.instance_id: (row.total_units or 0, row.used_units or 0)
+        for row in (await session.execute(pack_sums_stmt)).all()
+    }
+
+    out = []
+    for inst in instances:
+        total_grants, active_grants = grant_counts.get(inst.id, (0, 0))
+        total_units, used_units = pack_sums.get(inst.id, (0, 0))
+        out.append(CatalogServiceOut(
+            instance_id=inst.id,
+            instance_name=inst.name,
+            type=inst.type or "",
+            category=inst.category,
+            meter_dim=inst.meter_dim,
+            status=inst.status,
+            total_grants=total_grants,
+            active_grants=active_grants,
+            total_units=total_units,
+            used_units=used_units,
+            remaining_units=max(0, total_units - used_units),
+        ))
+    return out
 
 
 @router.get(

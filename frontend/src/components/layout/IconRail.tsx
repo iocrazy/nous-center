@@ -13,6 +13,8 @@ import {
   ListTodo,
   ScrollText,
   Package,
+  Activity,
+  AppWindow,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
@@ -23,6 +25,8 @@ import { useTasks } from '../../api/tasks'
 const OVERLAY_ROUTES: Record<OverlayId, string> = {
   dashboard: '/dashboard',
   models: '/models',
+  services: '/services',
+  apps: '/apps',
   'api-management': '/api-management',
   agents: '/agents',
   settings: '/settings',
@@ -40,6 +44,8 @@ const PANEL_ITEMS: { id: PanelId; icon: typeof CircuitBoard; label: string }[] =
 const OVERLAY_ITEMS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { id: 'models', icon: Layers, label: 'Models' },
+  { id: 'services', icon: Activity, label: 'Services' },
+  { id: 'apps', icon: AppWindow, label: 'Apps' },
   { id: 'api-management', icon: Link, label: 'API Management' },
   { id: 'agents', icon: Bot, label: 'Agents' },
 ]
