@@ -1,0 +1,7 @@
+{
+  "note": "PLACEHOLDER baseline. Run `cd backend && CUDA_VISIBLE_DEVICES='' python -m tests.evals.compact.runner` to generate real values; then copy latest_report.json to this path.",
+  "engine": "gzip-compact",
+  "fixtures_count": 0,
+  "avg_score": 0,
+  "results": []
+}
