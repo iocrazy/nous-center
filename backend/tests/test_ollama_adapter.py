@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from src.services.ollama_adapter import (
     ollama_chat_to_openai,
     openai_chat_to_ollama,
