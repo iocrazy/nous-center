@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Activity, AlertTriangle, ChevronRight } from 'lucide-react'
 import { useServicesCatalog, type CatalogService } from '../../api/apiGateway'
+import ServicePlayground from './ServicePlayground'
+import CodeSnippets from './CodeSnippets'
 
 export default function ServicesOverlay() {
   const { data: services, isLoading, error } = useServicesCatalog()
@@ -144,26 +146,67 @@ function ServiceRow({
         />
       </button>
 
-      {expanded && (
-        <div
-          style={{
-            padding: '12px 16px 16px 16px',
-            borderTop: '1px solid var(--border)',
-            color: 'var(--muted)',
-            fontSize: 13,
-          }}
-        >
-          <div className="grid grid-cols-3 gap-4">
-            <Stat label="总量" value={fmt(svc.total_units)} />
-            <Stat label="已用" value={fmt(svc.used_units)} />
-            <Stat label="剩余" value={fmt(svc.remaining_units)} />
-          </div>
-          <div className="mt-3 text-[12px]">
-            Playground + 资源包管理即将上线 (Lane F)。当前视图只做只读总览。
-          </div>
-        </div>
+      {expanded && <ServiceDetail svc={svc} />}
+    </div>
+  )
+}
+
+function ServiceDetail({ svc }: { svc: CatalogService }) {
+  const [tab, setTab] = useState<'playground' | 'snippets'>('playground')
+  return (
+    <div
+      style={{
+        padding: '12px 16px 16px 16px',
+        borderTop: '1px solid var(--border)',
+      }}
+    >
+      <div className="grid grid-cols-3 gap-4 mb-3">
+        <Stat label="总量" value={fmt(svc.total_units)} />
+        <Stat label="已用" value={fmt(svc.used_units)} />
+        <Stat label="剩余" value={fmt(svc.remaining_units)} />
+      </div>
+      <div
+        className="flex items-center gap-1 mb-3"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <TabButton active={tab === 'playground'} onClick={() => setTab('playground')}>
+          Playground
+        </TabButton>
+        <TabButton active={tab === 'snippets'} onClick={() => setTab('snippets')}>
+          如何调用
+        </TabButton>
+      </div>
+      {tab === 'playground' ? (
+        <ServicePlayground svc={svc} />
+      ) : (
+        <CodeSnippets svc={svc} />
       )}
     </div>
+  )
+}
+
+function TabButton({
+  active, onClick, children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: '6px 12px',
+        fontSize: 13,
+        color: active ? 'var(--fg)' : 'var(--muted)',
+        borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+        background: 'transparent',
+        cursor: 'pointer',
+      }}
+    >
+      {children}
+    </button>
   )
 }
 
