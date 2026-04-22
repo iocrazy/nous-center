@@ -13,6 +13,8 @@ import { useToastStore } from './stores/toast'
 
 const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/models': 'models',
+  '/services': 'services',
+  '/apps': 'apps',
   '/agents': 'agents',
   '/settings': 'settings',
   '/dashboard': 'dashboard',
@@ -84,6 +86,8 @@ export default function App() {
         <Route path="/workflows" element={<MainLayout />} />
         <Route path="/workflows/:id" element={<MainLayout workflowRoute />} />
         <Route path="/models" element={<MainLayout />} />
+        <Route path="/services" element={<MainLayout />} />
+        <Route path="/apps" element={<MainLayout />} />
         <Route path="/agents" element={<MainLayout />} />
         <Route path="/settings" element={<MainLayout />} />
         <Route path="/dashboard" element={<MainLayout />} />

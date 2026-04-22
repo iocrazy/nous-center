@@ -123,7 +123,7 @@ async def test_api_chat_stream_ndjson(
             if s:
                 lines.append(s)
 
-    parsed = [json.loads(l) for l in lines]
+    parsed = [json.loads(ln) for ln in lines]
     assert parsed[-1]["done"] is True
     assert parsed[-1]["done_reason"] == "stop"
     assert any(obj.get("done") is False for obj in parsed[:-1])
