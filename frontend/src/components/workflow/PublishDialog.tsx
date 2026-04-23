@@ -36,20 +36,34 @@ export default function PublishDialog({
   const publish = usePublishWorkflow()
   const resetMutation = publish.reset
 
+  // Effect 1: close → wipe local state + reset mutation. ONLY depend on
+  // open + resetMutation (resetMutation is stable across React Query
+  // renders). Putting `nodes` here would cause this effect to refire
+  // every render the parent passed a fresh `nodes` literal, which used
+  // to feed an infinite-loop the manual gate caught.
   useEffect(() => {
-    if (!open) {
-      setStep(1)
-      setInputNodeIds([])
-      setOutputNodeIds([])
-      setName('')
-      setLabel('')
-      setCategory('app')
-      resetMutation()
-      return
-    }
-    if (nodes.length === 0) return
-    // Best-guess defaults: anything looking like input → step 1, anything
-    // looking like output → step 2.
+    if (open) return
+    setStep(1)
+    setInputNodeIds([])
+    setOutputNodeIds([])
+    setName('')
+    setLabel('')
+    setCategory('app')
+    resetMutation()
+  }, [open, resetMutation])
+
+  // Effect 2: when open and nodes exist, pick default I/O selections.
+  // setState with identical arrays is a React no-op (bail-out via
+  // Object.is on each entry would not bail; but the values are computed
+  // deterministically from `nodes`, so re-running with the same `nodes`
+  // contents produces equal-by-value arrays — React still bails on the
+  // same reference only). To avoid superfluous setState calls when the
+  // parent passes a fresh `nodes` literal each render, we depend on
+  // `nodes` shallowly: same array length + same id sequence is good
+  // enough.
+  const nodesKey = nodes.map((n) => n.id).join('|')
+  useEffect(() => {
+    if (!open || nodes.length === 0) return
     const inputDefaults = nodes
       .filter((n) => /input|primitive|load/i.test(n.type ?? ''))
       .map((n) => n.id)
@@ -58,8 +72,8 @@ export default function PublishDialog({
       .map((n) => n.id)
     setInputNodeIds(inputDefaults)
     setOutputNodeIds(outputDefaults)
-    // resetMutation is stable across renders (React Query memoizes it).
-  }, [open, nodes, resetMutation])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, nodesKey])
 
   const exposedInputs = useMemo<ExposedParam[]>(
     () =>
