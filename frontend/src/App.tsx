@@ -30,8 +30,15 @@ function RouteSync() {
   const setOverlay = usePanelStore((s) => s.setOverlay)
 
   useEffect(() => {
-    // `/workflows` and `/workflows/:id` share the workflow editor (no overlay).
-    if (location.pathname.startsWith('/workflows')) {
+    // `/workflows/:id` is the canvas editor (no overlay); `/workflows`
+    // (no id) is the v3 m08 list page.
+    if (location.pathname === '/workflows') {
+      if (usePanelStore.getState().activeOverlay !== 'workflows-list') {
+        setOverlay('workflows-list')
+      }
+      return
+    }
+    if (location.pathname.startsWith('/workflows/')) {
       if (usePanelStore.getState().activeOverlay !== null) setOverlay(null)
       return
     }

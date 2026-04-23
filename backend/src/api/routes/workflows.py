@@ -32,11 +32,14 @@ async def create_workflow(
 @router.get("", response_model=list[WorkflowOut])
 async def list_workflows(
     is_template: bool | None = None,
+    auto_generated: bool | None = None,
     session: AsyncSession = Depends(get_async_session),
 ):
     stmt = select(Workflow).order_by(Workflow.updated_at.desc())
     if is_template is not None:
         stmt = stmt.where(Workflow.is_template == is_template)
+    if auto_generated is not None:
+        stmt = stmt.where(Workflow.auto_generated == auto_generated)
     result = await session.execute(stmt)
     return result.scalars().all()
 

@@ -351,12 +351,18 @@ class WorkflowOut(BaseModel):
     edges: list
     is_template: bool
     status: str
+    auto_generated: bool = False
+    generated_for_service_id: int | None = None
     created_at: datetime
     updated_at: datetime
 
     @field_serializer("id")
     def serialize_id(self, v: int) -> str:
         return str(v)
+
+    @field_serializer("generated_for_service_id")
+    def serialize_back_link(self, v: int | None) -> str | None:
+        return str(v) if v is not None else None
 
 
 # --- v3 services / workflow publish (see routes/services.py + routes/workflow_publish.py) ---
