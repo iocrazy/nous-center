@@ -1,26 +1,28 @@
 import {
   LayoutDashboard,
   Layers,
-  CircuitBoard,
   GitBranch,
-  Settings,
+  Activity,
+  KeyRound,
+  BarChart3,
+  ScrollText,
   SlidersHorizontal,
-  Link,
-  Bot,
   Sun,
   Moon,
   Monitor,
   ListTodo,
-  ScrollText,
-  Package,
-  Activity,
-  AppWindow,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
 import { useThemeStore } from '../../stores/theme'
 import { useExecutionStore } from '../../stores/execution'
 import { useTasks } from '../../api/tasks'
+
+// v3 IA: 8 main navs (Dashboard / Services / Workflow / Engines / API Key /
+// Usage / Logs / Settings) + 3 theme buttons + GPU pill.
+//
+// Workflow is the panel-style entry (opens the canvas tabs); the rest are
+// overlay-style routes.
 
 const OVERLAY_ROUTES: Record<OverlayId, string> = {
   dashboard: '/dashboard',
@@ -32,22 +34,27 @@ const OVERLAY_ROUTES: Record<OverlayId, string> = {
   settings: '/settings',
   logs: '/logs',
   'node-packages': '/node-packages',
-  'preset-detail': '/', // no dedicated route
+  'preset-detail': '/',
+  'service-detail': '/services',
+  usage: '/usage',
 }
 
-const PANEL_ITEMS: { id: PanelId; icon: typeof CircuitBoard; label: string }[] = [
-  { id: 'nodes', icon: CircuitBoard, label: 'Nodes' },
-  { id: 'workflows', icon: GitBranch, label: 'Workflows' },
-  { id: 'presets', icon: Settings, label: 'Presets' },
+const PANEL_ITEMS: { id: PanelId; icon: typeof GitBranch; label: string }[] = [
+  // v3 keeps Workflow on the rail as a panel/canvas entry; nodes/presets are
+  // editor-side panels and don't get a top-level rail spot anymore.
+  { id: 'workflows', icon: GitBranch, label: 'Workflow' },
 ]
 
-const OVERLAY_ITEMS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[] = [
+const TOP_NAVS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { id: 'models', icon: Layers, label: 'Models' },
-  { id: 'services', icon: Activity, label: 'Services' },
-  { id: 'apps', icon: AppWindow, label: 'Apps' },
-  { id: 'api-management', icon: Link, label: 'API Management' },
-  { id: 'agents', icon: Bot, label: 'Agents' },
+  { id: 'services', icon: Activity, label: '服务' },
+]
+
+const MID_NAVS: { id: OverlayId; icon: typeof Layers; label: string }[] = [
+  { id: 'models', icon: Layers, label: '引擎库' },
+  { id: 'api-management', icon: KeyRound, label: 'API Key' },
+  { id: 'usage', icon: BarChart3, label: '用量' },
+  { id: 'logs', icon: ScrollText, label: '日志' },
 ]
 
 export default function IconRail() {
@@ -58,7 +65,6 @@ export default function IconRail() {
 
   const navigateOverlay = (id: OverlayId) => {
     const target = OVERLAY_ROUTES[id]
-    // Toggle: if already on that route, go home
     if (activeOverlay === id || location.pathname === target) {
       navigate('/')
     } else {
@@ -89,11 +95,14 @@ export default function IconRail() {
         N
       </div>
 
-      {/* Overlay buttons (Dashboard, Models) */}
-      {OVERLAY_ITEMS.map(({ id, icon: Icon, label }) => (
+      {/* Top: Dashboard, Services */}
+      {TOP_NAVS.map(({ id, icon: Icon, label }) => (
         <RailButton
           key={id}
-          active={activeOverlay === id}
+          active={
+            activeOverlay === id ||
+            (id === 'services' && activeOverlay === 'service-detail')
+          }
           onClick={() => navigateOverlay(id)}
           label={label}
         >
@@ -101,13 +110,9 @@ export default function IconRail() {
         </RailButton>
       ))}
 
-      {/* Separator */}
-      <div
-        className="my-1.5"
-        style={{ width: 24, height: 1, background: 'var(--border)' }}
-      />
+      <Sep />
 
-      {/* Panel buttons */}
+      {/* Workflow (panel) */}
       {PANEL_ITEMS.map(({ id, icon: Icon, label }) => (
         <RailButton
           key={id}
@@ -122,35 +127,33 @@ export default function IconRail() {
         </RailButton>
       ))}
 
+      <Sep />
+
+      {/* Mid: Engines, API Key, Usage, Logs */}
+      {MID_NAVS.map(({ id, icon: Icon, label }) => (
+        <RailButton
+          key={id}
+          active={activeOverlay === id}
+          onClick={() => navigateOverlay(id)}
+          label={label}
+        >
+          <Icon size={18} />
+        </RailButton>
+      ))}
+
       {/* Bottom section */}
       <div className="mt-auto flex flex-col items-center gap-1">
         <TaskRailButton />
 
         <RailButton
-          active={activeOverlay === 'node-packages'}
-          onClick={() => navigateOverlay('node-packages')}
-          label="Node Packages"
-        >
-          <Package size={18} />
-        </RailButton>
-
-        <RailButton
-          active={activeOverlay === 'logs'}
-          onClick={() => navigateOverlay('logs')}
-          label="Logs"
-        >
-          <ScrollText size={18} />
-        </RailButton>
-
-        <RailButton
           active={activeOverlay === 'settings'}
           onClick={() => navigateOverlay('settings')}
-          label="Settings"
+          label="设置"
         >
           <SlidersHorizontal size={18} />
         </RailButton>
 
-        <div className="my-1" style={{ width: 24, height: 1, background: 'var(--border)' }} />
+        <Sep />
 
         <ThemeButton active={mode === 'light'} onClick={() => setMode('light')}>
           <Sun size={12} />
@@ -170,6 +173,15 @@ export default function IconRail() {
         </div>
       </div>
     </div>
+  )
+}
+
+function Sep() {
+  return (
+    <div
+      className="my-1.5"
+      style={{ width: 24, height: 1, background: 'var(--border)' }}
+    />
   )
 }
 

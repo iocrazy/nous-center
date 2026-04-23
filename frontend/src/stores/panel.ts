@@ -1,7 +1,19 @@
 import { create } from 'zustand'
 
 export type PanelId = 'nodes' | 'workflows' | 'presets'
-export type OverlayId = 'dashboard' | 'models' | 'settings' | 'preset-detail' | 'api-management' | 'agents' | 'logs' | 'node-packages' | 'services' | 'apps'
+export type OverlayId =
+  | 'dashboard'
+  | 'models'           // 引擎库
+  | 'settings'
+  | 'preset-detail'
+  | 'api-management'   // API Key
+  | 'agents'           // legacy — kept addressable for now, hidden in v3 rail
+  | 'logs'
+  | 'node-packages'    // legacy — moved into Settings sub-page in v3
+  | 'services'         // v3 服务列表
+  | 'apps'             // legacy alias of services; kept so old links/state don't 404
+  | 'service-detail'   // v3 服务详情（id 从 URL 取）
+  | 'usage'            // v3 新
 
 export interface ApiManagementOptions {
   presetId?: string
