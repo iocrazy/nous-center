@@ -292,6 +292,111 @@ frontend/src/api/
 2. **另开 session 跑 `/plan-eng-review`**：基于本文档 + 6 个开放问题，锁定实现 plan
 3. **再另开 session 开始实现**：按 plan 走，建议先做骨架（数据模型 + API 契约 + 1 张关键页 m02）跑通最简闭环
 
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 10 issues, 2 critical gaps (migration 幂等性 + deferred() perf), 0 unresolved |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+| Outside Voice | Claude subagent | Cross-model challenge | 1 | issues_found | 11 findings (9 采纳 → PR-A/PR-B · 2 拒绝 · 用户 sovereignty) |
+
+**CODEX:** Codex CLI 本地配置有格式错（`~/.codex/config.toml` `tui.alternate_screen`），回落 Claude 子 agent 做独立评审。输出已合入本文档 "Review Findings" 追加。
+
+**CROSS-MODEL:**
+- 最根本的分歧：Outside voice 认为"不该合表，两表保留 + 路由层 normalize" — 用户坚持 v3 合表（方案 C）。User sovereignty 记录在案。
+- Outside voice 认为 "SchemaDrivenForm 仅 Playwright E2E 不够" — 用户采纳，PR-B 升级含 SchemaDrivenForm/Output Vitest unit test。
+
+**UNRESOLVED:** 0 项（所有决策都有明确答案）
+
+**VERDICT:** ENG CLEARED — ready to implement. 建议顺序：PR-A（backend + migration + frontend placeholder stub）→ PR-B（frontend）。
+
+## 本轮 Plan-Eng-Review 锁定的实施细节
+
+以下是 /plan-eng-review 过程中（Step 0 + 4 sections + outside voice）拍板的**实施规范**。PR-A/PR-B 执行时以此为准。
+
+### PR-A Backend（~10 files）
+
+**Migration `2026-04-22-services-v3.sql`** — 单事务内完成：
+1. `service_instances` 加列：`workflow_id BIGINT NULL`, `workflow_snapshot JSONB DEFAULT '{}'::jsonb`, `exposed_inputs JSONB DEFAULT '[]'::jsonb`, `exposed_outputs JSONB DEFAULT '[]'::jsonb`, `snapshot_hash TEXT NULL`, `snapshot_schema_version INT DEFAULT 1`, `version INT DEFAULT 1`。
+2. `ALTER TABLE service_instances ADD CONSTRAINT name_unique UNIQUE (name)` + `CHECK (name ~ '^[a-z][a-z0-9-]{1,62}$')`。
+3. `workflows` 加列：`auto_generated BOOLEAN DEFAULT FALSE`, `generated_for_service_id BIGINT NULL REFERENCES service_instances(id) ON DELETE SET NULL`。
+4. `ApiKeyGrant.instance_id` → `service_id`（rename column + rename unique constraint + rename index）。
+5. 数据回填：每个 `workflow_apps` 行 → `service_instances` 行（拷 name/snapshot/exposed_i/o），每个 `InstanceApiKey.instance_id NOT NULL` → `api_key_grants` 新行。
+6. `UPDATE instance_api_keys SET instance_id = NULL WHERE instance_id IS NOT NULL`。
+7. `DROP TABLE workflow_apps`（按现 ORM 关系清理）。
+8. `CREATE INDEX idx_service_snapshot_hash ON service_instances (snapshot_hash)` — 非 unique，为 dedup 留门。
+9. 幂等保护：每步用 `IF NOT EXISTS` / `IF EXISTS`；重跑应 no-op。
+
+**Models：**
+- `service_instance.py`: 加字段 + `deferred(workflow_snapshot, exposed_inputs, exposed_outputs)`
+- `workflow.py`: 加 `auto_generated`, `generated_for_service_id`
+- `api_gateway.py`: 改 column 名
+- `workflow_app.py`: **删除文件** + 更新 `__init__.py` 导入
+
+**Services 层：**
+- `model_resolver.py`: 删 Legacy 分支，重命名 `resolve_target_instance` → `resolve_target_service`
+- `quota_gate.py`: 参数 `instance_id` → `service_id`
+
+**Routes：**
+- `apps.py`: `execute_app()` 改走 `resolve_target_service` + `consume_for_request`，units=1 dim="calls"
+- `openai_compat.py`: dispatch 改 `resolve_target_service` + `.options(undefer(ServiceInstance.workflow_snapshot))`
+- `services.py`（新）：CRUD + 快速开通路径。name regex 校验通过 Pydantic validator
+- `workflow_publish.py`（新）：POST `/api/v1/workflows/{id}/publish`。发布事务内断言每个 `exposed.node_id ∈ snapshot.nodes`，否则 422
+
+**Frontend placeholder stubs**（防 master 破坏）：
+- `frontend/src/pages/ServicesListStub.tsx` — "v3 重构中，功能在 PR-B"
+- `frontend/src/pages/WorkflowsListStub.tsx` — 同
+- 清除老 `ServicesOverlay` / `AppsOverlay` 路由指向占位
+
+**Tests (PR-A)**：
+- `test_services_v3_migration.py`: Legacy→Grant 回填、WorkflowApp→Service 回填、rerun idempotent
+- `test_services_crud.py`: name regex、冲突、deprecated 仍服务
+- `test_workflow_publish.py`: version bump、snapshot_hash 计算、exposed_node_id 校验
+- `test_services_dispatch.py`: 统一 dispatch + SQL query counter 断言（防 deferred 漏 undefer）
+- `test_apps_grant_auth.py`: /v1/apps/{name} 无 grant → 403，配额用尽 → 402
+- `test_model_resolver.py`: 删 Legacy 分支 asserts
+- `test_api_gateway_e2e.py`: 字段重命名回归
+
+**手动门禁**：PR-A merge 前 `pg_dump` 当前 dev DB → fresh PG → run migration → 验证。
+
+### PR-B Frontend（~9 files + e2e + unit）
+
+**Pages：**
+- `ServicesList.tsx` (m02)
+- `ServiceDetail.tsx` (m03，含 5 tabs：总览 / Playground / API 文档 / Key 授权 / 用量)
+
+**Components：**
+- `services/CreateServiceDialog.tsx` — 快速开通向导
+- `workflow/PublishDialog.tsx` — 发布向导，3 step
+- `playground/SchemaDrivenForm.tsx` — 从 exposed_inputs 自动渲染（核心）
+- `playground/SchemaDrivenOutput.tsx` — 按 output mime 渲染
+- `IconRail.tsx` — 精简到 8 主 nav
+
+**API hooks：**
+- `frontend/src/api/services.ts` — CRUD + publish hooks
+
+**Tests (PR-B)**：
+- `e2e/quick-provision-llm.spec.ts` — 快速开通 → Playground run
+- `e2e/publish-workflow.spec.ts` — 画布发布 → 生成服务
+- `e2e/playground-run.spec.ts` — 服务详情 Playground 全流程
+- `components/playground/SchemaDrivenForm.test.tsx` — Vitest unit (T12 采纳)
+- `components/playground/SchemaDrivenOutput.test.tsx` — Vitest unit (T12 采纳)
+
+### 设计细节补充（Plan-Eng-Review 锁定）
+
+- **服务命名** = `^[a-z][a-z0-9-]{1,62}$`，禁止重命名，只允许 deprecate + new name
+- **节点 ID** = snowflake / UUID 字符串（如 `"nd_5g2k9m"`），删除不复用。schema 里 `node_id` 字段 type = string
+- **service.status 生命周期**：`active` → `paused` → `deprecated` → `retired`。deprecated 仍响应调用但 log warn；retired 返 410
+- **trivial workflow**: `workflow.auto_generated=True` + `generated_for_service_id` FK (ondelete=SET NULL)。m08 列表默认 filter `auto_generated=false`
+- **snapshot_hash**: index=True, unique=False（允多服务共享同 snapshot，为 dedup 留门）
+- **snapshot_schema_version**: 加在 services 行上，默认 1。ComfyUI 导入未来可增版本
+- **Grant.service_id**: `ApiKeyGrant.instance_id` 改名
+- **Grant-level ResourcePack** 唯一：不做跨服务共享池
+- **deferred() + 强制 undefer**: dispatch 路径显式 `.options(undefer(...))`，有 SQL counter 测试
+
 ## 附：术语表
 
 | 术语 | 定义 |
