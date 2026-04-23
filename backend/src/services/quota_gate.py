@@ -25,17 +25,17 @@ logger = logging.getLogger(__name__)
 
 
 class NoActiveGrant(Exception):
-    """The key has no active grant for this instance — 403-shaped, not 402."""
+    """The key has no active grant for this service — 403-shaped, not 402."""
 
 
 async def consume_for_request(
     session: AsyncSession,
     *,
     api_key_id: int,
-    instance_id: int,
+    service_id: int,
     units: int,
 ) -> tuple[ConsumeResult, list[AlertEvent]]:
-    """Atomically charge `units` against the grant for (api_key, instance).
+    """Atomically charge `units` against the grant for (api_key, service).
 
     Returns (ConsumeResult, events). Raises:
       - NoActiveGrant: caller is not authorized; return 403.
@@ -44,13 +44,13 @@ async def consume_for_request(
     grant_id = await session.scalar(
         select(ApiKeyGrant.id).where(
             ApiKeyGrant.api_key_id == api_key_id,
-            ApiKeyGrant.instance_id == instance_id,
+            ApiKeyGrant.service_id == service_id,
             ApiKeyGrant.status == "active",
         )
     )
     if grant_id is None:
         raise NoActiveGrant(
-            f"api_key {api_key_id} has no active grant on instance {instance_id}",
+            f"api_key {api_key_id} has no active grant on service {service_id}",
         )
 
     result = await consume(session, grant_id=grant_id, units=units)

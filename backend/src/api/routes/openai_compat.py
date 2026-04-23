@@ -18,7 +18,8 @@ from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
 from src.models.service_instance import ServiceInstance
 from src.models.instance_api_key import InstanceApiKey
 from src.models.database import get_async_session
-from src.services.model_resolver import ModelNotFound, resolve_target_instance
+
+from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.prompt_composer import (
     AgentLoadFailed,
     AgentNotFound,
@@ -76,8 +77,8 @@ def _supports_thinking(engine_name: str) -> bool:
     return any(p in n for p in _THINKING_MODEL_PATTERNS)
 
 
-async def _post_consume_quota(api_key_id: int, instance_id: int, units: int) -> None:
-    """Charge `units` against the (api_key, instance) grant post-inference.
+async def _post_consume_quota(api_key_id: int, service_id: int, units: int) -> None:
+    """Charge `units` against the (api_key, service) grant post-inference.
 
     Best-effort: legacy keys (no grant) are silently skipped; exhaustion is
     logged but does not fail the already-completed request. A pre-flight
@@ -94,14 +95,15 @@ async def _post_consume_quota(api_key_id: int, instance_id: int, units: int) -> 
     async with sf() as s:
         try:
             await consume_for_request(
-                s, api_key_id=api_key_id, instance_id=instance_id, units=units,
+                s, api_key_id=api_key_id, service_id=service_id, units=units,
             )
+            await s.commit()
         except NoActiveGrant:
             return
         except QuotaExhausted:
             logger.warning(
-                "grant exhausted post-inference for api_key=%s instance=%s",
-                api_key_id, instance_id,
+                "grant exhausted post-inference for api_key=%s service=%s",
+                api_key_id, service_id,
             )
 
 
@@ -145,24 +147,31 @@ async def chat_completions(
     After resolution, instance.source_type selects the handler:
       - "model"    → vllm subprocess (below)
       - "workflow" → WorkflowExecutor (not yet wired; 501)
-      - "app"      → WorkflowApp execute (not yet wired; 501)
+      - "app"      → 501 (v3: app == workflow-backed service; routed via /v1/apps)
     """
     instance, api_key = auth
 
     body = await request.json()
     requested_model = body.get("model") or None
 
-    # Resolve target instance. For legacy keys the resolver is a no-op
-    # (returns the already-bound instance); for M:N keys it picks by name.
+    # Resolve target service. Legacy 1:1 keys (instance set by the auth dep)
+    # short-circuit; M:N keys use the v3 grant lookup.
     if instance is None:
         try:
-            instance = await resolve_target_instance(
+            instance = await resolve_target_service(
                 session, api_key=api_key, requested_model=requested_model,
             )
         except ModelNotFound as e:
             raise NotFoundError(str(e), code="model_not_found")
         if instance.status != "active":
             raise HTTPException(403, detail="Instance is inactive")
+        # v3: dispatch needs the snapshot if the service is workflow-backed.
+        # Force-load deferred columns now so handlers below see real data
+        # (covered by test_services_dispatch.py SQL counter assertion).
+        await session.refresh(
+            instance,
+            attribute_names=["workflow_snapshot", "exposed_inputs", "exposed_outputs"],
+        )
 
     # Dispatch by source_type
     if instance.source_type == "workflow":

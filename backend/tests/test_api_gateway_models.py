@@ -67,12 +67,12 @@ async def test_api_key_grant_unique_per_key_instance_pair(db_session, sample_ins
     await db_session.commit()
     await db_session.refresh(key)
 
-    g1 = ApiKeyGrant(api_key_id=key.id, instance_id=sample_instance.id)
+    g1 = ApiKeyGrant(api_key_id=key.id, service_id=sample_instance.id)
     db_session.add(g1)
     await db_session.commit()
 
     # Second grant on the same (key, instance) must fail unique constraint.
-    g2 = ApiKeyGrant(api_key_id=key.id, instance_id=sample_instance.id)
+    g2 = ApiKeyGrant(api_key_id=key.id, service_id=sample_instance.id)
     db_session.add(g2)
     with pytest.raises(Exception):
         await db_session.commit()
@@ -88,7 +88,7 @@ async def test_api_key_grant_default_active(db_session, sample_instance):
     await db_session.commit()
     await db_session.refresh(key)
 
-    grant = ApiKeyGrant(api_key_id=key.id, instance_id=sample_instance.id)
+    grant = ApiKeyGrant(api_key_id=key.id, service_id=sample_instance.id)
     db_session.add(grant)
     await db_session.commit()
     await db_session.refresh(grant)
@@ -106,7 +106,7 @@ async def test_resource_pack_defaults(db_session, sample_instance):
     db_session.add(key)
     await db_session.commit()
     await db_session.refresh(key)
-    grant = ApiKeyGrant(api_key_id=key.id, instance_id=sample_instance.id)
+    grant = ApiKeyGrant(api_key_id=key.id, service_id=sample_instance.id)
     db_session.add(grant)
     await db_session.commit()
     await db_session.refresh(grant)
@@ -132,7 +132,7 @@ async def test_alert_rule_defaults_enabled(db_session, sample_instance):
     db_session.add(key)
     await db_session.commit()
     await db_session.refresh(key)
-    grant = ApiKeyGrant(api_key_id=key.id, instance_id=sample_instance.id)
+    grant = ApiKeyGrant(api_key_id=key.id, service_id=sample_instance.id)
     db_session.add(grant)
     await db_session.commit()
     await db_session.refresh(grant)

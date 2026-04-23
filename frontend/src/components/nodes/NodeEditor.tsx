@@ -32,8 +32,9 @@ import ApiManagementOverlay from '../overlays/ApiManagementOverlay'
 import AgentManagementOverlay from '../overlays/AgentManagementOverlay'
 import LogsOverlay from '../overlays/LogsOverlay'
 import NodePackagesOverlay from '../overlays/NodePackagesOverlay'
-import ServicesOverlay from '../overlays/ServicesOverlay'
-import AppsOverlay from '../overlays/AppsOverlay'
+import ServicesListStub from '../../pages/ServicesListStub'
+// WorkflowsListStub lives at frontend/src/pages/WorkflowsListStub.tsx —
+// PR-B will wire it into the IconRail "Workflows" nav item.
 import TaskPanel from '../panels/TaskPanel'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
@@ -326,8 +327,8 @@ export default function NodeEditor() {
       {activeOverlay === 'agents' && <AgentManagementOverlay />}
       {activeOverlay === 'logs' && <LogsOverlay />}
       {activeOverlay === 'node-packages' && <NodePackagesOverlay />}
-      {activeOverlay === 'services' && <ServicesOverlay />}
-      {activeOverlay === 'apps' && <AppsOverlay />}
+      {activeOverlay === 'services' && <ServicesListStub />}
+      {activeOverlay === 'apps' && <ServicesListStub />}
 
       {/* Task panel */}
       <TaskPanel open={taskPanelOpen} onClose={toggleTaskPanel} />

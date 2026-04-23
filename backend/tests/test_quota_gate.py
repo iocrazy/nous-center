@@ -44,7 +44,7 @@ async def _make_kit(db_session, *, status: str = "active", pack_total: int = 100
     await db_session.refresh(key)
 
     grant = ApiKeyGrant(
-        api_key_id=key.id, instance_id=inst.id, status=status,
+        api_key_id=key.id, service_id=inst.id, status=status,
     )
     db_session.add(grant)
     await db_session.commit()
@@ -63,7 +63,7 @@ async def _make_kit(db_session, *, status: str = "active", pack_total: int = 100
 async def test_happy_path_consumes_and_returns(db_session):
     inst, key, _, _ = await _make_kit(db_session)
     result, events = await consume_for_request(
-        db_session, api_key_id=key.id, instance_id=inst.id, units=100,
+        db_session, api_key_id=key.id, service_id=inst.id, units=100,
     )
     assert result.remaining_units == 900
     assert events == []
@@ -86,7 +86,7 @@ async def test_no_grant_raises(db_session):
 
     with pytest.raises(NoActiveGrant):
         await consume_for_request(
-            db_session, api_key_id=key.id, instance_id=inst.id, units=1,
+            db_session, api_key_id=key.id, service_id=inst.id, units=1,
         )
 
 
@@ -95,7 +95,7 @@ async def test_paused_grant_raises(db_session):
     inst, key, _, _ = await _make_kit(db_session, status="paused")
     with pytest.raises(NoActiveGrant):
         await consume_for_request(
-            db_session, api_key_id=key.id, instance_id=inst.id, units=1,
+            db_session, api_key_id=key.id, service_id=inst.id, units=1,
         )
 
 
@@ -104,7 +104,7 @@ async def test_exhausted_pack_raises(db_session):
     inst, key, _, _ = await _make_kit(db_session, pack_total=10)
     with pytest.raises(QuotaExhausted):
         await consume_for_request(
-            db_session, api_key_id=key.id, instance_id=inst.id, units=100,
+            db_session, api_key_id=key.id, service_id=inst.id, units=100,
         )
 
 
@@ -115,7 +115,7 @@ async def test_alert_fires_on_threshold_cross(db_session):
     await db_session.commit()
 
     _, events = await consume_for_request(
-        db_session, api_key_id=key.id, instance_id=inst.id, units=60,
+        db_session, api_key_id=key.id, service_id=inst.id, units=60,
     )
     assert len(events) == 1
     assert events[0].observed_percent == 60

@@ -30,7 +30,7 @@ from src.models.api_gateway import ApiKeyGrant
 from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
-from src.services.model_resolver import ModelNotFound, resolve_target_instance
+from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.ollama_adapter import (
     ollama_chat_to_openai,
     ollama_generate_to_openai,
@@ -56,7 +56,7 @@ async def _resolve_model_instance(
             raise HTTPException(403, detail="Instance is inactive")
         return instance
     try:
-        return await resolve_target_instance(
+        return await resolve_target_service(
             session, api_key=api_key, requested_model=requested_model,
         )
     except ModelNotFound as e:
@@ -325,7 +325,7 @@ async def ollama_tags(
     else:
         stmt = (
             select(ServiceInstance)
-            .join(ApiKeyGrant, ApiKeyGrant.instance_id == ServiceInstance.id)
+            .join(ApiKeyGrant, ApiKeyGrant.service_id == ServiceInstance.id)
             .where(
                 ApiKeyGrant.api_key_id == api_key.id,
                 ApiKeyGrant.status == "active",

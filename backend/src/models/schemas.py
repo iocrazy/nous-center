@@ -359,42 +359,24 @@ class WorkflowOut(BaseModel):
         return str(v)
 
 
-# --- Workflow Apps ---
+# --- v3 services / workflow publish (see routes/services.py + routes/workflow_publish.py) ---
+
 
 class ExposedParam(BaseModel):
+    """Shared shape for both inputs and outputs of a published service.
+
+    v3 names (`key` / `input_name`) are preferred. The legacy aliases
+    `api_name` / `param_key` are accepted for backward compat with rows
+    backfilled from `workflow_apps`.
+    """
     node_id: str
-    param_key: str
-    api_name: str
-    param_type: str = "string"
-    description: str = ""
+    key: str | None = None
+    input_name: str | None = None
+    label: str = ""
+    type: str = "string"
     required: bool = True
     default: Any = None
-
-
-class WorkflowAppPublish(BaseModel):
-    name: str = Field(..., pattern=r"^[a-z0-9][a-z0-9-]*$", max_length=100)
-    display_name: str = Field(..., max_length=200)
-    description: str = ""
-    exposed_inputs: list[ExposedParam] = []
-    exposed_outputs: list[ExposedParam] = []
-
-
-class WorkflowAppOut(BaseModel):
-    model_config = {"from_attributes": True}
-
-    id: int
-    name: str
-    display_name: str
-    description: str
-    workflow_id: int
-    workflow_snapshot: dict
-    active: bool
-    exposed_inputs: list
-    exposed_outputs: list
-    call_count: int
-    created_at: datetime
-    updated_at: datetime
-
-    @field_serializer("id", "workflow_id")
-    def serialize_ids(self, v: int) -> str:
-        return str(v)
+    constraints: dict = {}
+    # legacy aliases — accepted on input, ignored on output
+    api_name: str | None = None
+    param_key: str | None = None

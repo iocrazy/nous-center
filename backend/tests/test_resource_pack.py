@@ -39,7 +39,7 @@ async def _make_grant_with_pack(
     await session.commit()
     await session.refresh(key)
 
-    grant = ApiKeyGrant(api_key_id=key.id, instance_id=inst.id)
+    grant = ApiKeyGrant(api_key_id=key.id, service_id=inst.id)
     session.add(grant)
     await session.commit()
     await session.refresh(grant)

@@ -125,7 +125,7 @@ async def verify_bearer_token_any(
     """Like verify_bearer_token but tolerates M:N keys (instance_id NULL).
 
     Returned instance is None for M:N keys; the caller is expected to use
-    `model_resolver.resolve_target_instance(api_key, request.model)` to
+    `model_resolver.resolve_target_service(api_key, request.model)` to
     pick the target ServiceInstance, then enforce rate limits on it.
 
     Legacy keys (instance_id set) behave exactly as verify_bearer_token:

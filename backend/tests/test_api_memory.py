@@ -23,7 +23,6 @@ import src.models.instance_api_key  # noqa: F401
 import src.models.model_metadata  # noqa: F401
 import src.models.workflow  # noqa: F401
 import src.models.execution_task  # noqa: F401
-import src.models.workflow_app  # noqa: F401
 import src.models.context_cache  # noqa: F401
 import src.models.response_session  # noqa: F401
 
