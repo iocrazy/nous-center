@@ -35,6 +35,7 @@ import NodePackagesOverlay from '../overlays/NodePackagesOverlay'
 import ServicesList from '../../pages/ServicesList'
 import ServiceDetailRoute from '../../pages/ServiceDetailRoute'
 import WorkflowsList from '../../pages/WorkflowsList'
+import UsagePage from '../../pages/UsagePage'
 import TaskPanel from '../panels/TaskPanel'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
@@ -331,6 +332,7 @@ export default function NodeEditor() {
       {activeOverlay === 'apps' && <ServicesList />}
       {activeOverlay === 'service-detail' && <ServiceDetailRoute />}
       {activeOverlay === 'workflows-list' && <WorkflowsList />}
+      {activeOverlay === 'usage' && <UsagePage />}
 
       {/* Task panel */}
       <TaskPanel open={taskPanelOpen} onClose={toggleTaskPanel} />
