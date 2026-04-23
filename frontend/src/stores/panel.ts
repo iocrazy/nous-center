@@ -13,6 +13,7 @@ export type OverlayId =
   | 'services'         // v3 服务列表
   | 'apps'             // legacy alias of services; kept so old links/state don't 404
   | 'service-detail'   // v3 服务详情（id 从 URL 取）
+  | 'workflows-list'   // v3 m08 列表（vs canvas at /workflows/:id）
   | 'usage'            // v3 新
 
 export interface ApiManagementOptions {

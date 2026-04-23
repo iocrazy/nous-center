@@ -36,18 +36,19 @@ const OVERLAY_ROUTES: Record<OverlayId, string> = {
   'node-packages': '/node-packages',
   'preset-detail': '/',
   'service-detail': '/services',
+  'workflows-list': '/workflows',
   usage: '/usage',
 }
 
-const PANEL_ITEMS: { id: PanelId; icon: typeof GitBranch; label: string }[] = [
-  // v3 keeps Workflow on the rail as a panel/canvas entry; nodes/presets are
-  // editor-side panels and don't get a top-level rail spot anymore.
-  { id: 'workflows', icon: GitBranch, label: 'Workflow' },
-]
+// Workflow goes through the overlay nav now (v3 m08 list); the in-canvas
+// side panel is still available via PanelId='workflows' from inside the
+// editor at /workflows/:id, but the rail no longer toggles it.
+const PANEL_ITEMS: { id: PanelId; icon: typeof GitBranch; label: string }[] = []
 
 const TOP_NAVS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { id: 'services', icon: Activity, label: '服务' },
+  { id: 'workflows-list', icon: GitBranch, label: 'Workflow' },
 ]
 
 const MID_NAVS: { id: OverlayId; icon: typeof Layers; label: string }[] = [
