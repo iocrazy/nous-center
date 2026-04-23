@@ -47,7 +47,7 @@ async def test_catalog_aggregates_across_grants(api_client, mock_vllm):
             s.add(key)
             await s.commit()
             await s.refresh(key)
-            g = ApiKeyGrant(api_key_id=key.id, instance_id=inst.id)
+            g = ApiKeyGrant(api_key_id=key.id, service_id=inst.id)
             s.add(g)
             await s.commit()
             await s.refresh(g)

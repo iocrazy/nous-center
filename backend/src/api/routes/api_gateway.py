@@ -121,18 +121,18 @@ async def create_grant(
     existing = await session.scalar(
         select(ApiKeyGrant).where(
             ApiKeyGrant.api_key_id == key_id,
-            ApiKeyGrant.instance_id == body.instance_id,
+            ApiKeyGrant.service_id == body.instance_id,
         )
     )
     if existing:
         raise HTTPException(409, detail="grant already exists")
 
-    grant = ApiKeyGrant(api_key_id=key_id, instance_id=body.instance_id)
+    grant = ApiKeyGrant(api_key_id=key_id, service_id=body.instance_id)
     session.add(grant)
     await session.commit()
     await session.refresh(grant)
     return GrantOut(
-        id=grant.id, api_key_id=grant.api_key_id, instance_id=grant.instance_id,
+        id=grant.id, api_key_id=grant.api_key_id, instance_id=grant.service_id,
         instance_name=instance.name, status=grant.status,
         activated_at=grant.activated_at, paused_at=grant.paused_at,
         retired_at=grant.retired_at,
@@ -150,14 +150,14 @@ async def list_grants(
 ):
     stmt = (
         select(ApiKeyGrant, ServiceInstance)
-        .join(ServiceInstance, ServiceInstance.id == ApiKeyGrant.instance_id)
+        .join(ServiceInstance, ServiceInstance.id == ApiKeyGrant.service_id)
         .where(ApiKeyGrant.api_key_id == key_id)
         .order_by(ApiKeyGrant.activated_at.desc())
     )
     rows = (await session.execute(stmt)).all()
     return [
         GrantOut(
-            id=g.id, api_key_id=g.api_key_id, instance_id=g.instance_id,
+            id=g.id, api_key_id=g.api_key_id, instance_id=g.service_id,
             instance_name=inst.name, status=g.status,
             activated_at=g.activated_at, paused_at=g.paused_at,
             retired_at=g.retired_at,
@@ -179,7 +179,7 @@ async def update_grant(
     grant = await session.get(ApiKeyGrant, grant_id)
     if not grant:
         raise HTTPException(404, detail="grant not found")
-    instance = await session.get(ServiceInstance, grant.instance_id)
+    instance = await session.get(ServiceInstance, grant.service_id)
 
     now = datetime.now(timezone.utc)
     grant.status = body.status
@@ -193,7 +193,7 @@ async def update_grant(
     await session.commit()
     await session.refresh(grant)
     return GrantOut(
-        id=grant.id, api_key_id=grant.api_key_id, instance_id=grant.instance_id,
+        id=grant.id, api_key_id=grant.api_key_id, instance_id=grant.service_id,
         instance_name=instance.name if instance else "", status=grant.status,
         activated_at=grant.activated_at, paused_at=grant.paused_at,
         retired_at=grant.retired_at,
@@ -429,17 +429,17 @@ async def services_catalog(
     # Split into two scalar queries to keep portability between PG and
     # SQLite (boolean-to-int casting works differently across drivers).
     totals_stmt = (
-        select(ApiKeyGrant.instance_id, func.count(ApiKeyGrant.id))
-        .group_by(ApiKeyGrant.instance_id)
+        select(ApiKeyGrant.service_id, func.count(ApiKeyGrant.id))
+        .group_by(ApiKeyGrant.service_id)
     )
     totals = {
         inst_id: count
         for inst_id, count in (await session.execute(totals_stmt)).all()
     }
     actives_stmt = (
-        select(ApiKeyGrant.instance_id, func.count(ApiKeyGrant.id))
+        select(ApiKeyGrant.service_id, func.count(ApiKeyGrant.id))
         .where(ApiKeyGrant.status == "active")
-        .group_by(ApiKeyGrant.instance_id)
+        .group_by(ApiKeyGrant.service_id)
     )
     actives = {
         inst_id: count
@@ -452,16 +452,16 @@ async def services_catalog(
 
     pack_sums_stmt = (
         select(
-            ApiKeyGrant.instance_id,
+            ApiKeyGrant.service_id,
             func.coalesce(func.sum(ResourcePack.total_units), 0).label("total_units"),
             func.coalesce(func.sum(ResourcePack.used_units), 0).label("used_units"),
         )
         .select_from(ResourcePack)
         .join(ApiKeyGrant, ApiKeyGrant.id == ResourcePack.grant_id)
-        .group_by(ApiKeyGrant.instance_id)
+        .group_by(ApiKeyGrant.service_id)
     )
     pack_sums = {
-        row.instance_id: (row.total_units or 0, row.used_units or 0)
+        row.service_id: (row.total_units or 0, row.used_units or 0)
         for row in (await session.execute(pack_sums_stmt)).all()
     }
 
@@ -516,7 +516,7 @@ async def my_services(
     # M:N: join grants → instances, sum packs per grant.
     grants_stmt = (
         select(ApiKeyGrant, ServiceInstance)
-        .join(ServiceInstance, ServiceInstance.id == ApiKeyGrant.instance_id)
+        .join(ServiceInstance, ServiceInstance.id == ApiKeyGrant.service_id)
         .where(ApiKeyGrant.api_key_id == api_key.id)
     )
     for grant, inst in (await session.execute(grants_stmt)).all():

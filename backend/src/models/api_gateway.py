@@ -32,12 +32,8 @@ from src.utils.snowflake import snowflake_id
 class ApiKeyGrant(Base):
     """M:N binding between InstanceApiKey and ServiceInstance.
 
-    When a grant exists, the api key may invoke /v1/chat/completions (and the
-    other protocol routes) targeting this particular instance via the `model`
-    field. Status = active | paused | retired:
-      - active:  request goes through, quota consumed
-      - paused:  402 service_paused, quota untouched
-      - retired: 410 service_retired, resource packs are settled/cleared
+    v3 (2026-04-22): renamed `instance_id` → `service_id` because v3 unifies
+    the term to "service". The DB column was renamed by the v3 migration.
     """
     __tablename__ = "api_key_grants"
 
@@ -48,15 +44,13 @@ class ApiKeyGrant(Base):
         nullable=False,
         index=True,
     )
-    instance_id = Column(
+    service_id = Column(
         BigInteger,
         ForeignKey("service_instances.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     status = Column(String(20), nullable=False, default="active")
-    # When the customer opened this grant. null = seeded by the system
-    # (e.g., the auto-activation on key creation decision D4).
     activated_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -66,7 +60,7 @@ class ApiKeyGrant(Base):
     retired_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("api_key_id", "instance_id", name="uq_grant_key_instance"),
+        UniqueConstraint("api_key_id", "service_id", name="uq_grant_key_service"),
         Index("ix_grant_active", "api_key_id", "status"),
     )
 

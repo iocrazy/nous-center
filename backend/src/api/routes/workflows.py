@@ -80,58 +80,11 @@ async def delete_workflow(
     await session.commit()
 
 
-@router.post("/{workflow_id}/publish", dependencies=[Depends(require_admin)])
-async def publish_workflow(
-    workflow_id: int,
-    request: Request,
-    session: AsyncSession = Depends(get_async_session),
-):
-    model_mgr = request.app.state.model_manager
-    wf = await session.get(Workflow, workflow_id)
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-
-    stmt = select(ServiceInstance).where(
-        ServiceInstance.source_type == "workflow",
-        ServiceInstance.source_id == workflow_id,
-    )
-    result = await session.execute(stmt)
-    instance = result.scalar_one_or_none()
-
-    if instance:
-        instance.params_override = {"nodes": wf.nodes, "edges": wf.edges}
-        instance.status = "active"
-    else:
-        instance = ServiceInstance(
-            source_type="workflow",
-            source_id=wf.id,
-            name=wf.name,
-            type="workflow",
-            params_override={"nodes": wf.nodes, "edges": wf.edges},
-        )
-        session.add(instance)
-        await session.flush()
-        instance.endpoint_path = f"/v1/instances/{instance.id}/run"
-
-    # Auto-load model dependencies
-    deps = model_mgr.get_model_dependencies(
-        {"nodes": wf.nodes, "edges": wf.edges}
-    )
-    for dep in deps:
-        try:
-            await model_mgr.load_model(dep["key"])
-            model_mgr.add_reference(dep["key"], str(wf.id))
-        except Exception as e:
-            raise HTTPException(503, f"无法加载模型 {dep['key']}: {e}")
-
-    wf.status = "published"
-    await session.commit()
-    await session.refresh(instance)
-
-    return {
-        "instance_id": str(instance.id),
-        "endpoint": instance.endpoint_path,
-    }
+# NOTE: the legacy POST /api/v1/workflows/{id}/publish handler was removed
+# in PR-A (v3 IA rebuild). The v3 publish path lives in
+# src/api/routes/workflow_publish.py and produces a service with a frozen
+# snapshot + exposed schema instead of just storing nodes in
+# params_override. PR-B will re-wire the frontend "publish" button.
 
 
 @router.post("/{workflow_id}/unpublish", dependencies=[Depends(require_admin)])

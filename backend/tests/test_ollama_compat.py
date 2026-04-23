@@ -40,7 +40,7 @@ async def _make_mn_key(session_factory, *, instance_name: str):
         await s.commit()
         await s.refresh(key)
         s.add(ApiKeyGrant(
-            api_key_id=key.id, instance_id=inst.id, status="active",
+            api_key_id=key.id, service_id=inst.id, status="active",
         ))
         await s.commit()
         return raw_key, inst.id

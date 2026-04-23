@@ -1,122 +1,101 @@
-"""WorkflowApp publish and execute routes."""
+"""External-facing service execution.
+
+v3 (2026-04-22): the WorkflowApp model is gone. Services are stored in
+`service_instances` (source_type='workflow' for published ones) and the
+execute path resolves by name through the same grant-authz the OpenAI
+compat path uses. The publish endpoint moved to `workflow_publish.py`.
+"""
 
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import undefer
 
-from src.api.deps_admin import require_admin
-from src.api.deps_auth import verify_bearer_token
+from src.api.deps_auth import verify_bearer_token_any
+from src.errors import NotFoundError
+from src.models.api_gateway import ApiKeyGrant
 from src.models.database import get_async_session
-from src.models.schemas import WorkflowAppPublish, WorkflowAppOut
-from src.models.workflow import Workflow
-from src.models.workflow_app import WorkflowApp
+from src.models.execution_task import ExecutionTask
+from src.models.instance_api_key import InstanceApiKey
+from src.models.service_instance import ServiceInstance
 
 router = APIRouter(tags=["apps"])
 
 
-@router.post(
-    "/api/v1/workflows/{workflow_id}/publish-app",
-    response_model=WorkflowAppOut,
-    status_code=201,
-    dependencies=[Depends(require_admin)],
-)
-async def publish_app(
-    workflow_id: int,
-    body: WorkflowAppPublish,
-    session: AsyncSession = Depends(get_async_session),
-):
-    # Fetch the workflow
-    wf = await session.get(Workflow, workflow_id)
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-
-    # Check name uniqueness
-    existing = await session.scalar(
-        select(WorkflowApp).where(WorkflowApp.name == body.name)
-    )
-    if existing:
-        raise HTTPException(409, f"App name '{body.name}' already exists")
-
-    app_obj = WorkflowApp(
-        name=body.name,
-        display_name=body.display_name,
-        description=body.description,
-        workflow_id=workflow_id,
-        workflow_snapshot={"nodes": wf.nodes, "edges": wf.edges},
-        exposed_inputs=[p.model_dump() for p in body.exposed_inputs],
-        exposed_outputs=[p.model_dump() for p in body.exposed_outputs],
-    )
-    session.add(app_obj)
-    await session.commit()
-    await session.refresh(app_obj)
-    return app_obj
-
-
-@router.get("/api/v1/apps", response_model=list[WorkflowAppOut])
-async def list_apps(
-    session: AsyncSession = Depends(get_async_session),
-):
-    result = await session.execute(
-        select(WorkflowApp).order_by(WorkflowApp.created_at.desc())
-    )
-    return result.scalars().all()
-
-
-@router.delete("/api/v1/apps/{app_name}", status_code=204, dependencies=[Depends(require_admin)])
-async def delete_app(
-    app_name: str,
-    session: AsyncSession = Depends(get_async_session),
-):
-    app_obj = await session.scalar(
-        select(WorkflowApp).where(WorkflowApp.name == app_name)
-    )
-    if not app_obj:
-        raise HTTPException(404, f"App '{app_name}' not found")
-    await session.delete(app_obj)
-    await session.commit()
-
-
-@router.post("/v1/apps/{app_name}")
-async def execute_app(
-    app_name: str,
+@router.post("/v1/apps/{service_name}/{action}")
+@router.post("/v1/apps/{service_name}")
+async def execute_service(
+    service_name: str,
     body: dict,
+    action: str = "run",
     session: AsyncSession = Depends(get_async_session),
-    auth: tuple = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
 ):
-    """External endpoint: merge user params into snapshot and execute workflow.
+    """v3 external endpoint: execute a service by name.
 
-    Auth: Bearer <InstanceApiKey>. Any active key on any active instance
-    works — the workflow snapshot is the authz boundary. Admin token is NOT
-    required; this path is meant for external integrations that hold only
-    a per-instance API key (same auth as /v1/chat/completions).
+    Auth: Bearer <InstanceApiKey>. Authz: an active ApiKeyGrant must exist
+    for (key, service). Charges 1 call per request via consume_for_request.
+
+    `action` is part of the v3 contract for future per-service routing
+    (e.g. `/v1/apps/lessor/synthesize`) — currently treated as opaque
+    metadata; the workflow always runs end to end.
     """
     from src.services.workflow_executor import WorkflowExecutor, ExecutionError
-    from src.models.execution_task import ExecutionTask
+    from src.services.quota_gate import NoActiveGrant, consume_for_request
+    from src.services.resource_pack import QuotaExhausted
 
-    app_obj = await session.scalar(
-        select(WorkflowApp).where(WorkflowApp.name == app_name)
+    _instance, api_key = auth
+
+    # Resolve service + authorize via grant in one query (M:N path).
+    stmt = (
+        select(ServiceInstance)
+        .options(
+            undefer(ServiceInstance.workflow_snapshot),
+            undefer(ServiceInstance.exposed_inputs),
+            undefer(ServiceInstance.exposed_outputs),
+        )
+        .join(ApiKeyGrant, ApiKeyGrant.service_id == ServiceInstance.id)
+        .where(
+            ApiKeyGrant.api_key_id == api_key.id,
+            ApiKeyGrant.status == "active",
+            ServiceInstance.name == service_name,
+        )
     )
-    if not app_obj:
-        raise HTTPException(404, f"App '{app_name}' not found")
-    if not app_obj.active:
-        raise HTTPException(403, f"App '{app_name}' is inactive")
+    svc = (await session.execute(stmt)).scalar_one_or_none()
+    if svc is None:
+        raise NotFoundError(
+            f"no active grant for service '{service_name}' on this key",
+            code="service_not_found",
+        )
+    if svc.status == "retired":
+        raise HTTPException(410, detail=f"Service '{service_name}' is retired")
+    if svc.status == "paused":
+        raise HTTPException(403, detail=f"Service '{service_name}' is paused")
+    # `deprecated` still serves but logs a warning (per v3 lifecycle spec).
 
-    snapshot = dict(app_obj.workflow_snapshot)
+    snapshot = dict(svc.workflow_snapshot or {})
     nodes = [dict(n) for n in snapshot.get("nodes", [])]
     edges = snapshot.get("edges", [])
 
-    # Merge exposed inputs from request body into the matching node data
-    for param in app_obj.exposed_inputs:
-        api_name = param["api_name"]
-        if api_name in body:
-            for node in nodes:
-                if node["id"] == param["node_id"]:
-                    node.setdefault("data", {})[param["param_key"]] = body[api_name]
+    # Merge exposed inputs from request body into the matching node data.
+    # Supports both v3 schema (key/input_name) and pre-v3 backfill rows
+    # that still carry the old (api_name/param_key) field names.
+    for param in (svc.exposed_inputs or []):
+        api_name = param.get("key") or param.get("api_name")
+        node_id = param.get("node_id")
+        slot = param.get("input_name") or param.get("param_key")
+        if api_name is None or node_id is None or slot is None:
+            continue
+        if api_name not in body:
+            continue
+        for node in nodes:
+            if str(node.get("id")) == str(node_id):
+                node.setdefault("data", {})[slot] = body[api_name]
 
     task = ExecutionTask(
-        workflow_name=app_obj.name,
+        workflow_name=svc.name,
         status="running",
         nodes_total=len(nodes),
     )
@@ -143,8 +122,17 @@ async def execute_app(
         await session.commit()
         raise HTTPException(500, str(e))
 
-    # Increment call count
-    app_obj.call_count = (app_obj.call_count or 0) + 1
     await session.commit()
 
+    # Quota: 1 call per request. Failures here are non-fatal — the work
+    # already happened — but exhaustion will block the next call.
+    try:
+        await consume_for_request(
+            session, api_key_id=api_key.id, service_id=svc.id, units=1,
+        )
+        await session.commit()
+    except (NoActiveGrant, QuotaExhausted):
+        pass
+
+    _ = action  # reserved
     return result

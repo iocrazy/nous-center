@@ -1,14 +1,9 @@
-"""Lane B-T1 · model_resolver tests.
+"""v3 model_resolver tests.
 
-The resolver maps (api_key, request.model) → ServiceInstance.
-
-Legacy path: if the api_key row has instance_id set (pre-M:N binding), that
-instance wins and request.model is ignored. This preserves the behavior
-existing customers already have wired up.
-
-M:N path: api_key.instance_id is NULL → look up ApiKeyGrant rows for the
-key and match request.model against ServiceInstance.name. Status must be
-"active".
+The v3 resolver maps (api_key, request.model) → ServiceInstance through
+ApiKeyGrant lookups only. Legacy 1:1 binding asserts were removed in PR-A
+because the v3 migration NULLs out `instance_api_keys.instance_id` and
+the resolver no longer special-cases it.
 """
 
 from __future__ import annotations
@@ -20,24 +15,24 @@ from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 from src.services.model_resolver import (
     ModelNotFound,
-    resolve_target_instance,
+    resolve_target_service,
 )
 
 
-async def _make_instance(session, *, name: str, source_type: str = "model"):
-    inst = ServiceInstance(
-        source_type=source_type, source_name=name, name=name, type="llm",
+async def _make_service(session, *, name: str):
+    svc = ServiceInstance(
+        source_type="model", source_name=name, name=name, type="llm",
         category="llm", meter_dim="tokens",
     )
-    session.add(inst)
+    session.add(svc)
     await session.commit()
-    await session.refresh(inst)
-    return inst
+    await session.refresh(svc)
+    return svc
 
 
-async def _make_key(session, *, prefix: str = "sk-x", instance_id=None):
+async def _make_key(session, *, prefix: str = "sk-x"):
     key = InstanceApiKey(
-        instance_id=instance_id, label="k", key_hash="h",
+        instance_id=None, label="k", key_hash="h",
         key_prefix=prefix,
     )
     session.add(key)
@@ -47,71 +42,46 @@ async def _make_key(session, *, prefix: str = "sk-x", instance_id=None):
 
 
 @pytest.mark.asyncio
-async def test_legacy_1to1_binding_wins(db_session):
-    """api_key.instance_id set → returns that instance, ignores request.model."""
-    inst = await _make_instance(db_session, name="qwen3")
-    key = await _make_key(db_session, prefix="sk-a", instance_id=inst.id)
-
-    # request.model is deliberately a lie; legacy binding still wins.
-    resolved = await resolve_target_instance(
-        db_session, api_key=key, requested_model="something-else",
-    )
-    assert resolved.id == inst.id
-
-
-@pytest.mark.asyncio
-async def test_legacy_binding_ignores_empty_model(db_session):
-    """Legacy clients don't send request.model sometimes; still works."""
-    inst = await _make_instance(db_session, name="qwen3")
-    key = await _make_key(db_session, prefix="sk-b", instance_id=inst.id)
-
-    resolved = await resolve_target_instance(
-        db_session, api_key=key, requested_model=None,
-    )
-    assert resolved.id == inst.id
-
-
-@pytest.mark.asyncio
-async def test_grant_match_by_instance_name(db_session):
-    """api_key with no legacy binding + an active grant → lookup by name."""
-    inst_a = await _make_instance(db_session, name="qwen3")
-    inst_b = await _make_instance(db_session, name="deepseek")
-    key = await _make_key(db_session, prefix="sk-c", instance_id=None)
+async def test_grant_match_by_service_name(db_session):
+    """Active grant + matching name resolves to the right service."""
+    svc_a = await _make_service(db_session, name="qwen3")
+    svc_b = await _make_service(db_session, name="deepseek")
+    key = await _make_key(db_session, prefix="sk-c")
     db_session.add_all([
-        ApiKeyGrant(api_key_id=key.id, instance_id=inst_a.id, status="active"),
-        ApiKeyGrant(api_key_id=key.id, instance_id=inst_b.id, status="active"),
+        ApiKeyGrant(api_key_id=key.id, service_id=svc_a.id, status="active"),
+        ApiKeyGrant(api_key_id=key.id, service_id=svc_b.id, status="active"),
     ])
     await db_session.commit()
 
-    resolved = await resolve_target_instance(
+    resolved = await resolve_target_service(
         db_session, api_key=key, requested_model="deepseek",
     )
-    assert resolved.id == inst_b.id
+    assert resolved.id == svc_b.id
 
 
 @pytest.mark.asyncio
-async def test_grant_unknown_model_raises(db_session):
-    inst = await _make_instance(db_session, name="qwen3")
-    key = await _make_key(db_session, prefix="sk-d", instance_id=None)
-    db_session.add(ApiKeyGrant(api_key_id=key.id, instance_id=inst.id))
+async def test_grant_unknown_service_raises(db_session):
+    svc = await _make_service(db_session, name="qwen3")
+    key = await _make_key(db_session, prefix="sk-d")
+    db_session.add(ApiKeyGrant(api_key_id=key.id, service_id=svc.id))
     await db_session.commit()
 
     with pytest.raises(ModelNotFound):
-        await resolve_target_instance(
+        await resolve_target_service(
             db_session, api_key=key, requested_model="ghost-model",
         )
 
 
 @pytest.mark.asyncio
 async def test_grant_missing_model_name_raises(db_session):
-    """No legacy binding + request.model empty → can't pick, must fail."""
-    inst = await _make_instance(db_session, name="qwen3")
-    key = await _make_key(db_session, prefix="sk-e", instance_id=None)
-    db_session.add(ApiKeyGrant(api_key_id=key.id, instance_id=inst.id))
+    """No request.model → can't pick a service, must fail (no legacy default)."""
+    svc = await _make_service(db_session, name="qwen3")
+    key = await _make_key(db_session, prefix="sk-e")
+    db_session.add(ApiKeyGrant(api_key_id=key.id, service_id=svc.id))
     await db_session.commit()
 
     with pytest.raises(ModelNotFound):
-        await resolve_target_instance(
+        await resolve_target_service(
             db_session, api_key=key, requested_model=None,
         )
 
@@ -119,23 +89,23 @@ async def test_grant_missing_model_name_raises(db_session):
 @pytest.mark.asyncio
 async def test_paused_grant_is_skipped(db_session):
     """Only active grants are visible to the resolver."""
-    inst = await _make_instance(db_session, name="qwen3")
-    key = await _make_key(db_session, prefix="sk-f", instance_id=None)
+    svc = await _make_service(db_session, name="qwen3")
+    key = await _make_key(db_session, prefix="sk-f")
     db_session.add(ApiKeyGrant(
-        api_key_id=key.id, instance_id=inst.id, status="paused",
+        api_key_id=key.id, service_id=svc.id, status="paused",
     ))
     await db_session.commit()
 
     with pytest.raises(ModelNotFound):
-        await resolve_target_instance(
+        await resolve_target_service(
             db_session, api_key=key, requested_model="qwen3",
         )
 
 
 @pytest.mark.asyncio
-async def test_no_grants_no_legacy_raises(db_session):
-    key = await _make_key(db_session, prefix="sk-g", instance_id=None)
+async def test_no_grants_raises(db_session):
+    key = await _make_key(db_session, prefix="sk-g")
     with pytest.raises(ModelNotFound):
-        await resolve_target_instance(
+        await resolve_target_service(
             db_session, api_key=key, requested_model="qwen3",
         )

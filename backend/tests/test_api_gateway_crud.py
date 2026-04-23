@@ -150,7 +150,7 @@ async def test_services_me_mn_key(api_client, mock_vllm):
     raw, key_id, inst_id = await _seed_instance_and_key(sf, name="gpt5", mn=True)
     # Seed a grant + pack directly so we don't go through admin endpoints.
     async with sf() as s:
-        grant = ApiKeyGrant(api_key_id=key_id, instance_id=inst_id)
+        grant = ApiKeyGrant(api_key_id=key_id, service_id=inst_id)
         s.add(grant)
         await s.commit()
         await s.refresh(grant)
