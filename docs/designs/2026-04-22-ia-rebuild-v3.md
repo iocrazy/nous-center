@@ -1,6 +1,9 @@
 ---
-status: ACTIVE
+status: SHIPPED
 supersedes: (architectural decisions after api-gateway lanes A–G merged on master)
+shipped_via:
+  - PR #8 (PR-A backend + migration + frontend stubs) — merged 2026-04-23
+  - PR #9 (PR-B frontend pages + dialogs + Vitest unit + e2e + manual-gate hotfixes) — merged 2026-04-23
 ---
 
 # Design: IA 重构 v3 — 单人管理员控制台
@@ -312,6 +315,31 @@ frontend/src/api/
 **UNRESOLVED:** 0 项（所有决策都有明确答案）
 
 **VERDICT:** ENG CLEARED — ready to implement. 建议顺序：PR-A（backend + migration + frontend placeholder stub）→ PR-B（frontend）。
+
+## 实施状态（2026-04-23 收尾）
+
+**SHIPPED.** 两个 PR 全部 merge 进 master，manual gate 在本地 dev 环境跑通。
+
+| 阶段 | 状态 | PR | 关键证据 |
+|---|---|---|---|
+| PR-A backend skeleton | ✅ merged | [#8](https://github.com/iocrazy/nous-center/pull/8) | migration + 10 backend 文件改 + 7 个新 test，全套 pytest green |
+| PR-B frontend | ✅ merged | [#9](https://github.com/iocrazy/nous-center/pull/9) | m02 + m03 + 4 dialogs + Schema-driven Playground + IconRail 8 nav；14 个 vitest unit、3 个 Playwright spec |
+| Migration manual gate | ✅ done | — | dev DB pg_dump → 跑 migration → 重跑 no-op；6 service_instances name normalize、2 collision 加 id 后缀；9 个 instance_api_keys 回填到 api_key_grants |
+| Browser walk-through | ✅ done | — | 快速开通 → 详情页 5 tabs；publish wizard 3 步走通 |
+
+### Manual gate 期间发现并修的 3 个 bug
+
+落在 PR-B 的 `fix(services-v3): manual-gate hotfixes` 提交里：
+
+1. **Migration 幂等性破窗**：`api_key_grants` 回填 INSERT 在第二次跑时失败（步骤 7 已把 `instance_id` rename 成 `service_id`）。修：把 INSERT 包进 `DO $$ ... IF EXISTS (instance_id 列) THEN EXECUTE ...`，重跑变 no-op。原 `test_services_v3_migration.py` 只查文件结构没真跑 SQL，所以静态测试漏了这个。
+2. **`window.history.pushState` 不触发 react-router**：`ServicesList` 的卡片点击导航到 `/services/:id` 但 `RouteSync` 的 `useLocation` 不会订阅原生 history 改动。修：改用 `useNavigate()`。
+3. **`useEffect` 依赖了 `useMutation` 整个对象 → 无限渲染循环**：`CreateServiceDialog` 与 `PublishDialog` 的 reset effect 依赖了 mutation result 的引用，每次 render 引用变化触发 reset → React Query 状态变 → 再 render → 死循环。修：依赖 stable 的 `.reset` 字段。
+
+### 后续可做（不阻塞）
+
+- m08 完整 Workflow 列表页（卡片底部"关联服务 / 再次发布"），目前 IconRail 上的 Workflow 仍走老编辑器画布
+- m13 用量页（按服务分组的统计图）
+- 把 manual-gate 那 3 个 bug 教训记到测试里（migration 真跑 PG、e2e 覆盖跨页导航）
 
 ## 本轮 Plan-Eng-Review 锁定的实施细节
 
