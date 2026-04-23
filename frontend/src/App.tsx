@@ -21,6 +21,7 @@ const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/api-management': 'api-management',
   '/logs': 'logs',
   '/node-packages': 'node-packages',
+  '/usage': 'usage',
 }
 
 /** Syncs the current URL to the panel store's activeOverlay */
@@ -30,9 +31,20 @@ function RouteSync() {
 
   useEffect(() => {
     // `/workflows` and `/workflows/:id` share the workflow editor (no overlay).
-    const overlay = location.pathname.startsWith('/workflows')
-      ? null
-      : (ROUTE_TO_OVERLAY[location.pathname] ?? null)
+    if (location.pathname.startsWith('/workflows')) {
+      if (usePanelStore.getState().activeOverlay !== null) setOverlay(null)
+      return
+    }
+    // `/services/:id` lights up the same rail slot as the list and routes
+    // through the dedicated `service-detail` overlay so NodeEditor knows
+    // which view to mount.
+    if (location.pathname.startsWith('/services/')) {
+      if (usePanelStore.getState().activeOverlay !== 'service-detail') {
+        setOverlay('service-detail')
+      }
+      return
+    }
+    const overlay = ROUTE_TO_OVERLAY[location.pathname] ?? null
     if (usePanelStore.getState().activeOverlay !== overlay) setOverlay(overlay)
   }, [location.pathname, setOverlay])
 
@@ -94,6 +106,8 @@ export default function App() {
         <Route path="/api-management" element={<MainLayout />} />
         <Route path="/logs" element={<MainLayout />} />
         <Route path="/node-packages" element={<MainLayout />} />
+        <Route path="/usage" element={<MainLayout />} />
+        <Route path="/services/:id" element={<MainLayout />} />
       </Routes>
     </BrowserRouter>
   )

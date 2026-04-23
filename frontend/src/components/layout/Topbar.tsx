@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
-import PublishWizard from '../overlays/PublishWizard'
+import PublishDialog from '../workflow/PublishDialog'
 import { useNavigate } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
@@ -192,11 +192,16 @@ export default function Topbar() {
                 onClick={() => setShowPublishWizard(true)}
                 style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 13 }}
               >
-                发布 App
+                发布服务
               </button>
             )}
-            {showPublishWizard && activeTab?.workflow && (
-              <PublishWizard workflowId={String(activeTab.workflow.id)} onClose={() => setShowPublishWizard(false)} />
+            {activeTab?.workflow && (
+              <PublishDialog
+                open={showPublishWizard}
+                onClose={() => setShowPublishWizard(false)}
+                workflowId={String(activeTab.workflow.id)}
+                nodes={(activeTab.workflow.nodes ?? []) as Array<{ id: string; type?: string; data?: Record<string, unknown> }>}
+              />
             )}
           </>
         )}
