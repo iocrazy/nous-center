@@ -159,22 +159,36 @@ END $$;
 -- Legacy 1:1 keys (instance_id NOT NULL) become an explicit grant.
 -- Stable id = abs(hashtextextended(api_key||'|'||instance, 0)) so
 -- re-runs do not create duplicates.
+--
+-- Wrapped in a guard: on a re-run the column has already been renamed to
+-- `service_id` (step 7), so PG would reject the INSERT at parse time.
+-- We branch on the actual schema state so the second run is a no-op.
 
-INSERT INTO api_key_grants (
-  id, api_key_id, instance_id, status, activated_at
-)
-SELECT
-  abs(hashtextextended(iak.id::text || '|' || iak.instance_id::text, 0)),
-  iak.id,
-  iak.instance_id,
-  'active',
-  COALESCE(iak.created_at, now())
-FROM instance_api_keys iak
-WHERE iak.instance_id IS NOT NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM api_key_grants g
-    WHERE g.api_key_id = iak.id AND g.instance_id = iak.instance_id
-  );
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'api_key_grants' AND column_name = 'instance_id'
+  ) THEN
+    EXECUTE $sql$
+      INSERT INTO api_key_grants (
+        id, api_key_id, instance_id, status, activated_at
+      )
+      SELECT
+        abs(hashtextextended(iak.id::text || '|' || iak.instance_id::text, 0)),
+        iak.id,
+        iak.instance_id,
+        'active',
+        COALESCE(iak.created_at, now())
+      FROM instance_api_keys iak
+      WHERE iak.instance_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM api_key_grants g
+          WHERE g.api_key_id = iak.id AND g.instance_id = iak.instance_id
+        )
+    $sql$;
+  END IF;
+END $$;
 
 -- ============================================================
 -- 6. Null out the legacy 1:1 column on instance_api_keys

@@ -34,6 +34,7 @@ export default function PublishDialog({
   const [category, setCategory] = useState<ServiceCategory>('app')
 
   const publish = usePublishWorkflow()
+  const resetMutation = publish.reset
 
   useEffect(() => {
     if (!open) {
@@ -43,20 +44,22 @@ export default function PublishDialog({
       setName('')
       setLabel('')
       setCategory('app')
-      publish.reset()
-    } else if (open && nodes.length > 0) {
-      // Best-guess defaults: anything looking like input → step 1, anything
-      // looking like output → step 2.
-      const inputDefaults = nodes
-        .filter((n) => /input|primitive|load/i.test(n.type ?? ''))
-        .map((n) => n.id)
-      const outputDefaults = nodes
-        .filter((n) => /output|save|preview/i.test(n.type ?? ''))
-        .map((n) => n.id)
-      setInputNodeIds(inputDefaults)
-      setOutputNodeIds(outputDefaults)
+      resetMutation()
+      return
     }
-  }, [open, nodes, publish])
+    if (nodes.length === 0) return
+    // Best-guess defaults: anything looking like input → step 1, anything
+    // looking like output → step 2.
+    const inputDefaults = nodes
+      .filter((n) => /input|primitive|load/i.test(n.type ?? ''))
+      .map((n) => n.id)
+    const outputDefaults = nodes
+      .filter((n) => /output|save|preview/i.test(n.type ?? ''))
+      .map((n) => n.id)
+    setInputNodeIds(inputDefaults)
+    setOutputNodeIds(outputDefaults)
+    // resetMutation is stable across renders (React Query memoizes it).
+  }, [open, nodes, resetMutation])
 
   const exposedInputs = useMemo<ExposedParam[]>(
     () =>

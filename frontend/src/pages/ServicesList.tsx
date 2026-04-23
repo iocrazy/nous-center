@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Activity, AppWindow, Cpu, Image as ImageIcon, Plus, Search } from 'lucide-react'
 import {
   endpointFor,
@@ -26,6 +27,7 @@ export interface ServicesListProps {
 
 export default function ServicesList({ onOpen }: ServicesListProps) {
   const { data: services, isLoading, error } = useServices()
+  const navigate = useNavigate()
   const [tab, setTab] = useState<FilterTab>('all')
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
@@ -38,7 +40,7 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
 
   const goDetail = (id: string) => {
     if (onOpen) onOpen(id)
-    else window.history.pushState({}, '', `/services/${id}`)
+    else navigate(`/services/${id}`)
   }
 
   return (

@@ -25,17 +25,19 @@ export default function CreateServiceDialog({ open, onClose, onCreated }: Create
 
   const { data: engines } = useEngines()
   const quickProvision = useQuickProvision()
+  const resetMutation = quickProvision.reset
 
   useEffect(() => {
-    if (!open) {
-      setCategory('llm')
-      setEngine('')
-      setName('')
-      setLabel('')
-      setSystemPrompt('')
-      quickProvision.reset()
-    }
-  }, [open, quickProvision])
+    if (open) return
+    setCategory('llm')
+    setEngine('')
+    setName('')
+    setLabel('')
+    setSystemPrompt('')
+    resetMutation()
+    // resetMutation comes from useMutation; React Query keeps its identity
+    // stable, so this effect fires only when `open` flips, not on every render.
+  }, [open, resetMutation])
 
   if (!open) return null
 
