@@ -153,6 +153,7 @@ export default function WorkflowsList() {
                 onDetail={(svcId) => navigate(`/services/${svcId}`)}
               />
             ))}
+            <NewWorkflowCard onClick={() => create.mutate()} />
           </div>
         )}
       </div>
@@ -317,6 +318,40 @@ function WorkflowCard({
         </div>
       )}
     </div>
+  )
+}
+
+function NewWorkflowCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        background: 'transparent',
+        border: '1px dashed var(--border)',
+        borderRadius: 8,
+        minHeight: 180,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        color: 'var(--muted)',
+        fontSize: 13,
+        cursor: 'pointer',
+        transition: 'border-color 0.15s, color 0.15s',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'var(--accent)'
+        e.currentTarget.style.color = 'var(--accent)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--border)'
+        e.currentTarget.style.color = 'var(--muted)'
+      }}
+    >
+      <Plus size={18} />
+      新建 Workflow
+    </button>
   )
 }
 

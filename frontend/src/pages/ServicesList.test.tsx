@@ -64,8 +64,10 @@ describe('ServicesList card click → navigate', () => {
         <ServicesList />
       </MemoryRouter>,
     )
-    fireEvent.click(screen.getByRole('button', { name: /click-me/ }))
-    expect(navigateSpy).toHaveBeenCalledTimes(1)
+    // The card body and the explicit "详情" footer button are both wired
+    // to the same navigate; click the body (named-region heuristic for
+    // the click-me service).
+    fireEvent.click(screen.getByText('click-me'))
     expect(navigateSpy).toHaveBeenCalledWith('/services/999')
   })
 
@@ -81,9 +83,24 @@ describe('ServicesList card click → navigate', () => {
         <ServicesList onOpen={onOpen} />
       </MemoryRouter>,
     )
-    fireEvent.click(screen.getByRole('button', { name: /override-me/ }))
+    fireEvent.click(screen.getByText('override-me'))
     expect(onOpen).toHaveBeenCalledWith('777')
     expect(navigateSpy).not.toHaveBeenCalled()
+  })
+
+  it('"新建服务" split button opens a menu with both creation paths', () => {
+    useServicesMock.mockReturnValue({ data: [], isLoading: false, error: null })
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /新建服务/ }))
+    expect(screen.getByRole('menuitem', { name: /快速开通/ })).toBeInTheDocument()
+    const fromWf = screen.getByRole('menuitem', { name: /从 Workflow 发布/ })
+    expect(fromWf).toBeInTheDocument()
+    fireEvent.click(fromWf)
+    expect(navigateSpy).toHaveBeenCalledWith('/workflows')
   })
 
   it('renders the empty state CTA when there are no services', () => {

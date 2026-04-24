@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react'
+import { Download } from 'lucide-react'
+import { exportUsageCsv } from './usage-export'
 import {
   Bar,
   BarChart,
@@ -56,24 +58,53 @@ export default function UsagePage() {
               调用量 · token 消耗 · 按 Key 按服务按时段的聚合
             </p>
           </div>
-          <select
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value) as DaysOpt)}
-            style={{
-              background: 'var(--bg-accent)',
-              color: 'var(--text)',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              padding: '7px 10px',
-              fontSize: 12,
-            }}
-          >
-            {RANGES.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.label}
-              </option>
-            ))}
-          </select>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select
+              value={days}
+              onChange={(e) => setDays(Number(e.target.value) as DaysOpt)}
+              style={{
+                background: 'var(--bg-accent)',
+                color: 'var(--text)',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                padding: '7px 10px',
+                fontSize: 12,
+              }}
+            >
+              {RANGES.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() =>
+                exportUsageCsv({
+                  days,
+                  summary: summary.data,
+                  series: series.data,
+                  topKeys: topKeys.data,
+                })
+              }
+              disabled={!summary.data && !series.data && !topKeys.data}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '7px 12px',
+                background: 'var(--bg-accent)',
+                color: 'var(--text)',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              <Download size={12} />
+              导出 CSV
+            </button>
+          </div>
         </div>
 
         {/* stat cards */}
@@ -231,6 +262,7 @@ function shortDate(iso: string): string {
   // YYYY-MM-DD → MM/DD
   return iso.slice(5).replace('-', '/')
 }
+
 
 // ---------- bits ----------
 
