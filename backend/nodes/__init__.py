@@ -4,7 +4,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import yaml
 
@@ -19,7 +19,13 @@ _packages: dict[str, dict] = {}  # package_name -> package info
 
 
 def scan_packages() -> dict[str, dict]:
-    """Scan nodes/ directory for packages and load their definitions + executors."""
+    """Scan nodes/ directory for packages and load their definitions + executors.
+
+    A package directory containing a ``.disabled`` marker file is recorded
+    in the registry as ``enabled: False`` but its node definitions and
+    executors are NOT registered — i.e. the canvas节点库不会出现这些节点，
+    workflow 也跑不起来用到它们的节点。Re-enabling 删 marker 即可。
+    """
     _node_definitions.clear()
     _node_executors.clear()
     _packages.clear()
@@ -38,28 +44,28 @@ def scan_packages() -> dict[str, dict]:
 
             pkg_name = pkg_config.get("name", pkg_dir.name)
             nodes = pkg_config.get("nodes", {})
+            enabled = not (pkg_dir / ".disabled").exists()
 
-            # Register node definitions
-            for node_type, node_def in nodes.items():
-                node_def["_package"] = pkg_name
-                _node_definitions[node_type] = node_def
+            if enabled:
+                # Register node definitions
+                for node_type, node_def in nodes.items():
+                    node_def["_package"] = pkg_name
+                    _node_definitions[node_type] = node_def
 
-            # Load executor module
-            executor_path = pkg_dir / "executor.py"
-            if executor_path.exists():
-                # Add package dir to sys.path temporarily
-                if str(pkg_dir) not in sys.path:
-                    sys.path.insert(0, str(pkg_dir))
+                # Load executor module
+                executor_path = pkg_dir / "executor.py"
+                if executor_path.exists():
+                    if str(pkg_dir) not in sys.path:
+                        sys.path.insert(0, str(pkg_dir))
 
-                spec = importlib.util.spec_from_file_location(
-                    f"nodes.{pkg_dir.name}.executor", executor_path
-                )
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+                    spec = importlib.util.spec_from_file_location(
+                        f"nodes.{pkg_dir.name}.executor", executor_path
+                    )
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
 
-                # Register executors from module's EXECUTORS dict
-                executors = getattr(module, "EXECUTORS", {})
-                _node_executors.update(executors)
+                    executors = getattr(module, "EXECUTORS", {})
+                    _node_executors.update(executors)
 
             _packages[pkg_name] = {
                 "name": pkg_name,
@@ -67,9 +73,13 @@ def scan_packages() -> dict[str, dict]:
                 "description": pkg_config.get("description", ""),
                 "node_count": len(nodes),
                 "nodes": list(nodes.keys()),
+                "enabled": enabled,
             }
 
-            logger.info("Loaded node package: %s (%d nodes)", pkg_name, len(nodes))
+            logger.info(
+                "Loaded node package: %s (%d nodes, enabled=%s)",
+                pkg_name, len(nodes), enabled,
+            )
 
         except Exception as e:
             logger.warning("Failed to load node package %s: %s", pkg_dir.name, e)

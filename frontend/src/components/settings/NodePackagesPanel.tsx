@@ -1,11 +1,21 @@
 import { useRef, useState } from 'react'
-import { GitBranch, Loader2, Package, RefreshCw, Trash2, Upload } from 'lucide-react'
+import {
+  GitBranch,
+  Loader2,
+  Package,
+  Pause,
+  Play,
+  RefreshCw,
+  Trash2,
+  Upload,
+} from 'lucide-react'
 import {
   useInstallPackageDeps,
   useInstallPackageGit,
   useInstallPackageZip,
   useNodePackages,
   useRescanPackages,
+  useTogglePackage,
   useUninstallPackage,
 } from '../../api/nodes'
 import { useToastStore } from '../../stores/toast'
@@ -20,6 +30,7 @@ export default function NodePackagesPanel() {
   const installGit = useInstallPackageGit()
   const uninstall = useUninstallPackage()
   const installDeps = useInstallPackageDeps()
+  const togglePkg = useTogglePackage()
   const fileInput = useRef<HTMLInputElement>(null)
   const [gitUrl, setGitUrl] = useState('')
   const toast = useToastStore.getState().add
@@ -64,6 +75,15 @@ export default function NodePackagesPanel() {
       toast(`${name} 依赖${r.status === 'no_requirements' ? '（无需安装）' : '安装完成'}`, 'success')
     } catch (e) {
       toast(`依赖安装失败: ${(e as Error).message}`, 'error')
+    }
+  }
+
+  const onToggle = async (name: string, enabled: boolean) => {
+    try {
+      await togglePkg.mutateAsync({ name, enabled })
+      toast(`${name} 已${enabled ? '启用' : '禁用'}`, 'success')
+    } catch (e) {
+      toast(`切换失败: ${(e as Error).message}`, 'error')
     }
   }
 
@@ -185,8 +205,12 @@ export default function NodePackagesPanel() {
               pkg={p}
               onUninstall={() => onUninstall(p.name)}
               onInstallDeps={() => onInstallDeps(p.name)}
+              onToggle={() => onToggle(p.name, !p.enabled)}
               installingDeps={installDeps.isPending && installDeps.variables === p.name}
               uninstalling={uninstall.isPending && uninstall.variables === p.name}
+              toggling={
+                togglePkg.isPending && togglePkg.variables?.name === p.name
+              }
             />
           ))}
         </div>
@@ -199,14 +223,25 @@ function PackageCard({
   pkg,
   onUninstall,
   onInstallDeps,
+  onToggle,
   installingDeps,
   uninstalling,
+  toggling,
 }: {
-  pkg: { name: string; version: string; description: string; node_count: number; nodes: string[] }
+  pkg: {
+    name: string
+    version: string
+    description: string
+    node_count: number
+    nodes: string[]
+    enabled: boolean
+  }
   onUninstall: () => void
   onInstallDeps: () => void
+  onToggle: () => void
   installingDeps: boolean
   uninstalling: boolean
+  toggling: boolean
 }) {
   return (
     <div
@@ -215,10 +250,25 @@ function PackageCard({
         border: '1px solid var(--border)',
         padding: '10px 12px',
         borderRadius: 6,
+        opacity: pkg.enabled ? 1 : 0.65,
       }}
     >
       <div className="flex items-center gap-2" style={{ marginBottom: 4 }}>
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{pkg.name}</span>
+        <span
+          style={{
+            fontSize: 9,
+            padding: '1px 6px',
+            borderRadius: 3,
+            background: pkg.enabled
+              ? 'rgba(34,197,94,0.15)'
+              : 'var(--bg-accent)',
+            color: pkg.enabled ? 'var(--accent-2, #22c55e)' : 'var(--muted)',
+            border: pkg.enabled ? 'none' : '1px solid var(--border)',
+          }}
+        >
+          {pkg.enabled ? '已启用' : '已禁用'}
+        </span>
         <span
           style={{
             fontSize: 9,
@@ -233,6 +283,12 @@ function PackageCard({
         <span style={{ fontSize: 10, color: 'var(--muted)' }}>{pkg.node_count} 节点</span>
         <div className="flex-1" />
         <ToolbarBtn label="安装依赖" onClick={onInstallDeps} loading={installingDeps} />
+        <ToolbarBtn
+          icon={pkg.enabled ? <Pause size={11} /> : <Play size={11} />}
+          label={pkg.enabled ? '禁用' : '启用'}
+          onClick={onToggle}
+          loading={toggling}
+        />
         <ToolbarBtn
           icon={<Trash2 size={11} />}
           label="卸载"

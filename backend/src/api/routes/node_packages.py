@@ -153,6 +153,27 @@ async def uninstall_package(name: str):
     return {"uninstalled": name, "package_count": len(pkgs)}
 
 
+@router.post("/packages/{name}/toggle")
+async def toggle_package(name: str, enabled: bool):
+    """Enable / disable a node package without uninstalling it.
+
+    Implementation: touch / remove a ``.disabled`` marker file in the
+    package dir; ``scan_packages`` reads it on next scan to decide whether
+    to register definitions + executors.
+    """
+    pkg_dir = _resolve_pkg_dir(name)
+    if not pkg_dir.exists():
+        raise HTTPException(404, detail=f"package '{name}' not installed")
+    marker = pkg_dir / ".disabled"
+    if enabled:
+        if marker.exists():
+            marker.unlink()
+    else:
+        marker.touch(exist_ok=True)
+    scan_packages()
+    return {"name": name, "enabled": enabled}
+
+
 @router.post("/packages/{name}/install_deps")
 async def install_package_deps(name: str):
     """Run pip install -r requirements.txt for the package, if present."""

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Search, X, RefreshCw, Radio } from 'lucide-react'
+import { Download, RefreshCw, Radio, Search, X } from 'lucide-react'
 import { usePanelStore } from '../../stores/panel'
 import {
   useRequestLogs,
@@ -203,7 +203,7 @@ function LoadingRow({ cols }: { cols: number }) {
 
 // ── Tab tables ─────────────────────────────────────────────────────────────
 
-function RequestTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
+function RequestTable({ items, loading, onRowClick }: { items: LogItem[]; loading: boolean; onRowClick: (row: LogItem) => void }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
@@ -223,7 +223,7 @@ function RequestTable({ items, loading }: { items: LogItem[]; loading: boolean }
           <EmptyRow cols={6} />
         ) : (
           items.map((row) => (
-            <tr key={row.id} className="log-row">
+            <tr key={row.id} className="log-row" onClick={() => onRowClick(row)} style={{ cursor: 'pointer' }}>
               <Td mono>{formatTs(row.timestamp)}</Td>
               <Td><MethodBadge method={String(row.method ?? '')} /></Td>
               <Td mono>{String(row.path ?? '—')}</Td>
@@ -238,7 +238,7 @@ function RequestTable({ items, loading }: { items: LogItem[]; loading: boolean }
   )
 }
 
-function AppTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
+function AppTable({ items, loading, onRowClick }: { items: LogItem[]; loading: boolean; onRowClick: (row: LogItem) => void }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
@@ -256,7 +256,7 @@ function AppTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
           <EmptyRow cols={4} />
         ) : (
           items.map((row) => (
-            <tr key={row.id} className="log-row">
+            <tr key={row.id} className="log-row" onClick={() => onRowClick(row)} style={{ cursor: 'pointer' }}>
               <Td mono>{formatTs(row.timestamp)}</Td>
               <Td><LevelBadge level={String(row.level ?? '')} /></Td>
               <Td mono>{String(row.module ?? '—')}</Td>
@@ -269,7 +269,7 @@ function AppTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
   )
 }
 
-function FrontendTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
+function FrontendTable({ items, loading, onRowClick }: { items: LogItem[]; loading: boolean; onRowClick: (row: LogItem) => void }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
@@ -287,7 +287,7 @@ function FrontendTable({ items, loading }: { items: LogItem[]; loading: boolean 
           <EmptyRow cols={4} />
         ) : (
           items.map((row) => (
-            <tr key={row.id} className="log-row">
+            <tr key={row.id} className="log-row" onClick={() => onRowClick(row)} style={{ cursor: 'pointer' }}>
               <Td mono>{formatTs(row.timestamp)}</Td>
               <Td><LevelBadge level={String(row.type ?? '')} /></Td>
               <Td>{String(row.message ?? '—')}</Td>
@@ -300,7 +300,7 @@ function FrontendTable({ items, loading }: { items: LogItem[]; loading: boolean 
   )
 }
 
-function AuditTable({ items, loading }: { items: LogItem[]; loading: boolean }) {
+function AuditTable({ items, loading, onRowClick }: { items: LogItem[]; loading: boolean; onRowClick: (row: LogItem) => void }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
@@ -320,7 +320,7 @@ function AuditTable({ items, loading }: { items: LogItem[]; loading: boolean }) 
           <EmptyRow cols={6} />
         ) : (
           items.map((row) => (
-            <tr key={row.id} className="log-row">
+            <tr key={row.id} className="log-row" onClick={() => onRowClick(row)} style={{ cursor: 'pointer' }}>
               <Td mono>{formatTs(row.timestamp)}</Td>
               <Td><LevelBadge level={String(row.action ?? '')} /></Td>
               <Td mono>{String(row.path ?? '—')}</Td>
@@ -353,6 +353,9 @@ export default function LogsOverlay() {
   const [timeRange, setTimeRange] = useState<TimeRange>(TIME_RANGES[1]) // default 1h
   const [live, setLive] = useState(true)
   const [levelFilter, setLevelFilter] = useState<string>('')  // '' = all
+  // m14 mockup 对齐：行 click 弹模态显示完整 row JSON（替代 mockup 的
+  // 行展开 — 改动小，跨 4 个 table 共用同一弹层）。
+  const [detailRow, setDetailRow] = useState<LogItem | null>(null)
 
   // Debounce search input
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -389,6 +392,22 @@ export default function LogsOverlay() {
 
   const handleRefresh = () => {
     currentQuery.refetch()
+  }
+
+  const handleExport = () => {
+    if (items.length === 0) return
+    const blob = new Blob([JSON.stringify(items, null, 2)], {
+      type: 'application/json',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    a.href = url
+    a.download = `logs-${activeTab}-${ts}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -436,10 +455,10 @@ export default function LogsOverlay() {
               <RefreshCw size={13} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
             </button>
 
-            {/* Live toggle */}
+            {/* Live toggle (= mockup 暂停/启用) */}
             <button
               onClick={() => setLive((v) => !v)}
-              title={live ? 'Pause live updates' : 'Enable live updates'}
+              title={live ? '暂停自动刷新' : '启用自动刷新'}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -456,7 +475,31 @@ export default function LogsOverlay() {
               }}
             >
               <Radio size={11} />
-              Live
+              {live ? '实时' : '已暂停'}
+            </button>
+
+            {/* Export 按钮 — m14 mockup 对齐 */}
+            <button
+              onClick={handleExport}
+              title="导出当前结果为 JSON"
+              disabled={items.length === 0}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '3px 8px',
+                borderRadius: 5,
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: items.length === 0 ? 'var(--muted)' : 'var(--text)',
+                cursor: items.length === 0 ? 'not-allowed' : 'pointer',
+                opacity: items.length === 0 ? 0.5 : 1,
+                fontSize: 11,
+                fontWeight: 500,
+              }}
+            >
+              <Download size={11} />
+              导出
             </button>
 
             {/* Close */}
@@ -593,10 +636,88 @@ export default function LogsOverlay() {
           @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         `}</style>
 
-        {activeTab === 'requests' && <RequestTable items={items} loading={loading} />}
-        {activeTab === 'app' && <AppTable items={items} loading={loading} />}
-        {activeTab === 'frontend' && <FrontendTable items={items} loading={loading} />}
-        {activeTab === 'audit' && <AuditTable items={items} loading={loading} />}
+        {activeTab === 'requests' && <RequestTable items={items} loading={loading} onRowClick={setDetailRow} />}
+        {activeTab === 'app' && <AppTable items={items} loading={loading} onRowClick={setDetailRow} />}
+        {activeTab === 'frontend' && <FrontendTable items={items} loading={loading} onRowClick={setDetailRow} />}
+        {activeTab === 'audit' && <AuditTable items={items} loading={loading} onRowClick={setDetailRow} />}
+      </div>
+
+      {detailRow && <LogDetailModal row={detailRow} onClose={() => setDetailRow(null)} />}
+    </div>
+  )
+}
+
+function LogDetailModal({ row, onClose }: { row: LogItem; onClose: () => void }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        zIndex: 60,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 640,
+          maxHeight: '80vh',
+          background: 'var(--bg-elevated, var(--bg))',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          padding: 18,
+          display: 'flex',
+          flexDirection: 'column',
+          boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            marginBottom: 12,
+          }}
+        >
+          <h3 style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
+            日志详情 #{row.id}
+          </h3>
+          <button
+            onClick={onClose}
+            type="button"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--muted)',
+              cursor: 'pointer',
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <pre
+          style={{
+            flex: 1,
+            overflow: 'auto',
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderLeft: '3px solid var(--accent)',
+            borderRadius: 4,
+            padding: 12,
+            fontFamily: 'var(--mono, monospace)',
+            fontSize: 11,
+            color: 'var(--text)',
+            margin: 0,
+            lineHeight: 1.6,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+          }}
+        >
+          {JSON.stringify(row, null, 2)}
+        </pre>
       </div>
     </div>
   )
