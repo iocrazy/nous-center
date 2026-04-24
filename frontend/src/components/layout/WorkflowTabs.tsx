@@ -31,14 +31,19 @@ export default function WorkflowTabs() {
     if (p === '/workflows') return  // 列表页 intent — 不改 URL
     const onEditor = p === '/' || p.startsWith('/workflows/')
     if (!onEditor) return
-    const target = activeDbId ? `/workflows/${activeDbId}` : '/workflows'
+    // 同 handleTabClick：unsaved tab 走 `/` 不走 `/workflows`，
+    // 否则 RouteSync 把它当列表页跳走。
+    const target = activeDbId ? `/workflows/${activeDbId}` : '/'
     if (p !== target) navigate(target, { replace: true })
   }, [activeDbId, location.pathname, navigate])
 
   const handleTabClick = (id: string) => {
     setActiveTab(id)
     const tab = tabs.find((t) => t.id === id)
-    const target = tab?.dbId ? `/workflows/${tab.dbId}` : '/workflows'
+    // 没 dbId 的 tab（unsaved 新工作流）必须跳到 `/`，不能用 `/workflows`
+    // —— 后者会被 RouteSync 当成"列表页 intent"直接 setOverlay('workflows-list')，
+    // 用户点 tab 反而跳走列表页。`/` 走画布显示。
+    const target = tab?.dbId ? `/workflows/${tab.dbId}` : '/'
     if (location.pathname !== target) navigate(target)
   }
 
@@ -142,22 +147,29 @@ export default function WorkflowTabs() {
           type="button"
           onClick={() => navigate('/workflows')}
           title="返回 Workflow 列表"
-          className="flex items-center gap-1 shrink-0"
+          className="flex items-center gap-1.5 shrink-0 self-center"
           style={{
+            margin: '0 8px 0 4px',
+            height: 22,
             padding: '0 10px',
             fontSize: 11,
-            background: 'transparent',
-            border: 'none',
+            fontWeight: 500,
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 11,
             color: 'var(--muted)',
             cursor: 'pointer',
-            borderRight: '1px solid var(--border)',
-            marginRight: 4,
+            transition: 'all 0.12s',
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--text)'
+            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.borderColor = 'var(--accent)'
+            e.currentTarget.style.background = 'var(--accent-subtle, rgba(99,102,241,0.1))'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.color = 'var(--muted)'
+            e.currentTarget.style.borderColor = 'var(--border)'
+            e.currentTarget.style.background = 'var(--bg)'
           }}
         >
           <ArrowLeft size={12} />
