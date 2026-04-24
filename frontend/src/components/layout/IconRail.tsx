@@ -29,7 +29,8 @@ const OVERLAY_ROUTES: Record<OverlayId, string> = {
   models: '/models',
   services: '/services',
   apps: '/apps',
-  'api-management': '/api-management',
+  'api-keys-list': '/api-keys',
+  'api-key-detail': '/api-keys',
   agents: '/agents',
   settings: '/settings',
   logs: '/logs',
@@ -53,7 +54,7 @@ const TOP_NAVS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[]
 
 const MID_NAVS: { id: OverlayId; icon: typeof Layers; label: string }[] = [
   { id: 'models', icon: Layers, label: '引擎库' },
-  { id: 'api-management', icon: KeyRound, label: 'API Key' },
+  { id: 'api-keys-list', icon: KeyRound, label: 'API Key' },
   { id: 'usage', icon: BarChart3, label: '用量' },
   { id: 'logs', icon: ScrollText, label: '日志' },
 ]
@@ -134,7 +135,10 @@ export default function IconRail() {
       {MID_NAVS.map(({ id, icon: Icon, label }) => (
         <RailButton
           key={id}
-          active={activeOverlay === id}
+          active={
+            activeOverlay === id ||
+            (id === 'api-keys-list' && activeOverlay === 'api-key-detail')
+          }
           onClick={() => navigateOverlay(id)}
           label={label}
         >

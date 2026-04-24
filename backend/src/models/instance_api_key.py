@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 
 from src.models.database import Base
 from src.utils.snowflake import snowflake_id
@@ -23,6 +23,11 @@ class InstanceApiKey(Base):
     label = Column(String(100), nullable=False)
     key_hash = Column(String(200), nullable=False)
     key_prefix = Column(String(20), nullable=False)
+    # m10: always-visible mode (Aliyun Bailian style). Stored alongside
+    # key_hash so existing bcrypt verification still works for keys with no
+    # plaintext (legacy or rotated). UI gates "view" on its presence.
+    secret_plaintext = Column(String(200), nullable=True)
+    note = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     usage_calls = Column(Integer, default=0, nullable=False)
     usage_chars = Column(Integer, default=0, nullable=False)

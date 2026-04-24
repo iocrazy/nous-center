@@ -1,0 +1,206 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { apiFetch } from './client'
+
+// ---------- types ----------
+
+export interface GrantSummary {
+  id: number
+  service_id: number
+  service_name: string
+  service_category: string | null
+  status: 'active' | 'paused' | 'retired'
+  activated_at: string
+}
+
+export interface ApiKeyRow {
+  id: number
+  label: string
+  note: string | null
+  key_prefix: string
+  secret_plaintext: string | null
+  is_active: boolean
+  usage_calls: number
+  usage_chars: number
+  last_used_at: string | null
+  created_at: string | null
+  expires_at: string | null
+  grant_count: number
+  active_grant_count: number
+  grants: GrantSummary[]
+}
+
+export interface ApiKeyCreated extends ApiKeyRow {
+  secret: string
+}
+
+export interface CreateKeyBody {
+  label: string
+  note?: string | null
+  expires_at?: string | null
+  service_ids?: number[]
+}
+
+export interface PatchKeyBody {
+  label?: string
+  note?: string | null
+  expires_at?: string | null
+  is_active?: boolean
+}
+
+export interface ServiceGrantRow {
+  grant_id: number
+  api_key_id: number
+  api_key_label: string
+  api_key_prefix: string
+  grant_status: 'active' | 'paused' | 'retired'
+  activated_at: string
+  pack_total: number
+  pack_used: number
+}
+
+// ---------- queries ----------
+
+export function useApiKeys() {
+  return useQuery<ApiKeyRow[]>({
+    queryKey: ['api-keys'],
+    queryFn: () => apiFetch<ApiKeyRow[]>('/api/v1/keys'),
+  })
+}
+
+export function useApiKey(keyId: number | string | null) {
+  return useQuery<ApiKeyRow>({
+    queryKey: ['api-key', String(keyId)],
+    queryFn: () => apiFetch<ApiKeyRow>(`/api/v1/keys/${keyId}`),
+    enabled: keyId != null,
+  })
+}
+
+export function useServiceGrants(serviceId: number | string | null) {
+  return useQuery<ServiceGrantRow[]>({
+    queryKey: ['service-grants', String(serviceId)],
+    queryFn: () => apiFetch<ServiceGrantRow[]>(`/api/v1/services/${serviceId}/grants`),
+    enabled: serviceId != null,
+  })
+}
+
+// ---------- mutations ----------
+
+export function useCreateApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: CreateKeyBody) =>
+      apiFetch<ApiKeyCreated>('/api/v1/keys', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+    },
+  })
+}
+
+export function useResetApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (keyId: number | string) =>
+      apiFetch<ApiKeyCreated>(`/api/v1/keys/${keyId}/reset`, { method: 'POST' }),
+    onSuccess: (_, keyId) => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: ['api-key', String(keyId)] })
+    },
+  })
+}
+
+export function usePatchApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ keyId, body }: { keyId: number | string; body: PatchKeyBody }) =>
+      apiFetch<ApiKeyRow>(`/api/v1/keys/${keyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: ['api-key', String(vars.keyId)] })
+    },
+  })
+}
+
+export function useDeleteApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (keyId: number | string) =>
+      apiFetch(`/api/v1/keys/${keyId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+    },
+  })
+}
+
+// ---------- grant ops（复用 api_gateway 路由） ----------
+
+export function useAddGrant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ keyId, serviceId }: { keyId: number | string; serviceId: number }) =>
+      apiFetch(`/api/v1/keys/${keyId}/grants`, {
+        method: 'POST',
+        body: JSON.stringify({ instance_id: serviceId }),
+      }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: ['api-key', String(vars.keyId)] })
+      qc.invalidateQueries({ queryKey: ['service-grants', String(vars.serviceId)] })
+    },
+  })
+}
+
+export function useRemoveGrant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (grantId: number | string) =>
+      apiFetch(`/api/v1/grants/${grantId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: ['service-grants'] })
+    },
+  })
+}
+
+export function useToggleGrant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ grantId, status }: { grantId: number | string; status: 'active' | 'paused' | 'retired' }) =>
+      apiFetch(`/api/v1/grants/${grantId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: ['service-grants'] })
+    },
+  })
+}
+
+// ---------- helpers ----------
+
+/** 给某个 key + service 组合渲染三种调用 endpoint URL（OpenAI/Ollama/Anthropic）。 */
+export function endpointsFor(serviceName: string, baseUrl: string) {
+  return {
+    openai: {
+      label: 'OpenAI 兼容',
+      url: `${baseUrl}/v1/chat/completions`,
+      hint: `model: ${serviceName}`,
+    },
+    ollama: {
+      label: 'Ollama 兼容',
+      url: `${baseUrl}/api/chat`,
+      hint: `model: ${serviceName}`,
+    },
+    anthropic: {
+      label: 'Anthropic 兼容',
+      url: `${baseUrl}/v1/messages`,
+      hint: `model: ${serviceName}`,
+    },
+  }
+}

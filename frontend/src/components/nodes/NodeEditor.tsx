@@ -28,7 +28,6 @@ import DashboardOverlay from '../overlays/DashboardOverlay'
 import ModelsOverlay from '../overlays/ModelsOverlay'
 import SettingsOverlay from '../overlays/SettingsOverlay'
 import PresetDetailOverlay from '../overlays/PresetDetailOverlay'
-import ApiManagementOverlay from '../overlays/ApiManagementOverlay'
 import AgentManagementOverlay from '../overlays/AgentManagementOverlay'
 import LogsOverlay from '../overlays/LogsOverlay'
 import NodePackagesOverlay from '../overlays/NodePackagesOverlay'
@@ -36,6 +35,8 @@ import ServicesList from '../../pages/ServicesList'
 import ServiceDetailRoute from '../../pages/ServiceDetailRoute'
 import WorkflowsList from '../../pages/WorkflowsList'
 import UsagePage from '../../pages/UsagePage'
+import ApiKeysList from '../../pages/ApiKeysList'
+import ApiKeyDetail from '../../pages/ApiKeyDetail'
 import TaskPanel from '../panels/TaskPanel'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
@@ -324,7 +325,8 @@ export default function NodeEditor() {
       {activeOverlay === 'models' && <ModelsOverlay />}
       {activeOverlay === 'settings' && <SettingsOverlay />}
       {activeOverlay === 'preset-detail' && <PresetDetailOverlay />}
-      {activeOverlay === 'api-management' && <ApiManagementOverlay />}
+      {activeOverlay === 'api-keys-list' && <ApiKeysList />}
+      {activeOverlay === 'api-key-detail' && <ApiKeyDetail />}
       {activeOverlay === 'agents' && <AgentManagementOverlay />}
       {activeOverlay === 'logs' && <LogsOverlay />}
       {activeOverlay === 'node-packages' && <NodePackagesOverlay />}

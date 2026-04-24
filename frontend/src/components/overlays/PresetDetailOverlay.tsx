@@ -1,10 +1,11 @@
 import { Rocket } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { usePanelStore } from '../../stores/panel'
 import { useVoicePresets } from '../../api/voices'
 
 export default function PresetDetailOverlay() {
   const presetId = usePanelStore((s) => s.selectedPresetId)
-  const openApiManagement = usePanelStore((s) => s.openApiManagement)
+  const navigate = useNavigate()
   const { data: presets } = useVoicePresets()
   const preset = presets?.find((p) => p.id === presetId)
 
@@ -107,11 +108,10 @@ export default function PresetDetailOverlay() {
               </>
             )}
 
-            {/* Deploy button */}
+            {/* Deploy button — v3: 跳到服务列表，让用户走"快速开通"。
+                preset 名进 quick-provision 是后续 PR 的 wiring。 */}
             <button
-              onClick={() =>
-                openApiManagement({ presetId: presetId! })
-              }
+              onClick={() => navigate('/services')}
               className="flex items-center gap-1"
               style={{
                 width: '100%',
