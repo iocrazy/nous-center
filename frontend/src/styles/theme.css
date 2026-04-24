@@ -195,6 +195,11 @@ input[type="number"] {
   50% { opacity: 0.3; }
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* Node slider — ElevenLabs style range input */
 .node-slider {
   -webkit-appearance: none;
