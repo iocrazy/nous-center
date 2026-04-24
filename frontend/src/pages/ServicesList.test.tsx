@@ -19,6 +19,8 @@ vi.mock('../api/services', async () => {
   return {
     ...actual,
     useServices: () => useServicesMock(),
+    // ServicesList 现在用 useDeleteService — mock 掉避免 QueryClientProvider
+    useDeleteService: () => ({ mutate: vi.fn(), isPending: false }),
   }
 })
 

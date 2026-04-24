@@ -6,11 +6,14 @@ import {
   ChevronDown,
   Cpu,
   Image as ImageIcon,
+  MoreHorizontal,
   Plus,
   Search,
+  Trash2,
 } from 'lucide-react'
 import {
   endpointFor,
+  useDeleteService,
   useServices,
   type ServiceCategory,
   type ServiceRow,
@@ -40,6 +43,8 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
   const [tab, setTab] = useState<FilterTab>('all')
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const del = useDeleteService()
+  const toast = useToastStore((s) => s.add)
 
   const counts = useMemo(() => buildCounts(services ?? []), [services])
   const filtered = useMemo(
@@ -50,6 +55,14 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
   const goDetail = (id: string) => {
     if (onOpen) onOpen(id)
     else navigate(`/services/${id}`)
+  }
+
+  const handleDelete = (svc: ServiceRow) => {
+    if (!window.confirm(`确认下线服务 "${svc.name}"？此操作不可撤销。`)) return
+    del.mutate(svc.id, {
+      onSuccess: () => toast(`已下线 ${svc.name}`, 'success'),
+      onError: (e) => toast(`下线失败：${(e as Error).message}`, 'error'),
+    })
   }
 
   return (
@@ -149,6 +162,7 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
                 svc={svc}
                 onOpen={() => goDetail(svc.id)}
                 onPlayground={() => goDetail(svc.id)}
+                onDelete={() => handleDelete(svc)}
               />
             ))}
           </div>
@@ -289,14 +303,28 @@ function ServiceCard({
   svc,
   onOpen,
   onPlayground,
+  onDelete,
 }: {
   svc: ServiceRow
   onOpen: () => void
   onPlayground: () => void
+  onDelete: () => void
 }) {
   const statusStyle = STATUS_STYLES[svc.status] ?? STATUS_STYLES.active
   const inactive = svc.status !== 'active'
   const addToast = useToastStore((s) => s.add)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDoc = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [menuOpen])
 
   const copyCurl = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -332,8 +360,79 @@ function ServiceCard({
         gap: 10,
         opacity: inactive ? 0.7 : 1,
         color: 'var(--text)',
+        position: 'relative',
       }}
     >
+      <div ref={menuRef} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            setMenuOpen((p) => !p)
+          }}
+          title="更多操作"
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 4,
+            border: 'none',
+            background: menuOpen ? 'var(--bg)' : 'transparent',
+            color: 'var(--muted)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+        {menuOpen && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 4px)',
+              right: 0,
+              minWidth: 140,
+              background: 'var(--bg-elevated, var(--bg))',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+              padding: '4px 0',
+            }}
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen(false)
+                onDelete()
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: '100%',
+                padding: '6px 12px',
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--accent, #ef4444)',
+                fontSize: 12,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--bg-hover, rgba(255,255,255,0.05))'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <Trash2 size={12} />
+              下线
+            </button>
+          </div>
+        )}
+      </div>
       <button
         type="button"
         onClick={onOpen}

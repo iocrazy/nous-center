@@ -24,6 +24,8 @@ vi.mock('../api/workflows', async () => {
       mutate: createMutateMock,
       isPending: false,
     }),
+    // 卡片菜单的删除入口
+    useDeleteWorkflow: () => ({ mutate: vi.fn(), isPending: false }),
   }
 })
 
@@ -115,7 +117,7 @@ describe('WorkflowsList', () => {
     expect(screen.getByText(/↻ v2/)).toBeInTheDocument()
   })
 
-  it('shows "未发布为服务" + 发布 CTA when no service is linked', () => {
+  it('shows "未关联服务" + 发布 CTA when no service is linked', () => {
     useWorkflowsMock.mockReturnValue({
       data: [makeWf({ id: 'wf-2', name: 'draft', status: 'draft' })],
       isLoading: false,
@@ -126,8 +128,37 @@ describe('WorkflowsList', () => {
         <WorkflowsList />
       </MemoryRouter>,
     )
-    expect(screen.getByText(/未发布为服务/)).toBeInTheDocument()
+    expect(screen.getByText(/未关联服务/)).toBeInTheDocument()
     expect(screen.getByText('发布为服务')).toBeInTheDocument()
+  })
+
+  it('已发布 workflow 但未挂服务时显示"已发布 · 未关联服务"', () => {
+    useWorkflowsMock.mockReturnValue({
+      data: [makeWf({ id: 'wf-3', name: 'pub-no-svc', status: 'published' })],
+      isLoading: false,
+      error: null,
+    })
+    render(
+      <MemoryRouter>
+        <WorkflowsList />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText(/已发布 · 未关联服务/)).toBeInTheDocument()
+  })
+
+  it('点击"发布为服务"按钮 navigate to /workflows/:id?publish=1（不冒泡到 onOpen）', () => {
+    useWorkflowsMock.mockReturnValue({
+      data: [makeWf({ id: 'wf-2', name: 'draft', status: 'draft' })],
+      isLoading: false,
+      error: null,
+    })
+    render(
+      <MemoryRouter>
+        <WorkflowsList />
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByText('发布为服务'))
+    expect(navigateSpy).toHaveBeenLastCalledWith('/workflows/wf-2?publish=1')
   })
 
   it('templates tab filters out non-template rows', () => {
