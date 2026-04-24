@@ -4,6 +4,12 @@ supersedes: (architectural decisions after api-gateway lanes A–G merged on mas
 shipped_via:
   - PR #8 (PR-A backend + migration + frontend stubs) — merged 2026-04-23
   - PR #9 (PR-B frontend pages + dialogs + Vitest unit + e2e + manual-gate hotfixes) — merged 2026-04-23
+  - PR #10 (docs SHIPPED 标记) — merged 2026-04-23
+  - PR #11 (manual-gate 3 个 bug 的回归测试：migration PG / navigate / mutation deps) — merged 2026-04-23
+  - PR #12 (m08 完整 workflow 列表页) — merged 2026-04-23
+  - PR #13 (m13 用量统计页 + 3 个 backend 聚合端点) — merged 2026-04-23
+  - PR #14 (UsagePage vitest 与其他页面对齐) — merged 2026-04-24
+  - PR #15 (m02/m08/m13 与 mockup 对齐：split-button、卡片 footer、category 区分色、+新建 Workflow 卡片、导出 CSV) — merged 2026-04-24
 ---
 
 # Design: IA 重构 v3 — 单人管理员控制台
@@ -316,9 +322,11 @@ frontend/src/api/
 
 **VERDICT:** ENG CLEARED — ready to implement. 建议顺序：PR-A（backend + migration + frontend placeholder stub）→ PR-B（frontend）。
 
-## 实施状态（2026-04-23 收尾）
+## 实施状态（2026-04-24 收尾）
 
-**SHIPPED.** 两个 PR 全部 merge 进 master，manual gate 在本地 dev 环境跑通。
+**SHIPPED + 视觉对齐 + 回归测试.** v3 主线（PR-A/PR-B）+ 次主线（m08/m13）
++ mockup 对齐 + 回归测试均已 merge。manual gate 在本地 dev 环境通过（通过浏览器
+walk-through + 直接对照 mockup 截图）。
 
 | 阶段 | 状态 | PR | 关键证据 |
 |---|---|---|---|
@@ -326,20 +334,26 @@ frontend/src/api/
 | PR-B frontend | ✅ merged | [#9](https://github.com/iocrazy/nous-center/pull/9) | m02 + m03 + 4 dialogs + Schema-driven Playground + IconRail 8 nav；14 个 vitest unit、3 个 Playwright spec |
 | Migration manual gate | ✅ done | — | dev DB pg_dump → 跑 migration → 重跑 no-op；6 service_instances name normalize、2 collision 加 id 后缀；9 个 instance_api_keys 回填到 api_key_grants |
 | Browser walk-through | ✅ done | — | 快速开通 → 详情页 5 tabs；publish wizard 3 步走通 |
+| 回归测试（manual-gate 3 bug） | ✅ merged | [#11](https://github.com/iocrazy/nous-center/pull/11) | PG migration 真跑 + 幂等 + 名字冲突；ServicesList navigate；CreateServiceDialog/PublishDialog mutation-deps loop guard |
+| m08 Workflow 列表页 | ✅ merged | [#12](https://github.com/iocrazy/nous-center/pull/12) | `/workflows` 切到 m08 列表，`/workflows/:id` 仍是 canvas；卡片关联服务 + 再次发布按钮 + 5 vitest |
+| m13 用量统计页 | ✅ merged | [#13](https://github.com/iocrazy/nous-center/pull/13) | 后端 3 端点 (summary / timeseries / top-keys) + 6 pytest；前端 recharts stacked bar + Top Key 表 |
+| UsagePage vitest 对齐 | ✅ merged | [#14](https://github.com/iocrazy/nous-center/pull/14) | 7 个 case，stat 渲染 / 错误率 null / 环比 / 范围切换 / 空态 / 错误显示 |
+| Mockup 视觉对齐 | ✅ merged | [#15](https://github.com/iocrazy/nous-center/pull/15) | m02 split-button + footer 三按钮 + category 区分色 + 提示框；m08 + 新建 Workflow 卡；m13 导出 CSV |
 
 ### Manual gate 期间发现并修的 3 个 bug
 
-落在 PR-B 的 `fix(services-v3): manual-gate hotfixes` 提交里：
+落在 PR-B 的 `fix(services-v3): manual-gate hotfixes` 提交里，回归测试在 PR #11：
 
 1. **Migration 幂等性破窗**：`api_key_grants` 回填 INSERT 在第二次跑时失败（步骤 7 已把 `instance_id` rename 成 `service_id`）。修：把 INSERT 包进 `DO $$ ... IF EXISTS (instance_id 列) THEN EXECUTE ...`，重跑变 no-op。原 `test_services_v3_migration.py` 只查文件结构没真跑 SQL，所以静态测试漏了这个。
 2. **`window.history.pushState` 不触发 react-router**：`ServicesList` 的卡片点击导航到 `/services/:id` 但 `RouteSync` 的 `useLocation` 不会订阅原生 history 改动。修：改用 `useNavigate()`。
 3. **`useEffect` 依赖了 `useMutation` 整个对象 → 无限渲染循环**：`CreateServiceDialog` 与 `PublishDialog` 的 reset effect 依赖了 mutation result 的引用，每次 render 引用变化触发 reset → React Query 状态变 → 再 render → 死循环。修：依赖 stable 的 `.reset` 字段。
 
-### 后续可做（不阻塞）
+### 后续可做（不阻塞，需要后端补数据）
 
-- m08 完整 Workflow 列表页（卡片底部"关联服务 / 再次发布"），目前 IconRail 上的 Workflow 仍走老编辑器画布
-- m13 用量页（按服务分组的统计图）
-- 把 manual-gate 那 3 个 bug 教训记到测试里（migration 真跑 PG、e2e 覆盖跨页导航）
+- m02 卡片配额条 + 24h 调用量 / P95 / 错误率（要 LLMUsage 加 status 字段或新建错误统计表）
+- m13 错误率 + P95 真实数据（同上 + PG `percentile_cont` / SQLite fallback）
+- m03 service detail 加"新版本"按钮（语义=新建一个新 name 的服务，源 workflow 不变）
+- vite chunk splitting：拆 react / recharts / @xyflow 等大依赖到独立 vendor chunk（消除 build 警告）
 
 ## 本轮 Plan-Eng-Review 锁定的实施细节
 
