@@ -52,6 +52,7 @@ class GzipCompactContextEngine(ContextEngine):
 
         system_msgs = [m for m in messages if m.get("role") == "system"]
         rest = [m for m in messages if m.get("role") != "system"]
+        original_rest_len = len(rest)
 
         # Identify the last user message — this is the minimum we must preserve.
         last_user_idx = None
@@ -70,8 +71,17 @@ class GzipCompactContextEngine(ContextEngine):
                 last_user_idx -= 1
 
         compacted = system_msgs + rest
+        dropped = original_rest_len - len(rest)
+
+        # 进程内累计 — 给 m04 dashboard 看 compaction 平均丢了多少 turn。
+        try:
+            from src.services.runtime_metrics import record_compaction
+        except Exception:
+            record_compaction = None
 
         if _approx_tokens(compacted) > max_tokens:
+            if record_compaction:
+                record_compaction(dropped, truncated=True)
             raise ContextOverflowError(
                 f"context still exceeds max_tokens={max_tokens} "
                 f"after compression (est={_approx_tokens(compacted)})"
@@ -79,8 +89,12 @@ class GzipCompactContextEngine(ContextEngine):
 
         if not rest:
             # 所有非 system 全被砍光了 — 说明最后一轮本身就超，raise
+            if record_compaction:
+                record_compaction(dropped, truncated=True)
             raise ContextOverflowError(
                 "last turn alone exceeds max_tokens"
             )
 
+        if record_compaction:
+            record_compaction(dropped, truncated=False)
         return compacted, True

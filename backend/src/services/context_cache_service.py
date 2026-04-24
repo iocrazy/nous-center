@@ -165,8 +165,17 @@ async def resolve_for_request(
     )
     if not context_id:
         return None, None
+
+    # 进程内 hit/miss 计数 — 给 m04 dashboard 算命中率。
+    try:
+        from src.services.runtime_metrics import record_cache_lookup
+    except Exception:
+        record_cache_lookup = None
+
     cache = await fetch_active_cache(session, context_id, instance_id)
     if cache is None:
+        if record_cache_lookup:
+            record_cache_lookup(hit=False)
         other = await fetch_cache_any_instance(session, context_id)
         if other is not None and other.instance_id != instance_id:
             raise NousPermissionError(
@@ -178,9 +187,14 @@ async def resolve_for_request(
             code="context_not_found",
         )
     if cache.model != engine_name:
+        # 模型不匹配 — 算 miss（业务上没用上这个 cache）。
+        if record_cache_lookup:
+            record_cache_lookup(hit=False)
         raise InvalidRequestError(
             f"Cache was created for '{cache.model}', not '{engine_name}'",
             code="context_model_mismatch",
             param="model",
         )
+    if record_cache_lookup:
+        record_cache_lookup(hit=True)
     return list(cache.messages_json), cache.ttl_seconds
