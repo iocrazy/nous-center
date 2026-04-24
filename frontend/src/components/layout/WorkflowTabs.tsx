@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { X, Plus } from 'lucide-react'
+import { ArrowLeft, X, Plus } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -19,18 +19,17 @@ export default function WorkflowTabs() {
 
   const [menu, setMenu] = useState<TabMenuState>({ visible: false, position: { x: 0, y: 0 }, tabId: '' })
 
-  // Keep URL in sync with active tab's dbId:
-  // - at mount / after full refresh on `/`, push URL to /workflows/:dbId
-  // - when a freshly-created tab first auto-saves and gets its dbId, same
-  // - when switching between saved tabs (handleTabClick also does this;
-  //   this effect covers setActiveTab called from elsewhere)
-  // Only touch the URL when we're on the workflow-editor surface (/, /workflows,
-  // or /workflows/*) — don't stomp on /models, /agents, /settings, etc.
+  // Keep URL in sync with active tab's dbId — but ONLY when用户处在 canvas
+  // 表面（`/` 或 `/workflows/<id>`）。`/workflows` 是 m08 列表页 intent；
+  // 不能 stomp 它，否则用户点 IconRail Workflow 想回列表会被 effect 立刻
+  // 弹回画布（dbId 触发 effect → navigate 改写 URL → RouteSync 又把 overlay
+  // 设回 null → 用户视觉上根本没离开画布）。
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const activeDbId = activeTab?.dbId ?? null
   useEffect(() => {
     const p = location.pathname
-    const onEditor = p === '/' || p === '/workflows' || p.startsWith('/workflows/')
+    if (p === '/workflows') return  // 列表页 intent — 不改 URL
+    const onEditor = p === '/' || p.startsWith('/workflows/')
     if (!onEditor) return
     const target = activeDbId ? `/workflows/${activeDbId}` : '/workflows'
     if (p !== target) navigate(target, { replace: true })
@@ -139,6 +138,31 @@ export default function WorkflowTabs() {
           gap: 0,
         }}
       >
+        <button
+          type="button"
+          onClick={() => navigate('/workflows')}
+          title="返回 Workflow 列表"
+          className="flex items-center gap-1 shrink-0"
+          style={{
+            padding: '0 10px',
+            fontSize: 11,
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--muted)',
+            cursor: 'pointer',
+            borderRight: '1px solid var(--border)',
+            marginRight: 4,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--text)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--muted)'
+          }}
+        >
+          <ArrowLeft size={12} />
+          列表
+        </button>
         {tabs.map((tab, i) => (
           <div key={tab.id} className="flex items-stretch">
             {i > 0 && (

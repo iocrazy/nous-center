@@ -471,18 +471,40 @@ function StatusBadge({ status }: { status: ServiceStatus }) {
 
 function SourceBadge({ svc }: { svc: ServiceDetailT }) {
   const fromWorkflow = svc.source_type === 'workflow' && !!svc.workflow_id
+  if (!fromWorkflow) {
+    return (
+      <span
+        style={{
+          fontSize: 11,
+          padding: '3px 9px',
+          borderRadius: 10,
+          background: 'var(--accent-subtle, rgba(99,102,241,0.1))',
+          color: 'var(--accent)',
+        }}
+      >
+        快速开通
+      </span>
+    )
+  }
+  // 来自 workflow — 显示名字 + 短 ID + 跳转到 workflow 编辑器入口。
+  const shortId = svc.workflow_id && svc.workflow_id.length > 6
+    ? svc.workflow_id.slice(-6)
+    : svc.workflow_id
   return (
-    <span
+    <a
+      href={`/workflows/${svc.workflow_id}`}
+      title={`workflow_id=${svc.workflow_id}`}
       style={{
         fontSize: 11,
         padding: '3px 9px',
         borderRadius: 10,
         background: 'var(--accent-subtle, rgba(99,102,241,0.1))',
         color: 'var(--accent)',
+        textDecoration: 'none',
       }}
     >
-      {fromWorkflow ? `来自 Workflow · v${svc.version}` : '快速开通'}
-    </span>
+      来自 {svc.workflow_name ?? 'Workflow'} #{shortId} · v{svc.version}
+    </a>
   )
 }
 

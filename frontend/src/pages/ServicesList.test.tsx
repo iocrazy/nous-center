@@ -38,6 +38,7 @@ function makeService(over: Partial<ServiceRow> = {}): ServiceRow {
     category: 'llm',
     meter_dim: 'tokens',
     workflow_id: '55',
+    workflow_name: 'demo-wf',
     snapshot_hash: 'sha256:abc',
     snapshot_schema_version: 1,
     version: 1,

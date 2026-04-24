@@ -66,6 +66,7 @@ class ServiceOut(BaseModel):
     category: str | None = None
     meter_dim: str | None = None
     workflow_id: int | None = None
+    workflow_name: str | None = None  # join from workflows.name；UI 用来显示"来自 Workflow · {name}"
     snapshot_hash: str | None = None
     snapshot_schema_version: int = 1
     version: int = 1
@@ -153,13 +154,25 @@ async def list_services(
     category: str | None = None,
     status: str | None = None,
 ):
-    stmt = select(ServiceInstance).order_by(ServiceInstance.created_at.desc())
+    # LEFT JOIN workflows 把 name 一起带回来 — UI 服务卡片显示
+    # "来自 Workflow · {name} #{id}"。trivial workflow 名是 "trivial:{svc}"，
+    # 用户能立刻看出是快速开通生成的 vs 真实 workflow。
+    stmt = (
+        select(ServiceInstance, Workflow.name.label("workflow_name"))
+        .outerjoin(Workflow, Workflow.id == ServiceInstance.workflow_id)
+        .order_by(ServiceInstance.created_at.desc())
+    )
     if category:
         stmt = stmt.where(ServiceInstance.category == category)
     if status:
         stmt = stmt.where(ServiceInstance.status == status)
-    rows = (await session.execute(stmt)).scalars().all()
-    return rows
+    rows = (await session.execute(stmt)).all()
+    out = []
+    for svc, wf_name in rows:
+        item = ServiceOut.model_validate(svc)
+        item.workflow_name = wf_name
+        out.append(item)
+    return out
 
 
 @router.get(
@@ -172,7 +185,8 @@ async def get_service(
     session: AsyncSession = Depends(get_async_session),
 ):
     stmt = (
-        select(ServiceInstance)
+        select(ServiceInstance, Workflow.name.label("workflow_name"))
+        .outerjoin(Workflow, Workflow.id == ServiceInstance.workflow_id)
         .options(
             undefer(ServiceInstance.workflow_snapshot),
             undefer(ServiceInstance.exposed_inputs),
@@ -180,10 +194,13 @@ async def get_service(
         )
         .where(ServiceInstance.id == service_id)
     )
-    svc = (await session.execute(stmt)).scalar_one_or_none()
-    if svc is None:
+    row = (await session.execute(stmt)).first()
+    if row is None:
         raise HTTPException(404, detail="service not found")
-    return svc
+    svc, wf_name = row
+    out = ServiceDetailOut.model_validate(svc)
+    out.workflow_name = wf_name
+    return out
 
 
 @router.post(

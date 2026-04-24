@@ -64,6 +64,7 @@ function makeSvc(over: Partial<ServiceRow> = {}): ServiceRow {
     category: 'tts',
     meter_dim: 'chars',
     workflow_id: 'wf-1',
+    workflow_name: 'demo',
     snapshot_hash: 'sha256:x',
     snapshot_schema_version: 1,
     version: 1,

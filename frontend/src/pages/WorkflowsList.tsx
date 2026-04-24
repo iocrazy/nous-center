@@ -202,8 +202,29 @@ function WorkflowCard({
         }}
       >
         <ThumbStrip count={nodeCount} />
-        <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500, marginBottom: 4 }}>
-          {wf.name}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 6,
+            marginBottom: 4,
+          }}
+        >
+          <span style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500 }}>
+            {wf.name}
+          </span>
+          {/* m08 mockup 对齐：每张卡显示短 ID（末 6 位），方便和服务卡片
+              "来自 {name} #xxxxxx" 互查。完整 ID hover title 看。 */}
+          <span
+            title={`workflow_id=${wf.id}`}
+            style={{
+              fontSize: 10,
+              fontFamily: 'var(--mono, monospace)',
+              color: 'var(--muted)',
+            }}
+          >
+            #{shortWfId(String(wf.id))}
+          </span>
         </div>
         <div
           style={{
@@ -421,6 +442,10 @@ function Badge({
 }
 
 // ---------- helpers ----------
+
+function shortWfId(id: string): string {
+  return id.length > 6 ? id.slice(-6) : id
+}
 
 function indexServicesByWorkflow(rows: ServiceRow[]): Map<string, ServiceRow> {
   const map = new Map<string, ServiceRow>()
