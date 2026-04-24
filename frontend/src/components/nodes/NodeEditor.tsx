@@ -22,8 +22,10 @@ import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
 import { NODE_DEFS, type NodeType, type PortType } from '../../models/workflow'
 import NodeLibraryPanel from '../panels/NodeLibraryPanel'
+import NodePropertyPanel from '../panels/NodePropertyPanel'
 import WorkflowsPanel from '../panels/WorkflowsPanel'
 import PresetsPanel from '../panels/PresetsPanel'
+import { useSelectionStore } from '../../stores/selection'
 import DashboardOverlay from '../overlays/DashboardOverlay'
 import ModelsOverlay from '../overlays/ModelsOverlay'
 import SettingsOverlay from '../overlays/SettingsOverlay'
@@ -69,6 +71,7 @@ export default function NodeEditor() {
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
+  const setSelectedNodeId = useSelectionStore((s) => s.setSelectedNodeId)
 
   // Cmd/Ctrl+Z undo; Cmd/Ctrl+Shift+Z (or Ctrl+Y) redo. Swallow when the
   // event target is an input/textarea/contenteditable so native text edit
@@ -260,6 +263,10 @@ export default function NodeEditor() {
   const PanelComponent = activePanel && !activeOverlay ? PANEL_MAP[activePanel] : null
 
   const showPanel = PanelComponent && !activeOverlay
+  // m09: 进画布时常驻右侧属性面板（无选中时显示空态提示）。overlay
+  // 视图（dashboard / services / etc.）下不显示。
+  const showPropertyPanel = !activeOverlay
+  const PROPERTY_PANEL_WIDTH = 300
 
   return (
     <div className="relative flex-1 overflow-hidden" ref={reactFlowWrapper}>
@@ -269,7 +276,10 @@ export default function NodeEditor() {
       {/* Canvas area — offset when panel is open */}
       <div
         className="absolute inset-0 transition-[left] duration-200"
-        style={{ left: showPanel ? panelWidth : 0 }}
+        style={{
+          left: showPanel ? panelWidth : 0,
+          right: showPropertyPanel ? PROPERTY_PANEL_WIDTH : 0,
+        }}
       >
         <ReactFlow
           nodes={nodes}
@@ -281,6 +291,10 @@ export default function NodeEditor() {
           onInit={(instance) => { reactFlowInstance.current = instance }}
           onDragOver={onDragOver}
           onDrop={onDrop}
+          onSelectionChange={({ nodes: sel }) => {
+            // Only single-select drives the property panel; multi-select / deselect → null.
+            setSelectedNodeId(sel.length === 1 ? sel[0].id : null)
+          }}
           onNodeDragStop={syncToStore}
           onEdgeDoubleClick={(_event, edge) => {
             setEdges((eds) => eds.filter((e) => e.id !== edge.id))
@@ -319,6 +333,9 @@ export default function NodeEditor() {
           />
         </ReactFlow>
       </div>
+
+      {/* m09: 节点属性面板（画布模式常驻右侧；overlay 视图下隐藏） */}
+      {showPropertyPanel && <NodePropertyPanel />}
 
       {/* Page overlays */}
       {activeOverlay === 'dashboard' && <DashboardOverlay />}
