@@ -117,7 +117,7 @@ async def test_list_services_populates_workflow_name(db_client):
     )
     assert r.status_code == 201
     sid = r.json()["id"]
-    expected_wf_name = f"trivial:named-svc"  # quick_provision 的命名规则
+    expected_wf_name = "trivial:named-svc"  # quick_provision 的命名规则
 
     rs = await db_client.get("/api/v1/services", headers=_admin_headers())
     assert rs.status_code == 200
