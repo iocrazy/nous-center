@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import PublishDialog from '../workflow/PublishDialog'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
@@ -24,6 +24,19 @@ export default function Topbar() {
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const isPublished = activeTab?.workflow?.status === 'published'
   const [showPublishWizard, setShowPublishWizard] = useState(false)
+  const location = useLocation()
+
+  // m08 列表卡"发布为服务"按钮 → 跳 /workflows/:id?publish=1
+  // → 这里检测到 query 自动弹发布对话框 + 清掉 query。要等 activeTab
+  // 加载完才弹（不然 PublishDialog 拿不到 nodes 数据）。
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    if (params.get('publish') !== '1') return
+    if (!activeTab?.workflow) return
+    setShowPublishWizard(true)
+    // replace 把 query 清掉，避免刷新或返回又弹
+    navigate(location.pathname, { replace: true })
+  }, [activeTab, location.search, location.pathname, navigate])
 
   const overlayTitle = activeOverlay === 'dashboard' ? 'Dashboard' : activeOverlay === 'models' ? 'Models' : activeOverlay === 'settings' ? '设置' : activeOverlay === 'preset-detail' ? '预设详情' : activeOverlay === 'api-keys-list' ? 'API Key' : activeOverlay === 'api-key-detail' ? 'API Key 详情' : null
 

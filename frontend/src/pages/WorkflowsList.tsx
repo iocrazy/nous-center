@@ -1,9 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Search } from 'lucide-react'
-import { useWorkflows, useCreateWorkflow, type WorkflowSummary } from '../api/workflows'
+import { MoreHorizontal, Plus, Search, Trash2 } from 'lucide-react'
+import {
+  useCreateWorkflow,
+  useDeleteWorkflow,
+  useWorkflows,
+  type WorkflowSummary,
+} from '../api/workflows'
 // (legacy duplicate import removed below)
 import { useServices, type ServiceRow } from '../api/services'
+import { useToastStore } from '../stores/toast'
 
 type Tab = 'all' | 'mine' | 'template' | 'published'
 
@@ -24,6 +30,22 @@ export default function WorkflowsList() {
   const [search, setSearch] = useState('')
 
   const create = useCreateWorkflowAndGo()
+  const del = useDeleteWorkflow()
+  const toast = useToastStore((s) => s.add)
+
+  const handleDelete = (wf: WorkflowSummary) => {
+    if (!window.confirm(`确认删除工作流 "${wf.name}"？这是不可撤销的操作。`)) return
+    del.mutate(String(wf.id), {
+      onSuccess: () => toast(`已删除 ${wf.name}`, 'success'),
+      onError: (e) => toast(`删除失败：${(e as Error).message}`, 'error'),
+    })
+  }
+
+  const handlePublish = (wf: WorkflowSummary) => {
+    // 跳到画布编辑器并自动弹发布对话框（query 由 Topbar 检测）。
+    // 直接在列表里弹会拿不到完整 nodes 数据 + react-flow context。
+    navigate(`/workflows/${wf.id}?publish=1`)
+  }
 
   // Group services by source workflow id so each card can show its
   // associated service link without an extra round-trip per row.
@@ -151,6 +173,8 @@ export default function WorkflowsList() {
                 service={servicesByWorkflow.get(String(wf.id)) ?? null}
                 onOpen={() => navigate(`/workflows/${wf.id}`)}
                 onDetail={(svcId) => navigate(`/services/${svcId}`)}
+                onPublish={() => handlePublish(wf)}
+                onDelete={() => handleDelete(wf)}
               />
             ))}
             <NewWorkflowCard onClick={() => create.mutate()} />
@@ -168,15 +192,36 @@ function WorkflowCard({
   service,
   onOpen,
   onDetail,
+  onPublish,
+  onDelete,
 }: {
   wf: WorkflowSummary
   service: ServiceRow | null
   onOpen: () => void
   onDetail: (serviceId: string) => void
+  onPublish: () => void
+  onDelete: () => void
 }) {
   const nodeCount = wf.nodes?.length ?? 0
-  const isPublished = wf.status === 'published' || !!service
+  // workflow status (draft / published) 与是否产出 service 是**两个独立状态**。
+  // 之前混在一起判断，导致已 published 的 workflow 卡片底部仍出现"未发布
+  // 为服务"+红色按钮，跟头部"已发布"绿徽章语义冲突。现在拆开：
+  //   - badge 只看 wf.status
+  //   - 底部专门看 service 关联
+  const isPublished = wf.status === 'published'
   const isTemplate = wf.is_template
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDoc = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [menuOpen])
   return (
     <div
       style={{
@@ -187,8 +232,81 @@ function WorkflowCard({
         display: 'flex',
         flexDirection: 'column',
         gap: 10,
+        position: 'relative',
       }}
     >
+      {/* 右上角 ··· 菜单：删除等清理操作 */}
+      <div ref={menuRef} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            setMenuOpen((p) => !p)
+          }}
+          title="更多操作"
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 4,
+            border: 'none',
+            background: menuOpen ? 'var(--bg)' : 'transparent',
+            color: 'var(--muted)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+        {menuOpen && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 4px)',
+              right: 0,
+              minWidth: 140,
+              background: 'var(--bg-elevated, var(--bg))',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+              padding: '4px 0',
+            }}
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen(false)
+                onDelete()
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: '100%',
+                padding: '6px 12px',
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--accent, #ef4444)',
+                fontSize: 12,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--bg-hover, rgba(255,255,255,0.05))'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <Trash2 size={12} />
+              删除
+            </button>
+          </div>
+        )}
+      </div>
+
       <button
         type="button"
         onClick={onOpen}
@@ -317,11 +435,15 @@ function WorkflowCard({
                   color: 'var(--muted)',
                 }}
               >
-                未发布为服务
+                {isPublished ? '已发布 · 未关联服务' : '未关联服务'}
               </span>
               <button
                 type="button"
-                onClick={onOpen}
+                onClick={(e) => {
+                  // 不冒泡到外层卡片 onOpen，否则跳画布根本不弹发布对话框
+                  e.stopPropagation()
+                  onPublish()
+                }}
                 style={{
                   padding: '3px 8px',
                   fontSize: 11,
