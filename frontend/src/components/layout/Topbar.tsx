@@ -25,7 +25,7 @@ export default function Topbar() {
   const isPublished = activeTab?.workflow?.status === 'published'
   const [showPublishWizard, setShowPublishWizard] = useState(false)
 
-  const overlayTitle = activeOverlay === 'dashboard' ? 'Dashboard' : activeOverlay === 'models' ? 'Models' : activeOverlay === 'settings' ? '设置' : activeOverlay === 'preset-detail' ? '预设详情' : activeOverlay === 'api-management' ? 'API 管理' : null
+  const overlayTitle = activeOverlay === 'dashboard' ? 'Dashboard' : activeOverlay === 'models' ? 'Models' : activeOverlay === 'settings' ? '设置' : activeOverlay === 'preset-detail' ? '预设详情' : activeOverlay === 'api-keys-list' ? 'API Key' : activeOverlay === 'api-key-detail' ? 'API Key 详情' : null
 
   const handleRun = async () => {
     if (isRunning) return

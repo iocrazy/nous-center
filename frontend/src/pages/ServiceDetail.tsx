@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Activity,
   AlertTriangle,
@@ -8,7 +9,9 @@ import {
   LayoutGrid,
   Pause,
   Play,
+  Plus,
   Trash2,
+  Unlink,
 } from 'lucide-react'
 import {
   endpointFor,
@@ -19,6 +22,14 @@ import {
   type ServiceDetail as ServiceDetailT,
   type ServiceStatus,
 } from '../api/services'
+import {
+  useApiKeys,
+  useAddGrant,
+  useRemoveGrant,
+  useServiceGrants,
+  useToggleGrant,
+} from '../api/keys'
+import CreateApiKeyDialog from '../components/api-keys/CreateApiKeyDialog'
 import SchemaDrivenForm from '../components/playground/SchemaDrivenForm'
 import SchemaDrivenOutput from '../components/playground/SchemaDrivenOutput'
 import { apiFetch } from '../api/client'
@@ -423,14 +434,7 @@ const th = { padding: '6px 10px', fontWeight: 500 } as const
 const td = { padding: '6px 10px', color: 'var(--text)' } as const
 
 function AuthTab({ svc }: { svc: ServiceDetailT }) {
-  return (
-    <Panel title={`授权 — ${svc.name}`}>
-      <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 12px' }}>
-        在 API Key 页面把 key 授权给本服务。完整 grant / pack 管理仍在
-        API Management 弹层（PR-A 接口未变）。后续会把入口收敛到这里。
-      </div>
-    </Panel>
-  )
+  return <RealAuthTab serviceId={svc.id} serviceName={svc.name} />
 }
 
 function UsageTab({ svc }: { svc: ServiceDetailT }) {
@@ -508,6 +512,273 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
     </div>
   )
 }
+
+// ---------- m03 "Key 授权" tab — m10 真实接入 ----------
+
+function RealAuthTab({ serviceId, serviceName }: { serviceId: string; serviceName: string }) {
+  const navigate = useNavigate()
+  const sid = Number(serviceId)
+  const { data: grants, isLoading } = useServiceGrants(sid)
+  const { data: allKeys } = useApiKeys()
+  const addGrant = useAddGrant()
+  const removeGrant = useRemoveGrant()
+  const toggleGrant = useToggleGrant()
+  const [createOpen, setCreateOpen] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+
+  const grantedKeyIds = useMemo(
+    () => new Set((grants ?? []).map((g) => g.api_key_id)),
+    [grants],
+  )
+  const candidateKeys = useMemo(
+    () => (allKeys ?? []).filter((k) => !grantedKeyIds.has(k.id)),
+    [allKeys, grantedKeyIds],
+  )
+
+  return (
+    <Panel title={`授权 — ${serviceName}`}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          padding: '8px 14px',
+          gap: 8,
+          borderBottom: '1px solid var(--border)',
+        }}
+      >
+        <div style={{ flex: 1, fontSize: 12, color: 'var(--muted)' }}>
+          {grants?.length ?? 0} 把 key 已授权访问本服务
+        </div>
+        <button
+          type="button"
+          onClick={() => setPickerOpen((p) => !p)}
+          style={btnGhost}
+        >
+          <Plus size={12} style={{ marginRight: 4 }} />
+          授权已有 Key
+        </button>
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          style={btnPrimary}
+        >
+          <Plus size={12} style={{ marginRight: 4 }} />
+          新建并授权
+        </button>
+      </div>
+
+      {pickerOpen && (
+        <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)' }}>
+          {candidateKeys.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+              所有已存在的 key 都已授权 — 新建一把吧。
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {candidateKeys.map((k) => (
+                <button
+                  key={k.id}
+                  type="button"
+                  onClick={() =>
+                    addGrant.mutate(
+                      { keyId: k.id, serviceId: sid },
+                      { onSuccess: () => setPickerOpen(false) },
+                    )
+                  }
+                  style={pickerChip}
+                >
+                  {k.label} <span style={{ color: 'var(--muted)' }}>{k.key_prefix}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isLoading && (
+        <div style={{ padding: 14, fontSize: 12, color: 'var(--muted)' }}>加载中…</div>
+      )}
+
+      {grants && grants.length === 0 && !isLoading && (
+        <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--muted)' }}>
+          这个服务还没有任何 key 授权 — 新建或挑一把已有 key 来开通访问。
+        </div>
+      )}
+
+      {grants && grants.length > 0 && (
+        <div>
+          {grants.map((g) => {
+            const pct = g.pack_total > 0 ? Math.min(100, Math.round((g.pack_used / g.pack_total) * 100)) : 0
+            return (
+              <div
+                key={g.grant_id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1.4fr 1.5fr 0.8fr 0.7fr',
+                  gap: 12,
+                  padding: '12px 14px',
+                  borderBottom: '1px solid var(--border)',
+                  alignItems: 'center',
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 13,
+                      color: 'var(--text)',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => navigate(`/api-keys/${g.api_key_id}`)}
+                  >
+                    <KeyRound size={12} style={{ color: 'var(--muted)' }} />
+                    {g.api_key_label}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--muted)',
+                      fontFamily: 'var(--mono, monospace)',
+                      marginTop: 3,
+                    }}
+                  >
+                    {g.api_key_prefix}...
+                  </div>
+                </div>
+                <div>
+                  {g.pack_total === 0 ? (
+                    <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                      未配额（不限）
+                    </span>
+                  ) : (
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
+                        {g.pack_used.toLocaleString()} / {g.pack_total.toLocaleString()} ({pct}%)
+                      </div>
+                      <div
+                        style={{
+                          height: 6,
+                          background: 'var(--bg)',
+                          borderRadius: 3,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${pct}%`,
+                            height: '100%',
+                            background: pct > 80 ? '#f87171' : 'var(--accent)',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      padding: '2px 8px',
+                      borderRadius: 10,
+                      background:
+                        g.grant_status === 'active'
+                          ? 'rgba(34,197,94,0.12)'
+                          : 'rgba(248,113,113,0.12)',
+                      color: g.grant_status === 'active' ? '#4ade80' : '#f87171',
+                    }}
+                  >
+                    {g.grant_status}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    title={g.grant_status === 'active' ? '暂停' : '恢复'}
+                    onClick={() =>
+                      toggleGrant.mutate({
+                        grantId: g.grant_id,
+                        status: g.grant_status === 'active' ? 'paused' : 'active',
+                      })
+                    }
+                    style={iconBtn}
+                  >
+                    {g.grant_status === 'active' ? <Pause size={12} /> : <Play size={12} />}
+                  </button>
+                  <button
+                    type="button"
+                    title="解除授权"
+                    onClick={() => removeGrant.mutate(g.grant_id)}
+                    style={iconBtn}
+                  >
+                    <Unlink size={12} />
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <CreateApiKeyDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        preselectedServiceIds={[sid]}
+      />
+    </Panel>
+  )
+}
+
+const btnGhost = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '6px 10px',
+  fontSize: 11,
+  background: 'transparent',
+  color: 'var(--text)',
+  border: '1px solid var(--border)',
+  borderRadius: 4,
+  cursor: 'pointer',
+} as const
+
+const btnPrimary = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '6px 10px',
+  fontSize: 11,
+  background: 'var(--accent)',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 4,
+  cursor: 'pointer',
+} as const
+
+const pickerChip = {
+  fontSize: 11,
+  padding: '5px 10px',
+  background: 'var(--bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 14,
+  color: 'var(--text)',
+  cursor: 'pointer',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+} as const
+
+const iconBtn = {
+  background: 'transparent',
+  border: '1px solid var(--border)',
+  color: 'var(--text)',
+  cursor: 'pointer',
+  borderRadius: 4,
+  width: 26,
+  height: 26,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+} as const
 
 function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   return (

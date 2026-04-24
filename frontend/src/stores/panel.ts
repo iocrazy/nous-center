@@ -6,7 +6,8 @@ export type OverlayId =
   | 'models'           // 引擎库
   | 'settings'
   | 'preset-detail'
-  | 'api-management'   // API Key
+  | 'api-keys-list'    // m10 v3 API Key 列表
+  | 'api-key-detail'   // m10 详情（id 从 URL 取）
   | 'agents'           // legacy — kept addressable for now, hidden in v3 rail
   | 'logs'
   | 'node-packages'    // legacy — moved into Settings sub-page in v3
@@ -16,23 +17,16 @@ export type OverlayId =
   | 'workflows-list'   // v3 m08 列表（vs canvas at /workflows/:id）
   | 'usage'            // v3 新
 
-export interface ApiManagementOptions {
-  presetId?: string
-  instanceId?: string
-}
-
 interface PanelState {
   activePanel: PanelId | null
   activeOverlay: OverlayId | null
   selectedPresetId: string | null
-  apiManagementOptions: ApiManagementOptions | null
   panelWidth: number
   setPanel: (id: PanelId | null) => void
   togglePanel: (id: PanelId) => void
   setOverlay: (id: OverlayId | null) => void
   toggleOverlay: (id: OverlayId) => void
   openPresetDetail: (presetId: string) => void
-  openApiManagement: (options?: ApiManagementOptions) => void
   setPanelWidth: (width: number) => void
 }
 
@@ -40,7 +34,6 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   activePanel: 'nodes',
   activeOverlay: null,
   selectedPresetId: null,
-  apiManagementOptions: null,
   panelWidth: 260,
 
   setPanel: (id) => set({ activePanel: id, activeOverlay: null }),
@@ -65,9 +58,6 @@ export const usePanelStore = create<PanelState>((set, get) => ({
 
   openPresetDetail: (presetId) =>
     set({ activeOverlay: 'preset-detail', activePanel: null, selectedPresetId: presetId }),
-
-  openApiManagement: (options) =>
-    set({ activeOverlay: 'api-management', activePanel: null, apiManagementOptions: options ?? null }),
 
   setPanelWidth: (width) => set({ panelWidth: Math.max(200, Math.min(400, width)) }),
 }))

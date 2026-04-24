@@ -18,7 +18,7 @@ const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/agents': 'agents',
   '/settings': 'settings',
   '/dashboard': 'dashboard',
-  '/api-management': 'api-management',
+  '/api-keys': 'api-keys-list',
   '/logs': 'logs',
   '/node-packages': 'node-packages',
   '/usage': 'usage',
@@ -48,6 +48,13 @@ function RouteSync() {
     if (location.pathname.startsWith('/services/')) {
       if (usePanelStore.getState().activeOverlay !== 'service-detail') {
         setOverlay('service-detail')
+      }
+      return
+    }
+    // `/api-keys/:id` 同上 — 详情页用独立 overlay slot。
+    if (location.pathname.startsWith('/api-keys/')) {
+      if (usePanelStore.getState().activeOverlay !== 'api-key-detail') {
+        setOverlay('api-key-detail')
       }
       return
     }
@@ -110,7 +117,8 @@ export default function App() {
         <Route path="/agents" element={<MainLayout />} />
         <Route path="/settings" element={<MainLayout />} />
         <Route path="/dashboard" element={<MainLayout />} />
-        <Route path="/api-management" element={<MainLayout />} />
+        <Route path="/api-keys" element={<MainLayout />} />
+        <Route path="/api-keys/:id" element={<MainLayout />} />
         <Route path="/logs" element={<MainLayout />} />
         <Route path="/node-packages" element={<MainLayout />} />
         <Route path="/usage" element={<MainLayout />} />
