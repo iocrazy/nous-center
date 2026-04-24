@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, ollama_compat, api_gateway as api_gateway_routes, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes, services as services_routes, workflow_publish as workflow_publish_routes, usage as usage_routes, dashboard as dashboard_routes, api_keys as api_keys_routes, anthropic_compat
+from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, ollama_compat, api_gateway as api_gateway_routes, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes, services as services_routes, workflow_publish as workflow_publish_routes, usage as usage_routes, dashboard as dashboard_routes, api_keys as api_keys_routes, anthropic_compat, observability
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services.gpu_monitor import memory_guard_loop
@@ -413,6 +413,7 @@ def create_app() -> FastAPI:
     app.include_router(api_keys_routes.router)
     app.include_router(api_keys_routes.service_grants_router)
     app.include_router(anthropic_compat.router)
+    app.include_router(observability.router)
     app.include_router(logs.router)
     from src.api.routes import memory as memory_routes
     app.include_router(memory_routes.router)

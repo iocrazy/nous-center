@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { AlertTriangle, BarChart3, ChevronRight, Cpu, X } from 'lucide-react'
+import { Activity, AlertTriangle, BarChart3, ChevronRight, Cpu, X } from 'lucide-react'
 import {
   useSysGpus, useSysStats, useSysProcesses, useKillProcess,
   type SysGpuInfo, type GpuProcessInfo,
 } from '../../api/system'
 import { useEngines } from '../../api/engines'
 import { useDashboardSummary, type AlertItem, type TopServiceRow } from '../../api/dashboard'
+import { useRuntimeMetrics, type RuntimeSnapshot } from '../../api/observability'
 
 /**
  * m04 Dashboard — v3 layout.
@@ -119,6 +120,9 @@ export default function DashboardOverlay() {
           )}
         </Panel>
 
+        {/* Runtime observability — process-level counters */}
+        <RuntimePanel />
+
         {/* System status — collapsible (was the entire v2 dashboard) */}
         <CollapsibleSystem open={sysOpen} onToggle={() => setSysOpen((v) => !v)} />
       </div>
@@ -213,6 +217,141 @@ function Panel({
       {children}
     </div>
   )
+}
+
+// 运行时观测：进程内累计的 gzip 压缩比 / context 压缩 / cache 命中率。
+// 重启清零；想要持久化跨重启数据走 Prometheus，本卡片只看"现在跑得咋样"。
+function RuntimePanel() {
+  const { data, isLoading, error } = useRuntimeMetrics()
+  const subtitle = isLoading
+    ? '加载中…'
+    : error
+      ? '指标接口不可达'
+      : data
+        ? `进程累计：${data.gzip.calls} 次压缩 · ${data.compaction.calls} 次 compaction · ${data.cache.lookups} 次 cache 查询`
+        : '进程刚启动，等首批请求'
+
+  return (
+    <Panel
+      icon={<Activity size={14} style={{ color: 'var(--info, #3b82f6)' }} />}
+      title="运行时观测"
+      rightSlot={
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>{subtitle}</span>
+      }
+    >
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 10,
+        }}
+      >
+        <RuntimeStat
+          label="gzip 压缩比"
+          value={fmtRatio(data?.gzip.compression_ratio)}
+          hint={
+            data?.gzip.calls
+              ? `${fmtBytes(data.gzip.raw_bytes)} → ${fmtBytes(data.gzip.compressed_bytes)}`
+              : '尚无数据'
+          }
+          tone={ratioTone(data?.gzip.compression_ratio)}
+        />
+        <RuntimeStat
+          label="平均丢弃 turn"
+          value={
+            data?.compaction.avg_turns_dropped != null
+              ? data.compaction.avg_turns_dropped.toFixed(1)
+              : '—'
+          }
+          hint={
+            data
+              ? `${data.compaction.calls} 次 · ${data.compaction.truncated} 仍超限`
+              : '尚无数据'
+          }
+          tone={compactionTone(data)}
+        />
+        <RuntimeStat
+          label="cache 命中率"
+          value={
+            data?.cache.hit_rate != null
+              ? `${(data.cache.hit_rate * 100).toFixed(1)}%`
+              : '—'
+          }
+          hint={
+            data?.cache.lookups
+              ? `${data.cache.hits} hits / ${data.cache.lookups} lookups`
+              : '尚无数据'
+          }
+          tone={hitRateTone(data?.cache.hit_rate)}
+        />
+      </div>
+    </Panel>
+  )
+}
+
+function RuntimeStat({
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  label: string
+  value: string
+  hint: string
+  tone: 'ok' | 'warn' | 'neutral'
+}) {
+  const valueColor =
+    tone === 'ok'
+      ? 'var(--accent-2, #22c55e)'
+      : tone === 'warn'
+        ? 'var(--warn, #f59e0b)'
+        : 'var(--text)'
+  return (
+    <div
+      style={{
+        background: 'var(--bg)',
+        border: '1px solid var(--border)',
+        borderRadius: 6,
+        padding: '10px 12px',
+      }}
+    >
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 20, color: valueColor, fontWeight: 600 }}>{value}</div>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{hint}</div>
+    </div>
+  )
+}
+
+function fmtRatio(r: number | null | undefined): string {
+  if (r == null) return '—'
+  return `${r.toFixed(2)}×`
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
+
+function ratioTone(r: number | null | undefined): 'ok' | 'warn' | 'neutral' {
+  if (r == null) return 'neutral'
+  if (r < 1.5) return 'warn' // 压缩 < 1.5x 说明 gzip 几乎没帮上忙
+  return 'ok'
+}
+
+function compactionTone(d: RuntimeSnapshot | undefined): 'ok' | 'warn' | 'neutral' {
+  if (!d || d.compaction.calls === 0) return 'neutral'
+  // 任何 truncated 都是问题（说明 max_tokens 卡得太紧）
+  if (d.compaction.truncated > 0) return 'warn'
+  return 'ok'
+}
+
+function hitRateTone(r: number | null | undefined): 'ok' | 'warn' | 'neutral' {
+  if (r == null) return 'neutral'
+  // 命中率 < 30% 提示 cache 可能没在用对
+  return r >= 0.3 ? 'ok' : 'warn'
 }
 
 function AlertRow({ alert }: { alert: AlertItem }) {

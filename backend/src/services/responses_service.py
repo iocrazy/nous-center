@@ -46,7 +46,16 @@ def new_turn_id() -> str:
 # ---------- Content codec (gzip over JSON) ---------- #
 
 def encode_content(content: list[dict]) -> bytes:
-    return gzip.compress(json.dumps(content, ensure_ascii=False).encode("utf-8"))
+    raw = json.dumps(content, ensure_ascii=False).encode("utf-8")
+    out = gzip.compress(raw)
+    # 跑过的进程内累计原始 / 压缩字节数，给 m04 dashboard 算压缩比用。
+    # 失败不影响主路径（写计数器只是 lock + 几个 +=）。
+    try:
+        from src.services.runtime_metrics import record_gzip
+        record_gzip(len(raw), len(out))
+    except Exception:
+        pass
+    return out
 
 
 def decode_content(data: bytes, max_size: int = 10_000_000) -> list[dict]:
