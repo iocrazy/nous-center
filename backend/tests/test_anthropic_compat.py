@@ -88,6 +88,16 @@ def _wire_loaded_model(app, base_url: str = "http://upstream.test:9999"):
     app.state.model_manager.get_adapter = MagicMock(return_value=adapter)
 
 
+@pytest.fixture
+def stub_usage_recorder(monkeypatch):
+    """record_llm_usage 自己开 engine 连 DATABASE_URL — CI 没 PG 跑会爆。
+    把它打成 no-op，匹配 conftest 里 _llm_recorder 的做法。"""
+    async def _noop(**kwargs):
+        return None
+    import src.services.usage_service as _usage
+    monkeypatch.setattr(_usage, "record_llm_usage", _noop)
+
+
 class _FakeUpstreamClient:
     """Stand-in for httpx.AsyncClient used inside anthropic_compat.
 
@@ -124,7 +134,9 @@ def _patch_upstream(monkeypatch, response_json, status=200):
 
 
 @pytest.mark.asyncio
-async def test_anthropic_messages_non_streaming(db_app_client, grant_key, monkeypatch):
+async def test_anthropic_messages_non_streaming(
+    db_app_client, grant_key, monkeypatch, stub_usage_recorder,
+):
     app, db_client, _ = db_app_client
     secret, _ = grant_key
     _wire_loaded_model(app)
@@ -167,7 +179,9 @@ async def test_anthropic_messages_non_streaming(db_app_client, grant_key, monkey
 
 
 @pytest.mark.asyncio
-async def test_anthropic_messages_accepts_bearer_too(db_app_client, grant_key, monkeypatch):
+async def test_anthropic_messages_accepts_bearer_too(
+    db_app_client, grant_key, monkeypatch, stub_usage_recorder,
+):
     app, db_client, _ = db_app_client
     secret, _ = grant_key
     _wire_loaded_model(app)
@@ -224,7 +238,9 @@ async def test_anthropic_messages_rejects_streaming(db_app_client, grant_key):
 
 
 @pytest.mark.asyncio
-async def test_content_blocks_are_flattened(db_app_client, grant_key, monkeypatch):
+async def test_content_blocks_are_flattened(
+    db_app_client, grant_key, monkeypatch, stub_usage_recorder,
+):
     """Anthropic 允许 messages[].content 为 [{type:"text",text:"..."}, ...]。
     适配器应把 text blocks 拼成单段 string 给上游。"""
     app, db_client, _ = db_app_client
