@@ -2,46 +2,68 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import FloatingPanel from '../layout/FloatingPanel'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
-import { NODE_CATEGORIES, PLUGIN_CATEGORIES } from '../../models/nodeRegistry'
+import { PLUGIN_CATEGORIES } from '../../models/nodeRegistry'
+
+// m09 v3: 5 个固定分组对齐 mockup（输入 / AI / 逻辑 / 音频 / 输出）。
+// 旧版按"who 注册了它"切（io / tts / declarative），不符合 user mental
+// model。现在按"做什么"切，跟 mockup 1:1。
 
 interface NodeCategory {
   name: string
+  label: string
   color: string
   nodes: { type: NodeType; dotColor: string }[]
 }
 
 const BUILTIN_CATEGORIES: NodeCategory[] = [
-  ...NODE_CATEGORIES.map((c) => ({
-    name: c.name,
-    color: c.color,
-    nodes: c.nodes,
-  })),
   {
-    name: 'io',
-    color: 'var(--info)',
+    name: 'input',
+    label: '输入',
+    color: 'var(--ok)',
     nodes: [
       { type: 'text_input', dotColor: 'var(--ok)' },
-      { type: 'text_output', dotColor: 'var(--info)' },
       { type: 'multimodal_input', dotColor: 'var(--purple)' },
+      { type: 'ref_audio', dotColor: 'var(--accent-2)' },
     ],
   },
   {
-    name: 'tts',
+    name: 'ai',
+    label: 'AI 节点',
+    color: 'var(--purple)',
+    nodes: [
+      { type: 'llm', dotColor: 'var(--purple)' },
+      { type: 'prompt_template', dotColor: 'var(--purple)' },
+      { type: 'agent', dotColor: 'var(--purple)' },
+    ],
+  },
+  {
+    name: 'logic',
+    label: '逻辑',
     color: 'var(--accent)',
     nodes: [
-      { type: 'ref_audio', dotColor: 'var(--accent-2)' },
-      { type: 'tts_engine', dotColor: 'var(--accent)' },
-      { type: 'output', dotColor: 'var(--info)' },
+      { type: 'if_else', dotColor: 'var(--accent)' },
+      { type: 'python_exec', dotColor: 'var(--accent-2)' },
     ],
   },
   {
-    name: 'audio_processing',
+    name: 'audio',
+    label: '音频处理',
     color: 'var(--info)',
     nodes: [
+      { type: 'tts_engine', dotColor: 'var(--accent)' },
       { type: 'resample', dotColor: 'var(--info)' },
       { type: 'concat', dotColor: 'var(--info)' },
       { type: 'mixer', dotColor: 'var(--info)' },
       { type: 'bgm_mix', dotColor: 'var(--purple)' },
+    ],
+  },
+  {
+    name: 'output',
+    label: '输出',
+    color: 'var(--info)',
+    nodes: [
+      { type: 'text_output', dotColor: 'var(--info)' },
+      { type: 'output', dotColor: 'var(--info)' },
     ],
   },
 ]
@@ -55,13 +77,24 @@ export default function NodeLibraryPanel() {
     e.dataTransfer.effectAllowed = 'move'
   }
 
+  // 插件包仍然按它们自己的 category 渲染在下面（保留可发现性）。
+  const allCategories: NodeCategory[] = [
+    ...BUILTIN_CATEGORIES,
+    ...PLUGIN_CATEGORIES.map((c) => ({
+      name: c.name,
+      label: c.label || c.name,
+      color: c.color,
+      nodes: c.nodes,
+    })),
+  ]
+
   return (
     <FloatingPanel
-      title="Node Library"
-      searchPlaceholder="Search Nodes..."
+      title="节点库"
+      searchPlaceholder="搜索节点..."
       onSearch={setSearch}
     >
-      {[...BUILTIN_CATEGORIES, ...PLUGIN_CATEGORIES].map((cat) => {
+      {allCategories.map((cat) => {
         const filteredNodes = cat.nodes.filter((n) => {
           const def = NODE_DEFS[n.type]
           if (!def) return false
@@ -80,7 +113,7 @@ export default function NodeLibraryPanel() {
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
             >
               {isCollapsed ? <ChevronRight size={10} color="var(--muted)" /> : <ChevronDown size={10} color="var(--muted)" />}
-              <span style={{ color: cat.color }}>{cat.name}</span>
+              <span style={{ color: cat.color }}>{cat.label}</span>
               <span
                 className="ml-auto"
                 style={{
