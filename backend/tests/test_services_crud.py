@@ -107,6 +107,31 @@ async def test_deprecated_service_still_appears_in_list(db_client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_services_populates_workflow_name(db_client):
+    """v3 IA: 服务卡片要标明"来自哪个 Workflow"（name + id）。
+    list_services 必须 LEFT JOIN workflows 把 workflow_name 一起返。"""
+    r = await db_client.post(
+        "/api/v1/services/quick-provision",
+        json=_quick("named-svc"),
+        headers=_admin_headers(),
+    )
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    expected_wf_name = f"trivial:named-svc"  # quick_provision 的命名规则
+
+    rs = await db_client.get("/api/v1/services", headers=_admin_headers())
+    assert rs.status_code == 200
+    rows = {s["id"]: s for s in rs.json()}
+    assert sid in rows
+    assert rows[sid]["workflow_name"] == expected_wf_name
+    assert rows[sid]["workflow_id"] is not None
+
+    rd = await db_client.get(f"/api/v1/services/{sid}", headers=_admin_headers())
+    assert rd.status_code == 200
+    assert rd.json()["workflow_name"] == expected_wf_name
+
+
+@pytest.mark.asyncio
 async def test_quick_provision_links_workflow_back(db_session):
     """The auto-generated workflow's generated_for_service_id points back
     to the service it backs (so the m08 list can group/hide them)."""

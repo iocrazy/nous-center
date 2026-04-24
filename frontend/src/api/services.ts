@@ -31,6 +31,7 @@ export interface ServiceRow {
   category: ServiceCategory | null
   meter_dim: string | null
   workflow_id: string | null
+  workflow_name: string | null  // 来自 backend LEFT JOIN workflows.name
   snapshot_hash: string | null
   snapshot_schema_version: number
   version: number

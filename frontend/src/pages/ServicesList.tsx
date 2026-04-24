@@ -368,7 +368,11 @@ function ServiceCard({
 
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <CategoryTag category={svc.category} />
-          <SourceTag sourceType={svc.source_type} />
+          <SourceTag
+            sourceType={svc.source_type}
+            workflowId={svc.workflow_id}
+            workflowName={svc.workflow_name}
+          />
           <Tag>v{svc.version}</Tag>
         </div>
 
@@ -473,10 +477,26 @@ function CategoryTag({ category }: { category: ServiceCategory | null }) {
   )
 }
 
-function SourceTag({ sourceType }: { sourceType: 'workflow' | 'preset' | 'model' }) {
+function SourceTag({
+  sourceType,
+  workflowId,
+  workflowName,
+}: {
+  sourceType: 'workflow' | 'preset' | 'model'
+  workflowId?: string | null
+  workflowName?: string | null
+}) {
   const isWorkflow = sourceType === 'workflow'
+  // 显示 workflow 来源的具体名字 + 短 ID（trivial:xxx 的快速开通命名能让人
+  // 一眼看出是真实工作流还是 quick-provision 自动生成的）。
+  const label = isWorkflow
+    ? workflowName
+      ? `来自 ${workflowName}${workflowId ? ` #${shortId(workflowId)}` : ''}`
+      : '来自 Workflow'
+    : '快速开通'
   return (
     <span
+      title={isWorkflow && workflowId ? `workflow_id=${workflowId}` : undefined}
       style={{
         fontSize: 10,
         padding: '1px 7px',
@@ -486,11 +506,21 @@ function SourceTag({ sourceType }: { sourceType: 'workflow' | 'preset' | 'model'
           : 'var(--bg)',
         color: isWorkflow ? 'var(--accent)' : 'var(--muted)',
         border: isWorkflow ? 'none' : '1px solid var(--border)',
+        maxWidth: 200,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        display: 'inline-block',
       }}
     >
-      {isWorkflow ? '来自 Workflow' : '快速开通'}
+      {label}
     </span>
   )
+}
+
+function shortId(id: string): string {
+  // snowflake ID 是 18-19 位；UI 取末 6 位作短码已足够人眼区分。
+  return id.length > 6 ? id.slice(-6) : id
 }
 
 function CategoryIcon({ category }: { category: ServiceCategory | null }) {
