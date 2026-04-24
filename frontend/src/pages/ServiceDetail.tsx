@@ -517,8 +517,12 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 function RealAuthTab({ serviceId, serviceName }: { serviceId: string; serviceName: string }) {
   const navigate = useNavigate()
-  const sid = Number(serviceId)
-  const { data: grants, isLoading } = useServiceGrants(sid)
+  // Snowflake service ID 超过 Number.MAX_SAFE_INTEGER (2^53-1)；
+  // 用 Number() 强转会丢精度，URL 变错的 ID → 后端 404 → React Query
+  // 永远 isLoading → m03 Key 授权 tab 卡在"加载中..."（实际是接口失败）。
+  // 后端的 services 路由把 id 序列化成 str，前端从 URL 拿到也一直是
+  // string，路径里直接传 string 给 fetch URL 即可，全程不经 Number()。
+  const { data: grants, isLoading } = useServiceGrants(serviceId)
   const { data: allKeys } = useApiKeys()
   const addGrant = useAddGrant()
   const removeGrant = useRemoveGrant()
@@ -581,7 +585,7 @@ function RealAuthTab({ serviceId, serviceName }: { serviceId: string; serviceNam
                   type="button"
                   onClick={() =>
                     addGrant.mutate(
-                      { keyId: k.id, serviceId: sid },
+                      { keyId: k.id, serviceId },
                       { onSuccess: () => setPickerOpen(false) },
                     )
                   }
@@ -724,7 +728,7 @@ function RealAuthTab({ serviceId, serviceName }: { serviceId: string; serviceNam
       <CreateApiKeyDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        preselectedServiceIds={[sid]}
+        preselectedServiceIds={[serviceId]}
       />
     </Panel>
   )

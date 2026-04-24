@@ -37,7 +37,9 @@ export interface CreateKeyBody {
   label: string
   note?: string | null
   expires_at?: string | null
-  service_ids?: number[]
+  /** snowflake IDs — 用 string 避开 JS Number 精度问题；
+   *  Pydantic 在 backend 会 str→int 无损还原。 */
+  service_ids?: (number | string)[]
 }
 
 export interface PatchKeyBody {
@@ -142,10 +144,13 @@ export function useDeleteApiKey() {
 export function useAddGrant() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ keyId, serviceId }: { keyId: number | string; serviceId: number }) =>
+    // serviceId 用 string|number — snowflake 大整数走 string 避免 JS 精度。
+    // body 用 String() 强转后 JSON.stringify 不会丢精度；Pydantic
+    // 接收时 str→int 还原。
+    mutationFn: ({ keyId, serviceId }: { keyId: number | string; serviceId: number | string }) =>
       apiFetch(`/api/v1/keys/${keyId}/grants`, {
         method: 'POST',
-        body: JSON.stringify({ instance_id: serviceId }),
+        body: JSON.stringify({ instance_id: String(serviceId) }),
       }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
