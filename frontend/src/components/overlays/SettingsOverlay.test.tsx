@@ -18,6 +18,7 @@ vi.mock('../../api/nodes', () => ({
   useInstallPackageGit: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUninstallPackage: () => ({ mutateAsync: vi.fn(), isPending: false, variables: undefined }),
   useInstallPackageDeps: () => ({ mutateAsync: vi.fn(), isPending: false, variables: undefined }),
+  useTogglePackage: () => ({ mutateAsync: vi.fn(), isPending: false, variables: undefined }),
 }))
 
 function withQuery(ui: React.ReactNode) {

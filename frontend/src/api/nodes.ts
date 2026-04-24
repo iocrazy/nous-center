@@ -7,6 +7,7 @@ export interface NodePackageInfo {
   description: string
   node_count: number
   nodes: string[]
+  enabled: boolean
 }
 
 export function useNodePackages() {
@@ -99,5 +100,21 @@ export function useInstallPackageDeps() {
         `/api/v1/nodes/packages/${encodeURIComponent(name)}/install_deps`,
         { method: 'POST' },
       ),
+  })
+}
+
+
+export function useTogglePackage() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
+      apiFetch<{ name: string; enabled: boolean }>(
+        `/api/v1/nodes/packages/${encodeURIComponent(name)}/toggle?enabled=${enabled}`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['node-packages'] })
+      qc.invalidateQueries({ queryKey: ['node-definitions'] })
+    },
   })
 }
