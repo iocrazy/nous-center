@@ -9,7 +9,8 @@ export interface CreateApiKeyDialogProps {
   /** 创建成功后返回新 key（带明文）— 调用方决定后续：跳详情/复制等。 */
   onCreated?: (key: ApiKeyCreated) => void
   /** 预选的 service_id（从 m03 "Key 授权" tab 调起时使用）。 */
-  preselectedServiceIds?: number[]
+  // Snowflake 大整数走 string 避开 JS Number 精度（详见 RealAuthTab 注释）。
+  preselectedServiceIds?: (number | string)[]
 }
 
 export default function CreateApiKeyDialog({
@@ -21,7 +22,7 @@ export default function CreateApiKeyDialog({
   const [label, setLabel] = useState('')
   const [note, setNote] = useState('')
   const [search, setSearch] = useState('')
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [created, setCreated] = useState<ApiKeyCreated | null>(null)
   const [copied, setCopied] = useState(false)
 
@@ -36,7 +37,7 @@ export default function CreateApiKeyDialog({
 
   useEffect(() => {
     if (open) {
-      setSelected(new Set(preselectedServiceIds ?? []))
+      setSelected(new Set((preselectedServiceIds ?? []).map(String)))
       return
     }
     setLabel('')
@@ -53,7 +54,7 @@ export default function CreateApiKeyDialog({
   const filtered = filterServices(services ?? [], search)
   const canSubmit = label.trim().length > 0 && !createKey.isPending
 
-  const toggle = (sid: number) => {
+  const toggle = (sid: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(sid)) next.delete(sid)
@@ -146,7 +147,7 @@ export default function CreateApiKeyDialog({
                 </div>
               )}
               {filtered.map((svc) => {
-                const checked = selected.has(Number(svc.id))
+                const checked = selected.has(svc.id)
                 return (
                   <label
                     key={svc.id}
@@ -165,7 +166,7 @@ export default function CreateApiKeyDialog({
                     <input
                       type="checkbox"
                       checked={checked}
-                      onChange={() => toggle(Number(svc.id))}
+                      onChange={() => toggle(svc.id)}
                     />
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 12, color: 'var(--text)' }}>{svc.name}</div>

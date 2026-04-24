@@ -66,7 +66,7 @@ async def test_create_key_rejects_unknown_service(db_client, two_services):
 
 
 @pytest.mark.asyncio
-async def test_list_keys_includes_grant_counts(db_client, two_services):
+async def test_list_keys_includes_grant_counts_and_array(db_client, two_services):
     a, b = two_services
     await db_client.post("/api/v1/keys", json={"label": "k1", "service_ids": [a.id]})
     await db_client.post(
@@ -79,6 +79,9 @@ async def test_list_keys_includes_grant_counts(db_client, two_services):
     by_label = {row["label"]: row for row in rows}
     assert by_label["k1"]["grant_count"] == 1
     assert by_label["k2"]["grant_count"] == 2
+    # m10 列表页要靠 grants 数组渲染"授权服务"徽章 — list 必须填上。
+    assert {g["service_name"] for g in by_label["k1"]["grants"]} == {"svc-a"}
+    assert {g["service_name"] for g in by_label["k2"]["grants"]} == {"svc-a", "svc-b"}
 
 
 @pytest.mark.asyncio
@@ -174,3 +177,30 @@ async def test_service_grants_endpoint_for_m03_tab(db_client, two_services):
 async def test_service_grants_404_when_service_missing(db_client):
     r = await db_client.get("/api/v1/services/99999/grants")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_key_shows_orphan_grants_with_fallback_name(
+    db_client, db_session, two_services,
+):
+    """v3 IA 重构清理过 service_instances，旧 grant 行可能指向已删的
+    service_id。LEFT JOIN 让这些孤儿 grant 仍出现在详情，service_name
+    显示为"(已删除)"，UI 才能解除。"""
+    a, _ = two_services
+    created = (await db_client.post(
+        "/api/v1/keys",
+        json={"label": "k-orphan", "service_ids": [a.id]},
+    )).json()
+    # 直接物理删 service，把 grant 变成孤儿（cascade 用模型默认 ondelete）
+    await db_session.delete(await db_session.get(ServiceInstance, a.id))
+    await db_session.commit()
+
+    r = await db_client.get(f"/api/v1/keys/{created['id']}")
+    assert r.status_code == 200
+    d = r.json()
+    # grant_count 仍统计到（旧 INNER JOIN 会导致 grants:[] 但 count=1）
+    assert d["grant_count"] == 1
+    # 孤儿 grant 用兜底 name 露出来
+    assert len(d["grants"]) == 1
+    assert d["grants"][0]["service_name"] == "(已删除)"
+    assert d["grants"][0]["service_category"] is None

@@ -107,16 +107,23 @@ def _gen_secret(label: str) -> tuple[str, str, str]:
 async def _grant_summaries(
     session: AsyncSession, key_id: int,
 ) -> list[GrantSummary]:
+    # LEFT JOIN：v3 IA 重构清理过 service_instances，旧 grant 仍指向已删
+    # 的 service_id。INNER JOIN 会让这些孤儿 grant 整行丢失，导致 UI
+    # 看到 grant_count > 0 但 grants: []，没法解除。LEFT JOIN + 兜底
+    # service_name="(已删除)" 让用户能从详情页清掉孤儿。
     rows = (await session.execute(
         select(ApiKeyGrant, ServiceInstance)
-        .join(ServiceInstance, ServiceInstance.id == ApiKeyGrant.service_id)
+        .outerjoin(ServiceInstance, ServiceInstance.id == ApiKeyGrant.service_id)
         .where(ApiKeyGrant.api_key_id == key_id)
         .order_by(ApiKeyGrant.activated_at.desc())
     )).all()
     return [
         GrantSummary(
-            id=g.id, service_id=g.service_id, service_name=svc.name,
-            service_category=svc.category, status=g.status,
+            id=g.id,
+            service_id=g.service_id,
+            service_name=svc.name if svc else "(已删除)",
+            service_category=svc.category if svc else None,
+            status=g.status,
             activated_at=g.activated_at,
         )
         for g, svc in rows
@@ -215,11 +222,31 @@ async def list_keys(
         )).all()
     }
 
+    # 一次取齐所有 key 的 grants（含孤儿），按 api_key_id 分组。m10 列表
+    # 直接用这个数组渲染"授权服务"徽章，不必再调 N 次 detail。
+    grants_by_key: dict[int, list[GrantSummary]] = {}
+    for g, svc in (await session.execute(
+        select(ApiKeyGrant, ServiceInstance)
+        .outerjoin(ServiceInstance, ServiceInstance.id == ApiKeyGrant.service_id)
+        .order_by(ApiKeyGrant.activated_at.desc())
+    )).all():
+        grants_by_key.setdefault(g.api_key_id, []).append(
+            GrantSummary(
+                id=g.id,
+                service_id=g.service_id,
+                service_name=svc.name if svc else "(已删除)",
+                service_category=svc.category if svc else None,
+                status=g.status,
+                activated_at=g.activated_at,
+            )
+        )
+
     return [
         _to_out(
             k,
             grant_count=totals.get(k.id, 0),
             active_count=actives.get(k.id, 0),
+            grants=grants_by_key.get(k.id, []),
         )
         for k in keys
     ]
