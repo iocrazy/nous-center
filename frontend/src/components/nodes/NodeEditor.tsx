@@ -259,25 +259,29 @@ export default function NodeEditor() {
     [setNodes, storeAddNode],
   )
 
-  // Determine which floating panel to show
-  const PanelComponent = activePanel && !activeOverlay ? PANEL_MAP[activePanel] : null
-
-  const showPanel = PanelComponent && !activeOverlay
-  // m09: 进画布时常驻右侧属性面板（无选中时显示空态提示）。overlay
-  // 视图（dashboard / services / etc.）下不显示。
+  // m09: 画布模式下左节点库 + 右属性面板**常驻**。overlay 视图
+  // （dashboard / services / 设置 等）下两边都隐藏。
+  // v3 没有 panel 切换 — IconRail.PANEL_ITEMS 已空 — activePanel
+  // 系统作为 legacy workflows/presets 兜底（如有，仍然 PANEL_MAP 渲染）。
   const showPropertyPanel = !activeOverlay
   const PROPERTY_PANEL_WIDTH = 300
 
+  const LegacyPanel = activePanel && activePanel !== 'nodes' ? PANEL_MAP[activePanel] : null
+  const showLegacyPanel = !!LegacyPanel && !activeOverlay
+  const showNodeLibrary = !activeOverlay && !showLegacyPanel
+  const NodeLibraryComponent = PANEL_MAP.nodes
+
   return (
     <div className="relative flex-1 overflow-hidden" ref={reactFlowWrapper}>
-      {/* Floating side panel */}
-      {showPanel && <PanelComponent />}
+      {/* Floating side panel — m09: 常驻节点库；legacy workflows/presets 仍兼容 */}
+      {showNodeLibrary && <NodeLibraryComponent />}
+      {showLegacyPanel && LegacyPanel && <LegacyPanel />}
 
       {/* Canvas area — offset when panel is open */}
       <div
         className="absolute inset-0 transition-[left] duration-200"
         style={{
-          left: showPanel ? panelWidth : 0,
+          left: showNodeLibrary || showLegacyPanel ? panelWidth : 0,
           right: showPropertyPanel ? PROPERTY_PANEL_WIDTH : 0,
         }}
       >
