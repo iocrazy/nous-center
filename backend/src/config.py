@@ -29,7 +29,13 @@ class Settings(BaseSettings):
 
     CACHE_TTL_SECONDS: int = 3600  # TTS cache TTL (1 hour)
 
-    ADMIN_TOKEN: str = ""  # Set to require auth for management API
+    ADMIN_TOKEN: str = ""  # Set to require auth for management API (CLI/curl bearer token)
+    # Browser admin login: when ADMIN_PASSWORD is set, /api/* and /ws/* require
+    # a valid session cookie obtained via POST /sys/admin/login. Empty disables
+    # the gate (dev mode). ADMIN_SESSION_SECRET signs the cookie HMAC.
+    ADMIN_PASSWORD: str = ""
+    ADMIN_SESSION_SECRET: str = ""
+    ADMIN_SESSION_MAX_AGE_SECONDS: int = 60 * 60 * 24 * 30  # 30 days
 
     NOUS_CENTER_HOME: str = "~/.nous-center"
 

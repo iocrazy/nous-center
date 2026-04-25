@@ -345,9 +345,13 @@ def create_app() -> FastAPI:
         RequestLoggingMiddleware,
         AuditMiddleware,
         RequestIdMiddleware,
+        AdminSessionGateMiddleware,
     )
     app.add_middleware(AuditMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
+    # Admin session gate sits before logging so 401s still get a request id but
+    # don't reach business handlers.
+    app.add_middleware(AdminSessionGateMiddleware)
     # LIFO: RequestIdMiddleware added LAST so it runs FIRST, populating
     # request.state.request_id before exception handlers inspect it.
     app.add_middleware(RequestIdMiddleware)
@@ -418,9 +422,22 @@ def create_app() -> FastAPI:
     app.include_router(logs.router)
     from src.api.routes import memory as memory_routes
     app.include_router(memory_routes.router)
+    from src.api.routes import admin_auth as admin_auth_routes
+    app.include_router(admin_auth_routes.router)
+
+    from src.api.admin_session import websocket_is_authed
+
+    async def _reject_unauthed_ws(websocket: WebSocket) -> bool:
+        """Return True when the WS was rejected. Closes with policy code 4401."""
+        if websocket_is_authed(websocket):
+            return False
+        await websocket.close(code=4401)
+        return True
 
     @app.websocket("/ws/tasks/{task_id}")
     async def websocket_task(websocket: WebSocket, task_id: str):
+        if await _reject_unauthed_ws(websocket):
+            return
         await ws_manager.connect(task_id, websocket)
         try:
             while True:
@@ -431,6 +448,8 @@ def create_app() -> FastAPI:
     @app.websocket("/ws/tasks")
     async def websocket_tasks_global(websocket: WebSocket):
         """Global task list WebSocket — pushes task create/update/delete events."""
+        if await _reject_unauthed_ws(websocket):
+            return
         await ws_manager.subscribe_global(websocket)
         try:
             while True:
@@ -441,6 +460,8 @@ def create_app() -> FastAPI:
     @app.websocket("/ws/models")
     async def websocket_models(websocket: WebSocket):
         """Model loading status WebSocket -- pushes loading/loaded/failed events."""
+        if await _reject_unauthed_ws(websocket):
+            return
         await ws_manager.subscribe_models(websocket)
         try:
             while True:
@@ -450,10 +471,14 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/tts")
     async def websocket_tts(websocket: WebSocket):
+        if await _reject_unauthed_ws(websocket):
+            return
         await handle_tts_websocket(websocket)
 
     @app.websocket("/ws/workflow/{instance_id}")
     async def workflow_progress_ws(websocket: WebSocket, instance_id: str):
+        if await _reject_unauthed_ws(websocket):
+            return
         await websocket.accept()
         if instance_id not in _ws_connections:
             _ws_connections[instance_id] = []

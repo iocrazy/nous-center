@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import IconRail from './components/layout/IconRail'
 import Topbar from './components/layout/Topbar'
@@ -10,6 +10,9 @@ import { useWorkspaceStore } from './stores/workspace'
 import { apiFetch } from './api/client'
 import type { WorkflowFull } from './api/workflows'
 import { useToastStore } from './stores/toast'
+import { useAdminMe } from './api/admin'
+import Login from './pages/Login'
+import { loadPluginDefinitions } from './models/nodeRegistry'
 
 const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/models': 'models',
@@ -104,26 +107,63 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
   )
 }
 
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const { data, isLoading } = useAdminMe()
+  const [pluginsReady, setPluginsReady] = useState(false)
+
+  const authenticated = data ? !data.login_required || data.authenticated : false
+
+  useEffect(() => {
+    if (!authenticated || pluginsReady) return
+    loadPluginDefinitions().finally(() => setPluginsReady(true))
+  }, [authenticated, pluginsReady])
+
+  if (isLoading) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center text-sm"
+        style={{ background: 'var(--bg)', color: 'var(--text-secondary)' }}
+      >
+        加载中…
+      </div>
+    )
+  }
+  if (!authenticated) return <Login />
+  if (!pluginsReady) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center text-sm"
+        style={{ background: 'var(--bg)', color: 'var(--text-secondary)' }}
+      >
+        正在加载节点定义…
+      </div>
+    )
+  }
+  return <>{children}</>
+}
+
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<MainLayout />} />
-        <Route path="/workflows" element={<MainLayout />} />
-        <Route path="/workflows/:id" element={<MainLayout workflowRoute />} />
-        <Route path="/models" element={<MainLayout />} />
-        <Route path="/services" element={<MainLayout />} />
-        <Route path="/apps" element={<MainLayout />} />
-        <Route path="/agents" element={<MainLayout />} />
-        <Route path="/settings" element={<MainLayout />} />
-        <Route path="/dashboard" element={<MainLayout />} />
-        <Route path="/api-keys" element={<MainLayout />} />
-        <Route path="/api-keys/:id" element={<MainLayout />} />
-        <Route path="/logs" element={<MainLayout />} />
-        <Route path="/node-packages" element={<MainLayout />} />
-        <Route path="/usage" element={<MainLayout />} />
-        <Route path="/services/:id" element={<MainLayout />} />
-      </Routes>
+      <AuthGate>
+        <Routes>
+          <Route path="/" element={<MainLayout />} />
+          <Route path="/workflows" element={<MainLayout />} />
+          <Route path="/workflows/:id" element={<MainLayout workflowRoute />} />
+          <Route path="/models" element={<MainLayout />} />
+          <Route path="/services" element={<MainLayout />} />
+          <Route path="/apps" element={<MainLayout />} />
+          <Route path="/agents" element={<MainLayout />} />
+          <Route path="/settings" element={<MainLayout />} />
+          <Route path="/dashboard" element={<MainLayout />} />
+          <Route path="/api-keys" element={<MainLayout />} />
+          <Route path="/api-keys/:id" element={<MainLayout />} />
+          <Route path="/logs" element={<MainLayout />} />
+          <Route path="/node-packages" element={<MainLayout />} />
+          <Route path="/usage" element={<MainLayout />} />
+          <Route path="/services/:id" element={<MainLayout />} />
+        </Routes>
+      </AuthGate>
     </BrowserRouter>
   )
 }

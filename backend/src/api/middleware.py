@@ -120,3 +120,27 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers["X-Request-Id"] = rid
         return response
+
+
+# Path prefixes that require an admin browser session when ADMIN_PASSWORD is set.
+# /v1/* keeps its own bearer-token auth (external LLM clients), /sys/admin/*
+# must stay reachable so the user can log in, and static SPA paths must load
+# the login page itself.
+_ADMIN_GATE_PREFIXES = ("/api/",)
+
+
+class AdminSessionGateMiddleware(BaseHTTPMiddleware):
+    """Block /api/* requests without a valid admin session cookie.
+
+    Disabled when ADMIN_PASSWORD is empty (dev mode). WebSocket auth is handled
+    in the endpoint functions because BaseHTTPMiddleware doesn't see WS upgrades.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path.startswith(_ADMIN_GATE_PREFIXES):
+            from src.api.admin_session import request_is_authed
+            if not request_is_authed(request):
+                from starlette.responses import JSONResponse
+                return JSONResponse({"detail": "admin login required"}, status_code=401)
+        return await call_next(request)
