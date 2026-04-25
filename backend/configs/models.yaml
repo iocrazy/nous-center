@@ -45,6 +45,11 @@ models:
   resident: false
   type: llm
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
+  id: qwen3_6_35b_a3b_fp8
+  path: llm/Qwen3.6-35B-A3B-FP8
+  resident: false
+  type: llm
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it
   path: llm/gemma-4-26B-A4B-it
   type: llm
