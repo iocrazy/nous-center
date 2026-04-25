@@ -6,6 +6,11 @@ import wasm from 'vite-plugin-wasm'
 export default defineConfig({
   plugins: [react(), tailwindcss(), wasm()],
   server: {
+    // 监听 0.0.0.0 让 LAN 内（如 10.0.0.10）能直访；HMR 用 host 自适应。
+    host: true,
+    // 允许任意 host 头（cloudflare tunnel / nginx 反代时 Host 不是 localhost）。
+    // Vite 5+ 默认收紧到 'localhost'，这里放开为内网 + 自定义域名。
+    allowedHosts: true,
     proxy: {
       '/api/': 'http://localhost:8000',
       '/v1': 'http://localhost:8000',
