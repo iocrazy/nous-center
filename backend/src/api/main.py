@@ -338,7 +338,11 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Request-Id"],
+        # ETag is exposed so JS clients can read it for explicit If-None-Match
+        # validation. The browser's native HTTP cache uses ETag transparently
+        # regardless, but custom diagnostic / instrumentation code needs CORS
+        # to expose the header.
+        expose_headers=["X-Request-Id", "ETag"],
     )
 
     from src.api.middleware import (
