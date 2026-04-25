@@ -11,12 +11,14 @@ import {
   Moon,
   Monitor,
   ListTodo,
+  LogOut,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
 import { useThemeStore } from '../../stores/theme'
 import { useExecutionStore } from '../../stores/execution'
 import { useTasks } from '../../api/tasks'
+import { useAdminLogout, useAdminMe } from '../../api/admin'
 
 // v3 IA: 8 main navs (Dashboard / Services / Workflow / Engines / API Key /
 // Usage / Logs / Settings) + 3 theme buttons + GPU pill.
@@ -64,6 +66,11 @@ export default function IconRail() {
   const { mode, setMode } = useThemeStore()
   const navigate = useNavigate()
   const location = useLocation()
+  const logout = useAdminLogout()
+  const me = useAdminMe()
+  // Only render the logout button when admin gate is actually active —
+  // dev mode (ADMIN_PASSWORD empty) has no session to log out of.
+  const canLogout = me.data?.login_required === true
 
   const navigateOverlay = (id: OverlayId) => {
     const target = OVERLAY_ROUTES[id]
@@ -169,6 +176,34 @@ export default function IconRail() {
         <ThemeButton active={mode === 'auto'} onClick={() => setMode('auto')}>
           <Monitor size={12} />
         </ThemeButton>
+
+        {canLogout && (
+          <>
+            <Sep />
+            <button
+              onClick={() => {
+                if (logout.isPending) return
+                logout.mutate()
+              }}
+              title="退出登录"
+              aria-label="退出登录"
+              className="flex items-center justify-center"
+              style={{
+                width: 32,
+                height: 28,
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: 'var(--muted)',
+                cursor: logout.isPending ? 'wait' : 'pointer',
+                opacity: logout.isPending ? 0.5 : 1,
+              }}
+            >
+              <LogOut size={12} />
+            </button>
+          </>
+        )}
+
         <div className="flex items-center gap-1 mt-1" style={{ fontSize: 8, color: 'var(--muted)' }}>
           <span
             className="inline-block rounded-full"
