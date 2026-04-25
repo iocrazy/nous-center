@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { apiFetch } from './client'
 
 // ---------- shared types ----------
@@ -72,6 +72,8 @@ export function useServices(params?: { category?: ServiceCategory; status?: Serv
   return useQuery<ServiceRow[]>({
     queryKey: ['services', params?.category ?? null, params?.status ?? null],
     queryFn: () => apiFetch<ServiceRow[]>(`/api/v1/services${q ? `?${q}` : ''}`),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   })
 }
 

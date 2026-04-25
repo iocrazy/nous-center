@@ -40,6 +40,9 @@ export function useAdminLogout() {
   return useMutation({
     mutationFn: () => apiFetch<{ ok: true }>('/sys/admin/logout', { method: 'POST' }),
     onSuccess: () => {
+      // Drop every cached query so the next admin (or post-relogin session)
+      // can't see stale list data via placeholderData.
+      qc.clear()
       qc.invalidateQueries({ queryKey: ADMIN_ME_KEY })
     },
   })

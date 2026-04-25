@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { useToastStore } from '../stores/toast'
 
@@ -64,6 +64,11 @@ export function useEngines() {
     refetchInterval: (query) => query.state.status === 'error' ? 10_000 : 30_000,
     refetchOnWindowFocus: false,
     retry: false,
+    // Show last-known engines instantly when navigating back to the page;
+    // background refetch keeps them fresh. Backend serves cached body in <50ms
+    // when warm, so the visible flicker window collapses.
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   })
 }
 

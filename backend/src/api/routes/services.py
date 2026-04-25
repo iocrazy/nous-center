@@ -20,13 +20,14 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_serializer, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
 from src.api.deps_admin import require_admin
+from src.api.response_cache import cached, invalidate
 from src.models.database import get_async_session
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
@@ -146,10 +147,11 @@ def _trivial_workflow_for(category: str, engine: str, params: dict[str, Any]) ->
 
 @router.get(
     "/services",
-    response_model=list[ServiceOut],
     dependencies=[Depends(require_admin)],
 )
+@cached("services", ttl=30)
 async def list_services(
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
     category: str | None = None,
     status: str | None = None,
@@ -280,6 +282,8 @@ async def quick_provision(
         svc,
         attribute_names=["workflow_snapshot", "exposed_inputs", "exposed_outputs"],
     )
+    # Cross-resource: quick-provision creates BOTH a workflow row and a service row.
+    invalidate("services", "workflows")
     return svc
 
 
@@ -300,6 +304,7 @@ async def patch_service(
         svc.status = body.status
     await session.commit()
     await session.refresh(svc)
+    invalidate("services")
     return svc
 
 
@@ -317,3 +322,4 @@ async def delete_service(
         raise HTTPException(404, detail="service not found")
     await session.delete(svc)
     await session.commit()
+    invalidate("services")

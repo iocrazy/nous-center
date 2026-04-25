@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
+from src.api.response_cache import cached, invalidate
 from src.models.database import get_async_session
 from src.models.schemas import WorkflowCreate, WorkflowUpdate, WorkflowOut
 from src.models.service_instance import ServiceInstance
@@ -26,11 +27,14 @@ async def create_workflow(
     session.add(wf)
     await session.commit()
     await session.refresh(wf)
+    invalidate("workflows")
     return wf
 
 
-@router.get("", response_model=list[WorkflowOut])
+@router.get("")
+@cached("workflows", ttl=30)
 async def list_workflows(
+    request: Request,
     is_template: bool | None = None,
     auto_generated: bool | None = None,
     session: AsyncSession = Depends(get_async_session),
@@ -68,6 +72,7 @@ async def update_workflow(
         setattr(wf, key, value)
     await session.commit()
     await session.refresh(wf)
+    invalidate("workflows")
     return wf
 
 
@@ -81,6 +86,7 @@ async def delete_workflow(
         raise HTTPException(404, "Workflow not found")
     await session.delete(wf)
     await session.commit()
+    invalidate("workflows")
 
 
 # NOTE: the legacy POST /api/v1/workflows/{id}/publish handler was removed
@@ -120,6 +126,9 @@ async def unpublish_workflow(
 
     wf.status = "draft"
     await session.commit()
+    # Cross-resource invalidation: unpublish flips workflow.status AND
+    # service.status, so the services list cache must drop too.
+    invalidate("workflows", "services")
     return {"status": "unpublished"}
 
 

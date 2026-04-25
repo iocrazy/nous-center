@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
+from src.api.response_cache import invalidate
 from src.api.routes.services import NAME_RE, ServiceDetailOut
 from src.models.database import get_async_session
 from src.models.schemas import ExposedParam
@@ -161,4 +162,7 @@ async def publish_workflow(
         svc,
         attribute_names=["workflow_snapshot", "exposed_inputs", "exposed_outputs"],
     )
+    # Publish creates a service AND flips workflow.status="published" downstream;
+    # both list caches must drop.
+    invalidate("services", "workflows")
     return svc
