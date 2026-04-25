@@ -7,6 +7,7 @@ import {
 import { useEngines } from '../../api/engines'
 import { useDashboardSummary, type AlertItem, type TopServiceRow } from '../../api/dashboard'
 import { useRuntimeMetrics, type RuntimeSnapshot } from '../../api/observability'
+import { useVLLMMetrics, useUpdateLaunchParams } from '../../api/vllm'
 
 /**
  * m04 Dashboard — v3 layout.
@@ -122,6 +123,9 @@ export default function DashboardOverlay() {
 
         {/* Runtime observability — process-level counters */}
         <RuntimePanel />
+
+        {/* vLLM KV cache + scheduler — per active inference instance */}
+        <VLLMPanel />
 
         {/* System status — collapsible (was the entire v2 dashboard) */}
         <CollapsibleSystem open={sysOpen} onToggle={() => setSysOpen((v) => !v)} />
@@ -1001,4 +1005,205 @@ function fmtTimeAgo(iso: string | null): string {
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`
   return `${Math.floor(diffSec / 86400)} 天前`
+}
+
+// vLLM KV cache + scheduler state — one card per active inference instance.
+// Pulled from each instance's :PORT/metrics by the backend, polled every 3s.
+function VLLMPanel() {
+  const { data, isLoading, error } = useVLLMMetrics()
+  const update = useUpdateLaunchParams()
+  const instances = data?.instances ?? []
+
+  const subtitle = isLoading
+    ? '加载中…'
+    : error
+      ? '指标接口不可达'
+      : instances.length === 0
+        ? '没有正在运行的 vLLM 实例'
+        : `${instances.length} 个实例 · 每 3 秒刷新`
+
+  return (
+    <Panel icon={<Cpu size={14} color="var(--accent)" />} title="vLLM KV Cache · 调度">
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>{subtitle}</div>
+
+      {instances.map((inst) => {
+        const usage = inst.stats.kv_cache_usage_perc ?? 0
+        const usagePct = Math.round(usage * 100)
+        const totalBlocks = Number(inst.config.num_gpu_blocks ?? 0)
+        const blockSize = Number(inst.config.block_size ?? 0)
+        const totalTokens = totalBlocks * blockSize
+        const prefixOn = inst.config.enable_prefix_caching === 'True'
+        const hitRate = inst.stats.prefix_cache_hit_rate
+
+        return (
+          <div
+            key={`${inst.name}-${inst.port}`}
+            style={{
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: 12,
+              marginBottom: 8,
+              background: 'var(--bg)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 8,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text)' }}>
+                {inst.name}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted)' }}>port :{inst.port}</div>
+              {!inst.healthy && (
+                <span style={{ fontSize: 10, color: 'var(--error, #ef4444)' }}>
+                  · {inst.error}
+                </span>
+              )}
+            </div>
+
+            {inst.healthy && (
+              <>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(4, 1fr)',
+                    gap: 12,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Stat label="KV 使用" value={`${usagePct}%`} />
+                  <Stat
+                    label="总容量"
+                    value={
+                      totalTokens > 0
+                        ? `${(totalTokens / 1000).toFixed(0)}K tokens`
+                        : '—'
+                    }
+                    sub={
+                      totalBlocks > 0 && blockSize > 0
+                        ? `${totalBlocks} blocks × ${blockSize}`
+                        : undefined
+                    }
+                  />
+                  <Stat
+                    label="并发"
+                    value={`${inst.stats.running ?? 0}`}
+                    sub={
+                      (inst.stats.waiting ?? 0) > 0
+                        ? `等待 ${inst.stats.waiting}`
+                        : undefined
+                    }
+                  />
+                  <Stat
+                    label="Prefix 命中"
+                    value={
+                      hitRate != null
+                        ? `${Math.round(hitRate * 100)}%`
+                        : prefixOn
+                          ? '0%'
+                          : '关'
+                    }
+                    sub={
+                      prefixOn
+                        ? `${inst.stats.prefix_cache_hits_total ?? 0} / ${inst.stats.prefix_cache_queries_total ?? 0}`
+                        : undefined
+                    }
+                  />
+                </div>
+
+                {/* KV usage bar */}
+                <div
+                  style={{
+                    height: 4,
+                    borderRadius: 2,
+                    background: 'var(--bg-accent)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${usagePct}%`,
+                      height: '100%',
+                      background:
+                        usage > 0.85 ? 'var(--error, #ef4444)' : 'var(--accent)',
+                      transition: 'width 0.3s',
+                    }}
+                  />
+                </div>
+
+                {/* Toggle: prefix caching (next-load apply) */}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    marginTop: 12,
+                    paddingTop: 10,
+                    borderTop: '1px solid var(--border)',
+                  }}
+                >
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 11,
+                      color: 'var(--text)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={prefixOn}
+                      disabled={update.isPending}
+                      onChange={(e) =>
+                        update.mutate({
+                          name: inst.name,
+                          body: { enable_prefix_caching: e.target.checked },
+                        })
+                      }
+                    />
+                    Prefix Caching
+                  </label>
+                  <span style={{ fontSize: 10, color: 'var(--muted)' }}>
+                    {update.isPending && '保存中…'}
+                    {!update.isPending &&
+                      '改后下次 load 生效（需 unload + load 重启 vLLM）'}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        )
+      })}
+    </Panel>
+  )
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase' }}>
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: 16,
+          fontWeight: 600,
+          color: 'var(--text)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {value}
+      </div>
+      {sub && (
+        <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>{sub}</div>
+      )}
+    </div>
+  )
 }

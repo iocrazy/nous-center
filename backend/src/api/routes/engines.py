@@ -358,6 +358,59 @@ async def set_resident(name: str, resident: bool = True):
     return {"name": name, "resident": resident}
 
 
+@router.patch("/{name}/launch-params", dependencies=[Depends(require_admin)])
+async def set_launch_params(name: str, body: dict):
+    """Edit the per-model `params` block in models.yaml.
+
+    Whitelisted keys only. Changes affect the **next** load — existing running
+    instances keep their current launch parameters. Caller must unload + load
+    to apply.
+    """
+    import yaml
+
+    allowed = {
+        "enable_prefix_caching",
+        "max_num_seqs",
+        "max_model_len",
+        "gpu_memory_utilization",
+        "tensor_parallel_size",
+        "quantization",
+        "dtype",
+    }
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(400, detail=f"no allowed keys; whitelist: {sorted(allowed)}")
+
+    configs_path = Path(__file__).resolve().parent.parent.parent.parent / "configs" / "models.yaml"
+    with open(configs_path) as f:
+        data = yaml.safe_load(f)
+
+    models = data.get("models", [])
+    if not isinstance(models, list):
+        raise HTTPException(500, detail="models.yaml is not in list-based format")
+
+    found = False
+    for entry in models:
+        if entry.get("id") != name:
+            continue
+        params = entry.setdefault("params", {})
+        params.update(updates)
+        # Remove keys explicitly set to null (lets caller "unset" overrides)
+        for k, v in list(params.items()):
+            if v is None:
+                params.pop(k, None)
+        found = True
+        break
+    if not found:
+        raise HTTPException(404, detail=f"unknown engine: {name}")
+
+    with open(configs_path, "w") as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+    invalidate("engines")
+    return {"name": name, "params": updates, "applied": False, "hint": "unload + load to apply"}
+
+
 @router.patch("/{name}/gpu", dependencies=[Depends(require_admin)])
 async def set_gpu(name: str, gpu: int = 0):
     """Change GPU assignment for an engine."""

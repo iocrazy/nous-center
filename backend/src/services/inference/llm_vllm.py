@@ -50,6 +50,7 @@ class VLLMAdapter(InferenceAdapter):
         quantization: str | None = None,
         dtype: str | None = None,
         max_num_seqs: int | None = None,
+        enable_prefix_caching: bool | None = None,
         adopt_pid: int | None = None,
         **kwargs: Any,
     ):
@@ -61,6 +62,9 @@ class VLLMAdapter(InferenceAdapter):
         self._quantization = quantization
         self._max_num_seqs = max_num_seqs
         self._dtype = dtype
+        # If True, vLLM is launched with --enable-prefix-caching.
+        # Per-model override; reads from models.yaml `params` block.
+        self._enable_prefix_caching = enable_prefix_caching
         # Port resolved lazily in load() if not set
         if self._port:
             self._base_url = f"http://localhost:{self._port}"
@@ -255,6 +259,11 @@ class VLLMAdapter(InferenceAdapter):
             cmd += ["--dtype", dtype]
         if max_num_seqs:
             cmd += ["--max-num-seqs", str(max_num_seqs)]
+        if self._enable_prefix_caching:
+            # Repeated system prompts / few-shot examples reuse cached KV
+            # blocks instead of re-prefilling. Memory cost is tiny metadata;
+            # benefit is large when callers send the same prefix often.
+            cmd += ["--enable-prefix-caching"]
         if auto.get("is_multimodal"):
             # vLLM >=0.6 parses this value with json.loads — must be JSON, not key=val.
             # Allow up to 4 images per prompt by default.
