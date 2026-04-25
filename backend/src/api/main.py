@@ -4,10 +4,11 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import tasks, understand, generate, tts, engines, audio, voices, openai_compat, ollama_compat, api_gateway as api_gateway_routes, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes, services as services_routes, workflow_publish as workflow_publish_routes, usage as usage_routes, dashboard as dashboard_routes, api_keys as api_keys_routes, anthropic_compat, observability
 from src.api.websocket import ws_manager
@@ -463,8 +464,46 @@ def create_app() -> FastAPI:
         except WebSocketDisconnect:
             _ws_connections[instance_id].remove(websocket)
 
+    _mount_frontend(app)
     _register_error_handlers(app)
     return app
+
+
+# --------------------------------------------------------------------------- #
+# Frontend static serving — production builds are served by the API process so
+# the browser hits one origin (cloudflared can point at :8000 only). Vite dev
+# on :9999 still works for local HMR; this only kicks in when `dist/` exists.
+# --------------------------------------------------------------------------- #
+
+# Path prefixes that belong to the API and must NOT fall through to the SPA.
+# Anything else returns index.html so client-side routing handles deep links.
+_API_PREFIXES = ("/v1", "/sys", "/api", "/ws", "/health", "/healthz", "/docs", "/openapi.json", "/redoc")
+
+
+def _frontend_dist_dir() -> Path | None:
+    # backend/src/api/main.py → repo_root = parents[3]
+    candidate = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+    return candidate if (candidate / "index.html").exists() else None
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    dist = _frontend_dist_dir()
+    if dist is None:
+        logger.info("frontend dist not found, skipping static mount (run `npm run build`)")
+        return
+
+    index_html = dist / "index.html"
+    app.mount("/assets", StaticFiles(directory=dist / "assets"), name="frontend-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str, request: Request):
+        path = "/" + full_path
+        if any(path == p or path.startswith(p + "/") for p in _API_PREFIXES):
+            raise HTTPException(status_code=404)
+        candidate = dist / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index_html)
 
 
 # --------------------------------------------------------------------------- #
