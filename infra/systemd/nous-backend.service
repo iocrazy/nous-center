@@ -1,0 +1,24 @@
+[Unit]
+Description=nous-center backend (FastAPI + uvicorn)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=heygo
+Group=heygo
+WorkingDirectory=/media/heygo/Program/projects-code/_playground/nous-center/backend
+EnvironmentFile=/media/heygo/Program/projects-code/_playground/nous-center/backend/.env
+# uv lives in $HOME/.local/bin; systemd doesn't read .profile, point at it
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/heygo/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/linuxbrew/.linuxbrew/bin/uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+# Log to journald — view with `journalctl -u nous-backend -f`
+StandardOutput=journal
+StandardError=journal
+# Hard memory cap so a vLLM bug can't OOM the host
+MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

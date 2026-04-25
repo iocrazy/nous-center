@@ -1,0 +1,19 @@
+[Unit]
+Description=cloudflared tunnel for api.iocrazy.com → localhost:8000
+After=network-online.target nous-backend.service
+Wants=network-online.target
+Requires=nous-backend.service
+
+[Service]
+Type=simple
+User=heygo
+Group=heygo
+# http2 fallback because QUIC (UDP/7844) is unreliable on this network
+ExecStart=/usr/local/bin/cloudflared tunnel --protocol http2 run nous-center
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
