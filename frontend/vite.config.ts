@@ -8,6 +8,9 @@ export default defineConfig({
   server: {
     // 监听 0.0.0.0 让 LAN 内（如 10.0.0.10）能直访；HMR 用 host 自适应。
     host: true,
+    // 端口固定 9999 — cloudflared / 各处链接对齐这个端口
+    port: 9999,
+    strictPort: true,
     // 允许任意 host 头（cloudflare tunnel / nginx 反代时 Host 不是 localhost）。
     // Vite 5+ 默认收紧到 'localhost'，这里放开为内网 + 自定义域名。
     allowedHosts: true,
