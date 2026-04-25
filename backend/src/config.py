@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = ""
     ADMIN_SESSION_SECRET: str = ""
     ADMIN_SESSION_MAX_AGE_SECONDS: int = 60 * 60 * 24 * 30  # 30 days
+    # WebAuthn / Passkey settings.
+    # ADMIN_PASSKEY_RP_ID is the host the browser sends — must EXACTLY match
+    # the domain the page is loaded from (no scheme, no port). Examples:
+    #   prod cloudflare:  api.iocrazy.com
+    #   localhost dev:    localhost   (works without https for localhost only)
+    # Multiple origins (dev + prod) are supported via a comma-separated list
+    # in ADMIN_PASSKEY_RP_ORIGINS — every value must be `scheme://host[:port]`.
+    ADMIN_PASSKEY_RP_ID: str = "localhost"
+    ADMIN_PASSKEY_RP_NAME: str = "nous-center"
+    ADMIN_PASSKEY_RP_ORIGINS: str = "http://localhost:9999,http://localhost:8000"
 
     NOUS_CENTER_HOME: str = "~/.nous-center"
 

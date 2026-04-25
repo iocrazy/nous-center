@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
     import src.models.response_session  # noqa: F401
     import src.models.memory  # noqa: F401
     import src.models.api_gateway  # noqa: F401
+    import src.models.admin_credentials  # noqa: F401
 
     engine = create_engine()
     async with engine.begin() as conn:
@@ -428,6 +429,10 @@ def create_app() -> FastAPI:
     app.include_router(memory_routes.router)
     from src.api.routes import admin_auth as admin_auth_routes
     app.include_router(admin_auth_routes.router)
+    from src.api.routes import admin_passkey as admin_passkey_routes
+    app.include_router(admin_passkey_routes.router)
+    from src.api.routes import admin_totp as admin_totp_routes
+    app.include_router(admin_totp_routes.router)
 
     from src.api.admin_session import websocket_is_authed
 

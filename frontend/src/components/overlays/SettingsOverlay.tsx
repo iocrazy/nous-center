@@ -9,12 +9,14 @@ import {
   Info,
   Package,
   Palette,
+  ShieldCheck,
   User,
   Zap,
 } from 'lucide-react'
 import { useServerSettings, useUpdateServerSettings } from '../../api/settings'
 import { useSettingsStore, type SettingsState } from '../../stores/settings'
 import NodePackagesPanel from '../settings/NodePackagesPanel'
+import SecurityPanel from '../settings/SecurityPanel'
 
 // m16 v3 mockup 对齐：3 个 sub-nav 分组共 10 项
 //   通用：账号 / 外观 / 通知
@@ -29,6 +31,7 @@ import NodePackagesPanel from '../settings/NodePackagesPanel'
 
 type Section =
   | 'account'
+  | 'security'
   | 'appearance'
   | 'notifications'
   | 'engine-defaults'
@@ -49,6 +52,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: '通用',
     items: [
       { id: 'account', label: '账号', icon: User },
+      { id: 'security', label: '安全', icon: ShieldCheck },
       { id: 'appearance', label: '外观', icon: Palette },
       { id: 'notifications', label: '通知', icon: Bell },
     ],
@@ -158,6 +162,8 @@ function Body({ section }: { section: Section }) {
   switch (section) {
     case 'account':
       return <AccountPanel />
+    case 'security':
+      return <SecurityPanel />
     case 'appearance':
       return <AppearancePanel />
     case 'notifications':
