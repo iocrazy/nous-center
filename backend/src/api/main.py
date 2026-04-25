@@ -512,6 +512,12 @@ def _frontend_dist_dir() -> Path | None:
 
 
 def _mount_frontend(app: FastAPI) -> None:
+    # Test suites build the app and add their own routes after create_app().
+    # The SPA catch-all (/{full_path:path}) would otherwise win route matching
+    # against later-registered test endpoints. Tests set this env to opt out.
+    import os
+    if os.environ.get("NOUS_DISABLE_FRONTEND_MOUNT") == "1":
+        return
     dist = _frontend_dist_dir()
     if dist is None:
         logger.info("frontend dist not found, skipping static mount (run `npm run build`)")

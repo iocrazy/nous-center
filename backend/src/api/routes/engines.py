@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
+from src.api.response_cache import cached, invalidate
 from src.services.model_scanner import scan_models
 from src.gpu.detector import gpu_summary
 from src.models.database import get_async_session
@@ -127,13 +128,20 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
     return info
 
 
-@router.get("", response_model=list[EngineInfo])
+@router.get("")
+@cached("engines", ttl=30)
 async def list_all_engines(
     request: Request,
     type: str | None = None,
     session: AsyncSession = Depends(get_async_session),
 ):
-    """List all engines with metadata. Optionally filter by type."""
+    """List all engines with metadata. Optionally filter by type.
+
+    Cached 30s in-process. Cache key includes ``?type=`` filter via the cache
+    layer's query-string handling. Writes to engine state (load/unload/scan/
+    resident/gpu/install_deps and the background loaders) all call
+    ``invalidate("engines")`` to drop the cached body before the next read.
+    """
     configs = scan_models()
     metadata = await get_all_metadata(session)
     local_dirs = scan_local_models()
@@ -153,6 +161,7 @@ async def list_all_engines(
 async def scan_models_endpoint():
     """Re-scan models directory for new models."""
     configs = scan_models()
+    invalidate("engines")
     return {"count": len(configs), "models": list(configs.keys())}
 
 
@@ -163,6 +172,7 @@ async def reload_registry(request: Request):
     if mgr is None:
         raise HTTPException(503, "ModelManager not initialized")
     new_count = mgr._registry.reload()
+    invalidate("engines")
     return {"status": "reloaded", "new_models": new_count, "total": len(mgr._registry.specs)}
 
 
@@ -170,6 +180,7 @@ async def reload_registry(request: Request):
 async def sync_all_metadata(session: AsyncSession = Depends(get_async_session)):
     """Fetch metadata for any engine not yet in DB."""
     metadata = await sync_metadata(session)
+    invalidate("engines")
     return {"synced": len(metadata)}
 
 
@@ -184,6 +195,7 @@ async def refresh_engine_metadata(
         raise HTTPException(404, detail=f"Unknown engine: {name}")
     meta = await refresh_metadata(session, name)
     local_dirs = scan_local_models()
+    invalidate("engines")
     return _build_engine_info(name, configs[name], meta, local_dirs)
 
 
@@ -205,6 +217,7 @@ async def load_engine(name: str, request: Request):
 
     # Start background loading
     _loading_states[name] = {"status": "loading", "detail": "Starting..."}
+    invalidate("engines")
     asyncio.create_task(_load_in_background(name, model_mgr))
 
     return EngineLoadResponse(name=name, status="loading")
@@ -221,10 +234,14 @@ async def _load_in_background(name: str, model_mgr):
         elapsed = round(time.monotonic() - start, 2)
         # Clear loading state on success — the model is now truly loaded
         _loading_states.pop(name, None)
+        # Invalidate cache so the next /engines GET reflects the new status
+        # (background task changes status without going through an HTTP write).
+        invalidate("engines")
         await ws_manager.broadcast_model_status(name, "loaded", f"Ready ({elapsed}s)")
         logger.info("Model %s loaded in %.2fs", name, elapsed)
     except Exception as e:
         _loading_states[name] = {"status": "failed", "detail": str(e)}
+        invalidate("engines")
         await ws_manager.broadcast_model_status(name, "failed", str(e))
         logger.error("Model %s load failed: %s", name, e)
 
@@ -242,6 +259,7 @@ async def unload_engine(name: str, request: Request, force: bool = False):
     model_mgr = request.app.state.model_manager
     await model_mgr.unload_model(name, force=force)
 
+    invalidate("engines")
     return EngineLoadResponse(name=name, status="unloaded")
 
 
@@ -270,6 +288,7 @@ async def install_engine_deps(name: str):
     if state and state.get("status") == "installing":
         return {"name": name, "status": "installing"}
     _install_states[name] = {"status": "installing", "detail": "Starting..."}
+    invalidate("engines")
     asyncio.create_task(_install_in_background(name))
     return {"name": name, "status": "installing"}
 
@@ -290,15 +309,18 @@ async def _install_in_background(name: str):
         ok, output = await install(name, on_log=_push)
         if ok:
             _install_states[name] = {"status": "installed", "detail": "Install complete"}
+            invalidate("engines")
             await ws_manager.broadcast_model_status(name, "installed", "Install complete")
             log.info("TTS deps installed for %s", name)
         else:
             tail = "\n".join(output.splitlines()[-5:])
             _install_states[name] = {"status": "install_failed", "detail": tail}
+            invalidate("engines")
             await ws_manager.broadcast_model_status(name, "install_failed", tail)
             log.error("TTS dep install failed for %s: %s", name, tail)
     except Exception as e:
         _install_states[name] = {"status": "install_failed", "detail": str(e)}
+        invalidate("engines")
         await ws_manager.broadcast_model_status(name, "install_failed", str(e))
         log.exception("TTS dep install crashed for %s", name)
 
@@ -332,6 +354,7 @@ async def set_resident(name: str, resident: bool = True):
     with open(configs_path, "w") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
 
+    invalidate("engines")
     return {"name": name, "resident": resident}
 
 
@@ -364,6 +387,7 @@ async def set_gpu(name: str, gpu: int = 0):
     with open(configs_path, "w") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
 
+    invalidate("engines")
     return {"name": name, "gpu": gpu}
 
 

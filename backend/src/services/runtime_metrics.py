@@ -109,14 +109,28 @@ class CacheSnapshot(TypedDict):
     hit_rate: float | None  # hits / lookups in [0, 1]; None when lookups==0
 
 
+class ResponseCacheSnapshot(TypedDict):
+    hits: int
+    misses: int
+    etag_304: int
+    invalidations: int
+    hit_rate: float | None  # hits / (hits + misses); None when both are 0
+    by_prefix: dict[str, dict[str, int]]
+
+
 class RuntimeSnapshot(TypedDict):
     gzip: GzipSnapshot
     compaction: CompactionSnapshot
     cache: CacheSnapshot
+    response_cache: ResponseCacheSnapshot
 
 
 def snapshot() -> RuntimeSnapshot:
     """Atomic snapshot — copies under lock so reads can't tear."""
+    # Imported lazily to avoid circular import (response_cache imports
+    # nothing from this module today, but pinning the order keeps it safe).
+    from src.api.response_cache import metrics as _rc_metrics
+
     with _state.lock:
         g = _state.gzip
         c = _state.compaction
@@ -124,6 +138,9 @@ def snapshot() -> RuntimeSnapshot:
         ratio = (g.raw_bytes / g.compressed_bytes) if g.compressed_bytes else None
         avg_drop = (c.turns_dropped / c.calls) if c.calls else None
         hit_rate = (ca.hits / ca.lookups) if ca.lookups else None
+        rc = _rc_metrics.snapshot()
+        rc_total = rc["hits"] + rc["misses"]
+        rc_hit_rate = (rc["hits"] / rc_total) if rc_total else None
         return {
             "gzip": {
                 "calls": g.calls,
@@ -143,5 +160,13 @@ def snapshot() -> RuntimeSnapshot:
                 "lookups": ca.lookups,
                 "hits": ca.hits,
                 "hit_rate": round(hit_rate, 3) if hit_rate is not None else None,
+            },
+            "response_cache": {
+                "hits": rc["hits"],
+                "misses": rc["misses"],
+                "etag_304": rc["etag_304"],
+                "invalidations": rc["invalidations"],
+                "hit_rate": round(rc_hit_rate, 3) if rc_hit_rate is not None else None,
+                "by_prefix": rc["by_prefix"],
             },
         }

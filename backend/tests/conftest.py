@@ -14,6 +14,17 @@ os.environ.setdefault("NOUS_DISABLE_BG_TASKS", "1")
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["NVIDIA_VISIBLE_DEVICES"] = ""
 
+# Tests must not inherit the developer's local admin password from .env —
+# pydantic-settings reads .env automatically, which would 401 every admin-gated
+# route. Force-empty here disables the cookie gate (dev mode) for the whole
+# suite. Bare assignment (not setdefault) overrides whatever .env provides.
+os.environ["ADMIN_PASSWORD"] = ""
+os.environ["ADMIN_SESSION_SECRET"] = ""
+
+# Skip mounting the SPA catch-all in tests — its /{full_path:path} would shadow
+# routes that test fixtures register on the app after create_app() returns.
+os.environ["NOUS_DISABLE_FRONTEND_MOUNT"] = "1"
+
 import sys
 from unittest.mock import MagicMock
 
