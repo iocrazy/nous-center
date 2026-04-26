@@ -17,7 +17,10 @@ export default defineConfig({
     proxy: {
       '/api/': 'http://localhost:8000',
       '/v1': 'http://localhost:8000',
-      '/sys': 'http://localhost:8001',
+      // /sys/admin/* (login / passkey / totp) lives on the same backend (:8000)
+      // since PR #33. The :8001 target was for a legacy "system" service that
+      // no longer exists; pointing it there used to return 500 on every login.
+      '/sys': 'http://localhost:8000',
       '/ws': { target: 'ws://localhost:8000', ws: true },
     },
   },
