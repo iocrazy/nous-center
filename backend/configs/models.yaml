@@ -39,33 +39,40 @@ models:
   id: qwen35-35b-a3b
   path: llm/Qwen3.5-35B-A3B
   type: llm
+  vram_mb: 68595
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_5_35b_a3b_gptq_int4
   path: llm/Qwen3.5-35B-A3B-GPTQ-Int4
   resident: false
   type: llm
+  vram_mb: 23325
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_6_35b_a3b_fp8
   path: llm/Qwen3.6-35B-A3B-FP8
   resident: false
   type: llm
+  vram_mb: 35756
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it
   path: llm/gemma-4-26B-A4B-it
   type: llm
+  vram_mb: 49252
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it-gptq-int4
   path: llm/gemma-4-26B-A4B-it-GPTQ-Int4
   type: llm
+  vram_mb: 14000
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it-awq-4bit
   path: llm/gemma-4-26B-A4B-it-AWQ-4bit
   type: llm
+  vram_mb: 16421
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen2_5_vl_7b_instruct
   path: llm/Qwen2.5-VL-7B-Instruct
   resident: false
   type: llm
+  vram_mb: 14000
 - adapter: src.workers.tts_engines.voxcpm2.VoxCPM2Engine
   id: voxcpm2
   path: tts/VoxCPM2
