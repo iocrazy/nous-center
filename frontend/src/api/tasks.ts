@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
+import { useLiveChannel } from './useLiveChannel'
 
 export interface ExecutionTask {
   id: string
@@ -20,30 +20,20 @@ export interface ExecutionTask {
 /** Fetch tasks once, then rely on WebSocket for updates. */
 export function useTasks() {
   const qc = useQueryClient()
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = `${protocol}//${window.location.host}/ws/tasks`
 
-  // Subscribe to global task WebSocket
-  useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/tasks`)
-
-    ws.onmessage = () => {
-      // Any task event → invalidate the tasks query to refetch
-      qc.invalidateQueries({ queryKey: ['tasks'] })
-    }
-
-    ws.onerror = () => {}
-    ws.onclose = () => {}
-
-    return () => {
-      ws.close()
-    }
-  }, [qc])
+  useLiveChannel(url, {
+    onMessage: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
+    onReconnect: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
+  })
 
   return useQuery({
     queryKey: ['tasks'],
     queryFn: () => apiFetch<ExecutionTask[]>('/api/v1/tasks?limit=50'),
-    // No polling — WebSocket handles updates. Fallback refetch every 30s as safety net.
-    refetchInterval: 30000,
+    // WebSocket handles real-time updates; this is a safety net for the
+    // half-open-socket case the browser may not surface.
+    refetchInterval: 60_000,
   })
 }
 

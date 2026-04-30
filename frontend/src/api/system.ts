@@ -2,28 +2,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { useToastStore } from '../stores/toast'
 
-// --- Python backend GPU summary (basic info, used by engines page) ---
-export interface GpuInfo {
-  index: number
-  name: string
-  vram_total_gb: number
-  compute_capability: [number, number]
-}
-
-export interface GpuSummary {
-  count: number
-  gpus: GpuInfo[]
-}
-
-export function useGpuStats() {
-  return useQuery({
-    queryKey: ['gpu-stats'],
-    queryFn: () => apiFetch<GpuSummary>('/api/v1/engines/gpus'),
-    refetchInterval: 3000,
-  })
-}
-
-// --- Unified monitor endpoint (replaces Rust sidecar) ---
+// Unified monitor endpoint (replaces the old Rust sidecar). The legacy
+// useGpuStats / GpuSummary on /engines/gpus was unused — DashboardOverlay
+// reads the GPU section out of useMonitorStats now, so we removed the
+// 3s duplicate poll.
 
 export interface GpuProcessInfo {
   pid: number
