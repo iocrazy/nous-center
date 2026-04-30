@@ -177,3 +177,51 @@ async def test_no_auth_at_all_returns_401(db_client, monkeypatch):
     finally:
         get_settings.cache_clear()
     assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_input_merge_writes_to_node_primary_slot(
+    db_client, db_session,
+):
+    """The publish dialog used to hard-code `input_name='value'` for every
+    exposed param. text_input reads `data.text`, so the merge silently
+    missed and the node returned its frozen value — making the LLM answer
+    the OLD prompt baked into publish instead of the caller's new input.
+    apps.py now also writes to the node's primary slot when `slot` doesn't
+    match, so legacy services keep working without re-publish."""
+    svc = ServiceInstance(
+        source_type="workflow", source_name="x",
+        name="slot-svc", type="inference", status="active",
+        category="app", meter_dim="calls",
+        workflow_id=2,
+        workflow_snapshot={
+            "nodes": [
+                {"id": "in1", "type": "text_input", "data": {"text": "frozen-old-prompt"}},
+                {"id": "out1", "type": "text_output", "data": {}},
+            ],
+            "edges": [{"source": "in1", "target": "out1", "sourceHandle": "text", "targetHandle": "text"}],
+        },
+        exposed_inputs=[
+            # Legacy schema: input_name='value' but text_input reads 'text'
+            {"node_id": "in1", "key": "prompt", "input_name": "value",
+             "type": "string", "required": True},
+        ],
+    )
+    db_session.add(svc)
+    raw, key = await _make_key(db_session, prefix="sk-slot12345")
+    db_session.add(ApiKeyGrant(
+        api_key_id=key.id, service_id=svc.id, status="active",
+    ))
+    await db_session.commit()
+
+    r = await db_client.post(
+        f"/v1/apps/{svc.name}",
+        headers={"Authorization": f"Bearer {raw}"},
+        json={"prompt": "fresh-caller-input"},
+    )
+    assert r.status_code == 200, r.text
+    # text_output emits {"text": inputs["text"]} — should be the caller's
+    # new input, not the frozen "frozen-old-prompt".
+    payload = r.json()
+    out_bucket = payload.get("outputs", {}).get("out1", {})
+    assert out_bucket.get("text") == "fresh-caller-input"

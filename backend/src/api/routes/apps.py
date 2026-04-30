@@ -128,6 +128,21 @@ async def execute_service(
     # Merge exposed inputs from request body into the matching node data.
     # Supports both v3 schema (key/input_name) and pre-v3 backfill rows
     # that still carry the old (api_name/param_key) field names.
+    #
+    # Robustness: if the declared `slot` doesn't match the field a node
+    # actually reads (the publish dialog used to hard-code
+    # `input_name='value'` for everything, but text_input reads
+    # `data.text`), also write to the node's primary slot for that type.
+    # Otherwise the merge silently missed the field and the node returned
+    # its frozen snapshot value — the LLM answered the OLD prompt baked
+    # into publish, not the caller's new input.
+    NODE_PRIMARY_SLOT = {
+        "text_input": "text",
+        "text_output": "text",
+        "multimodal_input": "text",
+        "reference_audio": "audio",
+        "image_input": "image",
+    }
     for param in (svc.exposed_inputs or []):
         api_name = param.get("key") or param.get("api_name")
         node_id = param.get("node_id")
@@ -137,8 +152,13 @@ async def execute_service(
         if api_name not in body:
             continue
         for node in nodes:
-            if str(node.get("id")) == str(node_id):
-                node.setdefault("data", {})[slot] = body[api_name]
+            if str(node.get("id")) != str(node_id):
+                continue
+            data = node.setdefault("data", {})
+            data[slot] = body[api_name]
+            primary = NODE_PRIMARY_SLOT.get(str(node.get("type") or "").lower())
+            if primary and primary != slot:
+                data[primary] = body[api_name]
 
     task = ExecutionTask(
         workflow_name=svc.name,
