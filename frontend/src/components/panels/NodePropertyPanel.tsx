@@ -7,7 +7,7 @@ import { NODE_DEFS } from '../../models/workflow'
 import { DECLARATIVE_NODES, type WidgetDef } from '../../models/nodeRegistry'
 import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
-import type { EngineInfo } from '../../api/engines'
+import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 
 // m09 v3: 右侧节点属性面板。选中节点 → 渲染该节点的 widgets，
 // 跟节点体内的 widget 共享 useWorkspaceStore.updateNode，所以两边
@@ -333,11 +333,11 @@ function ModelSelect({
   onChange: (v: string) => void
   filter?: string
 }) {
+  useEnginesLiveSync()
   const params = filter ? `?type=${filter}` : ''
   const { data: engines } = useQuery({
     queryKey: ['engines', filter],
     queryFn: () => apiFetch<EngineInfo[]>(`/api/v1/engines${params}`),
-    refetchInterval: 10_000,
   })
   const loaded = (engines ?? []).filter((e) => e.status === 'loaded')
   const unloaded = (engines ?? []).filter((e) => e.status !== 'loaded' && e.local_exists)

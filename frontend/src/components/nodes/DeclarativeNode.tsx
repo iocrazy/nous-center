@@ -7,7 +7,7 @@ import { NODE_DEFS, type NodeType } from '../../models/workflow'
 import { DECLARATIVE_NODES, type WidgetDef } from '../../models/nodeRegistry'
 import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
-import type { EngineInfo } from '../../api/engines'
+import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
 
 function AgentSelectWidget({
@@ -40,11 +40,13 @@ function ModelSelectWidget({
   onChange: (v: string) => void
   filter?: string
 }) {
+  // Subscribe to /ws/models so the dropdown stays current as models load /
+  // unload, even when no other component on the page mounts useEngines().
+  useEnginesLiveSync()
   const params = filter ? `?type=${filter}` : ''
   const { data: engines } = useQuery({
     queryKey: ['engines', filter],
     queryFn: () => apiFetch<EngineInfo[]>(`/api/v1/engines${params}`),
-    refetchInterval: 10_000,
   })
 
   const loaded = (engines ?? []).filter((e) => e.status === 'loaded')
