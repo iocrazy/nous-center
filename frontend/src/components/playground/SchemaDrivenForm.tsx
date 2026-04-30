@@ -24,12 +24,15 @@ function classifyField(p: ExposedParam): FieldKind {
   const constraints = (p.constraints ?? {}) as Record<string, unknown>
   if (Array.isArray(constraints.enum) && constraints.enum.length > 0) return 'select'
   const t = (p.type ?? 'string').toLowerCase()
-  if (t.includes('multiline') || t.includes('text') || t === 'string_multi') return 'string_multiline'
   if (t === 'integer' || t === 'int') return 'integer'
   if (t === 'number' || t === 'float') return 'number'
   if (t === 'boolean' || t === 'bool') return 'boolean'
   if (t === 'file' || t === 'image' || t === 'audio' || t === 'video' || t === 'binary') return 'file'
-  return 'string'
+  // Strings default to multiline. Single-line is opt-in via constraints.format='single_line'
+  // — published service inputs are almost always free text (prompts, transcripts,
+  // user content) and a single 32-char input is unusable for those.
+  if (constraints.format === 'single_line') return 'string'
+  return 'string_multiline'
 }
 
 function defaultFor(p: ExposedParam): unknown {
@@ -123,7 +126,7 @@ export default function SchemaDrivenForm({
             cursor: 'pointer',
           }}
         >
-          重置
+          清空
         </button>
         <button
           type="submit"
@@ -157,30 +160,29 @@ function Field({
 }) {
   const kind = classifyField(param)
   const slot = paramSlot(param) ?? '?'
+  const typeBadge = kind === 'string_multiline' ? 'string' : kind
 
   return (
-    <div className="flex flex-col gap-1.5 mb-3.5">
+    <div className="flex flex-col gap-2 mb-4">
       <label
-        className="flex items-center gap-1.5"
-        style={{
-          fontSize: 11,
-          color: 'var(--muted)',
-          textTransform: 'uppercase',
-          letterSpacing: 0.5,
-        }}
+        className="flex items-center gap-2"
+        title={`node=${param.node_id} · ${slot}`}
       >
-        <span style={{ color: 'var(--text)' }}>{param.label || paramKey(param) || '(unnamed)'}</span>
-        {param.required && <span style={{ color: 'var(--accent)', fontSize: 10 }}>*</span>}
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontFamily: 'var(--mono, monospace)',
-            fontSize: 10,
-            color: 'var(--muted)',
-          }}
-        >
-          node={param.node_id} · {slot}
+        <span style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500 }}>
+          {param.label || paramKey(param) || '(unnamed)'}
         </span>
+        <span style={{
+          fontSize: 10, padding: '1px 6px', borderRadius: 3,
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          color: 'var(--muted)', fontFamily: 'var(--mono, monospace)',
+        }}>
+          {typeBadge}
+        </span>
+        {param.required && (
+          <span style={{
+            fontSize: 10, color: 'var(--accent)', fontWeight: 500,
+          }}>必填</span>
+        )}
       </label>
       <FieldInput kind={kind} param={param} value={value} onChange={onChange} />
     </div>
@@ -212,13 +214,29 @@ function FieldInput({
     return (
       <textarea
         value={(value as string) ?? ''}
-        onChange={(e: ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value)}
-        rows={4}
+        onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
+          // Auto-grow up to ~12 lines, then scroll
+          const ta = e.target
+          ta.style.height = 'auto'
+          ta.style.height = Math.min(ta.scrollHeight, 264) + 'px'
+          onChange(ta.value)
+        }}
+        ref={(el) => {
+          // Initial sizing on mount + when value changes externally
+          if (!el) return
+          el.style.height = 'auto'
+          el.style.height = Math.min(el.scrollHeight, 264) + 'px'
+        }}
+        rows={3}
+        placeholder="支持多行输入"
         style={{
           ...inputStyle,
-          minHeight: 80,
-          resize: 'vertical',
-          fontFamily: 'var(--mono, monospace)',
+          padding: 10,
+          minHeight: 72,
+          resize: 'none',
+          overflow: 'auto',
+          lineHeight: 1.5,
+          fontFamily: 'inherit',
         }}
       />
     )
