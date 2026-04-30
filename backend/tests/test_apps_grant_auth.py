@@ -142,3 +142,38 @@ async def test_retired_service_returns_410(
             json={},
         )
     assert r.status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_admin_session_bypasses_bearer_for_playground(
+    db_client, db_session, app_service,
+):
+    """Playground tab uses session cookie, not Bearer — admin must reach the
+    executor without an API key, without grant lookup, and without charging
+    quota. Pre-fix the request died at FastAPI header validation with
+    'Field required' because Authorization was Header(...)."""
+    with patch(
+        "src.services.workflow_executor.WorkflowExecutor.execute",
+        new=AsyncMock(return_value={"out": "playground"}),
+    ):
+        r = await db_client.post(
+            f"/v1/apps/{app_service.name}",
+            json={},  # no Authorization header — relies on admin cookie
+        )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"out": "playground"}
+
+
+@pytest.mark.asyncio
+async def test_no_auth_at_all_returns_401(db_client, monkeypatch):
+    """Without admin cookie AND without Bearer the request must be rejected.
+    Tests force ADMIN_PASSWORD='' which makes admin auth permissive; flip
+    that for this case so the unauth path is actually exercised."""
+    monkeypatch.setenv("ADMIN_PASSWORD", "real-pw")
+    from src.config import get_settings
+    get_settings.cache_clear()
+    try:
+        r = await db_client.post("/v1/apps/anything", json={})
+    finally:
+        get_settings.cache_clear()
+    assert r.status_code == 401
