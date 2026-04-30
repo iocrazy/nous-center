@@ -157,12 +157,16 @@ async def publish_workflow(
         version=1,
     )
     session.add(svc)
+    # Flip the source workflow to "published" so the list view's badge + tab
+    # filter reflect reality. Without this the only signal that a workflow
+    # has been published was the existence of a ServiceInstance row, and the
+    # two could (and did) drift — see the orphan rows cleared in the
+    # accompanying data fix.
+    wf.status = "published"
     await session.commit()
     await session.refresh(
         svc,
         attribute_names=["workflow_snapshot", "exposed_inputs", "exposed_outputs"],
     )
-    # Publish creates a service AND flips workflow.status="published" downstream;
-    # both list caches must drop.
     invalidate("services", "workflows")
     return svc
