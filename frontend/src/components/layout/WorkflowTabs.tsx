@@ -147,33 +147,32 @@ export default function WorkflowTabs() {
           type="button"
           onClick={() => navigate('/workflows')}
           title="返回 Workflow 列表"
-          className="flex items-center gap-1.5 shrink-0 self-center"
+          className="inline-flex items-center gap-1 shrink-0 self-center"
           style={{
-            margin: '0 8px 0 4px',
-            height: 22,
-            padding: '0 10px',
-            fontSize: 11,
-            fontWeight: 500,
-            background: 'var(--bg)',
-            border: '1px solid var(--border)',
-            borderRadius: 11,
+            margin: '0 6px 0 4px',
+            padding: '2px 8px',
+            fontSize: 12,
+            background: 'transparent',
+            border: '1px solid transparent',
+            borderRadius: 4,
             color: 'var(--muted)',
             cursor: 'pointer',
-            transition: 'all 0.12s',
+            transition: 'color 0.12s, border-color 0.12s, background 0.12s',
+            lineHeight: 1,
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.color = 'var(--accent)'
-            e.currentTarget.style.borderColor = 'var(--accent)'
-            e.currentTarget.style.background = 'var(--accent-subtle, rgba(99,102,241,0.1))'
+            e.currentTarget.style.borderColor = 'var(--border)'
+            e.currentTarget.style.background = 'var(--accent-subtle, rgba(99,102,241,0.08))'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.color = 'var(--muted)'
-            e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.background = 'var(--bg)'
+            e.currentTarget.style.borderColor = 'transparent'
+            e.currentTarget.style.background = 'transparent'
           }}
         >
           <ArrowLeft size={12} />
-          列表
+          <span>列表</span>
         </button>
         {tabs.map((tab, i) => (
           <div key={tab.id} className="flex items-stretch">
