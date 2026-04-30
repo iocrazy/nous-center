@@ -22,6 +22,26 @@ export interface PublishDialogProps {
 
 type Step = 1 | 2 | 3
 
+/**
+ * The slot name on `node.data` that the executor reads for a given node
+ * type. PublishDialog used to hard-code `input_name='value'` for every
+ * exposed param, but `text_input` reads `data.text`, so the merge in
+ * apps.py wrote to the wrong field — the node returned its frozen
+ * snapshot value and the LLM answered the OLD prompt instead of the
+ * caller's new input.
+ *
+ * Keep in sync with backend/src/services/nodes/*.py invoke signatures.
+ */
+function defaultSlotForNode(nodeType: string | undefined): string {
+  const t = (nodeType ?? '').toLowerCase()
+  if (t.includes('text_input') || t.includes('text_output')) return 'text'
+  if (t.includes('multimodal_input')) return 'text'
+  if (t.includes('reference_audio') || t.includes('audio_input')) return 'audio'
+  if (t.includes('image_input')) return 'image'
+  // PrimitiveString-style legacy default
+  return 'value'
+}
+
 export default function PublishDialog({
   open,
   onClose,
@@ -80,25 +100,31 @@ export default function PublishDialog({
 
   const exposedInputs = useMemo<ExposedParam[]>(
     () =>
-      inputNodeIds.map((id, i) => ({
-        node_id: id,
-        key: `input_${i + 1}`,
-        input_name: 'value',
-        type: 'string',
-        required: true,
-      })),
-    [inputNodeIds],
+      inputNodeIds.map((id, i) => {
+        const node = nodes.find((n) => n.id === id)
+        return {
+          node_id: id,
+          key: `input_${i + 1}`,
+          input_name: defaultSlotForNode(node?.type),
+          type: 'string',
+          required: true,
+        }
+      }),
+    [inputNodeIds, nodes],
   )
 
   const exposedOutputs = useMemo<ExposedParam[]>(
     () =>
-      outputNodeIds.map((id, i) => ({
-        node_id: id,
-        key: `output_${i + 1}`,
-        input_name: 'value',
-        type: 'string',
-      })),
-    [outputNodeIds],
+      outputNodeIds.map((id, i) => {
+        const node = nodes.find((n) => n.id === id)
+        return {
+          node_id: id,
+          key: `output_${i + 1}`,
+          input_name: defaultSlotForNode(node?.type),
+          type: 'string',
+        }
+      }),
+    [outputNodeIds, nodes],
   )
 
   if (!open) return null
