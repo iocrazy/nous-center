@@ -4,8 +4,11 @@ import { apiFetch } from './client'
 // ---------- types ----------
 
 export interface GrantSummary {
-  id: number
-  service_id: number
+  // Snowflake IDs are serialized as strings server-side to dodge JS Number
+  // precision loss (silent ±256 rounding on 18-digit ints made PATCH/DELETE
+  // /grants/{id} 404 with the wrong row).
+  id: string
+  service_id: string
   service_name: string
   service_category: string | null
   status: 'active' | 'paused' | 'retired'
@@ -13,7 +16,7 @@ export interface GrantSummary {
 }
 
 export interface ApiKeyRow {
-  id: number
+  id: string
   label: string
   note: string | null
   key_prefix: string
@@ -50,8 +53,8 @@ export interface PatchKeyBody {
 }
 
 export interface ServiceGrantRow {
-  grant_id: number
-  api_key_id: number
+  grant_id: string
+  api_key_id: string
   api_key_label: string
   api_key_prefix: string
   grant_status: 'active' | 'paused' | 'retired'
@@ -167,6 +170,9 @@ export function useRemoveGrant() {
       apiFetch(`/api/v1/grants/${grantId}`, { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
+      // The detail page subscribes to ['api-key', id]; without invalidating
+      // it the row stays "active" until the user reloads.
+      qc.invalidateQueries({ queryKey: ['api-key'] })
       qc.invalidateQueries({ queryKey: ['service-grants'] })
     },
   })
@@ -182,6 +188,7 @@ export function useToggleGrant() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
+      qc.invalidateQueries({ queryKey: ['api-key'] })
       qc.invalidateQueries({ queryKey: ['service-grants'] })
     },
   })

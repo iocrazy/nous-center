@@ -50,8 +50,10 @@ async def test_create_key_returns_plaintext_and_grants(db_client, two_services):
     assert data["note"] == "for mediahub"
     assert data["grant_count"] == 2
     assert data["active_grant_count"] == 2
+    # Snowflake IDs are serialized as strings to dodge JS Number precision
+    # loss; compare in string form.
     svc_ids = sorted(g["service_id"] for g in data["grants"])
-    assert svc_ids == sorted([a.id, b.id])
+    assert svc_ids == sorted([str(a.id), str(b.id)])
 
 
 @pytest.mark.asyncio

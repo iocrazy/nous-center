@@ -27,7 +27,7 @@ from datetime import datetime
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +70,13 @@ class GrantSummary(BaseModel):
     status: str
     activated_at: datetime
 
+    # Snowflake-style 64-bit IDs overflow JS Number. Serialize as string in
+    # JSON so the frontend can pass the value back round-trip without losing
+    # precision — otherwise PATCH/DELETE /grants/{id} 404s on the wrong id.
+    @field_serializer("id", "service_id", when_used="json")
+    def _id_to_str(self, v: int) -> str:
+        return str(v)
+
 
 class KeyOut(BaseModel):
     id: int
@@ -86,6 +93,10 @@ class KeyOut(BaseModel):
     grant_count: int
     active_grant_count: int
     grants: list[GrantSummary] = Field(default_factory=list)
+
+    @field_serializer("id", when_used="json")
+    def _id_to_str(self, v: int) -> str:
+        return str(v)
 
 
 class KeyCreated(KeyOut):
@@ -354,6 +365,10 @@ class ServiceKeyGrantOut(BaseModel):
     activated_at: datetime
     pack_total: int
     pack_used: int
+
+    @field_serializer("grant_id", "api_key_id", when_used="json")
+    def _id_to_str(self, v: int) -> str:
+        return str(v)
 
 
 service_grants_router = APIRouter(

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +50,11 @@ class GrantOut(BaseModel):
     activated_at: datetime
     paused_at: datetime | None = None
     retired_at: datetime | None = None
+
+    # Snowflake IDs → string in JSON to keep round-trip safe in JS.
+    @field_serializer("id", "api_key_id", "instance_id", when_used="json")
+    def _id_to_str(self, v: int) -> str:
+        return str(v)
 
 
 class GrantPatch(BaseModel):
