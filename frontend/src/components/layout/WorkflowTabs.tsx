@@ -149,18 +149,27 @@ export default function WorkflowTabs() {
           title="返回 Workflow 列表"
           className="inline-flex items-center gap-1 shrink-0 self-center"
           style={{
-            margin: '0 10px 0 6px',
-            padding: 0,
+            margin: '0 6px 0 4px',
+            padding: '2px 8px',
             fontSize: 12,
             background: 'transparent',
-            border: 'none',
+            border: '1px solid transparent',
+            borderRadius: 4,
             color: 'var(--muted)',
             cursor: 'pointer',
-            transition: 'color 0.12s',
+            transition: 'color 0.12s, border-color 0.12s, background 0.12s',
             lineHeight: 1,
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent)' }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--muted)' }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.borderColor = 'var(--border)'
+            e.currentTarget.style.background = 'var(--accent-subtle, rgba(99,102,241,0.08))'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--muted)'
+            e.currentTarget.style.borderColor = 'transparent'
+            e.currentTarget.style.background = 'transparent'
+          }}
         >
           <ArrowLeft size={12} />
           <span>列表</span>

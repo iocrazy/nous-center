@@ -87,22 +87,40 @@ export default function ServiceDetailPage({ serviceId, onBack }: ServiceDetailPa
 
 function Breadcrumb({ name, onBack }: { name: string; onBack?: () => void }) {
   return (
-    <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>
+    <div style={{
+      fontSize: 12, color: 'var(--muted)', marginBottom: 8,
+      display: 'flex', alignItems: 'center',
+    }}>
       <button
         type="button"
         onClick={onBack}
         style={{
           background: 'transparent',
-          border: 'none',
+          border: '1px solid transparent',
           color: 'var(--muted)',
           cursor: 'pointer',
-          padding: 0,
+          padding: '2px 8px',
+          marginLeft: -8,
+          borderRadius: 4,
           display: 'inline-flex',
           alignItems: 'center',
           gap: 4,
+          lineHeight: 1,
+          transition: 'color 0.12s, border-color 0.12s, background 0.12s',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.color = 'var(--accent)'
+          e.currentTarget.style.borderColor = 'var(--border)'
+          e.currentTarget.style.background = 'var(--accent-subtle, rgba(99,102,241,0.08))'
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.color = 'var(--muted)'
+          e.currentTarget.style.borderColor = 'transparent'
+          e.currentTarget.style.background = 'transparent'
         }}
       >
-        <ArrowLeft size={12} /> 服务
+        <ArrowLeft size={12} />
+        <span>服务</span>
       </button>
       <span style={{ margin: '0 6px' }}>/</span>
       <span style={{ color: 'var(--text)' }}>{name}</span>
