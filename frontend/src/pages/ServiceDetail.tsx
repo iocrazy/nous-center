@@ -273,17 +273,15 @@ function PlaygroundTab({ svc }: { svc: ServiceDetailT }) {
   const [result, setResult] = useState<Record<string, unknown> | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [taskInfo, setTaskInfo] = useState<{
-    task_id?: string
-    status?: 'running' | 'completed' | 'failed'
-    latency_ms?: number
-  } | null>(null)
+  const [latencyMs, setLatencyMs] = useState<number | null>(null)
+  const [status, setStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle')
 
   const submit = async (values: Record<string, unknown>) => {
     setRunning(true)
     setError(null)
     setResult(null)
-    setTaskInfo({ status: 'running' })
+    setLatencyMs(null)
+    setStatus('running')
     const start = performance.now()
     try {
       const url =
@@ -296,56 +294,179 @@ function PlaygroundTab({ svc }: { svc: ServiceDetailT }) {
         body: JSON.stringify(body),
       })
       setResult(data)
-      setTaskInfo({
-        status: 'completed',
-        latency_ms: Math.round(performance.now() - start),
-      })
+      setStatus('completed')
+      setLatencyMs(Math.round(performance.now() - start))
     } catch (e) {
       const msg = (e as Error).message ?? String(e)
       setError(msg)
-      setTaskInfo({
-        status: 'failed',
-        latency_ms: Math.round(performance.now() - start),
-      })
+      setStatus('failed')
+      setLatencyMs(Math.round(performance.now() - start))
     } finally {
       setRunning(false)
     }
   }
 
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 360px',
-        gap: 14,
-        minHeight: 540,
-      }}
-    >
-      <div
-        style={{
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Stage 1: Input form */}
+      <section style={{
+        background: 'var(--bg-accent)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+      }}>
+        <SectionHeader title="入参" />
+        <SchemaDrivenForm
+          inputs={svc.exposed_inputs}
+          submitting={running}
+          onSubmit={submit}
+        />
+      </section>
+
+      {/* Stage 2: Output (takes focus when there's content) */}
+      {(status !== 'idle' || result || error) && (
+        <section style={{
           background: 'var(--bg-accent)',
           border: '1px solid var(--border)',
           borderRadius: 8,
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
-        }}
-      >
-        <SchemaDrivenForm
-          inputs={svc.exposed_inputs}
-          submitting={running}
-          onSubmit={submit}
-          estimateLine={`endpoint：${endpointFor(svc)}`}
-        />
-      </div>
-      <SchemaDrivenOutput
-        outputs={svc.exposed_outputs}
-        result={result}
-        taskInfo={taskInfo ?? undefined}
-        error={error}
-      />
+        }}>
+          <SectionHeader title="输出" />
+          <div style={{ padding: '16px 18px' }}>
+            {status === 'running' && !result && !error && (
+              <div style={{
+                color: 'var(--muted)', fontSize: 12, padding: '40px 16px',
+                textAlign: 'center',
+              }}>
+                运行中…
+              </div>
+            )}
+            <SchemaDrivenOutput
+              outputs={svc.exposed_outputs}
+              result={result}
+              error={error}
+            />
+          </div>
+          {/* Stage 3: Status footer */}
+          {status !== 'idle' && (
+            <StatusFooter status={status} latencyMs={latencyMs} result={result} />
+          )}
+        </section>
+      )}
     </div>
   )
+}
+
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div style={{
+      fontSize: 11, color: 'var(--muted)',
+      textTransform: 'uppercase', letterSpacing: 0.5,
+      padding: '10px 18px',
+      borderBottom: '1px solid var(--border)',
+    }}>
+      {title}
+    </div>
+  )
+}
+
+function StatusFooter({
+  status,
+  latencyMs,
+  result,
+}: {
+  status: 'running' | 'completed' | 'failed' | 'idle'
+  latencyMs: number | null
+  result?: Record<string, unknown> | null
+}) {
+  const usage = collectLlmUsage(result)
+  const dotColor =
+    status === 'completed' ? 'var(--ok, #34c759)' :
+    status === 'failed' ? 'var(--error, #ef4444)' :
+    status === 'running' ? 'var(--accent, #f43f5e)' : 'var(--muted)'
+  const label =
+    status === 'running' ? '运行中' :
+    status === 'completed' ? 'completed' :
+    status === 'failed' ? 'failed' : ''
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '8px 18px',
+      borderTop: '1px solid var(--border)',
+      background: 'var(--bg)',
+      fontSize: 11, color: 'var(--muted)',
+      fontFamily: 'var(--mono, monospace)',
+    }}>
+      <style>{`@keyframes pgPulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
+      <span style={{
+        width: 7, height: 7, borderRadius: '50%',
+        background: dotColor, flexShrink: 0,
+        boxShadow: status === 'running'
+          ? `0 0 0 3px color-mix(in oklab, ${dotColor} 25%, transparent)`
+          : 'none',
+        animation: status === 'running' ? 'pgPulse 1.4s ease-in-out infinite' : 'none',
+      }} />
+      <span>{label}</span>
+      {latencyMs !== null && (
+        <>
+          <span>·</span>
+          <span>{formatLatency(latencyMs)}</span>
+        </>
+      )}
+      {usage && (
+        <>
+          <span>·</span>
+          <span>{usage.total} tok ({usage.prompt} in / {usage.completion} out)</span>
+          {usage.tps && (
+            <>
+              <span>·</span>
+              <span>{usage.tps.toFixed(1)} tok/s</span>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function formatLatency(ms: number): string {
+  if (ms < 1000) return `${ms} ms`
+  return `${(ms / 1000).toFixed(2)} s`
+}
+
+/**
+ * LLM nodes attach `{ usage: {prompt_tokens, completion_tokens, total_tokens},
+ * duration_ms }` to their bucket. Find the first node that did so and surface
+ * the aggregate stats. Multi-LLM flows: pick the heaviest by completion tokens.
+ */
+function collectLlmUsage(result?: Record<string, unknown> | null): {
+  prompt: number; completion: number; total: number; tps: number | null
+} | null {
+  if (!result) return null
+  const root = (result.outputs && typeof result.outputs === 'object'
+    ? result.outputs
+    : result) as Record<string, unknown>
+  let best: {
+    prompt: number; completion: number; total: number; tps: number | null
+  } | null = null
+  for (const v of Object.values(root)) {
+    if (!v || typeof v !== 'object') continue
+    const bucket = v as Record<string, unknown>
+    const u = bucket.usage as Record<string, unknown> | undefined
+    if (!u || typeof u !== 'object') continue
+    const prompt = Number(u.prompt_tokens ?? 0)
+    const completion = Number(u.completion_tokens ?? 0)
+    const total = Number(u.total_tokens ?? prompt + completion)
+    const durMs = Number(bucket.duration_ms ?? 0)
+    const tps = durMs > 0 && completion > 0 ? (completion / (durMs / 1000)) : null
+    const candidate = { prompt, completion, total, tps }
+    if (!best || candidate.completion > best.completion) best = candidate
+  }
+  return best
 }
 
 function buildLlmBody(svc: ServiceDetailT, values: Record<string, unknown>): Record<string, unknown> {

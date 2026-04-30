@@ -1,17 +1,55 @@
+import { useState } from 'react'
+import { Copy, Check } from 'lucide-react'
 import type { ExposedParam } from '../../api/services'
-import { paramKey } from '../../api/services'
+import { paramKey, paramSlot } from '../../api/services'
 
 export interface SchemaDrivenOutputProps {
   outputs: ExposedParam[]
-  /** Run result. Treated as `{ key: value }` keyed by exposed_outputs[].key. */
+  /**
+   * Run result. The executor returns `{ node_id: { slot: value, ... } }`,
+   * so we pluck via (param.node_id, paramSlot(param)). For services that
+   * pre-flatten or return raw text, we also fall back to `result[paramKey]`
+   * so older snapshots keep working.
+   */
   result: Record<string, unknown> | null
-  taskInfo?: {
-    task_id?: string
-    status?: 'running' | 'completed' | 'failed'
-    latency_ms?: number
-    cost?: string
-  }
   error?: string | null
+}
+
+/**
+ * Common slot names a node might emit its primary value on. We try the
+ * declared `input_name` first, then fall back through these so the publish
+ * default `input_name='value'` still resolves against nodes that actually
+ * emit `text` / `output` / `content` / etc.
+ */
+const SLOT_FALLBACKS = ['text', 'value', 'output', 'content', 'result', 'data'] as const
+
+function pluck(
+  result: Record<string, unknown>,
+  param: ExposedParam,
+): unknown {
+  // Backend wraps node outputs as `{ outputs: { node_id: { slot: value } } }`.
+  // Older callers may pass the inner dict directly — accept both.
+  const root = (result.outputs && typeof result.outputs === 'object'
+    ? result.outputs
+    : result) as Record<string, unknown>
+
+  const nodeBucket = root[param.node_id]
+  if (nodeBucket && typeof nodeBucket === 'object') {
+    const bucket = nodeBucket as Record<string, unknown>
+    const slot = paramSlot(param)
+    if (slot && bucket[slot] !== undefined) return bucket[slot]
+    for (const fb of SLOT_FALLBACKS) {
+      if (bucket[fb] !== undefined) return bucket[fb]
+    }
+    // Single-key bucket — use the only value
+    const keys = Object.keys(bucket)
+    if (keys.length === 1) return bucket[keys[0]]
+    return bucket
+  }
+  // Fallback: flat shape keyed by exposed key (legacy / direct caller)
+  const k = paramKey(param)
+  if (k && root[k] !== undefined) return root[k]
+  return undefined
 }
 
 function pickMime(p: ExposedParam): 'audio' | 'video' | 'image' | 'json' | 'text' {
@@ -31,115 +69,84 @@ function pickMime(p: ExposedParam): 'audio' | 'video' | 'image' | 'json' | 'text
 export default function SchemaDrivenOutput({
   outputs,
   result,
-  taskInfo,
   error,
 }: SchemaDrivenOutputProps) {
-  return (
-    <div
-      style={{
-        background: 'var(--bg-accent)',
-        border: '1px solid var(--border)',
+  if (error) {
+    return (
+      <div style={{
+        background: 'rgba(239,68,68,0.08)',
+        border: '1px solid var(--error, #ef4444)',
+        color: 'var(--error, #ef4444)',
+        padding: '12px 14px',
+        borderRadius: 6,
+        fontSize: 12,
+        fontFamily: 'var(--mono, monospace)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}>
+        {error}
+      </div>
+    )
+  }
+
+  if (!result) {
+    return (
+      <div style={{
+        color: 'var(--muted)', fontSize: 12, padding: '40px 16px',
+        textAlign: 'center', border: '1px dashed var(--border)',
         borderRadius: 8,
-        padding: '16px 18px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 12,
-        height: '100%',
-        overflow: 'auto',
-      }}
-    >
-      <h3
-        style={{
-          fontSize: 12,
-          color: 'var(--muted)',
-          textTransform: 'uppercase',
-          letterSpacing: 0.5,
-        }}
-      >
-        输出
-      </h3>
+      }}>
+        运行后输出会显示在这里
+      </div>
+    )
+  }
 
-      {taskInfo && <TaskInfoBox info={taskInfo} />}
-      {error && <ErrorBox message={error} />}
+  // No declared outputs — dump raw JSON as fallback
+  if (outputs.length === 0) {
+    return <JsonBlock value={result} />
+  }
 
-      {!result && !error && (
-        <div
-          style={{
-            color: 'var(--muted)',
-            fontSize: 12,
-            padding: 24,
-            textAlign: 'center',
-          }}
-        >
-          运行后输出会显示在这里
-        </div>
-      )}
-
-      {result &&
-        outputs.map((p) => {
-          const k = paramKey(p)
-          if (!k) return null
-          const v = result[k]
-          if (v === undefined) return null
-          return (
-            <OutputBlock
-              key={`${p.node_id}.${k}`}
-              label={p.label || k}
-              nodeId={p.node_id}
-              kind={pickMime(p)}
-              value={v}
-            />
-          )
-        })}
-
-      {result && outputs.length === 0 && (
-        // No declared schema → just dump raw JSON.
-        <pre
-          style={{
-            background: 'var(--bg)',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            padding: 12,
-            fontSize: 11,
-            fontFamily: 'var(--mono, monospace)',
-            color: 'var(--text)',
-            margin: 0,
-            overflow: 'auto',
-          }}
-        >
-          {JSON.stringify(result, null, 2)}
-        </pre>
-      )}
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {outputs.map((p) => {
+        const k = paramKey(p)
+        const v = pluck(result, p)
+        if (v === undefined) return null
+        return (
+          <OutputBlock
+            key={`${p.node_id}.${k}`}
+            label={p.label || k || 'output'}
+            kind={pickMime(p)}
+            value={v}
+            singular={outputs.length === 1}
+          />
+        )
+      })}
     </div>
   )
 }
 
 function OutputBlock({
   label,
-  nodeId,
   kind,
   value,
+  singular,
 }: {
   label: string
-  nodeId: string
   kind: 'audio' | 'video' | 'image' | 'json' | 'text'
   value: unknown
+  singular: boolean
 }) {
   return (
     <div>
-      <div
-        style={{
-          fontSize: 11,
-          color: 'var(--muted)',
-          textTransform: 'uppercase',
-          marginBottom: 6,
-        }}
-      >
-        {label}{' '}
-        <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono, monospace)', fontSize: 10 }}>
-          ← node {nodeId}
-        </span>
-      </div>
+      {!singular && (
+        <div style={{
+          fontSize: 11, color: 'var(--muted)',
+          textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6,
+        }}>
+          {label}
+        </div>
+      )}
       <Renderer kind={kind} value={value} />
     </div>
   )
@@ -147,7 +154,12 @@ function OutputBlock({
 
 function asUrlOrText(value: unknown): { kind: 'url' | 'text'; value: string } {
   if (typeof value === 'string') {
-    if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:') || value.startsWith('/')) {
+    if (
+      value.startsWith('http://') ||
+      value.startsWith('https://') ||
+      value.startsWith('data:') ||
+      value.startsWith('/')
+    ) {
       return { kind: 'url', value }
     }
     return { kind: 'text', value }
@@ -155,7 +167,13 @@ function asUrlOrText(value: unknown): { kind: 'url' | 'text'; value: string } {
   return { kind: 'text', value: JSON.stringify(value) }
 }
 
-function Renderer({ kind, value }: { kind: 'audio' | 'video' | 'image' | 'json' | 'text'; value: unknown }) {
+function Renderer({
+  kind,
+  value,
+}: {
+  kind: 'audio' | 'video' | 'image' | 'json' | 'text'
+  value: unknown
+}) {
   if (kind === 'audio') {
     const u = asUrlOrText(value)
     if (u.kind === 'url') return <audio controls src={u.value} style={{ width: '100%' }} />
@@ -172,123 +190,80 @@ function Renderer({ kind, value }: { kind: 'audio' | 'video' | 'image' | 'json' 
     return <Mono>{u.value}</Mono>
   }
   if (kind === 'json') {
-    return (
-      <pre
-        style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          padding: 12,
-          fontSize: 11,
-          fontFamily: 'var(--mono, monospace)',
-          color: 'var(--text)',
-          margin: 0,
-          overflow: 'auto',
-        }}
-      >
-        {JSON.stringify(value, null, 2)}
-      </pre>
-    )
+    return <JsonBlock value={value} />
   }
   // text
   if (typeof value === 'string') {
-    return (
-      <div
+    return <TextBlock value={value} />
+  }
+  return <JsonBlock value={value} />
+}
+
+function TextBlock({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard may be unavailable in non-https contexts */
+    }
+  }
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={copy}
+        title="复制"
         style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          padding: 10,
-          fontSize: 12,
-          color: 'var(--text)',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
+          position: 'absolute', top: 8, right: 8,
+          padding: '4px 8px', fontSize: 11,
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 4, color: copied ? 'var(--ok, #34c759)' : 'var(--muted)',
+          cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          transition: 'color 0.12s',
         }}
       >
+        {copied ? <Check size={11} /> : <Copy size={11} />}
+        {copied ? '已复制' : '复制'}
+      </button>
+      <div style={{
+        background: 'var(--bg)', border: '1px solid var(--border)',
+        borderRadius: 6, padding: '14px 16px',
+        fontSize: 14, color: 'var(--text)', lineHeight: 1.6,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        paddingRight: 80,
+      }}>
         {value}
       </div>
-    )
-  }
-  return <Mono>{JSON.stringify(value)}</Mono>
+    </div>
+  )
+}
+
+function JsonBlock({ value }: { value: unknown }) {
+  return (
+    <pre style={{
+      background: 'var(--bg)', border: '1px solid var(--border)',
+      borderRadius: 6, padding: 12, margin: 0,
+      fontSize: 11, fontFamily: 'var(--mono, monospace)',
+      color: 'var(--text)', overflow: 'auto',
+    }}>
+      {JSON.stringify(value, null, 2)}
+    </pre>
+  )
 }
 
 function Mono({ children }: { children: React.ReactNode }) {
   return (
-    <code
-      style={{
-        background: 'var(--bg)',
-        border: '1px solid var(--border)',
-        borderRadius: 4,
-        padding: '2px 6px',
-        fontSize: 11,
-        fontFamily: 'var(--mono, monospace)',
-        color: 'var(--text)',
-        wordBreak: 'break-all',
-      }}
-    >
+    <code style={{
+      background: 'var(--bg)', border: '1px solid var(--border)',
+      borderRadius: 4, padding: '2px 6px',
+      fontSize: 11, fontFamily: 'var(--mono, monospace)',
+      color: 'var(--text)', wordBreak: 'break-all',
+    }}>
       {children}
     </code>
-  )
-}
-
-function TaskInfoBox({
-  info,
-}: {
-  info: { task_id?: string; status?: string; latency_ms?: number; cost?: string }
-}) {
-  return (
-    <div
-      style={{
-        fontSize: 11,
-        padding: '8px 10px',
-        background: 'var(--bg)',
-        borderRadius: 4,
-        fontFamily: 'var(--mono, monospace)',
-        color: 'var(--muted)',
-      }}
-    >
-      {info.task_id && <Row k="task_id" v={info.task_id} />}
-      {info.status && (
-        <Row
-          k="status"
-          v={info.status}
-          color={
-            info.status === 'completed'
-              ? 'var(--accent-2, #22c55e)'
-              : info.status === 'failed'
-                ? 'var(--error, #ef4444)'
-                : 'var(--text)'
-          }
-        />
-      )}
-      {info.latency_ms != null && <Row k="latency" v={`${info.latency_ms} ms`} />}
-      {info.cost && <Row k="cost" v={info.cost} />}
-    </div>
-  )
-}
-
-function Row({ k, v, color }: { k: string; v: string; color?: string }) {
-  return (
-    <div>
-      <span style={{ color: 'var(--muted)' }}>{k}: </span>
-      <span style={{ color: color ?? 'var(--text)' }}>{v}</span>
-    </div>
-  )
-}
-
-function ErrorBox({ message }: { message: string }) {
-  return (
-    <div
-      style={{
-        background: 'rgba(239, 68, 68, 0.1)',
-        border: '1px solid var(--error, #ef4444)',
-        color: 'var(--error, #ef4444)',
-        padding: '8px 10px',
-        borderRadius: 4,
-        fontSize: 12,
-      }}
-    >
-      {message}
-    </div>
   )
 }
