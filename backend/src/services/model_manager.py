@@ -202,6 +202,12 @@ class ModelManager:
         """
         spec = self._registry.get(model_id)
         if spec is None:
+            # Fallback: model wasn't in models.yaml at startup but the
+            # disk scanner discovered it later (auto-detected LLM / VL).
+            # Synthesize a ModelSpec on the fly so newly-dropped LLM
+            # checkpoints don't require a yaml edit + restart.
+            spec = self._registry.add_from_scan(model_id)
+        if spec is None:
             raise ValueError(f"Unknown model: {model_id!r}")
 
         async with self._lock_for(model_id):

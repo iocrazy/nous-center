@@ -64,3 +64,42 @@ class ModelRegistry:
 
     def list_by_type(self, model_type: str) -> list[ModelSpec]:
         return [s for s in self._specs.values() if s.model_type == model_type]
+
+    def add_from_scan(self, model_id: str) -> ModelSpec | None:
+        """Synthesize a ModelSpec from the on-disk scanner output.
+
+        Used as a load-time fallback when `model_id` wasn't in models.yaml
+        at startup. Auto-detected LLM/VL entries fill `adapter` (always
+        VLLMAdapter); image/video do not — those return None here so the
+        caller raises ValueError instead of silently registering an
+        unloadable spec.
+
+        Imported locally to avoid a startup-time circular import between
+        registry and model_scanner.
+        """
+        from src.services.model_scanner import scan_models
+
+        configs = scan_models()
+        cfg = configs.get(model_id)
+        if cfg is None:
+            return None
+        adapter = cfg.get("adapter")
+        if not adapter:
+            return None
+        spec = ModelSpec(
+            id=model_id,
+            model_type=cfg.get("type", "llm"),
+            adapter_class=adapter,
+            path=cfg.get("local_path", ""),
+            vram_mb=int(round(cfg.get("vram_gb", 0) * 1024)),
+            params=cfg.get("params", {}),
+            resident=cfg.get("resident", False),
+            ttl_seconds=cfg.get("ttl_seconds", 3600 if cfg.get("type") == "llm" else 300),
+            gpu=cfg.get("gpu"),
+        )
+        self._specs[spec.id] = spec
+        logger.info(
+            "Auto-registered model spec from scan: %s (%s, %s)",
+            spec.id, spec.model_type, spec.adapter_class,
+        )
+        return spec

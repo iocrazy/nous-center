@@ -110,6 +110,7 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         local_path=local_path,
         local_exists=local_exists,
         auto_detected=cfg.get("auto_detected", False),
+        has_adapter=bool(cfg.get("adapter")),
         loaded_gpu=_get_loaded_gpu(key, request) if loaded else None,
         loaded_gpus=_get_loaded_gpus(key, request) if loaded else None,
         status_detail=status_detail,
@@ -204,6 +205,22 @@ async def load_engine(name: str, request: Request):
     configs = scan_models()
     if name not in configs:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
+
+    cfg = configs[name]
+    # Refuse to start a load that we know will crash. Auto-detected
+    # diffusers (image/video) ship without an adapter — letting the
+    # background task run only to ValueError("Unknown model") gives
+    # the user a stale toast and a "failed" badge with no path forward.
+    if not cfg.get("adapter"):
+        raise HTTPException(
+            422,
+            detail=(
+                f"'{name}' was auto-detected on disk but has no adapter "
+                f"configured. Image/video diffusers loading is not "
+                f"implemented yet — add an adapter entry to "
+                f"backend/configs/models.yaml to enable loading."
+            ),
+        )
 
     # Reject if already loading
     if name in _loading_states and _loading_states[name]["status"] == "loading":

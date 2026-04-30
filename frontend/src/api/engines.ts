@@ -25,6 +25,13 @@ export interface EngineInfo {
   description: string | null
   has_metadata: boolean
   auto_detected: boolean
+  /**
+   * False = the model was discovered on disk but no adapter is wired up
+   * (image / video diffusers right now). UI must disable the load
+   * button — the backend will 422 with a config hint anyway, but it's
+   * cleaner to gate the button than to let users click a doomed action.
+   */
+  has_adapter: boolean
   loaded_gpu: number | null
   loaded_gpus: number[] | null
   status_detail: string | null
