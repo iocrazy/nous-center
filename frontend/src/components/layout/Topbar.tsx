@@ -7,7 +7,7 @@ import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
 import { executeWorkflow } from '../../utils/workflowExecutor'
 import { useToastStore } from '../../stores/toast'
-import { usePublishWorkflow, useUnpublishWorkflow } from '../../api/workflows'
+import { useUnpublishWorkflow } from '../../api/workflows'
 
 export default function Topbar() {
   const { tabs, activeTabId } = useWorkspaceStore()
@@ -18,7 +18,6 @@ export default function Topbar() {
   const navigate = useNavigate()
   const { isRunning, progress, currentNodeType, start, succeed, fail, resetNodeStates } = useExecutionStore()
   const toast = useToastStore((s) => s.add)
-  const publishWf = usePublishWorkflow()
   const unpublishWf = useUnpublishWorkflow()
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
@@ -176,28 +175,22 @@ export default function Topbar() {
             <TopbarButton primary onClick={handleRun} disabled={isRunning}>
               {isRunning ? '⏳ Running...' : '▶ Run'}
             </TopbarButton>
-            {activeTab?.dbId && (
+            {activeTab?.dbId && isPublished && (
               <button
-                onClick={() => {
-                  if (isPublished) {
-                    unpublishWf.mutate(activeTab.dbId!)
-                  } else {
-                    publishWf.mutate(activeTab.dbId!)
-                  }
-                }}
-                disabled={publishWf.isPending || unpublishWf.isPending}
+                onClick={() => unpublishWf.mutate(activeTab.dbId!)}
+                disabled={unpublishWf.isPending}
                 style={{
                   padding: '4px 12px',
                   fontSize: 11,
                   borderRadius: 4,
                   border: '1px solid var(--border)',
-                  background: isPublished ? 'none' : 'var(--ok)',
-                  color: isPublished ? 'var(--muted)' : '#fff',
-                  cursor: publishWf.isPending || unpublishWf.isPending ? 'wait' : 'pointer',
-                  opacity: publishWf.isPending || unpublishWf.isPending ? 0.6 : 1,
+                  background: 'none',
+                  color: 'var(--muted)',
+                  cursor: unpublishWf.isPending ? 'wait' : 'pointer',
+                  opacity: unpublishWf.isPending ? 0.6 : 1,
                 }}
               >
-                {isPublished ? '下线' : '发布'}
+                下线
               </button>
             )}
             {!isPublished && (

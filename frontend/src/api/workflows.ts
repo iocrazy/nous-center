@@ -74,20 +74,6 @@ export function useDeleteWorkflow() {
   })
 }
 
-export function usePublishWorkflow() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<{ instance_id: string; endpoint: string }>(
-        `/api/v1/workflows/${id}/publish`,
-        { method: 'POST' }
-      ),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['workflows'] })
-    },
-  })
-}
-
 export function useUnpublishWorkflow() {
   const qc = useQueryClient()
   return useMutation({
