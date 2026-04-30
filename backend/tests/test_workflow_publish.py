@@ -62,6 +62,35 @@ async def test_publish_assigns_snapshot_hash_and_version(
 
 
 @pytest.mark.asyncio
+async def test_publish_flips_workflow_status_to_published(
+    db_client, db_session, workflow_with_two_nodes,
+):
+    """Publish must mark the source workflow published so the list view's
+    badge + tab filter stay in sync with reality. Pre-fix the status was
+    only flipped on unpublish, leaving the published workflow visually
+    indistinguishable from a draft."""
+    wf_id = workflow_with_two_nodes.id
+    r = await db_client.post(
+        f"/api/v1/workflows/{wf_id}/publish",
+        headers=_admin_headers(),
+        json={
+            "name": "status-svc",
+            "exposed_inputs": [
+                {"node_id": "in_1", "key": "text", "input_name": "value",
+                 "type": "string", "required": True},
+            ],
+            "exposed_outputs": [
+                {"node_id": "out_1", "key": "echo", "input_name": "value",
+                 "type": "string"},
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    await db_session.refresh(workflow_with_two_nodes)
+    assert workflow_with_two_nodes.status == "published"
+
+
+@pytest.mark.asyncio
 async def test_publish_rejects_unknown_exposed_node_id(
     db_client, workflow_with_two_nodes, monkeypatch,
 ):
