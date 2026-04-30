@@ -175,31 +175,41 @@ export default function Topbar() {
             <TopbarButton primary onClick={handleRun} disabled={isRunning}>
               {isRunning ? '⏳ Running...' : '▶ Run'}
             </TopbarButton>
-            {activeTab?.dbId && isPublished && (
-              <button
-                onClick={() => unpublishWf.mutate(activeTab.dbId!)}
-                disabled={unpublishWf.isPending}
-                style={{
-                  padding: '4px 12px',
-                  fontSize: 11,
-                  borderRadius: 4,
-                  border: '1px solid var(--border)',
-                  background: 'none',
-                  color: 'var(--muted)',
-                  cursor: unpublishWf.isPending ? 'wait' : 'pointer',
-                  opacity: unpublishWf.isPending ? 0.6 : 1,
-                }}
-              >
-                下线
-              </button>
-            )}
-            {!isPublished && (
-              <button
-                onClick={() => setShowPublishWizard(true)}
-                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 13 }}
-              >
-                发布服务
-              </button>
+            {activeTab?.workflow && (
+              isPublished ? (
+                <button
+                  onClick={() => activeTab?.dbId && unpublishWf.mutate(activeTab.dbId)}
+                  disabled={unpublishWf.isPending || !activeTab?.dbId}
+                  title="取消发布后服务将下线，新调用会 404"
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    border: 'none',
+                    background: 'var(--ok, #34c759)',
+                    color: '#fff',
+                    cursor: unpublishWf.isPending ? 'wait' : 'pointer',
+                    fontSize: 13,
+                    opacity: unpublishWf.isPending ? 0.6 : 1,
+                  }}
+                >
+                  {unpublishWf.isPending ? '取消中…' : '取消发布'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowPublishWizard(true)}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    border: 'none',
+                    background: 'var(--accent)',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                  }}
+                >
+                  发布服务
+                </button>
+              )
             )}
             {activeTab?.workflow && (
               <PublishDialog

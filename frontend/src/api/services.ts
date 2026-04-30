@@ -109,8 +109,13 @@ export function usePublishWorkflow() {
         method: 'POST',
         body: JSON.stringify(body),
       }),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ['services'] })
+      // Workflow row + list also flip to status=published; without these
+      // the editor topbar still reads the cached status='draft' and
+      // shows "发布服务" instead of "取消发布".
+      qc.invalidateQueries({ queryKey: ['workflows'] })
+      qc.invalidateQueries({ queryKey: ['workflow', String(vars.workflowId)] })
     },
   })
 }
