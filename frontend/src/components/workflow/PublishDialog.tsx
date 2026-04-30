@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { X, ChevronLeft, ChevronRight } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import {
+  X, ChevronLeft, ChevronRight, Check, Info, Box,
+} from 'lucide-react'
 import {
   NAME_RE,
   usePublishWorkflow,
@@ -124,26 +127,32 @@ export default function PublishDialog({
   }
 
   return (
-    <Modal onClose={onClose} title={`发布为服务 · 步骤 ${step} / 3`}>
+    <Modal onClose={onClose} title="发布为服务">
       <Stepper step={step} />
 
       {step === 1 && (
         <NodePicker
-          title="选输入节点（caller 提交时填这些字段）"
+          kind="input"
+          title="选输入节点"
+          subtitle="caller 调 /run 时要填的字段，从这些节点的入参里取"
           nodes={nodes}
           selected={inputNodeIds}
           onToggle={(id) => toggle(setInputNodeIds, id)}
-          hint="通常是 PrimitiveString / LoadImage / LoadAudio 等"
+          onSetAll={(ids) => setInputNodeIds(ids)}
+          hint="一般是 PrimitiveString / LoadImage / LoadAudio 这类入口节点"
         />
       )}
 
       {step === 2 && (
         <NodePicker
-          title="选输出节点（执行结果从这些节点读取）"
+          kind="output"
+          title="选输出节点"
+          subtitle="执行结果会从这些节点读出来返回给 caller"
           nodes={nodes}
           selected={outputNodeIds}
           onToggle={(id) => toggle(setOutputNodeIds, id)}
-          hint="通常是 SaveVideo / SaveAudio / PreviewImage 等"
+          onSetAll={(ids) => setOutputNodeIds(ids)}
+          hint="一般是 SaveVideo / SaveAudio / PreviewImage 这类出口节点"
         />
       )}
 
@@ -245,101 +254,210 @@ function toggle(setter: (fn: (prev: string[]) => string[]) => void, id: string) 
 }
 
 function NodePicker({
+  kind,
   title,
+  subtitle,
   nodes,
   selected,
   onToggle,
+  onSetAll,
   hint,
 }: {
+  kind: 'input' | 'output'
   title: string
+  subtitle: string
   nodes: PublishDialogProps['nodes']
   selected: string[]
   onToggle: (id: string) => void
+  onSetAll: (ids: string[]) => void
   hint: string
 }) {
+  const accent = kind === 'input' ? 'var(--info, #3b82f6)' : 'var(--ok, #34c759)'
+  const allIds = nodes.map((n) => n.id)
+  const allSelected = nodes.length > 0 && selected.length === nodes.length
+  const noneSelected = selected.length === 0
+
   return (
     <div>
-      <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 4 }}>{title}</div>
-      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>{hint}</div>
-      {nodes.length === 0 && (
-        <div style={{ fontSize: 12, color: 'var(--muted)', padding: 16, textAlign: 'center' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{title}</span>
+        <span style={{
+          fontSize: 10, padding: '2px 7px', borderRadius: 10,
+          background: kind === 'input' ? 'rgba(59,130,246,0.12)' : 'rgba(52,199,89,0.14)',
+          color: accent, fontWeight: 500,
+        }}>
+          {selected.length} / {nodes.length}
+        </span>
+      </div>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        fontSize: 11, color: 'var(--muted)', marginBottom: 12,
+      }}>
+        <Info size={12} style={{ flexShrink: 0 }} />
+        <span>{subtitle}</span>
+      </div>
+
+      {nodes.length === 0 ? (
+        <div style={{
+          fontSize: 12, color: 'var(--muted)', padding: '32px 16px',
+          textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8,
+        }}>
           这个 workflow 还没有节点 · 先到画布加节点
         </div>
-      )}
-      <div
-        style={{
-          maxHeight: 240,
-          overflow: 'auto',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-        }}
-      >
-        {nodes.map((n) => {
-          const isSel = selected.includes(n.id)
-          return (
-            <label
-              key={n.id}
+      ) : (
+        <>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '8px 12px', background: 'var(--bg)',
+            border: '1px solid var(--border)', borderBottom: 'none',
+            borderRadius: '8px 8px 0 0',
+          }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>{hint}</span>
+            <button
+              type="button"
+              onClick={() => onSetAll(allSelected ? [] : allIds)}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '8px 10px',
-                borderBottom: '1px solid var(--border)',
-                cursor: 'pointer',
-                background: isSel ? 'var(--accent-subtle, rgba(99,102,241,0.08))' : 'transparent',
+                fontSize: 11, color: accent, background: 'transparent',
+                border: 'none', cursor: 'pointer', padding: 0, fontWeight: 500,
               }}
             >
-              <input type="checkbox" checked={isSel} onChange={() => onToggle(n.id)} />
-              <span style={{ fontSize: 12, color: 'var(--text)' }}>
-                {n.type ?? 'node'}
-              </span>
-              <span
-                style={{
-                  marginLeft: 'auto',
-                  fontSize: 10,
-                  color: 'var(--muted)',
-                  fontFamily: 'var(--mono, monospace)',
-                }}
-              >
-                #{n.id}
-              </span>
-            </label>
-          )
-        })}
-      </div>
+              {allSelected ? '全部取消' : noneSelected ? '全选' : '全选其余'}
+            </button>
+          </div>
+          <div style={{
+            maxHeight: 260, overflow: 'auto',
+            border: '1px solid var(--border)', borderRadius: '0 0 8px 8px',
+          }}>
+            {nodes.map((n, i) => (
+              <NodeRow
+                key={n.id}
+                node={n}
+                accent={accent}
+                isSelected={selected.includes(n.id)}
+                isLast={i === nodes.length - 1}
+                onToggle={() => onToggle(n.id)}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-function Stepper({ step }: { step: Step }) {
+function NodeRow({
+  node,
+  accent,
+  isSelected,
+  isLast,
+  onToggle,
+}: {
+  node: PublishDialogProps['nodes'][number]
+  accent: string
+  isSelected: boolean
+  isLast: boolean
+  onToggle: () => void
+}) {
+  const [hover, setHover] = useState(false)
+  const type = node.type ?? 'node'
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-      {[1, 2, 3].map((s) => (
-        <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: 11,
-              background: s <= step ? 'var(--accent)' : 'var(--border)',
-              color: s <= step ? '#fff' : 'var(--muted)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 11,
-              fontWeight: 500,
-            }}
-          >
-            {s}
-          </div>
-          {s < 3 && (
-            <div style={{ width: 32, height: 2, background: s < step ? 'var(--accent)' : 'var(--border)' }} />
-          )}
-        </div>
-      ))}
-      <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--muted)' }}>
-        {step === 1 ? '选输入节点' : step === 2 ? '选输出节点' : '命名与发布'}
+    <label
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '10px 12px',
+        borderBottom: isLast ? 'none' : '1px solid var(--border)',
+        cursor: 'pointer',
+        background: isSelected
+          ? `linear-gradient(90deg, ${accent}1a 0%, ${accent}08 100%)`
+          : hover ? 'var(--bg-accent, rgba(255,255,255,0.03))' : 'transparent',
+        borderLeft: `3px solid ${isSelected ? accent : 'transparent'}`,
+        transition: 'background 0.12s, border-color 0.12s',
+      }}
+    >
+      {/* Custom checkbox */}
+      <span style={{
+        width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: isSelected ? accent : 'transparent',
+        border: `1.5px solid ${isSelected ? accent : 'var(--border)'}`,
+        transition: 'background 0.12s, border-color 0.12s',
+      }}>
+        {isSelected && <Check size={11} strokeWidth={3} color="#fff" />}
       </span>
+
+      {/* Type glyph */}
+      <span style={{
+        width: 22, height: 22, borderRadius: 4, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--bg)', border: '1px solid var(--border)',
+        color: 'var(--muted)',
+      }}>
+        <Box size={12} />
+      </span>
+
+      <span style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500 }}>{type}</span>
+
+      <input type="checkbox" checked={isSelected} onChange={onToggle} style={{
+        position: 'absolute', opacity: 0, pointerEvents: 'none',
+      }} />
+
+      <span style={{
+        marginLeft: 'auto', fontSize: 10, padding: '2px 6px',
+        background: 'var(--bg)', border: '1px solid var(--border)',
+        borderRadius: 3, color: 'var(--muted)',
+        fontFamily: 'var(--mono, ui-monospace, monospace)',
+      }}>
+        #{node.id.length > 10 ? `${node.id.slice(0, 8)}…` : node.id}
+      </span>
+    </label>
+  )
+}
+
+function Stepper({ step }: { step: Step }) {
+  const labels = ['选输入', '选输出', '命名发布'] as const
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20 }}>
+      {[1, 2, 3].map((s, i) => {
+        const done = s < step
+        const active = s === step
+        return (
+          <div key={s} style={{ display: 'flex', alignItems: 'center', flex: i < 2 ? 1 : 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+              <div
+                style={{
+                  width: 26, height: 26, borderRadius: 13,
+                  background: done || active ? 'var(--accent)' : 'transparent',
+                  border: `1.5px solid ${done || active ? 'var(--accent)' : 'var(--border)'}`,
+                  color: done || active ? '#fff' : 'var(--muted)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 12, fontWeight: 600,
+                  boxShadow: active ? '0 0 0 4px color-mix(in oklab, var(--accent) 18%, transparent)' : 'none',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {done ? <Check size={14} strokeWidth={3} /> : s}
+              </div>
+              <span style={{
+                fontSize: 10,
+                color: active ? 'var(--text)' : 'var(--muted)',
+                fontWeight: active ? 600 : 400,
+              }}>
+                {labels[i]}
+              </span>
+            </div>
+            {i < 2 && (
+              <div style={{
+                flex: 1, height: 2, margin: '0 8px',
+                marginBottom: 18,
+                background: done ? 'var(--accent)' : 'var(--border)',
+                transition: 'background 0.15s',
+              }} />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -380,13 +498,19 @@ function Modal({
   title: string
   children: React.ReactNode
 }) {
-  return (
+  // Portal to body — Topbar (the typical caller) sets backdrop-filter, which
+  // creates a containing block that hijacks `position:fixed` children. Without
+  // the portal the modal is centered inside the 36px-tall topbar instead of
+  // the viewport, pushing the title + stepper above the visible area.
+  return createPortal(
     <div
       onClick={onClose}
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.55)',
+        background: 'rgba(0,0,0,0.6)',
+        backdropFilter: 'blur(4px)',
+        WebkitBackdropFilter: 'blur(4px)',
         zIndex: 50,
         display: 'flex',
         alignItems: 'center',
@@ -399,12 +523,12 @@ function Modal({
           background: 'var(--bg-elevated, var(--bg))',
           border: '1px solid var(--border)',
           borderRadius: 8,
-          width: 540,
+          width: 600,
           maxWidth: '92vw',
           maxHeight: '88vh',
           overflow: 'auto',
-          padding: 20,
-          boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
+          padding: 24,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.55)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
@@ -419,7 +543,8 @@ function Modal({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
