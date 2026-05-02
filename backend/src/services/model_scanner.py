@@ -72,8 +72,19 @@ def _make_key(dir_name: str) -> str:
     return dir_name.lower().replace("-", "_").replace(".", "_")
 
 
+_VLLM_ADAPTER = "src.services.inference.llm_vllm.VLLMAdapter"
+
+
 def _detect_model(model_dir: Path, local_path: str) -> dict[str, Any] | None:
-    """Auto-detect model type from directory contents."""
+    """Auto-detect model type from directory contents.
+
+    LLM and VL detections fill `adapter` so the registry can synthesize a
+    ModelSpec on demand and the load button actually works. Image/video
+    intentionally do NOT fill `adapter` — there's no diffusers adapter
+    implemented yet, so leaving it blank lets the UI render a "未注册"
+    badge and disable the load button instead of letting the user click
+    into a confusing "Unknown model" failure.
+    """
 
     # Check for HuggingFace LLM (config.json with model_type)
     config_json = model_dir / "config.json"
@@ -94,6 +105,7 @@ def _detect_model(model_dir: Path, local_path: str) -> dict[str, Any] | None:
                     "name": model_dir.name,
                     "type": "understand" if is_vl else "llm",
                     "engine": "vllm",
+                    "adapter": _VLLM_ADAPTER,
                     "gpu": 0,
                     "vram_gb": _estimate_vram(model_dir),
                     "resident": False,
@@ -117,6 +129,7 @@ def _detect_model(model_dir: Path, local_path: str) -> dict[str, Any] | None:
             return {
                 "name": model_dir.name,
                 "type": "video" if is_video else "image",
+                # NB: no `adapter` — diffusers adapter is unimplemented.
                 "gpu": 0,
                 "vram_gb": _estimate_vram(model_dir),
                 "resident": False,

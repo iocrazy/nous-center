@@ -56,9 +56,18 @@ export default function ModelsOverlay() {
       if (engine.status === 'loading') return // ignore while loading
       if (engine.status === 'loaded') {
         unloadEngine.mutate(engine.name)
-      } else {
-        loadEngine.mutate(engine.name)
+        return
       }
+      if (!engine.has_adapter) {
+        // Auto-detected diffusers without an adapter — backend would 422
+        // anyway. Surface the same hint without making the request.
+        useToastStore.getState().add(
+          `${engine.name} 未注册：图像/视频 adapter 未实现，需要先在 backend/configs/models.yaml 添加 adapter`,
+          'error',
+        )
+        return
+      }
+      loadEngine.mutate(engine.name)
     },
     [loadEngine, unloadEngine],
   )
@@ -77,9 +86,12 @@ export default function ModelsOverlay() {
         {
           label: ctxMenu.model.status === 'loaded' ? '卸载模型'
             : ctxMenu.model.status === 'loading' ? '加载中...'
+            : !ctxMenu.model.has_adapter ? '未注册（无 adapter）'
             : '加载模型',
           onClick: () => handleToggle(ctxMenu.model!),
-          disabled: ctxMenu.model.status === 'loading',
+          disabled:
+            ctxMenu.model.status === 'loading'
+            || (ctxMenu.model.status !== 'loaded' && !ctxMenu.model.has_adapter),
         },
         {
           label: ctxMenu.model.resident ? '取消自动加载' : '设为自动加载',
@@ -303,6 +315,21 @@ function ModelCard({
             }}
           >
             自动检测
+          </span>
+        )}
+        {!model.has_adapter && (
+          <span
+            title="adapter 未实现，无法加载。需先在 backend/configs/models.yaml 添加 adapter 字段。"
+            style={{
+              fontSize: 8,
+              padding: '1px 5px',
+              borderRadius: 3,
+              background: 'rgba(239,68,68,0.14)',
+              color: 'var(--error, #ef4444)',
+              flexShrink: 0,
+            }}
+          >
+            未注册
           </span>
         )}
         <StatusBadge

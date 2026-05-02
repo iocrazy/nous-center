@@ -100,6 +100,12 @@ class EngineInfo(BaseModel):
     description: str | None = None
     has_metadata: bool = False
     auto_detected: bool = False
+    # False when the model was discovered on disk but no adapter is wired
+    # up to actually load it (e.g. ERNIE-Image: diffusers checkpoint with
+    # no DiffusersImageAdapter implemented yet). UI uses this to disable
+    # the load button instead of letting the user click into a confusing
+    # "Unknown model" failure.
+    has_adapter: bool = True
     loaded_gpu: int | None = None
     loaded_gpus: list[int] | None = None
 

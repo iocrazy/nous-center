@@ -113,6 +113,10 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
                 "resident": entry.get("resident", False),
                 "local_path": entry.get("path", ""),
                 "ttl_seconds": entry.get("ttl_seconds", 300),
+                # Preserve adapter so engines.py can compute has_adapter
+                # without re-reading the yaml. Auto-detected entries fill
+                # this same field from model_scanner.
+                "adapter": entry.get("adapter"),
             }
             if entry.get("params"):
                 result[model_id]["params"] = entry["params"]

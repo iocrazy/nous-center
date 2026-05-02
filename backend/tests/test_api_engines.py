@@ -84,6 +84,25 @@ async def test_unload_non_loaded_engine(client):
     assert resp.status_code == 200
 
 
+async def test_load_rejects_engine_without_adapter(client, monkeypatch):
+    """Auto-detected diffusers (no adapter) must 422 with a config hint
+    instead of starting a background task that ValueErrors. Pre-fix the
+    user saw a misleading 'failed' badge with no path forward."""
+    from src.api.routes import engines as engines_route
+
+    monkeypatch.setattr(engines_route, "scan_models", lambda: {
+        "ernie_image": {
+            "name": "ernie_image", "type": "image", "vram_gb": 35.3,
+            "resident": False, "local_path": "image/ERNIE-Image",
+            "auto_detected": True,
+            # No adapter — this is the case we're guarding.
+        },
+    })
+    resp = await client.post("/api/v1/engines/ernie_image/load")
+    assert resp.status_code == 422
+    assert "adapter" in resp.text.lower()
+
+
 async def test_scheduler_status(client):
     resp = await client.get("/api/v1/engines/scheduler/status")
     assert resp.status_code == 200

@@ -23,6 +23,10 @@ def _make_spec(model_id="test-model", vram_mb=2000):
 def _make_manager(specs=None):
     registry = MagicMock()
     registry.get = lambda mid: next((s for s in (specs or []) if s.id == mid), None)
+    # ModelManager.load_model falls back to add_from_scan when get() misses,
+    # so the test mock must explicitly return None for unknown ids — otherwise
+    # MagicMock returns a truthy MagicMock instance and "Unknown model" never raises.
+    registry.add_from_scan = MagicMock(return_value=None)
     registry.specs = specs or []
     allocator = MagicMock()
     allocator.get_best_gpu = MagicMock(return_value=0)
