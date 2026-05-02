@@ -6,17 +6,29 @@ and is 3-5x faster than vLLM on Qwen3.5 MoE models.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 import os
 import subprocess
 import sys
 import time
+import urllib.parse
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 
-from src.services.inference.base import InferenceAdapter, InferenceResult
+from src.services.inference.base import (
+    InferenceAdapter,
+    InferenceRequest,
+    InferenceResult,
+    MediaModality,
+    StreamEvent,
+    TextRequest,
+    UsageMeter,
+)
+from src.utils.constants import ALLOWED_LLM_HOSTS
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +36,12 @@ logger = logging.getLogger(__name__)
 class SGLangAdapter(InferenceAdapter):
     """Adapter that spawns SGLang as a subprocess and manages its lifecycle."""
 
-    model_type = "llm"
+    modality = MediaModality.TEXT
     estimated_vram_mb = 0
 
     def __init__(
         self,
-        model_path: str,
+        paths: dict[str, str],
         device: str = "cuda",
         sglang_port: int | None = None,
         tensor_parallel_size: int | None = None,
@@ -41,7 +53,8 @@ class SGLangAdapter(InferenceAdapter):
         adopt_pid: int | None = None,
         **kwargs: Any,
     ):
-        super().__init__(model_path=model_path, device=device)
+        super().__init__(paths=paths, device=device)
+        self.model_path = Path(paths.get("main", ""))
         self._port = sglang_port or 0
         self._tp = tensor_parallel_size
         self._max_model_len = max_model_len
@@ -316,20 +329,101 @@ class SGLangAdapter(InferenceAdapter):
         except Exception:
             return False
 
-    async def infer(self, params: dict[str, Any]) -> InferenceResult:
-        """Forward chat completion request to SGLang."""
-        resp = await self._client.post(
-            f"{self._base_url}/v1/chat/completions", json=params
-        )
-        return InferenceResult(data=resp.content, content_type="application/json")
+    def _validate_base_url(self) -> None:
+        parsed = urllib.parse.urlparse(self._base_url or "")
+        if parsed.hostname and parsed.hostname not in ALLOWED_LLM_HOSTS:
+            raise ValueError(f"SGLang base_url 只允许 localhost，收到: {parsed.hostname}")
 
-    async def infer_stream(self, params: dict[str, Any]) -> AsyncIterator[bytes]:
-        """Stream SSE chunks from SGLang."""
+    def _clamp_max_tokens(self, requested: int) -> int:
+        model_max = getattr(self, "max_model_len", None) or 4096
+        safe_max = max(model_max - 512, model_max // 2)
+        return min(requested, safe_max)
+
+    def _build_payload(self, req: TextRequest) -> dict[str, Any]:
+        return {
+            "model": req.model,
+            "messages": [m.model_dump(mode="json") for m in req.messages],
+            "temperature": req.temperature,
+            "max_tokens": self._clamp_max_tokens(req.max_tokens),
+            "chat_template_kwargs": {"enable_thinking": req.enable_thinking},
+            **req.extra,
+        }
+
+    def _build_headers(self, req: TextRequest) -> dict[str, str]:
+        if req.api_key:
+            return {"Authorization": f"Bearer {req.api_key}"}
+        return {}
+
+    async def infer(self, req: InferenceRequest) -> InferenceResult:
+        if not isinstance(req, TextRequest):
+            raise TypeError(f"SGLangAdapter expects TextRequest, got {type(req).__name__}")
+        self._validate_base_url()
+
+        t0 = time.monotonic()
+        resp = await self._client.post(
+            f"{self._base_url}/v1/chat/completions",
+            json=self._build_payload(req),
+            headers=self._build_headers(req),
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        if resp.status_code != 200:
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                detail = resp.text[:300]
+            raise RuntimeError(f"SGLang API error ({resp.status_code}): {detail}")
+
+        body = resp.json()
+        usage_dict = body.get("usage") or {}
+        usage = UsageMeter(
+            input_tokens=usage_dict.get("prompt_tokens"),
+            output_tokens=usage_dict.get("completion_tokens"),
+            latency_ms=latency_ms,
+        )
+        return InferenceResult(
+            media_type="application/json",
+            data=resp.content,
+            metadata={"raw": body},
+            usage=usage,
+        )
+
+    async def infer_stream(self, req: InferenceRequest) -> AsyncIterator[StreamEvent]:
+        if not isinstance(req, TextRequest):
+            raise TypeError(f"SGLangAdapter expects TextRequest, got {type(req).__name__}")
+        self._validate_base_url()
+
+        payload = self._build_payload(req)
+        payload["stream"] = True
+        payload.setdefault("stream_options", {"include_usage": True})
+
+        last_usage: dict[str, Any] | None = None
         async with self._client.stream(
             "POST",
             f"{self._base_url}/v1/chat/completions",
-            json={**params, "stream": True},
+            json=payload,
+            headers=self._build_headers(req),
         ) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                yield StreamEvent(
+                    type="error",
+                    payload={"status_code": resp.status_code, "body": body[:300].decode("utf-8", errors="replace")},
+                )
+                return
             async for line in resp.aiter_lines():
-                if line:
-                    yield line.encode() + b"\n"
+                if not line or not line.startswith("data:"):
+                    continue
+                payload_text = line[5:].strip()
+                if payload_text == "[DONE]":
+                    break
+                try:
+                    chunk = _json.loads(payload_text)
+                except _json.JSONDecodeError:
+                    continue
+                if chunk.get("usage"):
+                    last_usage = chunk["usage"]
+                choices = chunk.get("choices") or []
+                delta = choices[0].get("delta") if choices else None
+                if delta:
+                    yield StreamEvent(type="delta", payload=delta)
+        yield StreamEvent(type="done", payload={"usage": last_usage or {}})

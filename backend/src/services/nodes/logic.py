@@ -33,7 +33,8 @@ class AgentNode:
         from src.services import workflow_executor as we
         from src.services.llm_service import call_llm_with_tools
         from src.services.skill_tools import skills_to_tools, execute_tool
-        from src.services.workflow_executor import ExecutionError, _validate_llm_url
+        from src.services.nodes.llm import _validate_llm_url
+        from src.services.workflow_executor import ExecutionError
         from src.config import get_settings
 
         agent_manager = we.agent_manager

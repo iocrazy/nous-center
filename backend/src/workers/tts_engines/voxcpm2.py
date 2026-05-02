@@ -15,8 +15,8 @@ class VoxCPM2Engine(TTSEngine):
     model_type = "tts"
     estimated_vram_mb = 8000
 
-    def __init__(self, model_path: str, device: str = "cuda", **kwargs):
-        super().__init__(model_path=model_path, device=device)
+    def __init__(self, paths: dict[str, str], device: str = "cuda", **kwargs):
+        super().__init__(paths=paths, device=device)
         self._voxcpm = None
 
     @property

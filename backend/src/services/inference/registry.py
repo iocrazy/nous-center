@@ -1,25 +1,40 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ModelSpec:
+class ModelSpec(BaseModel):
+    """Static model registry entry (yaml-loaded or scanner-synthesized).
+
+    Frozen — instances are stored in registry dict + adapter instantiation
+    closures, must be hashable / immutable.
+    """
+
     id: str
     model_type: str
     adapter_class: str
-    path: str
+    paths: dict[str, str]  # multi-component paths; single-component uses {"main": "..."}
     vram_mb: int
-    params: dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
     resident: bool = False
     ttl_seconds: int = 300
     gpu: int | list[int] | None = None
+
+    model_config = ConfigDict(frozen=True)
+
+
+def _coerce_paths(entry: dict[str, Any]) -> dict[str, str]:
+    """Read `paths` block from a yaml entry; legacy `path` falls into paths['main']."""
+    paths = entry.get("paths") or {}
+    if not paths and entry.get("path"):
+        paths = {"main": entry["path"]}
+    return paths
 
 
 class ModelRegistry:
@@ -45,7 +60,7 @@ class ModelRegistry:
                 id=entry["id"],
                 model_type=entry["type"],
                 adapter_class=entry["adapter"],
-                path=entry.get("path", ""),
+                paths=_coerce_paths(entry),
                 vram_mb=entry.get("vram_mb", 0),
                 params=entry.get("params", {}),
                 resident=entry.get("resident", False),
@@ -86,11 +101,16 @@ class ModelRegistry:
         adapter = cfg.get("adapter")
         if not adapter:
             return None
+        # Scanner emits `local_path` for single-component models; image/video
+        # emit `paths` dict directly when known.
+        paths = cfg.get("paths") or {}
+        if not paths and cfg.get("local_path"):
+            paths = {"main": cfg["local_path"]}
         spec = ModelSpec(
             id=model_id,
             model_type=cfg.get("type", "llm"),
             adapter_class=adapter,
-            path=cfg.get("local_path", ""),
+            paths=paths,
             vram_mb=int(round(cfg.get("vram_gb", 0) * 1024)),
             params=cfg.get("params", {}),
             resident=cfg.get("resident", False),

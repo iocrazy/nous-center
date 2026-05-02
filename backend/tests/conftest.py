@@ -183,100 +183,92 @@ def on_progress_capture(monkeypatch):
     return cap
 
 
+def _install_fake_adapter(monkeypatch, *, stream_tokens=("hel", "lo"),
+                          usage=None, nonstream_text="non-stream response",
+                          nonstream_usage=None):
+    """Install a fake v2 adapter on workflow_executor._model_manager.
+
+    LLMNode.stream / invoke now resolve the adapter via
+    `mm.get_loaded_adapter(model_key)` and call `adapter.infer_stream(req)` /
+    `adapter.infer(req)`. This helper replaces the module-level model manager
+    with one that returns a fake adapter wired with predictable behavior.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.services import workflow_executor
+    from src.services.inference.base import (
+        InferenceResult,
+        StreamEvent,
+        UsageMeter,
+    )
+
+    stream_usage = usage or {
+        "prompt_tokens": 2,
+        "completion_tokens": 2,
+        "total_tokens": 4,
+    }
+    nonstream_usage = nonstream_usage or {
+        "prompt_tokens": 3,
+        "completion_tokens": 5,
+        "total_tokens": 8,
+    }
+
+    async def _infer_stream(req):
+        for tok in stream_tokens:
+            yield StreamEvent(type="delta", payload={"content": tok})
+        yield StreamEvent(type="done", payload={"usage": stream_usage})
+
+    raw_body = {
+        "choices": [{"message": {"content": nonstream_text}}],
+        "usage": nonstream_usage,
+    }
+
+    async def _infer(req):
+        return InferenceResult(
+            media_type="application/json",
+            data=b"{}",
+            metadata={"raw": raw_body},
+            usage=UsageMeter(
+                input_tokens=nonstream_usage.get("prompt_tokens"),
+                output_tokens=nonstream_usage.get("completion_tokens"),
+                latency_ms=1,
+            ),
+        )
+
+    adapter = MagicMock()
+    adapter.is_loaded = True
+    adapter.infer = _infer
+    adapter.infer_stream = _infer_stream
+    adapter.max_model_len = 4096
+
+    mgr = MagicMock()
+    mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
+    mgr.get_adapter = MagicMock(return_value=adapter)
+    monkeypatch.setattr(workflow_executor, "_model_manager", mgr)
+    return adapter
+
+
 @pytest.fixture
 def mock_llm_stream(monkeypatch):
-    """Replace workflow_executor._stream_llm with a deterministic 3-chunk stream.
-
-    `_stream_llm` is a module-level coroutine with signature
-    `(base_url, params, on_token=None) -> str`. It pushes each token via
-    `on_token` and writes the final usage dict into the module-level
-    `_last_stream_usage` (what `_exec_llm` reads after awaiting). The fake
-    replicates that contract without any HTTP.
+    """Install a fake v2 adapter that streams two delta events ('hel','lo')
+    and a final done event with usage. LLMNode.stream iterates infer_stream
+    and reads the final usage from the done event.
     """
-    from src.services import workflow_executor
-
-    async def _fake_stream(base_url, params, on_token=None):
-        tokens = ["hel", "lo"]
-        for tok in tokens:
-            if on_token is not None:
-                await on_token(tok)
-        workflow_executor._last_stream_usage = {
-            "prompt_tokens": 2,
-            "completion_tokens": 2,
-            "total_tokens": 4,
-        }
-        return "".join(tokens)
-
-    monkeypatch.setattr(workflow_executor, "_stream_llm", _fake_stream)
-    return _fake_stream
+    return _install_fake_adapter(monkeypatch)
 
 
 @pytest.fixture
 def mock_llm_stream_v2(monkeypatch):
-    """Mock streaming LLM call for the Wave 1 node-class architecture.
-
-    LLMNode.stream delegates to workflow_executor._stream_llm (reusing the W-T1.2
-    helper) and reads workflow_executor._last_stream_usage for final usage. This
-    fixture replaces the helper with a deterministic 2-chunk fake that also
-    populates _last_stream_usage, matching the on-the-wire contract without HTTP.
-    """
-    from src.services import workflow_executor
-
-    async def _fake_stream(base_url, params, on_token=None):
-        tokens = ["hel", "lo"]
-        for tok in tokens:
-            if on_token is not None:
-                await on_token(tok)
-        workflow_executor._last_stream_usage = {
-            "prompt_tokens": 2,
-            "completion_tokens": 2,
-            "total_tokens": 4,
-        }
-        return "".join(tokens)
-
-    monkeypatch.setattr(workflow_executor, "_stream_llm", _fake_stream)
-    return _fake_stream
+    """Alias of mock_llm_stream for tests still binding the v2 fixture name."""
+    return _install_fake_adapter(monkeypatch)
 
 
 @pytest.fixture
 def mock_llm_nonstream(monkeypatch):
-    """Mock non-streaming LLM call for LLMNode.invoke.
-
-    LLMNode.invoke uses httpx.AsyncClient.post to call the vLLM OpenAI endpoint.
-    This fixture patches the httpx.AsyncClient symbol referenced from the llm
-    node module to return a canned OpenAI-format response.
+    """Install a fake v2 adapter whose infer() returns a canned non-stream
+    OpenAI-format response wrapped in the InferenceResult envelope.
     """
-    from unittest.mock import AsyncMock, MagicMock
-
-    resp_payload = {
-        "choices": [
-            {"message": {"content": "non-stream response"}}
-        ],
-        "usage": {
-            "prompt_tokens": 3,
-            "completion_tokens": 5,
-            "total_tokens": 8,
-        },
-    }
-
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json = MagicMock(return_value=resp_payload)
-    mock_response.text = "ok"
-
-    mock_client = MagicMock()
-    mock_client.post = AsyncMock(return_value=mock_response)
-    mock_client.get = AsyncMock(return_value=MagicMock(status_code=404))
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    def _factory(*args, **kwargs):
-        return mock_client
-
-    # Patch httpx.AsyncClient at the llm node module (where LLMNode uses it).
-    from src.services.nodes import llm as llm_mod
-    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _factory)
-    return mock_client
+    return _install_fake_adapter(monkeypatch)
 
 
 @pytest.fixture

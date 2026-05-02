@@ -11,17 +11,23 @@ pytest.importorskip("vllm")
 
 from unittest.mock import AsyncMock, patch, MagicMock
 from src.services.inference.llm_vllm import VLLMAdapter
-from src.services.inference.base import InferenceAdapter, InferenceResult
+from src.services.inference.base import (
+    InferenceAdapter,
+    InferenceResult,
+    MediaModality,
+    Message,
+    TextRequest,
+)
 
 
 @pytest.fixture
 def adapter(tmp_path):
-    return VLLMAdapter(model_path=str(tmp_path), device="cpu", vllm_port=19999)
+    return VLLMAdapter(paths={"main": str(tmp_path)}, device="cpu", vllm_port=19999)
 
 
 async def test_adapter_is_inference_adapter(adapter):
     assert isinstance(adapter, InferenceAdapter)
-    assert adapter.model_type == "llm"
+    assert adapter.modality == MediaModality.TEXT
 
 
 async def test_load_connects_to_existing_vllm(adapter):
@@ -75,12 +81,23 @@ async def test_unload_external_doesnt_kill(adapter):
 
 async def test_infer_returns_result(adapter):
     adapter._model = True
-    fake_body = {"choices": [{"message": {"content": "hi"}}]}
+    fake_body = {
+        "choices": [{"message": {"content": "hi"}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+    }
     mock_resp = MagicMock()
     mock_resp.content = json.dumps(fake_body).encode()
     mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_body
     with patch.object(adapter._client, "post", new_callable=AsyncMock, return_value=mock_resp):
-        result = await adapter.infer({"model": "test", "messages": [{"role": "user", "content": "hi"}]})
+        req = TextRequest(
+            request_id="r1",
+            messages=[Message(role="user", content="hi")],
+            model="test",
+        )
+        result = await adapter.infer(req)
     assert isinstance(result, InferenceResult)
-    assert result.content_type == "application/json"
+    assert result.media_type == "application/json"
     assert b"hi" in result.data
+    assert result.usage.input_tokens == 5
+    assert result.usage.output_tokens == 2

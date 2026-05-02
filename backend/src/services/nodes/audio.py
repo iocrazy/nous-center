@@ -1,11 +1,16 @@
-"""Audio-related invokable nodes: ref audio + TTS engine.
+"""Audio nodes: ref audio + TTS engine.
 
-Migrated from workflow_executor._exec_ref_audio / _exec_tts_engine as part of
-Wave 1 Task 4.4. Bodies are copied verbatim — no refactor.
+TTSEngineNode calls the v2 InferenceAdapter (TTSEngine subclass) via
+adapter.infer(AudioRequest). adapter.infer wraps the per-engine sync
+synthesize() in asyncio.to_thread and returns a unified InferenceResult.
 """
 
 from __future__ import annotations
 
+import base64
+import uuid
+
+from src.services.inference.base import AudioRequest
 from src.services.nodes.registry import register
 
 
@@ -22,12 +27,6 @@ class RefAudioNode:
 @register("tts_engine")
 class TTSEngineNode:
     async def invoke(self, data: dict, inputs: dict) -> dict:
-        """Call TTS engine via ModelManager."""
-        import asyncio
-        import base64
-
-        # Import lazily to avoid circular imports and to read the current
-        # _model_manager global at call time (matches legacy _exec_tts_engine).
         from src.services import workflow_executor as we
 
         text = inputs.get("text", "")
@@ -39,24 +38,20 @@ class TTSEngineNode:
         if we._model_manager is None:
             raise we.ExecutionError("ModelManager 未初始化")
 
-        adapter = we._model_manager.get_adapter(engine_name)
-        if adapter is None or not adapter.is_loaded:
-            raise we.ExecutionError(
-                f"引擎 {engine_name} 未加载，请先通过管理 API 加载"
-            )
+        adapter = await we._model_manager.get_loaded_adapter(engine_name)
 
-        kwargs = {
-            "text": text,
-            "voice": data.get("voice", "default"),
-            "speed": data.get("speed", 1.0),
-            "sample_rate": data.get("sample_rate", 24000),
-        }
-
-        result = await asyncio.to_thread(adapter.synthesize, **kwargs)
-        audio_b64 = base64.b64encode(result.audio_bytes).decode()
+        req = AudioRequest(
+            request_id=str(uuid.uuid4()),
+            text=text,
+            voice=data.get("voice", "default"),
+            speed=float(data.get("speed", 1.0)),
+            sample_rate=int(data.get("sample_rate", 24000)),
+        )
+        result = await adapter.infer(req)
+        meta = result.metadata
         return {
-            "audio": audio_b64,
-            "sample_rate": result.sample_rate,
-            "duration_seconds": result.duration_seconds,
-            "format": result.format,
+            "audio": base64.b64encode(result.data).decode(),
+            "sample_rate": meta.get("sample_rate"),
+            "duration_seconds": meta.get("duration_seconds"),
+            "format": meta.get("format"),
         }

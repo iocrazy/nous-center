@@ -3,17 +3,12 @@
 from __future__ import annotations
 
 import logging
-import re
-import urllib.parse
 from collections import defaultdict, deque
 from typing import Any
-
-import httpx
 
 from src.services import agent_manager  # noqa: F401 — test-patching seam (AgentNode reads via we.agent_manager)
 from src.services.llm_service import call_llm  # noqa: F401 — re-exported for test patching
 from src.services.model_manager import ModelManager
-from src.utils.constants import ALLOWED_LLM_HOSTS
 
 # Trigger @register side effects for all builtin nodes
 from src.services.nodes import audio, llm, logic, text_io  # noqa: F401
@@ -45,71 +40,8 @@ def set_model_manager(mgr: ModelManager) -> None:
     _model_manager = mgr
 
 
-_last_stream_usage: dict | None = None
-
-
-async def _stream_llm(base_url: str, params: dict, on_token=None) -> str:
-    """Stream LLM response, calling on_token for each chunk. Returns full text.
-    Captures final usage in module-level _last_stream_usage (include_usage)."""
-    global _last_stream_usage
-    import json as _json
-
-    full_text = ""
-    _last_stream_usage = None
-    async with httpx.AsyncClient(timeout=300, proxy=None) as client:
-        async with client.stream(
-            "POST",
-            f"{base_url.rstrip('/')}/v1/chat/completions",
-            json={**params, "stream": True},
-        ) as resp:
-            if resp.status_code != 200:
-                body = await resp.aread()
-                try:
-                    err = _json.loads(body)
-                    detail = err.get("error", {}).get("message", body.decode()[:200])
-                except Exception:
-                    detail = body.decode()[:200]
-                raise ExecutionError(f"LLM API error ({resp.status_code}): {detail}")
-
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data: "):
-                    continue
-                payload = line[6:]
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = _json.loads(payload)
-                    choices = chunk.get("choices") or []
-                    if choices:
-                        delta = choices[0].get("delta", {})
-                        token = delta.get("content", "")
-                        if token and on_token:
-                            await on_token(token)
-                        full_text += token
-                    usage = chunk.get("usage")
-                    if usage:
-                        _last_stream_usage = usage
-                except Exception:
-                    pass
-    return full_text
-
-
-def _strip_thinking(text: str) -> str:
-    """Remove <think>...</think> blocks from model output, return only the final answer."""
-    result = re.sub(r"<think>[\s\S]*?</think>\s*", "", text)
-    return result.strip()
-
-
 class ExecutionError(Exception):
     pass
-
-
-def _validate_llm_url(url: str) -> str:
-    """Ensure LLM base_url only points to localhost."""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.hostname and parsed.hostname not in ALLOWED_LLM_HOSTS:
-        raise ExecutionError(f"LLM base_url 只允许 localhost，收到: {parsed.hostname}")
-    return url
 
 
 class WorkflowExecutor:

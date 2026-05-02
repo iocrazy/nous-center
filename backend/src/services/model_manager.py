@@ -4,24 +4,36 @@ import asyncio
 import importlib
 import logging
 import time
-from dataclasses import dataclass, field
 from typing import Callable
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from src.errors import ModelLoadError, ModelNotFoundError
 from src.services.inference.base import InferenceAdapter
 from src.services.inference.registry import ModelRegistry, ModelSpec
 from src.services.gpu_allocator import GPUAllocator
 
 logger = logging.getLogger(__name__)
 
+# Re-export so existing `from src.services.model_manager import
+# ModelLoadError, ModelNotFoundError` keeps working (these moved to
+# src.errors so they share the NousError envelope path).
+__all__ = ["ModelLoadError", "ModelManager", "ModelNotFoundError"]
 
-@dataclass
-class LoadedModel:
+
+class LoadedModel(BaseModel):
+    """Runtime entry per loaded model: spec + adapter instance + GPU placement
+    + LRU bookkeeping. Mutable (touch() updates last_used)."""
+
     spec: ModelSpec
     adapter: InferenceAdapter
     gpu_index: int  # primary GPU (for single-GPU models)
-    gpu_indices: list[int] = field(default_factory=list)  # all GPUs (for tensor-parallel)
-    loaded_at: float = field(default_factory=time.monotonic)
-    last_used: float = field(default_factory=time.monotonic)
+    gpu_indices: list[int] = Field(default_factory=list)  # all GPUs (for tensor-parallel)
+    loaded_at: float = Field(default_factory=time.monotonic)
+    last_used: float = Field(default_factory=time.monotonic)
+
+    # InferenceAdapter is a non-pydantic ABC instance; allow as field value.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def touch(self) -> None:
         self.last_used = time.monotonic()
@@ -36,6 +48,10 @@ class ModelManager:
         self._models: dict[str, LoadedModel] = {}
         self._references: dict[str, set[str]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # Per-model load failures (set by background preload tasks or prior
+        # failed load_model attempts). get_loaded_adapter raises ModelLoadError
+        # when a record exists. Cleared on successful load.
+        self._load_failures: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -45,7 +61,12 @@ class ModelManager:
         return self._locks.setdefault(model_id, asyncio.Lock())
 
     def _instantiate_adapter(self, spec: ModelSpec) -> InferenceAdapter:
-        """Dynamically import and instantiate adapter from spec.adapter_class dotted path."""
+        """Dynamically import and instantiate adapter from spec.adapter_class dotted path.
+
+        v2: passes `paths: dict[str, str]` to the adapter __init__. Single-component
+        adapters (vLLM/SGLang/TTS) read `paths['main']`; image-class adapters
+        read `paths['transformer']`, `paths['text_encoder']`, `paths['vae']`.
+        """
         dotted = spec.adapter_class
         module_path, _, class_name = dotted.rpartition(".")
         if not module_path:
@@ -54,7 +75,7 @@ class ModelManager:
             )
         module = importlib.import_module(module_path)
         cls = getattr(module, class_name)
-        return cls(model_path=spec.path, **spec.params)
+        return cls(paths=spec.paths, **spec.params)
 
     def _detect_vllm_gpus_for_adapter(self, adapter) -> list[int]:
         """Map the adapter's subprocess (and its children) to GPU indices
@@ -175,6 +196,50 @@ class ModelManager:
         entry.touch()
         return entry.adapter
 
+    async def get_loaded_adapter(self, model_id: str) -> InferenceAdapter:
+        """Get adapter, loading on demand if needed.
+
+        v2 unified path for all node-layer adapter calls. Replaces the
+        4-line "get_adapter → check is_loaded → load_model → get_adapter"
+        pattern duplicated across nodes/llm.py + nodes/audio.py.
+
+        Raises:
+            ModelNotFoundError: model_id has no spec (yaml + scan miss).
+                                Maps to HTTP 404.
+            ModelLoadError:     load failed (recorded in `_load_failures`).
+                                Maps to HTTP 503.
+        """
+        # Fast path: already loaded
+        adapter = self.get_adapter(model_id)
+        if adapter is not None and adapter.is_loaded:
+            return adapter
+
+        # Check for prior failure (set by background preload or a previous
+        # load_model attempt). Don't retry indefinitely — admin must
+        # restart or call load_model explicitly to clear.
+        if model_id in self._load_failures:
+            raise ModelLoadError(model_id, self._load_failures[model_id])
+
+        # Lazy load. load_model raises ValueError("Unknown model") on
+        # spec miss; convert to typed ModelNotFoundError.
+        try:
+            await self.load_model(model_id)
+        except ValueError as e:
+            if "Unknown model" in str(e):
+                raise ModelNotFoundError(model_id) from e
+            # Other ValueErrors (e.g. adapter-without-config) are load failures
+            self._load_failures[model_id] = str(e)
+            raise ModelLoadError(model_id, str(e)) from e
+        except Exception as e:
+            self._load_failures[model_id] = f"{type(e).__name__}: {e}"
+            raise ModelLoadError(model_id, str(e)) from e
+
+        adapter = self.get_adapter(model_id)
+        if adapter is None or not adapter.is_loaded:
+            self._load_failures[model_id] = "load_model returned but adapter is not loaded"
+            raise ModelLoadError(model_id, self._load_failures[model_id])
+        return adapter
+
     def get_references(self, model_id: str) -> set[str]:
         return set(self._references.get(model_id, set()))
 
@@ -257,6 +322,9 @@ class ModelManager:
                 gpu_indices=gpu_indices,
             )
             self._references.setdefault(model_id, set())
+            # Clear prior failure record on successful load; lets admin
+            # retry by re-calling load_model after fixing the underlying issue.
+            self._load_failures.pop(model_id, None)
             logger.info("Loaded model %r on %s", model_id, device)
 
     async def unload_model(self, model_id: str, force: bool = False) -> None:

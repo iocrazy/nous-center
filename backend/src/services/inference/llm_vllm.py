@@ -2,45 +2,48 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 import os
 import subprocess
 import sys
 import time
+import urllib.parse
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 
-from src.services.inference.base import InferenceAdapter, InferenceResult
+from src.services.inference.base import (
+    InferenceAdapter,
+    InferenceRequest,
+    InferenceResult,
+    MediaModality,
+    StreamEvent,
+    TextRequest,
+    UsageMeter,
+)
+from src.utils.constants import ALLOWED_LLM_HOSTS
 
 logger = logging.getLogger(__name__)
-
-# Port counter for multiple vLLM instances
-_next_port = 8100
-
-
-def _alloc_port() -> int:
-    global _next_port
-    port = _next_port
-    _next_port += 1
-    return port
 
 
 class VLLMAdapter(InferenceAdapter):
     """Adapter that spawns vLLM as a subprocess and manages its lifecycle.
 
-    load()   → start vLLM subprocess → wait for health check
-    unload() → kill subprocess → free GPU memory
-    infer()  → HTTP call to the local vLLM instance
+    load()         → start vLLM subprocess → wait for health check
+    unload()       → kill subprocess → free GPU memory
+    infer(req)     → HTTP POST /v1/chat/completions, return InferenceResult
+    infer_stream() → SSE stream → yields StreamEvent("delta"|"done")
     """
 
-    model_type = "llm"
+    modality = MediaModality.TEXT
     estimated_vram_mb = 0  # Determined at runtime
 
     def __init__(
         self,
-        model_path: str,
+        paths: dict[str, str],
         device: str = "cuda",
         vllm_base_url: str | None = None,
         vllm_port: int | None = None,
@@ -54,7 +57,9 @@ class VLLMAdapter(InferenceAdapter):
         adopt_pid: int | None = None,
         **kwargs: Any,
     ):
-        super().__init__(model_path=model_path, device=device)
+        super().__init__(paths=paths, device=device)
+        # Single-component model: 'main' is the HF model dir under LOCAL_MODELS_PATH
+        self.model_path = Path(paths.get("main", ""))
         self._port = vllm_port or (int(vllm_base_url.split(":")[-1]) if vllm_base_url else 0)
         self._tp = tensor_parallel_size
         self._max_model_len = max_model_len
@@ -393,20 +398,110 @@ class VLLMAdapter(InferenceAdapter):
         except Exception:
             return False
 
-    async def infer(self, params: dict[str, Any]) -> InferenceResult:
-        """Forward chat completion request to vLLM."""
-        resp = await self._client.post(
-            f"{self._base_url}/v1/chat/completions", json=params
-        )
-        return InferenceResult(data=resp.content, content_type="application/json")
+    def _validate_base_url(self) -> None:
+        """vLLM only on localhost (defense-in-depth — admin-controlled config)."""
+        parsed = urllib.parse.urlparse(self._base_url or "")
+        if parsed.hostname and parsed.hostname not in ALLOWED_LLM_HOSTS:
+            raise ValueError(f"vLLM base_url 只允许 localhost，收到: {parsed.hostname}")
 
-    async def infer_stream(self, params: dict[str, Any]) -> AsyncIterator[bytes]:
-        """Stream SSE chunks from vLLM."""
+    def _clamp_max_tokens(self, requested: int) -> int:
+        """Per-model max_model_len enforcement (replaces TextRequest schema ceiling).
+
+        Outside-voice #7a: 200k-context models must not be rejected at schema layer.
+        """
+        model_max = getattr(self, "max_model_len", None) or 4096
+        safe_max = max(model_max - 512, model_max // 2)
+        return min(requested, safe_max)
+
+    def _build_payload(self, req: TextRequest) -> dict[str, Any]:
+        return {
+            "model": req.model,
+            "messages": [m.model_dump(mode="json") for m in req.messages],
+            "temperature": req.temperature,
+            "max_tokens": self._clamp_max_tokens(req.max_tokens),
+            # Always pass explicit value — Qwen3's chat template defaults to
+            # thinking=True; omitting the flag still produces reasoning traces.
+            "chat_template_kwargs": {"enable_thinking": req.enable_thinking},
+            **req.extra,
+        }
+
+    def _build_headers(self, req: TextRequest) -> dict[str, str]:
+        if req.api_key:
+            return {"Authorization": f"Bearer {req.api_key}"}
+        return {}
+
+    async def infer(self, req: InferenceRequest) -> InferenceResult:
+        """Non-streaming chat completion. Wraps vLLM /v1/chat/completions."""
+        if not isinstance(req, TextRequest):
+            raise TypeError(f"VLLMAdapter expects TextRequest, got {type(req).__name__}")
+        self._validate_base_url()
+
+        t0 = time.monotonic()
+        resp = await self._client.post(
+            f"{self._base_url}/v1/chat/completions",
+            json=self._build_payload(req),
+            headers=self._build_headers(req),
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        if resp.status_code != 200:
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                detail = resp.text[:300]
+            raise RuntimeError(f"vLLM API error ({resp.status_code}): {detail}")
+
+        body = resp.json()
+        usage_dict = body.get("usage") or {}
+        usage = UsageMeter(
+            input_tokens=usage_dict.get("prompt_tokens"),
+            output_tokens=usage_dict.get("completion_tokens"),
+            latency_ms=latency_ms,
+        )
+        return InferenceResult(
+            media_type="application/json",
+            data=resp.content,
+            metadata={"raw": body},
+            usage=usage,
+        )
+
+    async def infer_stream(self, req: InferenceRequest) -> AsyncIterator[StreamEvent]:
+        """SSE stream → yields StreamEvent('delta', {chunk}) / ('done', {usage})."""
+        if not isinstance(req, TextRequest):
+            raise TypeError(f"VLLMAdapter expects TextRequest, got {type(req).__name__}")
+        self._validate_base_url()
+
+        payload = self._build_payload(req)
+        payload["stream"] = True
+        payload.setdefault("stream_options", {"include_usage": True})
+
+        last_usage: dict[str, Any] | None = None
         async with self._client.stream(
             "POST",
             f"{self._base_url}/v1/chat/completions",
-            json={**params, "stream": True},
+            json=payload,
+            headers=self._build_headers(req),
         ) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                yield StreamEvent(
+                    type="error",
+                    payload={"status_code": resp.status_code, "body": body[:300].decode("utf-8", errors="replace")},
+                )
+                return
             async for line in resp.aiter_lines():
-                if line:
-                    yield line.encode() + b"\n"
+                if not line or not line.startswith("data:"):
+                    continue
+                payload_text = line[5:].strip()
+                if payload_text == "[DONE]":
+                    break
+                try:
+                    chunk = _json.loads(payload_text)
+                except _json.JSONDecodeError:
+                    continue
+                if chunk.get("usage"):
+                    last_usage = chunk["usage"]
+                choices = chunk.get("choices") or []
+                delta = choices[0].get("delta") if choices else None
+                if delta:
+                    yield StreamEvent(type="delta", payload=delta)
+        yield StreamEvent(type="done", payload={"usage": last_usage or {}})
