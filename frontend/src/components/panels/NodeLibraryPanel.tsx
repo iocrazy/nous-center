@@ -58,6 +58,15 @@ const BUILTIN_CATEGORIES: NodeCategory[] = [
     ],
   },
   {
+    name: 'image',
+    label: '图像',
+    color: 'var(--info)',
+    nodes: [
+      { type: 'image_generate', dotColor: 'var(--info)' },
+      { type: 'image_output', dotColor: 'var(--info)' },
+    ],
+  },
+  {
     name: 'output',
     label: '输出',
     color: 'var(--info)',

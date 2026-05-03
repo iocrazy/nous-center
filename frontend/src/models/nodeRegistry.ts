@@ -98,6 +98,23 @@ export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
       { name: 'code', label: 'code', widget: 'textarea', rows: 8, default: 'print("Hello World")' },
     ],
   },
+  image_generate: {
+    type: 'image_generate',
+    label: '图像生成',
+    category: 'image',
+    badge: 'IMG',
+    badgeColor: 'var(--info)',
+    widgets: [
+      { name: 'model_key', label: '模型', widget: 'model_select', filter: 'image' },
+      { name: 'prompt', label: '提示词', widget: 'textarea', rows: 3 },
+      { name: 'negative_prompt', label: '负面提示', widget: 'textarea', rows: 2 },
+      { name: 'width', label: '宽度', widget: 'slider', min: 64, max: 2048, step: 64, precision: 0, default: 1024 },
+      { name: 'height', label: '高度', widget: 'slider', min: 64, max: 2048, step: 64, precision: 0, default: 1024 },
+      { name: 'steps', label: '步数', widget: 'slider', min: 1, max: 100, step: 1, precision: 0, default: 25 },
+      { name: 'cfg_scale', label: 'CFG', widget: 'slider', min: 0, max: 20, step: 0.5, precision: 1, default: 7.0 },
+      { name: 'seed', label: '种子', widget: 'input' },
+    ],
+  },
 }
 
 export interface NodeCategoryDef {
@@ -134,6 +151,15 @@ export const NODE_CATEGORIES: NodeCategoryDef[] = [
       { type: 'python_exec', dotColor: 'var(--accent-2)' },
     ],
   },
+  {
+    name: 'image',
+    label: '图像',
+    color: 'var(--info)',
+    nodes: [
+      { type: 'image_generate', dotColor: 'var(--info)' },
+      { type: 'image_output', dotColor: 'var(--info)' },
+    ],
+  },
 ]
 
 /** Plugin categories added dynamically from API */
@@ -152,6 +178,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   audio: 'var(--info)',
   control: 'var(--accent)',
   utility: 'var(--accent-2)',
+  image: 'var(--info)',
 }
 
 interface PluginNodeDef {

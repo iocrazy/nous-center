@@ -11,7 +11,7 @@ from src.services.llm_service import call_llm  # noqa: F401 — re-exported for 
 from src.services.model_manager import ModelManager
 
 # Trigger @register side effects for all builtin nodes
-from src.services.nodes import audio, llm, logic, text_io  # noqa: F401
+from src.services.nodes import audio, image, llm, logic, text_io  # noqa: F401
 
 EVENT_TYPES: tuple[str, ...] = (
     # Existing events

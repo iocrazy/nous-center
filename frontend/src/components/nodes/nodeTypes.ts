@@ -10,6 +10,7 @@ import ConcatNode from './ConcatNode'
 import MixerNode from './MixerNode'
 import BgmMixNode from './BgmMixNode'
 import DeclarativeNode from './DeclarativeNode'
+import ImageOutputNode from './ImageOutputNode'
 import { DECLARATIVE_NODES, onPluginDefsLoaded } from '../../models/nodeRegistry'
 
 const handwrittenTypes: NodeTypes = {
@@ -23,6 +24,7 @@ const handwrittenTypes: NodeTypes = {
   concat: ConcatNode,
   mixer: MixerNode,
   bgm_mix: BgmMixNode,
+  image_output: ImageOutputNode,
 }
 
 function buildNodeTypes(): NodeTypes {

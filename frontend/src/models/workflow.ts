@@ -1,4 +1,4 @@
-export type PortType = 'text' | 'audio' | 'message' | 'data' | 'any'
+export type PortType = 'text' | 'audio' | 'image' | 'message' | 'data' | 'any'
 
 /** Node type identifier. Built-in types are listed below; plugin packages can add more at runtime. */
 export type NodeType = string
@@ -20,6 +20,8 @@ export type BuiltinNodeType =
   | 'agent'
   | 'if_else'
   | 'python_exec'
+  | 'image_generate'
+  | 'image_output'
 
 export interface PortDef {
   id: string
@@ -147,6 +149,18 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     label: 'Python 执行',
     inputs: [{ id: 'text', type: 'text', label: '输入' }],
     outputs: [{ id: 'text', type: 'text', label: '输出' }],
+  },
+  image_generate: {
+    type: 'image_generate',
+    label: '图像生成',
+    inputs: [{ id: 'prompt', type: 'text', label: '提示' }],
+    outputs: [{ id: 'image', type: 'image', label: '图像' }],
+  },
+  image_output: {
+    type: 'image_output',
+    label: '图像输出',
+    inputs: [{ id: 'image', type: 'image', label: '图像' }],
+    outputs: [],
   },
 }
 
