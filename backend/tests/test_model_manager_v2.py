@@ -1,23 +1,38 @@
 import pytest
 from unittest.mock import MagicMock
-from src.services.inference.base import InferenceAdapter, InferenceResult
+from src.services.inference.base import (
+    InferenceAdapter,
+    InferenceResult,
+    MediaModality,
+    UsageMeter,
+)
 from src.services.inference.registry import ModelSpec
-from src.services.model_manager import ModelManager
+from src.services.model_manager import ModelLoadError, ModelManager, ModelNotFoundError
 
 
 class FakeAdapter(InferenceAdapter):
-    model_type = "tts"
+    modality = MediaModality.AUDIO
     estimated_vram_mb = 2000
 
     async def load(self, device: str) -> None:
         self._model = True
 
-    async def infer(self, params: dict) -> InferenceResult:
-        return InferenceResult(data=b"ok", content_type="text/plain")
+    async def infer(self, req) -> InferenceResult:
+        return InferenceResult(
+            media_type="text/plain",
+            data=b"ok",
+            usage=UsageMeter(latency_ms=1),
+        )
 
 
 def _make_spec(model_id="test-model", vram_mb=2000):
-    return ModelSpec(id=model_id, model_type="tts", adapter_class="fake", path="/fake", vram_mb=vram_mb)
+    return ModelSpec(
+        id=model_id,
+        model_type="tts",
+        adapter_class="fake",
+        paths={"main": "/fake"},
+        vram_mb=vram_mb,
+    )
 
 
 def _make_manager(specs=None):
@@ -36,7 +51,7 @@ def _make_manager(specs=None):
 
 async def test_load_and_unload():
     mgr = _make_manager([_make_spec()])
-    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(sp.path))
+    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
     assert mgr.is_loaded("test-model")
     await mgr.unload_model("test-model")
     assert not mgr.is_loaded("test-model")
@@ -50,7 +65,7 @@ async def test_load_unknown_model():
 
 async def test_add_remove_reference():
     mgr = _make_manager([_make_spec()])
-    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(sp.path))
+    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
     mgr.add_reference("test-model", "wf-1")
     assert mgr.get_references("test-model") == {"wf-1"}
     mgr.remove_reference("test-model", "wf-1")
@@ -59,7 +74,7 @@ async def test_add_remove_reference():
 
 async def test_unload_skips_referenced():
     mgr = _make_manager([_make_spec()])
-    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(sp.path))
+    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
     mgr.add_reference("test-model", "wf-1")
     await mgr.unload_model("test-model")
     assert mgr.is_loaded("test-model")  # still loaded
@@ -67,8 +82,8 @@ async def test_unload_skips_referenced():
 
 async def test_evict_lru():
     mgr = _make_manager([_make_spec("model-a"), _make_spec("model-b")])
-    await mgr.load_model("model-a", adapter_factory=lambda sp: FakeAdapter(sp.path))
-    await mgr.load_model("model-b", adapter_factory=lambda sp: FakeAdapter(sp.path))
+    await mgr.load_model("model-a", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
+    await mgr.load_model("model-b", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
     evicted = await mgr.evict_lru(gpu_index=0)
     assert evicted == "model-a"
     assert not mgr.is_loaded("model-a")
@@ -77,6 +92,74 @@ async def test_evict_lru():
 
 async def test_get_adapter():
     mgr = _make_manager([_make_spec()])
-    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(sp.path))
+    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
     adapter = mgr.get_adapter("test-model")
     assert adapter is not None and adapter.is_loaded
+
+
+# ----- get_loaded_adapter (PR-0 v2 helper) -----
+
+
+async def test_get_loaded_adapter_already_loaded_fast_path():
+    mgr = _make_manager([_make_spec()])
+    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
+    # Note: get_loaded_adapter uses spec.adapter_class for lazy load, but
+    # since fast-path returns early, that path isn't exercised here.
+    adapter = await mgr.get_loaded_adapter("test-model")
+    assert adapter.is_loaded
+
+
+async def test_get_loaded_adapter_unknown_raises_not_found():
+    """Spec doesn't exist (yaml + scan miss) → ModelNotFoundError → HTTP 404."""
+    mgr = _make_manager([])
+    with pytest.raises(ModelNotFoundError):
+        await mgr.get_loaded_adapter("nonexistent")
+
+
+async def test_get_loaded_adapter_prior_failure_raises_load_error():
+    """If a prior load failed, subsequent get_loaded_adapter raises immediately
+    without retrying — admin must call load_model explicitly to clear."""
+    mgr = _make_manager([_make_spec()])
+    mgr._load_failures["test-model"] = "OOM during load"
+    with pytest.raises(ModelLoadError) as exc_info:
+        await mgr.get_loaded_adapter("test-model")
+    assert "OOM during load" in exc_info.value.message
+    assert exc_info.value.code == "model_load_failed"
+
+
+async def test_get_loaded_adapter_load_failure_recorded():
+    """Load failure → ModelLoadError + record in _load_failures for next call."""
+    mgr = _make_manager([_make_spec()])
+
+    def failing_factory(sp):
+        raise RuntimeError("CUDA OOM")
+
+    with pytest.raises(ModelLoadError):
+        # adapter_factory only applies to load_model directly; get_loaded_adapter
+        # goes through _instantiate_adapter. We exercise the failure path by
+        # using a spec whose adapter_class doesn't exist.
+        bad_spec = ModelSpec(
+            id="bad-model",
+            model_type="tts",
+            adapter_class="nonexistent.module.BadAdapter",
+            paths={"main": "/fake"},
+            vram_mb=100,
+        )
+        mgr._registry.get = lambda mid: bad_spec if mid == "bad-model" else None
+        mgr._registry.add_from_scan = MagicMock(return_value=None)
+        await mgr.get_loaded_adapter("bad-model")
+
+    # Failure recorded — second call raises immediately
+    assert "bad-model" in mgr._load_failures
+    with pytest.raises(ModelLoadError):
+        await mgr.get_loaded_adapter("bad-model")
+
+
+async def test_get_loaded_adapter_clears_failure_on_successful_reload():
+    """After a failure, a successful explicit load_model clears the record."""
+    mgr = _make_manager([_make_spec()])
+    mgr._load_failures["test-model"] = "transient"
+    await mgr.load_model("test-model", adapter_factory=lambda sp: FakeAdapter(paths=sp.paths))
+    assert "test-model" not in mgr._load_failures
+    adapter = await mgr.get_loaded_adapter("test-model")
+    assert adapter.is_loaded

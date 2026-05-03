@@ -1,5 +1,11 @@
-from src.services.inference.base import InferenceAdapter, InferenceResult
+from src.services.inference.base import (
+    AudioRequest,
+    InferenceAdapter,
+    InferenceResult,
+    MediaModality,
+)
 from src.workers.tts_engines.base import TTSEngine, TTSResult
+
 
 class FakeTTSEngine(TTSEngine):
     ENGINE_NAME = "fake"
@@ -12,17 +18,22 @@ class FakeTTSEngine(TTSEngine):
     def engine_name(self) -> str:
         return self.ENGINE_NAME
 
+
 def test_tts_engine_is_inference_adapter():
     assert issubclass(TTSEngine, InferenceAdapter)
 
-async def test_tts_infer_delegates_to_synthesize(tmp_path):
-    engine = FakeTTSEngine(model_path=str(tmp_path), device="cpu")
-    engine.load_sync()
-    result = await engine.infer({"text": "hello"})
-    assert isinstance(result, InferenceResult)
-    assert result.content_type == "audio/wav"
-    assert result.data == b"fakewav"
 
-async def test_tts_engine_model_type(tmp_path):
-    engine = FakeTTSEngine(model_path=str(tmp_path), device="cpu")
-    assert engine.model_type == "tts"
+def test_tts_engine_modality():
+    """v2: TTSEngine declares MediaModality.AUDIO."""
+    assert TTSEngine.modality == MediaModality.AUDIO
+
+
+async def test_tts_infer_delegates_to_synthesize(tmp_path):
+    engine = FakeTTSEngine(paths={"main": str(tmp_path)}, device="cpu")
+    engine.load_sync()
+    req = AudioRequest(request_id="r1", text="hello")
+    result = await engine.infer(req)
+    assert isinstance(result, InferenceResult)
+    assert result.media_type == "audio/wav"
+    assert result.data == b"fakewav"
+    assert result.usage.audio_seconds == 1.0

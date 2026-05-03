@@ -112,12 +112,15 @@ async def test_prompt_template_substitution():
 
 
 @pytest.mark.asyncio
-async def test_llm_node():
-    """text_input -> llm -> output, mock the non-streaming httpx call."""
+async def test_llm_node(monkeypatch):
+    """text_input -> llm -> output, with the v2 adapter's infer mocked."""
+    from src.services import workflow_executor as we
+    from src.services.inference.base import InferenceResult, UsageMeter
+
     wf = {
         "nodes": [
             {"id": "n1", "type": "text_input", "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
-            {"id": "n2", "type": "llm", "data": {"model": "test-model", "base_url": "http://localhost:8100", "stream": False}, "position": {"x": 200, "y": 0}},
+            {"id": "n2", "type": "llm", "data": {"model": "test-model", "model_key": "test-model", "stream": False}, "position": {"x": 200, "y": 0}},
             {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
         ],
         "edges": [
@@ -126,34 +129,36 @@ async def test_llm_node():
         ],
     }
 
-    # Mock httpx response: /v1/models probe (skipped when adapter is None falls through)
-    # and POST /v1/chat/completions returning an OpenAI-compatible reply.
-    post_resp = MagicMock()
-    post_resp.status_code = 200
-    post_resp.json = MagicMock(return_value={
-        "choices": [{"message": {"content": "LLM reply"}}],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 2},
-    })
+    captured: dict = {}
 
-    get_resp = MagicMock()
-    get_resp.status_code = 200
-    get_resp.json = MagicMock(return_value={"data": [{"max_model_len": 4096}]})
+    async def fake_infer(req):
+        captured["model"] = req.model
+        captured["messages"] = [m.model_dump(mode="json") for m in req.messages]
+        return InferenceResult(
+            media_type="application/json",
+            data=b"{}",
+            metadata={"raw": {
+                "choices": [{"message": {"content": "LLM reply"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            }},
+            usage=UsageMeter(input_tokens=1, output_tokens=2, latency_ms=1),
+        )
 
-    mock_client = MagicMock()
-    mock_client.post = AsyncMock(return_value=post_resp)
-    mock_client.get = AsyncMock(return_value=get_resp)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
+    adapter = MagicMock()
+    adapter.is_loaded = True
+    adapter.infer = fake_infer
+    adapter.max_model_len = 4096
 
-    with patch("src.services.workflow_executor.httpx.AsyncClient", return_value=mock_client):
-        executor = WorkflowExecutor(wf)
-        result = await executor.execute()
+    mgr = MagicMock()
+    mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
+    monkeypatch.setattr(we, "_model_manager", mgr)
+
+    executor = WorkflowExecutor(wf)
+    result = await executor.execute()
 
     assert result["outputs"]["n2"]["text"] == "LLM reply"
-    mock_client.post.assert_awaited_once()
-    call_body = mock_client.post.await_args.kwargs["json"]
-    assert call_body["model"] == "test-model"
-    assert call_body["messages"][-1]["content"] == "hello"
+    assert captured["model"] == "test-model"
+    assert captured["messages"][-1]["content"] == "hello"
 
 
 # --- if_else tests ---

@@ -103,6 +103,11 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
         result = {}
         for entry in models:
             model_id = entry["id"]
+            # v2: `paths.main` is the canonical single-component path. Older
+            # yaml using `path:` is not in the repo anymore (migrated by
+            # PR-0 cutover) but we still gracefully read it as a fallback.
+            paths = entry.get("paths") or {}
+            local_path = paths.get("main") or entry.get("path", "")
             result[model_id] = {
                 "name": model_id,
                 "type": entry.get("type", ""),
@@ -111,7 +116,8 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
                 "gpu": entry.get("gpu"),
                 "vram_gb": round(entry.get("vram_mb", 0) / 1024, 1),
                 "resident": entry.get("resident", False),
-                "local_path": entry.get("path", ""),
+                "local_path": local_path,
+                "paths": paths,
                 "ttl_seconds": entry.get("ttl_seconds", 300),
                 # Preserve adapter so engines.py can compute has_adapter
                 # without re-reading the yaml. Auto-detected entries fill

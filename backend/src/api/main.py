@@ -174,9 +174,10 @@ async def lifespan(app: FastAPI):
 
         # Reconnect healthy ones
         for spec in registry.specs:
-            if spec.model_type != "llm" or not spec.path:
+            spec_main_path = spec.paths.get("main", "")
+            if spec.model_type != "llm" or not spec_main_path:
                 continue
-            if vllm_info["model_path"].rstrip("/").endswith(spec.path.rstrip("/")):
+            if vllm_info["model_path"].rstrip("/").endswith(spec_main_path.rstrip("/")):
                 logger.info(
                     "Reconnecting to running vLLM for %s (pid=%s, port=%s)",
                     spec.id, vllm_info["pid"], vllm_info["port"],
@@ -184,7 +185,7 @@ async def lifespan(app: FastAPI):
                 try:
                     def _factory(s, port=vllm_info["port"], pid=vllm_info["pid"]):
                         from src.services.inference.llm_vllm import VLLMAdapter
-                        return VLLMAdapter(model_path=s.path, vllm_port=port, adopt_pid=pid, **s.params)
+                        return VLLMAdapter(paths=s.paths, vllm_port=port, adopt_pid=pid, **s.params)
                     await model_mgr.load_model(spec.id, adapter_factory=_factory)
                     reconnected.add(spec.id)
                 except Exception as e:

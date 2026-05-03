@@ -1,29 +1,49 @@
 from __future__ import annotations
+
+import asyncio
 from abc import abstractmethod
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
-from src.services.inference.base import InferenceAdapter, InferenceResult
+
+from pydantic import BaseModel
+
+from src.services.inference.base import (
+    AudioRequest,
+    InferenceAdapter,
+    InferenceRequest,
+    InferenceResult,
+    MediaModality,
+    UsageMeter,
+)
 
 
-@dataclass
-class TTSResult:
+class TTSResult(BaseModel):
+    """Concrete-engine return shape from synthesize(). TTSEngine.infer wraps
+    into the unified InferenceResult envelope before returning to callers."""
+
     audio_bytes: bytes
     sample_rate: int
     duration_seconds: float
     format: str = "wav"
 
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class TTSEngine(InferenceAdapter):
-    model_type = "tts"
+    modality = MediaModality.AUDIO
     estimated_vram_mb = 0
 
-    def __init__(self, model_path: str, device: str = "cuda"):
-        super().__init__(model_path=model_path, device=device)
+    def __init__(self, paths: dict[str, str], device: str = "cuda", **params: Any):
+        super().__init__(paths=paths, device=device)
+        # All TTS engines are single-component: paths['main'] is the model dir.
+        self.model_path = Path(paths.get("main", ""))
 
     async def load(self, device: str | None = None) -> None:
         if device:
             self.device = device
-        self.load_sync()
+        # Wrap potentially-blocking model load in a thread so the event loop
+        # stays responsive during long startup operations.
+        await asyncio.to_thread(self.load_sync)
 
     def load_sync(self) -> None:
         raise NotImplementedError
@@ -41,24 +61,38 @@ class TTSEngine(InferenceAdapter):
     ) -> TTSResult:
         ...
 
-    async def infer(self, params: dict[str, Any]) -> InferenceResult:
-        result = self.synthesize(
-            text=params.get("text", ""),
-            voice=params.get("voice", "default"),
-            speed=params.get("speed", 1.0),
-            sample_rate=params.get("sample_rate", 24000),
-            reference_audio=params.get("reference_audio"),
-            reference_text=params.get("reference_text"),
-            emotion=params.get("emotion"),
+    async def infer(self, req: InferenceRequest) -> InferenceResult:
+        if not isinstance(req, AudioRequest):
+            raise TypeError(f"TTSEngine expects AudioRequest, got {type(req).__name__}")
+        import time
+
+        t0 = time.monotonic()
+        # synthesize() is sync (blocking torch); offload to thread so the
+        # event loop stays responsive. Per-engine async-native rewrite is
+        # explicitly out of scope (each engine owns blocking torch internals).
+        result = await asyncio.to_thread(
+            self.synthesize,
+            text=req.text,
+            voice=req.voice,
+            speed=req.speed,
+            sample_rate=req.sample_rate,
+            reference_audio=req.reference_audio,
+            reference_text=req.reference_text,
+            emotion=req.emotion,
         )
+        latency_ms = int((time.monotonic() - t0) * 1000)
         return InferenceResult(
+            media_type=f"audio/{result.format}",
             data=result.audio_bytes,
-            content_type="audio/wav",
             metadata={
                 "sample_rate": result.sample_rate,
                 "duration_seconds": result.duration_seconds,
                 "format": result.format,
             },
+            usage=UsageMeter(
+                audio_seconds=result.duration_seconds,
+                latency_ms=latency_ms,
+            ),
         )
 
     def unload(self) -> None:

@@ -1,81 +1,95 @@
 models:
 - adapter: src.workers.tts_engines.cosyvoice2.CosyVoice2Engine
   id: cosyvoice2
-  path: tts/cosyvoice2-0.5b
+  paths:
+    main: tts/cosyvoice2-0.5b
   resident: false
   type: tts
   vram_mb: 3000
 - adapter: src.workers.tts_engines.indextts2.IndexTTS2Engine
   id: indextts2
-  path: tts/indextts-2
+  paths:
+    main: tts/indextts-2
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.moss_tts.MOSSTTSEngine
   id: moss_tts
-  path: tts/moss-tts
+  paths:
+    main: tts/moss-tts
   resident: false
   type: tts
   vram_mb: 8000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSBaseEngine
   id: qwen3_tts_base
-  path: tts/qwen3-tts-1.7b-base
+  paths:
+    main: tts/qwen3-tts-1.7b-base
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSCustomVoiceEngine
   id: qwen3_tts_customvoice
-  path: tts/qwen3-tts-1.7b-customvoice
+  paths:
+    main: tts/qwen3-tts-1.7b-customvoice
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSVoiceDesignEngine
   id: qwen3_tts_voicedesign
-  path: tts/qwen3-tts-1.7b-voicedesign
+  paths:
+    main: tts/qwen3-tts-1.7b-voicedesign
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen35-35b-a3b
-  path: llm/Qwen3.5-35B-A3B
+  paths:
+    main: llm/Qwen3.5-35B-A3B
   type: llm
   vram_mb: 68595
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_5_35b_a3b_gptq_int4
-  path: llm/Qwen3.5-35B-A3B-GPTQ-Int4
+  paths:
+    main: llm/Qwen3.5-35B-A3B-GPTQ-Int4
   resident: false
   type: llm
   vram_mb: 23325
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_6_35b_a3b_fp8
-  path: llm/Qwen3.6-35B-A3B-FP8
+  paths:
+    main: llm/Qwen3.6-35B-A3B-FP8
   resident: false
   type: llm
   vram_mb: 35756
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it
-  path: llm/gemma-4-26B-A4B-it
+  paths:
+    main: llm/gemma-4-26B-A4B-it
   type: llm
   vram_mb: 49252
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it-gptq-int4
-  path: llm/gemma-4-26B-A4B-it-GPTQ-Int4
+  paths:
+    main: llm/gemma-4-26B-A4B-it-GPTQ-Int4
   type: llm
   vram_mb: 14000
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: gemma-4-26b-a4b-it-awq-4bit
-  path: llm/gemma-4-26B-A4B-it-AWQ-4bit
+  paths:
+    main: llm/gemma-4-26B-A4B-it-AWQ-4bit
   type: llm
   vram_mb: 16421
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen2_5_vl_7b_instruct
-  path: llm/Qwen2.5-VL-7B-Instruct
+  paths:
+    main: llm/Qwen2.5-VL-7B-Instruct
   resident: false
   type: llm
   vram_mb: 14000
 - adapter: src.workers.tts_engines.voxcpm2.VoxCPM2Engine
   id: voxcpm2
-  path: tts/VoxCPM2
+  paths:
+    main: tts/VoxCPM2
   resident: false
   type: tts
   vram_mb: 8000

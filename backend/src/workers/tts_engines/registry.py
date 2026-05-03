@@ -17,7 +17,11 @@ def register_engine(cls: type[TTSEngine]) -> type[TTSEngine]:
 
 
 def get_engine(name: str, model_path: str, device: str = "cuda") -> TTSEngine:
-    """Get or create a TTS engine instance."""
+    """Get or create a TTS engine instance.
+
+    `model_path` is the legacy single-component path; wrapped into
+    paths={"main": model_path} for the v2 adapter contract.
+    """
     if name in _ENGINE_INSTANCES:
         return _ENGINE_INSTANCES[name]
 
@@ -26,7 +30,7 @@ def get_engine(name: str, model_path: str, device: str = "cuda") -> TTSEngine:
             f"Unknown TTS engine: {name}. Available: {list(_ENGINE_CLASSES.keys())}"
         )
 
-    engine = _ENGINE_CLASSES[name](model_path=model_path, device=device)
+    engine = _ENGINE_CLASSES[name](paths={"main": model_path}, device=device)
     _ENGINE_INSTANCES[name] = engine
     return engine
 
