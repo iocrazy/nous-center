@@ -158,16 +158,35 @@ async def refresh_metadata(session: AsyncSession, engine_key: str) -> ModelMetad
 
 
 def scan_local_models() -> set[str]:
-    """Scan LOCAL_MODELS_PATH and return set of local_path dirs that exist."""
+    """Scan LOCAL_MODELS_PATH and return set of local_path dirs that exist.
+
+    Layout:
+      llm/<MODEL>                          — depth 2
+      tts/<MODEL>                          — depth 2
+      image/diffusion_models/<MODEL>       — depth 3 (transformer dirs)
+      image/<sub>/<MODEL>                  — depth 3 (vae/, text_encoders/ etc)
+    """
     settings = get_settings()
     base = Path(settings.LOCAL_MODELS_PATH)
     if not base.exists():
         return set()
-    # Collect all subdirectory paths relative to base (depth 2: type/model)
     found = set()
     for type_dir in base.iterdir():
-        if type_dir.is_dir():
-            for model_dir in type_dir.iterdir():
-                if model_dir.is_dir():
-                    found.add(f"{type_dir.name}/{model_dir.name}")
+        if not type_dir.is_dir():
+            continue
+        # Image holds component subdirectories (diffusion_models / vae /
+        # text_encoders); each child is one component dir holding
+        # single-file safetensors. Walk one extra level so the registered
+        # `image/diffusion_models/<MODEL>` paths are matchable.
+        if type_dir.name == "image":
+            for sub_dir in type_dir.iterdir():
+                if not sub_dir.is_dir():
+                    continue
+                for component_dir in sub_dir.iterdir():
+                    if component_dir.is_dir():
+                        found.add(f"{type_dir.name}/{sub_dir.name}/{component_dir.name}")
+            continue
+        for model_dir in type_dir.iterdir():
+            if model_dir.is_dir():
+                found.add(f"{type_dir.name}/{model_dir.name}")
     return found

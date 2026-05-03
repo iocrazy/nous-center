@@ -107,7 +107,15 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
             # yaml using `path:` is not in the repo anymore (migrated by
             # PR-0 cutover) but we still gracefully read it as a fallback.
             paths = entry.get("paths") or {}
+            # Single-component models (LLM/TTS) live under paths.main. Image
+            # models are 3-component (transformer + text_encoder + vae) and
+            # have no `main` — use the transformer's parent dir as the
+            # canonical local_path so engines.py / scan_local_models can
+            # match the entry against the on-disk directory.
             local_path = paths.get("main") or entry.get("path", "")
+            if not local_path and paths.get("transformer"):
+                from pathlib import Path as _P
+                local_path = str(_P(paths["transformer"]).parent)
             result[model_id] = {
                 "name": model_id,
                 "type": entry.get("type", ""),
