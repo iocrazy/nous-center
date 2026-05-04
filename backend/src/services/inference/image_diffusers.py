@@ -69,12 +69,31 @@ class DiffusersImageBackend(InferenceAdapter):
         self._pipe: Any = None  # diffusers Flux2Pipeline | FluxPipeline
 
     def _resolve_path(self, key: str) -> Path:
+        """Resolve a paths[key] entry to an absolute on-disk path.
+
+        Yaml stores paths relative to LOCAL_MODELS_PATH (matching the
+        vLLM/TTS convention). Diffusers refuses anything that isn't an
+        absolute path or HF hub id, so we must absolutize before handing
+        the path off to from_single_file / from_pretrained.
+
+        If the absolute candidate doesn't exist, fall back to the raw
+        value — that lets the spec point at HF hub ids ("org/model")
+        without LOCAL_MODELS_PATH prefixing them into nonsense.
+        """
+        from src.config import get_settings
         raw = self.paths.get(key)
         if not raw:
             raise ValueError(
                 f"DiffusersImageBackend requires paths[{key!r}] but spec.paths={list(self.paths)}"
             )
-        return Path(raw)
+        candidate = Path(raw)
+        if candidate.is_absolute():
+            return candidate
+        absolutized = Path(get_settings().LOCAL_MODELS_PATH) / candidate
+        if absolutized.exists():
+            return absolutized
+        # Last-resort: maybe an HF hub id; let diffusers reject it itself.
+        return candidate
 
     def _gpu_index(self) -> int:
         if ":" in self.device:
