@@ -59,7 +59,17 @@ def _stub_diffusers(monkeypatch):
 
     pipe.enable_model_cpu_offload = MagicMock(side_effect=_enable_offload)
     pipe.disable_model_cpu_offload = MagicMock(side_effect=_disable_offload)
-    pipe.load_lora_weights = MagicMock()
+
+    # Real diffusers' load_lora_weights populates pipe.peft_config[adapter_name]
+    # on success (and stays empty when the LoRA tensors don't match the
+    # architecture). Mirror that: success path here adds to peft_config so
+    # the architecture-mismatch guard treats this as a successful load.
+    pipe.peft_config = {}
+
+    def _load_lora(_path, adapter_name=None):
+        pipe.peft_config[adapter_name] = {"loaded": True}
+
+    pipe.load_lora_weights = MagicMock(side_effect=_load_lora)
     pipe.set_adapters = MagicMock()
 
     # Track active adapters for the structural LoRA test
@@ -450,3 +460,27 @@ async def test_infer_no_loras_after_previous_lora_does_clear(tmp_path, _stub_dif
 
     await backend.infer(_make_req(loras=[]))
     pipe.set_adapters.assert_called_once_with([])
+
+
+async def test_lora_architecture_mismatch_raises_clear_error(tmp_path, _stub_diffusers):
+    """Real-GPU repro: load_lora_weights() silently no-ops when the LoRA's
+    tensor names don't match the pipeline architecture (SDXL/SD1.5 LoRA on
+    Flux/ERNIE pipeline). Without this guard, downstream set_adapters
+    explodes with 'not in the list of present adapters: set()'. We detect
+    the empty-load and raise a useful message before set_adapters runs."""
+    from unittest.mock import MagicMock
+
+    pipe = _stub_diffusers["pipe"]
+    backend = DiffusersImageBackend(
+        paths=_paths(tmp_path),
+        lora_paths={"sdxl-lora": "/fake/sdxl.safetensors"},
+    )
+    await backend.load(device="cuda:0")
+
+    # Override AFTER load() so the fixture's success-path stub is replaced
+    # by the silent-noop behavior real diffusers exhibits on arch mismatch.
+    pipe.peft_config = {}
+    pipe.load_lora_weights = MagicMock()  # no side_effect → leaves peft_config empty
+
+    with pytest.raises(ValueError, match="zero matching weights"):
+        await backend.infer(_make_req(loras=[LoRASpec(name="sdxl-lora", strength=1.0)]))
