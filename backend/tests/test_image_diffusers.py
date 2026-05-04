@@ -43,6 +43,9 @@ def _stub_diffusers(monkeypatch):
     fake_diffusers = MagicMock()
     fake_diffusers.FluxTransformer2DModel.from_single_file = MagicMock(return_value=MagicMock(name="transformer"))
     fake_diffusers.AutoencoderKL.from_single_file = MagicMock(return_value=MagicMock(name="vae"))
+    # DiffusionPipeline.from_pretrained returns the same fake pipe object
+    # so the test asserts hold for both load paths.
+    fake_diffusers.DiffusionPipeline.from_pretrained = MagicMock()
 
     # Pipeline class returns an instance with the methods we exercise
     pipe = MagicMock(name="flux2-pipeline")
@@ -86,6 +89,10 @@ def _stub_diffusers(monkeypatch):
     Flux2Pipeline = MagicMock(return_value=pipe)
     fake_diffusers.Flux2Pipeline = Flux2Pipeline
     fake_diffusers.FluxPipeline = Flux2Pipeline  # fallback path uses same fake
+    # Wire DiffusionPipeline.from_pretrained to the same fake pipe so
+    # downstream infer/LoRA logic exercises the same code path regardless
+    # of which load branch ran.
+    fake_diffusers.DiffusionPipeline.from_pretrained = MagicMock(return_value=pipe)
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
@@ -324,3 +331,122 @@ def test_resolve_path_returns_relative_unchanged_when_absolutized_missing(tmp_pa
     })
     resolved = backend._resolve_path("transformer")
     assert str(resolved) == "black-forest-labs/FLUX.2-dev"
+
+
+# ----- from_pretrained branch (PR-8) -----
+
+
+def _main_paths(tmp_path):
+    """Diffusers full-layout dir: model_index.json + component subdirs."""
+    root = tmp_path / "ernie"
+    root.mkdir()
+    (root / "model_index.json").write_text('{"_class_name":"ErnieImagePipeline"}')
+    return {"main": str(root)}
+
+
+async def test_load_routes_to_from_pretrained_when_paths_main(tmp_path, _stub_diffusers):
+    backend = DiffusersImageBackend(paths=_main_paths(tmp_path))
+    await backend.load(device="cuda:0")
+
+    diffusers = _stub_diffusers["diffusers"]
+    diffusers.DiffusionPipeline.from_pretrained.assert_called_once()
+    call_args = diffusers.DiffusionPipeline.from_pretrained.call_args
+    # First positional arg is the dir
+    assert call_args.args[0] == str(tmp_path / "ernie")
+    # trust_remote_code must be True so custom pipeline classes load
+    assert call_args.kwargs.get("trust_remote_code") is True
+    # Single-file compose helpers must NOT have been called for this branch
+    diffusers.FluxTransformer2DModel.from_single_file.assert_not_called()
+    diffusers.AutoencoderKL.from_single_file.assert_not_called()
+
+
+async def test_load_routes_to_compose_when_paths_three_components(tmp_path, _stub_diffusers):
+    backend = DiffusersImageBackend(paths=_paths(tmp_path))
+    await backend.load(device="cuda:0")
+
+    diffusers = _stub_diffusers["diffusers"]
+    # 3-component path uses from_single_file twice + from_pretrained on encoder dir
+    diffusers.FluxTransformer2DModel.from_single_file.assert_called_once()
+    diffusers.AutoencoderKL.from_single_file.assert_called_once()
+    # And NOT the new from_pretrained whole-pipeline path
+    diffusers.DiffusionPipeline.from_pretrained.assert_not_called()
+
+
+async def test_from_pretrained_branch_still_applies_cpu_offload(tmp_path, _stub_diffusers):
+    """Both branches share the offload tail in load() — make sure ERNIE
+    style load still gets enable_model_cpu_offload(gpu_id=...)."""
+    pipe = _stub_diffusers["pipe"]
+    backend = DiffusersImageBackend(paths=_main_paths(tmp_path))
+    await backend.load(device="cuda:1")
+    pipe.enable_model_cpu_offload.assert_called_with(gpu_id=1)
+
+
+async def test_from_pretrained_branch_runs_infer_end_to_end(tmp_path, _stub_diffusers):
+    """Sanity: load via from_pretrained → infer returns the standard
+    InferenceResult envelope (PNG bytes + metadata + usage). Catches
+    silent regressions where the from_pretrained branch wires up a pipe
+    that infer() can't drive."""
+    backend = DiffusersImageBackend(paths=_main_paths(tmp_path))
+    await backend.load(device="cuda:0")
+    result = await backend.infer(_make_req(seed=7))
+    assert result.media_type == "image/png"
+    assert result.data.startswith(b"\x89PNG")
+    assert result.metadata["seed"] == 7
+
+
+async def test_from_pretrained_ignores_three_component_keys(tmp_path, _stub_diffusers):
+    """When paths.main is set, transformer/text_encoder/vae keys are
+    ignored. This is the contract for ERNIE-style entries — operator can
+    put the dir under main and not bother with component breakdown."""
+    p = _main_paths(tmp_path)
+    p["transformer"] = "/should/be/ignored"
+    backend = DiffusersImageBackend(paths=p)
+    await backend.load(device="cuda:0")
+    diffusers = _stub_diffusers["diffusers"]
+    diffusers.DiffusionPipeline.from_pretrained.assert_called_once()
+    diffusers.FluxTransformer2DModel.from_single_file.assert_not_called()
+
+
+def test_yaml_includes_ernie_image_entry():
+    """Sanity: the new ernie-image yaml entry parses + has the main path."""
+    from src.config import load_model_configs
+    cfgs = load_model_configs()
+    assert "ernie-image" in cfgs
+    e = cfgs["ernie-image"]
+    assert e["type"] == "image"
+    assert e["paths"] == {"main": "image/ERNIE-Image"}
+    assert e["adapter"].endswith("DiffusersImageBackend")
+
+
+async def test_infer_no_loras_on_fresh_pipeline_does_not_call_set_adapters(tmp_path, _stub_diffusers):
+    """Regression: real ERNIE diffusers pipelines raise KeyError 'transformer'
+    when set_adapters([]) is called with no LoRAs ever loaded — diffusers'
+    _component_adapter_weights mapping is empty in that state. Skip the
+    clear when _loaded_loras is empty.
+    """
+    pipe = _stub_diffusers["pipe"]
+    backend = DiffusersImageBackend(paths=_paths(tmp_path), lora_paths={})
+    await backend.load(device="cuda:0")
+    pipe.set_adapters.reset_mock()
+
+    # No LoRAs ever loaded, request also has no LoRAs → must NOT touch set_adapters
+    await backend.infer(_make_req(loras=[]))
+    pipe.set_adapters.assert_not_called()
+
+
+async def test_infer_no_loras_after_previous_lora_does_clear(tmp_path, _stub_diffusers):
+    """Once a LoRA has been loaded, set_adapters([]) IS the legitimate way
+    to clear active adapters — diffusers seeded the mapping during the
+    earlier load_lora_weights call."""
+    pipe = _stub_diffusers["pipe"]
+    backend = DiffusersImageBackend(
+        paths=_paths(tmp_path),
+        lora_paths={"a": "/fake/a.safetensors"},
+    )
+    await backend.load(device="cuda:0")
+
+    await backend.infer(_make_req(loras=[LoRASpec(name="a", strength=1.0)]))
+    pipe.set_adapters.reset_mock()
+
+    await backend.infer(_make_req(loras=[]))
+    pipe.set_adapters.assert_called_once_with([])

@@ -101,18 +101,66 @@ class DiffusersImageBackend(InferenceAdapter):
         return 0
 
     async def load(self, device: str | None = None) -> None:
-        """Compose Flux2Pipeline from 3 single-file components."""
+        """Build a diffusers pipeline using the layout indicated by self.paths.
+
+        Two supported layouts:
+
+          1) Diffusers full-layout dir (recommended):
+             paths = {"main": "<dir>"}
+             where <dir> contains model_index.json + scheduler/ +
+             transformer/ + text_encoder/ + vae/ + tokenizer/.
+             Loaded via DiffusionPipeline.from_pretrained which reads
+             every component's local config.json — zero HF hub access.
+             Custom pipeline classes (e.g. ErnieImagePipeline) are
+             auto-resolved via trust_remote_code.
+
+          2) Three-component single-file compose (Flux2 style):
+             paths = {"transformer": "<file>", "text_encoder": "<dir>",
+                      "vae": "<file>"}
+             from_single_file pulls architecture metadata from the HF
+             hub (since safetensors only stores tensor names, not the
+             class topology). Requires HF_TOKEN for gated repos.
+        """
         if device:
             self.device = device
 
-        # Imports are lazy: diffusers/transformers add ~3s import cost and
-        # are only present when the `image` extra is installed.
+        # Imports are lazy: diffusers/transformers add ~3s import cost
+        # and are only present when the `image` extra is installed.
         import torch
+        dtype = getattr(torch, self._torch_dtype)
+
+        if "main" in self.paths:
+            await self._load_from_pretrained(dtype)
+        else:
+            await self._load_from_single_file_compose(dtype)
+
+        if self._offload_strategy == "single_card_offload":
+            self._pipe.enable_model_cpu_offload(gpu_id=self._gpu_index())
+            logger.info(
+                "image: enabled model_cpu_offload on gpu_id=%d",
+                self._gpu_index(),
+            )
+
+        self._model = self._pipe
+
+    async def _load_from_pretrained(self, dtype) -> None:
+        from diffusers import DiffusionPipeline
+
+        path = self._resolve_path("main")
+        logger.info("image: loading diffusers pipeline from %s", path)
+        # trust_remote_code=True so model dirs that ship a custom pipeline
+        # class (ErnieImagePipeline, etc.) load it from the dir instead of
+        # falling back to a stock pipeline that doesn't fit the model.
+        self._pipe = DiffusionPipeline.from_pretrained(
+            str(path),
+            torch_dtype=dtype,
+            trust_remote_code=True,
+        )
+
+    async def _load_from_single_file_compose(self, dtype) -> None:
         from transformers import AutoModel, AutoTokenizer
         import diffusers
         from diffusers import AutoencoderKL, FluxTransformer2DModel
-
-        dtype = getattr(torch, self._torch_dtype)
 
         transformer_path = self._resolve_path("transformer")
         encoder_path = self._resolve_path("text_encoder")
@@ -143,12 +191,6 @@ class DiffusersImageBackend(InferenceAdapter):
             vae=vae,
             scheduler=None,
         )
-
-        if self._offload_strategy == "single_card_offload":
-            self._pipe.enable_model_cpu_offload(gpu_id=self._gpu_index())
-            logger.info("Flux2: enabled model_cpu_offload on gpu_id=%d", self._gpu_index())
-
-        self._model = self._pipe
 
     def unload(self) -> None:
         try:
@@ -192,7 +234,11 @@ class DiffusersImageBackend(InferenceAdapter):
                 [s.name for s in loras],
                 adapter_weights=[s.strength for s in loras],
             )
-        else:
+        elif self._loaded_loras:
+            # No LoRAs requested AND we have previously-loaded ones to clear.
+            # Fresh-state pipelines (never had a LoRA) can't take set_adapters([])
+            # — diffusers raises KeyError because _component_adapter_weights
+            # is empty. Only call clear when there's actually something to clear.
             self._pipe.set_adapters([])
 
         if was_offloaded and self._offload_strategy == "single_card_offload":
