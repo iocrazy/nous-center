@@ -183,6 +183,7 @@ async def test_image_output_passes_through_image_envelope():
     out = await node.invoke(
         data={},
         inputs={
+            "image_url": "/files/images/2026-05-04/abcd.png?token=t&expires=1",
             "image": "Zm9v",
             "media_type": "image/png",
             "width": 1024,
@@ -191,6 +192,7 @@ async def test_image_output_passes_through_image_envelope():
         },
     )
     assert out == {
+        "image_url": "/files/images/2026-05-04/abcd.png?token=t&expires=1",
         "image": "Zm9v",
         "media_type": "image/png",
         "width": 1024,
@@ -203,6 +205,7 @@ async def test_image_output_defaults_when_input_missing():
 
     out = await ImageOutputNode().invoke(data={}, inputs={})
     assert out["image"] == ""
+    assert out["image_url"] is None
     assert out["media_type"] == "image/png"
     assert out["width"] is None
 

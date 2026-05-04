@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import uuid
 
+from src.services.image_output_storage import write_image
 from src.services.inference.base import ImageRequest, LoRASpec
 from src.services.nodes.registry import register
 
@@ -52,8 +53,18 @@ class ImageGenerateNode:
             loras=_coerce_loras(data.get("loras")),
         )
         result = await adapter.infer(req)
-        return {
-            "image": base64.b64encode(result.data).decode(),
+
+        # Persist + sign URL when ADMIN_SESSION_SECRET is configured.
+        # Fall back to inline base64 when no secret (dev mode / fresh
+        # install / tests) so the workflow still ends with an image the
+        # UI can render. Both fields land in the output envelope; the
+        # frontend prefers image_url when present.
+        ext = (result.media_type.split("/", 1)[-1] or "png").lower()
+        if ext == "jpeg":
+            ext = "jpg"
+        ttl = int(data.get("url_ttl_seconds", 3600))
+        record = write_image(result.data, ext=ext, ttl_seconds=ttl)
+        envelope: dict = {
             "media_type": result.media_type,
             "width": result.metadata.get("width"),
             "height": result.metadata.get("height"),
@@ -61,17 +72,26 @@ class ImageGenerateNode:
             "seed": result.metadata.get("seed"),
             "loras": result.metadata.get("loras", []),
             "duration_ms": result.usage.latency_ms,
+            "image_url": record["url"],
+            "image_uuid": record["uuid"],
+            "image_expires": record["expires"],
         }
+        if record["url"] is None:
+            # No signing key — emit base64 so the canvas still renders.
+            envelope["image"] = base64.b64encode(result.data).decode()
+        return envelope
 
 
 @register("image_output")
 class ImageOutputNode:
-    """Render-only sink. Mirrors text_output / OutputNode shape so downstream
-    workflow consumers (UI preview, signed-URL renderer in PR-6) see a
-    consistent {image, media_type, width, height} envelope."""
+    """Render-only sink. Stable envelope: {image_url, image, media_type,
+    width, height}. image_url is the canonical render path (PR-6 signed
+    URL); image (base64) only flows when no signing key is configured.
+    """
 
     async def invoke(self, data: dict, inputs: dict) -> dict:
         return {
+            "image_url": inputs.get("image_url"),
             "image": inputs.get("image", ""),
             "media_type": inputs.get("media_type", "image/png"),
             "width": inputs.get("width"),
