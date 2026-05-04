@@ -1,8 +1,12 @@
-"""Image nodes: image_generate (calls v2 IMAGE adapter) + image_output passthrough."""
+"""Image nodes: image_generate (calls v2 IMAGE adapter) + image_output passthrough.
+
+ADMIN_SESSION_SECRET MUST be set when image workflows run — the signed
+URL is the canonical and only render path. write_image returns url=None
+when the secret is missing, which surfaces here as MissingSecretError.
+"""
 
 from __future__ import annotations
 
-import base64
 import uuid
 
 from src.services.image_output_storage import write_image
@@ -54,17 +58,17 @@ class ImageGenerateNode:
         )
         result = await adapter.infer(req)
 
-        # Persist + sign URL when ADMIN_SESSION_SECRET is configured.
-        # Fall back to inline base64 when no secret (dev mode / fresh
-        # install / tests) so the workflow still ends with an image the
-        # UI can render. Both fields land in the output envelope; the
-        # frontend prefers image_url when present.
         ext = (result.media_type.split("/", 1)[-1] or "png").lower()
         if ext == "jpeg":
             ext = "jpg"
         ttl = int(data.get("url_ttl_seconds", 3600))
         record = write_image(result.data, ext=ext, ttl_seconds=ttl)
-        envelope: dict = {
+        if record["url"] is None:
+            raise we.ExecutionError(
+                "image_generate 需要 ADMIN_SESSION_SECRET 才能签名输出 URL — "
+                "请在 backend/.env 配置后重启 backend"
+            )
+        return {
             "media_type": result.media_type,
             "width": result.metadata.get("width"),
             "height": result.metadata.get("height"),
@@ -76,23 +80,18 @@ class ImageGenerateNode:
             "image_uuid": record["uuid"],
             "image_expires": record["expires"],
         }
-        if record["url"] is None:
-            # No signing key — emit base64 so the canvas still renders.
-            envelope["image"] = base64.b64encode(result.data).decode()
-        return envelope
 
 
 @register("image_output")
 class ImageOutputNode:
-    """Render-only sink. Stable envelope: {image_url, image, media_type,
-    width, height}. image_url is the canonical render path (PR-6 signed
-    URL); image (base64) only flows when no signing key is configured.
+    """Render-only sink. Stable envelope: {image_url, media_type, width, height}.
+    image_url is the canonical (and only) render path — the signed URL HMAC'd
+    against ADMIN_SESSION_SECRET.
     """
 
     async def invoke(self, data: dict, inputs: dict) -> dict:
         return {
             "image_url": inputs.get("image_url"),
-            "image": inputs.get("image", ""),
             "media_type": inputs.get("media_type", "image/png"),
             "width": inputs.get("width"),
             "height": inputs.get("height"),

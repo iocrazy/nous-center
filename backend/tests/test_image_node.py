@@ -1,7 +1,6 @@
 """Tests for image_generate / image_output nodes (PR-4 backend half)."""
 from __future__ import annotations
 
-import base64
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -75,8 +74,9 @@ async def test_image_generate_dispatches_to_adapter_with_typed_request(fake_imag
     assert req.loras[0].name == "anime-v2"
     assert req.loras[0].strength == 0.7
 
-    # base64 round-trips the PNG marker bytes
-    assert base64.b64decode(out["image"]) == b"\x89PNGFAKE"
+    # Signed URL is the only render path now (p2-polish-3 dropped base64).
+    assert out["image_url"].startswith("/files/images/")
+    assert "image" not in out
     assert out["media_type"] == "image/png"
     assert out["width"] == 768
     assert out["seed"] == 1234
@@ -94,7 +94,7 @@ async def test_image_generate_falls_back_to_text_input(fake_image_adapter):
         inputs={"text": "via text edge"},
     )
     assert fake_image_adapter["req"].prompt == "via text edge"
-    assert out["image"] != ""
+    assert out["image_url"]
 
 
 async def test_image_generate_uses_data_prompt_when_no_input(fake_image_adapter):
@@ -106,7 +106,7 @@ async def test_image_generate_uses_data_prompt_when_no_input(fake_image_adapter)
         inputs={},
     )
     assert fake_image_adapter["req"].prompt == "from data"
-    assert out["image"] != ""
+    assert out["image_url"]
 
 
 async def test_image_generate_missing_prompt_raises():
@@ -184,7 +184,6 @@ async def test_image_output_passes_through_image_envelope():
         data={},
         inputs={
             "image_url": "/files/images/2026-05-04/abcd.png?token=t&expires=1",
-            "image": "Zm9v",
             "media_type": "image/png",
             "width": 1024,
             "height": 1024,
@@ -193,7 +192,6 @@ async def test_image_output_passes_through_image_envelope():
     )
     assert out == {
         "image_url": "/files/images/2026-05-04/abcd.png?token=t&expires=1",
-        "image": "Zm9v",
         "media_type": "image/png",
         "width": 1024,
         "height": 1024,
@@ -204,8 +202,8 @@ async def test_image_output_defaults_when_input_missing():
     from src.services.nodes.image import ImageOutputNode
 
     out = await ImageOutputNode().invoke(data={}, inputs={})
-    assert out["image"] == ""
     assert out["image_url"] is None
+    assert "image" not in out
     assert out["media_type"] == "image/png"
     assert out["width"] is None
 

@@ -19,7 +19,11 @@ os.environ["NVIDIA_VISIBLE_DEVICES"] = ""
 # route. Force-empty here disables the cookie gate (dev mode) for the whole
 # suite. Bare assignment (not setdefault) overrides whatever .env provides.
 os.environ["ADMIN_PASSWORD"] = ""
-os.environ["ADMIN_SESSION_SECRET"] = ""
+# image_generate node demands a signing secret since p2-polish-3 (no more
+# base64 fallback). Tests don't need a real secret — anything non-empty
+# unlocks the URL path. Specific tests that exercise the missing-secret
+# error monkeypatch this back to "".
+os.environ["ADMIN_SESSION_SECRET"] = "tests-only-do-not-use-in-prod"
 
 # Skip mounting the SPA catch-all in tests — its /{full_path:path} would shadow
 # routes that test fixtures register on the app after create_app() returns.
