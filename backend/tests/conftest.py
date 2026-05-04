@@ -25,6 +25,11 @@ os.environ["ADMIN_SESSION_SECRET"] = ""
 # routes that test fixtures register on the app after create_app() returns.
 os.environ["NOUS_DISABLE_FRONTEND_MOUNT"] = "1"
 
+# Image output storage writes to ~/.gstack/outputs/images by default.
+# Redirect to a tmp dir so tests never pollute the developer's real home.
+import tempfile as _tempfile
+os.environ.setdefault("NOUS_IMAGE_OUTPUTS", _tempfile.mkdtemp(prefix="nous-test-img-"))
+
 import sys
 from unittest.mock import MagicMock
 
