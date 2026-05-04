@@ -74,6 +74,7 @@ class ImageGenerateNode:
             "height": result.metadata.get("height"),
             "steps": result.metadata.get("steps"),
             "seed": result.metadata.get("seed"),
+            "cfg_scale": req.cfg_scale,
             "loras": result.metadata.get("loras", []),
             "duration_ms": result.usage.latency_ms,
             "image_url": record["url"],
