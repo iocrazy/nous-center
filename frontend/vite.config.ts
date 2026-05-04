@@ -21,6 +21,11 @@ export default defineConfig({
       // since PR #33. The :8001 target was for a legacy "system" service that
       // no longer exists; pointing it there used to return 500 on every login.
       '/sys': 'http://localhost:8000',
+      // Signed-URL static route for image_generate outputs. In prod the
+      // backend serves the SPA dist/ AND /files/* in one process (no proxy
+      // needed); in dev vite (:9999) and backend (:8000) are split, so we
+      // forward the path explicitly.
+      '/files/': 'http://localhost:8000',
       '/ws': { target: 'ws://localhost:8000', ws: true },
     },
   },

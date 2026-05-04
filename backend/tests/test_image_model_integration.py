@@ -58,6 +58,30 @@ def test_scan_local_models_walks_image_subcategories(tmp_path, monkeypatch):
     assert "image/vae/flux2-vae" in found
 
 
+def test_scan_local_models_emits_diffusers_full_layout_at_depth_2(tmp_path, monkeypatch):
+    """image/<MODEL>/ with model_index.json (ERNIE-Image style) → depth 2.
+    Component-bucket dirs without that marker stay at depth 3."""
+    base = tmp_path / "models"
+    (base / "image" / "ERNIE-Image").mkdir(parents=True)
+    (base / "image" / "ERNIE-Image" / "model_index.json").write_text(
+        '{"_class_name": "ErnieImagePipeline"}'
+    )
+    # also a depth-3 component bucket alongside
+    (base / "image" / "vae" / "flux2-vae").mkdir(parents=True)
+
+    from src.services import model_metadata_service as svc
+    settings = MagicMock()
+    settings.LOCAL_MODELS_PATH = str(base)
+    monkeypatch.setattr(svc, "get_settings", lambda: settings)
+
+    found = svc.scan_local_models()
+    assert "image/ERNIE-Image" in found        # depth 2 (full layout)
+    assert "image/vae/flux2-vae" in found      # depth 3 (component bucket)
+    # MUST NOT also surface ERNIE-Image's transformer / vae as depth-3
+    assert "image/ERNIE-Image/transformer" not in found
+    assert "image/ERNIE-Image/vae" not in found
+
+
 def test_scan_local_models_skips_image_files(tmp_path, monkeypatch):
     """Files (not dirs) under image/<sub>/ should not contribute entries."""
     base = tmp_path / "models"
