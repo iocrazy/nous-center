@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
-import { Zap, Check } from 'lucide-react'
+import { Zap, Check, ArrowUp, ArrowDown, X, Plus } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
@@ -8,6 +8,7 @@ import { DECLARATIVE_NODES, type WidgetDef } from '../../models/nodeRegistry'
 import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
 import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
+import { useLoras } from '../../api/loras'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
 
 function AgentSelectWidget({
@@ -28,6 +29,128 @@ function AgentSelectWidget({
         </option>
       ))}
     </NodeSelect>
+  )
+}
+
+interface LoraEntry {
+  name: string
+  strength: number
+}
+
+function LoraStackWidget({
+  value,
+  onChange,
+}: {
+  value: LoraEntry[]
+  onChange: (v: LoraEntry[]) => void
+}) {
+  const { data: loras } = useLoras()
+  const items = Array.isArray(value) ? value : []
+
+  const update = (next: LoraEntry[]) => onChange(next)
+  const add = () => update([...items, { name: '', strength: 1.0 }])
+  const remove = (idx: number) => update(items.filter((_, i) => i !== idx))
+  const move = (idx: number, dir: -1 | 1) => {
+    const target = idx + dir
+    if (target < 0 || target >= items.length) return
+    const next = items.slice()
+    ;[next[idx], next[target]] = [next[target], next[idx]]
+    update(next)
+  }
+  const setName = (idx: number, name: string) => {
+    const next = items.slice()
+    next[idx] = { ...next[idx], name }
+    update(next)
+  }
+  const setStrength = (idx: number, strength: number) => {
+    const next = items.slice()
+    next[idx] = { ...next[idx], strength }
+    update(next)
+  }
+
+  const btnStyle: React.CSSProperties = {
+    background: 'var(--bg-hover)',
+    border: '1px solid var(--border)',
+    borderRadius: 3,
+    padding: '2px 4px',
+    cursor: 'pointer',
+    color: 'var(--muted)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+      {items.map((row, idx) => (
+        <div key={idx} style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+          <NodeSelect
+            value={row.name}
+            onChange={(e) => setName(idx, e.target.value)}
+            style={{ flex: 1, minWidth: 0 }}
+          >
+            <option value="">选择 LoRA...</option>
+            {(loras ?? []).map((l) => (
+              <option key={l.name} value={l.name}>
+                {l.name}
+              </option>
+            ))}
+          </NodeSelect>
+          <div style={{ width: 50 }}>
+            <NodeNumberDrag
+              value={row.strength}
+              onChange={(v) => setStrength(idx, Number(v))}
+              min={-2}
+              max={2}
+              step={0.1}
+              precision={2}
+            />
+          </div>
+          <button
+            className="nodrag"
+            type="button"
+            aria-label={`上移 LoRA ${row.name || idx + 1}`}
+            onClick={() => move(idx, -1)}
+            style={btnStyle}
+          >
+            <ArrowUp size={10} />
+          </button>
+          <button
+            className="nodrag"
+            type="button"
+            aria-label={`下移 LoRA ${row.name || idx + 1}`}
+            onClick={() => move(idx, 1)}
+            style={btnStyle}
+          >
+            <ArrowDown size={10} />
+          </button>
+          <button
+            className="nodrag"
+            type="button"
+            aria-label={`删除 LoRA ${row.name || idx + 1}`}
+            onClick={() => remove(idx)}
+            style={{ ...btnStyle, color: 'var(--err)' }}
+          >
+            <X size={10} />
+          </button>
+        </div>
+      ))}
+      <button
+        className="nodrag"
+        type="button"
+        onClick={add}
+        style={{
+          ...btnStyle,
+          padding: '4px 6px',
+          color: 'var(--muted)',
+          fontSize: 10,
+          gap: 4,
+        }}
+      >
+        <Plus size={10} />
+        添加 LoRA
+      </button>
+    </div>
   )
 }
 
@@ -158,6 +281,13 @@ function WidgetRenderer({
           value={String(resolved ?? '')}
           onChange={(v) => onChange(v)}
           filter={widget.filter}
+        />
+      )
+    case 'lora_stack':
+      return (
+        <LoraStackWidget
+          value={Array.isArray(resolved) ? (resolved as LoraEntry[]) : []}
+          onChange={(v) => onChange(v)}
         />
       )
     default:
