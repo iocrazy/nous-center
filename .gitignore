@@ -54,3 +54,6 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 .claude/scheduled_tasks.lock
 .gstack/
+
+# Per-run eval output (committed baselines live in baselines/)
+backend/tests/evals/compact/latest_report.json

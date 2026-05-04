@@ -266,3 +266,61 @@ async def test_missing_paths_key_raises_on_load():
     backend = DiffusersImageBackend(paths={"transformer": "/x"})
     with pytest.raises(ValueError, match="text_encoder"):
         await backend.load(device="cuda:0")
+
+
+def test_resolve_path_absolutizes_relative_against_local_models_path(tmp_path, monkeypatch):
+    """Yaml stores paths relative to LOCAL_MODELS_PATH. _resolve_path MUST
+    absolutize them — diffusers' from_single_file refuses anything that
+    isn't an absolute path or HF hub id, so a relative path falls through
+    as a hub id and triggers a confusing 'not a valid model identifier'
+    error in production. Regression test for the bug found during real-GPU
+    E2E (path was being passed through verbatim).
+    """
+    from src.config import get_settings as _gs
+    from src.services import inference as _inf  # noqa: F401
+
+    # Build a fake LOCAL_MODELS_PATH with the file at a relative location
+    base = tmp_path / "models"
+    (base / "image" / "diffusion_models" / "flux2").mkdir(parents=True)
+    target = base / "image" / "diffusion_models" / "flux2" / "weights.safetensors"
+    target.write_bytes(b"x")
+
+    # Make get_settings().LOCAL_MODELS_PATH point at our tmp tree
+    settings = _gs()
+    monkeypatch.setattr(settings, "LOCAL_MODELS_PATH", str(base))
+
+    backend = DiffusersImageBackend(paths={
+        "transformer": "image/diffusion_models/flux2/weights.safetensors",
+        "text_encoder": "/abs/text_encoder",
+        "vae": "/abs/vae",
+    })
+
+    resolved = backend._resolve_path("transformer")
+    assert resolved == target  # absolutized + exists
+
+    # Absolute path with a non-existent file: must NOT clobber it (so HF
+    # hub ids like 'org/model' fall through unchanged for diffusers to handle)
+    resolved2 = backend._resolve_path("text_encoder")
+    assert str(resolved2) == "/abs/text_encoder"
+
+
+def test_resolve_path_returns_relative_unchanged_when_absolutized_missing(tmp_path, monkeypatch):
+    """If the absolutized candidate doesn't exist on disk, fall back to
+    the raw value so HF hub ids ('black-forest-labs/FLUX.2-dev' style)
+    still reach diffusers as-is instead of getting LOCAL_MODELS_PATH glued
+    onto them.
+    """
+    from src.config import get_settings as _gs
+
+    base = tmp_path / "empty"
+    base.mkdir()
+    settings = _gs()
+    monkeypatch.setattr(settings, "LOCAL_MODELS_PATH", str(base))
+
+    backend = DiffusersImageBackend(paths={
+        "transformer": "black-forest-labs/FLUX.2-dev",  # HF hub id
+        "text_encoder": "/x",
+        "vae": "/x",
+    })
+    resolved = backend._resolve_path("transformer")
+    assert str(resolved) == "black-forest-labs/FLUX.2-dev"

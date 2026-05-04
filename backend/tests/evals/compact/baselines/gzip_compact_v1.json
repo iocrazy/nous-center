@@ -1,7 +1,71 @@
 {
-  "note": "PLACEHOLDER baseline. Run `cd backend && CUDA_VISIBLE_DEVICES='' python -m tests.evals.compact.runner` to generate real values; then copy latest_report.json to this path.",
   "engine": "gzip-compact",
-  "fixtures_count": 0,
-  "avg_score": 0,
-  "results": []
+  "fixtures_count": 10,
+  "avg_score": 9.4,
+  "results": [
+    {
+      "id": "summary-after-python-basics",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    },
+    {
+      "id": "cross-turn-reference-expand",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    },
+    {
+      "id": "role-consistency-tutor",
+      "score": 7,
+      "truncated": false,
+      "missing": [
+        "加速度"
+      ]
+    },
+    {
+      "id": "code-generation-then-debug",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    },
+    {
+      "id": "multilingual-mixed",
+      "score": 7,
+      "truncated": false,
+      "missing": [
+        "English"
+      ]
+    },
+    {
+      "id": "long-doc-summary",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    },
+    {
+      "id": "fact-recall-names-dates",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    },
+    {
+      "id": "multimodal-placeholder",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    },
+    {
+      "id": "preference-concise-reply",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    },
+    {
+      "id": "persona-injection-first-turn",
+      "score": 10,
+      "truncated": false,
+      "missing": []
+    }
+  ]
 }
