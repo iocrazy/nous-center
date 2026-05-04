@@ -25,13 +25,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
 from src.api.response_cache import invalidate
-from src.api.routes.services import NAME_RE, ServiceDetailOut
+from src.api.routes.services import NAME_RE, ServiceDetailOut, _METER_DIM_BY_CATEGORY
 from src.models.database import get_async_session
 from src.models.schemas import ExposedParam
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
 
 router = APIRouter(prefix="/api/v1", tags=["workflow-publish"])
+
+# Output fields image_generate emits — exposed_outputs pointing at an
+# image_generate node may only reference one of these. Anything else is
+# either a typo (image_url vs image_uri) or a mistake about the envelope
+# shape; either way, surfacing 422 at publish time beats a 500 at runtime
+# when the caller hits the service.
+_IMAGE_GENERATE_OUTPUT_FIELDS = {
+    "image_url",
+    "image",          # base64 fallback for dev mode
+    "image_uuid",
+    "image_expires",
+    "media_type",
+    "width",
+    "height",
+    "steps",
+    "seed",
+    "loras",
+    "duration_ms",
+}
 
 
 def _snapshot_hash(snapshot: dict) -> str:
@@ -47,6 +66,39 @@ def _node_ids(snapshot: dict) -> set[str]:
     if isinstance(nodes, list):
         return {str(n.get("id")) for n in nodes if isinstance(n, dict) and n.get("id") is not None}
     return set()
+
+
+def _node_types_by_id(snapshot: dict) -> dict[str, str]:
+    """Map node_id → class_type for either snapshot shape."""
+    out: dict[str, str] = {}
+    nodes = snapshot.get("nodes")
+    if isinstance(nodes, dict):
+        for nid, node in nodes.items():
+            ct = node.get("class_type") if isinstance(node, dict) else None
+            if ct:
+                out[str(nid)] = str(ct)
+    elif isinstance(nodes, list):
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            nid = n.get("id")
+            ct = n.get("class_type") or n.get("type")
+            if nid is not None and ct:
+                out[str(nid)] = str(ct)
+    return out
+
+
+def _detect_category(snapshot: dict) -> str | None:
+    """Heuristic per-modality detection from the snapshot's node types.
+
+    Returned value drops into ServiceInstance.category + meter_dim. We
+    only cover image here in PR-7 — LLM/TTS/VL flow through the explicit
+    body.category path that quick-provision already controls.
+    """
+    types = set(_node_types_by_id(snapshot).values())
+    if "image_generate" in types:
+        return "image"
+    return None
 
 
 class PublishBody(BaseModel):
@@ -115,6 +167,7 @@ async def publish_workflow(
 
     snapshot = _build_snapshot(wf)
     valid_ids = _node_ids(snapshot)
+    types_by_id = _node_types_by_id(snapshot)
 
     # Hard contract: every exposed.node_id MUST resolve.
     for kind, params in (("input", body.exposed_inputs), ("output", body.exposed_outputs)):
@@ -128,6 +181,24 @@ async def publish_workflow(
                     ),
                 )
 
+    # Image envelope guard: a typo in input_name ("image_uri" vs
+    # "image_url") would silently publish a service whose response payload
+    # is `null`. Reject at publish time so the caller sees the mistake
+    # before any downstream consumer integrates against it.
+    for p in body.exposed_outputs:
+        if types_by_id.get(str(p.node_id)) != "image_generate":
+            continue
+        field = p.input_name
+        if field and field not in _IMAGE_GENERATE_OUTPUT_FIELDS:
+            raise HTTPException(
+                422,
+                detail=(
+                    f"exposed output input_name={field!r} is not emitted by "
+                    f"image_generate; allowed: "
+                    f"{sorted(_IMAGE_GENERATE_OUTPUT_FIELDS)}"
+                ),
+            )
+
     # Name collision: bump version on existing-name re-publish? v3 says
     # "禁止重命名，只允许 deprecate + new name". So we 409 on name collision
     # — callers are expected to either pick a new name or PATCH the old
@@ -140,14 +211,24 @@ async def publish_workflow(
 
     snapshot_hash = _snapshot_hash(snapshot)
 
+    # When the caller doesn't lock the category, infer from snapshot
+    # contents so meter_dim picks up the right unit (image → "images").
+    detected_category = _detect_category(snapshot)
+    resolved_category = body.category or detected_category or "app"
+    resolved_meter = (
+        body.meter_dim
+        or _METER_DIM_BY_CATEGORY.get(resolved_category)
+        or "calls"
+    )
+
     svc = ServiceInstance(
         name=body.name,
         type="inference",
         status="active",
         source_type="workflow",
         source_id=workflow_id,
-        category=body.category or "app",
-        meter_dim=body.meter_dim or "calls",
+        category=resolved_category,
+        meter_dim=resolved_meter,
         workflow_id=workflow_id,
         workflow_snapshot=snapshot,
         exposed_inputs=[p.model_dump(exclude_none=True) for p in body.exposed_inputs],
