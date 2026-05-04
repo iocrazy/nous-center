@@ -32,7 +32,7 @@ def with_signing_secret(monkeypatch):
 # ----- write_image -----
 
 
-def test_write_image_writes_under_dated_subdir(storage_tmp):
+def test_write_image_writes_under_dated_subdir(storage_tmp, with_signing_secret):
     from src.services.image_output_storage import write_image
 
     rec = write_image(b"\x89PNGFAKE", ext="png")
@@ -45,11 +45,14 @@ def test_write_image_writes_under_dated_subdir(storage_tmp):
     assert len(rec["uuid"]) == 32  # uuid4 hex
 
 
-def test_write_image_no_secret_yields_null_url(storage_tmp):
+def test_write_image_no_secret_yields_null_url(storage_tmp, monkeypatch):
+    """Conftest sets ADMIN_SESSION_SECRET (since p2-polish-3 the node
+    rejects empty); explicitly clear here to exercise the no-signing path."""
+    from src.config import get_settings
     from src.services.image_output_storage import write_image
 
+    monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "")
     rec = write_image(b"x", ext="png")
-    # conftest forces ADMIN_SESSION_SECRET="" → no signing
     assert rec["url"] is None
     assert rec["expires"] is None
 
@@ -103,9 +106,11 @@ def test_verify_token_rejects_expired(storage_tmp, with_signing_secret):
     assert verify_token("aaaa", expires, legit) is False
 
 
-def test_verify_token_rejects_when_no_secret(storage_tmp):
+def test_verify_token_rejects_when_no_secret(storage_tmp, monkeypatch):
+    from src.config import get_settings
     from src.services.image_output_storage import verify_token
-    # No secret → can't sign, can't verify
+
+    monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "")
     assert verify_token("aaaa", int(time.time()) + 3600, "anything") is False
 
 
@@ -163,10 +168,12 @@ async def test_image_route_403_when_token_missing(client):
 
 
 @pytest.mark.asyncio
-async def test_image_route_403_when_no_signing_secret(client):
-    """Conftest forces secret = "". Even a 'valid'-looking URL must reject
-    so a leaked URL from a one-off run with a transient secret can't
-    survive a deploy that rotated keys."""
+async def test_image_route_403_when_no_signing_secret(client, monkeypatch):
+    """Even a 'valid'-looking URL must reject so a leaked URL from a one-off
+    run with a transient secret can't survive a deploy that rotated keys."""
+    from src.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     expires = int(time.time()) + 3600
     url = f"/files/images/{today}/{'a' * 32}.png?token=deadbeef&expires={expires}"
@@ -242,17 +249,22 @@ async def test_image_generate_emits_url_when_secret_configured(
 
 
 @pytest.mark.asyncio
-async def test_image_generate_falls_back_to_base64_in_dev_mode(storage_tmp):
-    """No ADMIN_SESSION_SECRET → image_url is None, image (base64) is set."""
+async def test_image_generate_raises_when_no_signing_secret(storage_tmp, monkeypatch):
+    """Dev-mode base64 fallback was removed in p2-polish-3. With no
+    ADMIN_SESSION_SECRET write_image returns url=None and the node raises
+    ExecutionError pointing the operator at the missing config."""
     from unittest.mock import AsyncMock, MagicMock
+    from src.config import get_settings
     from src.services import workflow_executor as we
     from src.services.inference.base import InferenceResult, UsageMeter
     from src.services.nodes.image import ImageGenerateNode
 
+    monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "")
+
     async def _infer(req):
         return InferenceResult(
             media_type="image/png",
-            data=b"\x89PNG_DEV",
+            data=b"\x89PNG_NO_SECRET",
             metadata={"width": req.width, "height": req.height,
                       "steps": req.steps, "seed": req.seed, "loras": []},
             usage=UsageMeter(image_count=1, latency_ms=1),
@@ -265,13 +277,11 @@ async def test_image_generate_falls_back_to_base64_in_dev_mode(storage_tmp):
     mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
     we._model_manager = mgr
 
-    out = await ImageGenerateNode().invoke(
-        data={"model_key": "flux2-klein-9b"},
-        inputs={"prompt": "hi"},
-    )
-    assert out["image_url"] is None
-    import base64 as _b64
-    assert _b64.b64decode(out["image"]) == b"\x89PNG_DEV"
+    with pytest.raises(we.ExecutionError, match="ADMIN_SESSION_SECRET"):
+        await ImageGenerateNode().invoke(
+            data={"model_key": "flux2-klein-9b"},
+            inputs={"prompt": "hi"},
+        )
 
 
 def test_outputs_root_respects_env_override(monkeypatch, tmp_path):

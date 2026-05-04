@@ -256,17 +256,17 @@ function unwrapOutputs(
     return { audioBase64: '', sampleRate: 24000, duration: 0 }
   }
 
-  // Image workflows terminate at image_output. Pipe the envelope (image_url
-  // for the signed-URL path, image base64 for the dev-mode fallback, plus
-  // media_type/width/height) back into the node so ImageOutputNode flips
-  // from "等待生成" → preview without an extra round-trip.
+  // Image workflows terminate at image_output. Pipe the signed-URL envelope
+  // (image_url + media_type + width + height) back into the node so
+  // ImageOutputNode flips from "等待生成" → preview without an extra
+  // round-trip. Backend always emits a signed URL — base64 fallback was
+  // removed in p2-polish-3 because production always has a signing key.
   const imageOutputNode = workflow.nodes.find((n) => n.type === 'image_output')
   if (imageOutputNode) {
     const outputData = result.outputs[imageOutputNode.id] || {}
     const { updateNode } = useWorkspaceStore.getState()
     updateNode(imageOutputNode.id, {
       image_url: outputData.image_url ?? null,
-      image: outputData.image ?? '',
       media_type: outputData.media_type ?? 'image/png',
       width: outputData.width ?? null,
       height: outputData.height ?? null,

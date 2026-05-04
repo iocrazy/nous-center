@@ -22,18 +22,12 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   const [lightbox, setLightbox] = useState(false)
 
   const imageUrl = (data.image_url as string) || ''
-  const imageB64 = (data.image as string) || ''
   const mediaType = (data.media_type as string) || 'image/png'
-  // Prefer signed URL when present; fall back to inline base64 (dev mode).
   const dataUrl = imageUrl
-    ? imageUrl
-    : imageB64
-      ? `data:${mediaType};base64,${imageB64}`
-      : ''
 
   useEffect(() => {
-    if ((imageUrl || imageB64) && phase !== 'success') setPhase('success')
-  }, [imageUrl, imageB64, phase])
+    if (imageUrl && phase !== 'success') setPhase('success')
+  }, [imageUrl, phase])
 
   useEffect(() => {
     const handler = (event: Event) => {
