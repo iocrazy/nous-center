@@ -119,8 +119,34 @@ async def delete_task(
     return {"status": "deleted"}
 
 
+def _detect_image_meta(result: object) -> dict:
+    """Pluck task_type + size from a workflow result by scanning for the
+    image_output envelope shape. Stays None for non-image results so the
+    UI can skip the badge entirely.
+    """
+    out: dict = {"task_type": None, "image_width": None, "image_height": None}
+    if not isinstance(result, dict):
+        return out
+    for v in result.values():
+        if not isinstance(v, dict):
+            continue
+        media_type = v.get("media_type")
+        is_image = (
+            (isinstance(media_type, str) and media_type.startswith("image/"))
+            or "image_url" in v
+        )
+        if is_image:
+            out["task_type"] = "image"
+            w, h = v.get("width"), v.get("height")
+            if isinstance(w, int) and isinstance(h, int):
+                out["image_width"] = w
+                out["image_height"] = h
+            return out
+    return out
+
+
 def _task_to_dict(t: ExecutionTask) -> dict:
-    return {
+    d = {
         "id": str(t.id),
         "workflow_id": str(t.workflow_id) if t.workflow_id else None,
         "workflow_name": t.workflow_name,
@@ -134,3 +160,5 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
+    d.update(_detect_image_meta(t.result))
+    return d

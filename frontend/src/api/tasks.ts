@@ -15,6 +15,11 @@ export interface ExecutionTask {
   duration_ms: number | null
   created_at: string
   updated_at: string
+  /** Server-derived from result envelope. null until the run completes
+   * with an image_output, then 'image'. Used for the task card badge. */
+  task_type: 'image' | null
+  image_width: number | null
+  image_height: number | null
 }
 
 /** Fetch tasks once, then rely on WebSocket for updates. */
