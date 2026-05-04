@@ -484,3 +484,19 @@ async def test_lora_architecture_mismatch_raises_clear_error(tmp_path, _stub_dif
 
     with pytest.raises(ValueError, match="zero matching weights"):
         await backend.infer(_make_req(loras=[LoRASpec(name="sdxl-lora", strength=1.0)]))
+
+
+def test_lora_count_property_reflects_lora_paths(tmp_path, _stub_diffusers):
+    """Engines route reads adapter.lora_count to populate EngineInfo.lora_count."""
+    backend = DiffusersImageBackend(
+        paths=_paths(tmp_path),
+        lora_paths={"a": "/x/a.safetensors", "b": "/x/b.safetensors"},
+    )
+    assert backend.lora_count == 2
+
+
+def test_lora_count_property_zero_when_no_lora_paths():
+    backend = DiffusersImageBackend(
+        paths={"transformer": "/x", "text_encoder": "/y", "vae": "/z"}
+    )
+    assert backend.lora_count == 0

@@ -99,6 +99,23 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         except (ValueError, IndexError):
             gpu_field = 0
 
+    # Image adapters expose lora_count via property; pull it through when
+    # the model is loaded so the UI can show "<n> LoRA" without another
+    # round-trip to /api/v1/loras. Falls back to the static scanner count
+    # for unloaded image specs (operator can still see "would have N
+    # LoRAs available" before clicking load).
+    lora_count: int | None = None
+    if cfg.get("type") == "image":
+        if request is not None:
+            mgr = _get_model_manager(request)
+            if mgr is not None and mgr.is_loaded(key):
+                adapter = mgr.get_adapter(key)
+                if adapter is not None and hasattr(adapter, "lora_count"):
+                    lora_count = adapter.lora_count
+        if lora_count is None:
+            from src.services.lora_scanner import scan_loras
+            lora_count = len(scan_loras())
+
     info = EngineInfo(
         name=key,
         display_name=cfg["name"],
@@ -114,6 +131,7 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         loaded_gpu=_get_loaded_gpu(key, request) if loaded else None,
         loaded_gpus=_get_loaded_gpus(key, request) if loaded else None,
         status_detail=status_detail,
+        lora_count=lora_count,
     )
     if meta:
         info.organization = meta.organization

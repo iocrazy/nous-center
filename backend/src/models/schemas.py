@@ -108,6 +108,12 @@ class EngineInfo(BaseModel):
     has_adapter: bool = True
     loaded_gpu: int | None = None
     loaded_gpus: list[int] | None = None
+    # Image adapters expose how many LoRA weights they recognize for the
+    # active load. Surfaced in /api/v1/engines so the frontend EngineCard
+    # can show "12 LoRA" without an extra round-trip to /api/v1/loras.
+    # None for non-image engines and for image engines that haven't
+    # exposed lora_paths yet.
+    lora_count: int | None = None
 
 
 class EngineLoadResponse(BaseModel):

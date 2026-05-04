@@ -68,6 +68,12 @@ class DiffusersImageBackend(InferenceAdapter):
         self._loaded_loras: set[str] = set()
         self._pipe: Any = None  # diffusers Flux2Pipeline | FluxPipeline
 
+    @property
+    def lora_count(self) -> int:
+        """How many LoRAs this adapter knows about. Used by the engines
+        list endpoint to surface "<n> LoRA" badges in the UI."""
+        return len(self._lora_paths)
+
     def _resolve_path(self, key: str) -> Path:
         """Resolve a paths[key] entry to an absolute on-disk path.
 
