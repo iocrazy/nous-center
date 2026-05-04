@@ -256,6 +256,24 @@ function unwrapOutputs(
     return { audioBase64: '', sampleRate: 24000, duration: 0 }
   }
 
+  // Image workflows terminate at image_output. Pipe the envelope (image_url
+  // for the signed-URL path, image base64 for the dev-mode fallback, plus
+  // media_type/width/height) back into the node so ImageOutputNode flips
+  // from "等待生成" → preview without an extra round-trip.
+  const imageOutputNode = workflow.nodes.find((n) => n.type === 'image_output')
+  if (imageOutputNode) {
+    const outputData = result.outputs[imageOutputNode.id] || {}
+    const { updateNode } = useWorkspaceStore.getState()
+    updateNode(imageOutputNode.id, {
+      image_url: outputData.image_url ?? null,
+      image: outputData.image ?? '',
+      media_type: outputData.media_type ?? 'image/png',
+      width: outputData.width ?? null,
+      height: outputData.height ?? null,
+    })
+    return { audioBase64: '', sampleRate: 24000, duration: 0 }
+  }
+
   throw new Error('工作流执行完成但没有输出')
 }
 
@@ -282,7 +300,9 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
 
   if (nodes.length === 0) throw new Error('工作流为空')
 
-  const hasOutput = nodes.some((n) => n.type === 'output' || n.type === 'text_output')
+  const hasOutput = nodes.some(
+    (n) => n.type === 'output' || n.type === 'text_output' || n.type === 'image_output'
+  )
   if (!hasOutput) throw new Error('工作流缺少输出节点')
 
   // If workflow has plugin nodes, execute on backend (task record is created server-side)
