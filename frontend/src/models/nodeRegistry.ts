@@ -1,6 +1,6 @@
 import { NODE_DEFS, type PortDef, type NodeType } from './workflow'
 
-export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'checkbox' | 'agent_select' | 'model_select'
+export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'checkbox' | 'agent_select' | 'model_select' | 'lora_stack'
 
 export interface WidgetDef {
   name: string
@@ -113,6 +113,7 @@ export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
       { name: 'steps', label: '步数', widget: 'slider', min: 1, max: 100, step: 1, precision: 0, default: 25 },
       { name: 'cfg_scale', label: 'CFG', widget: 'slider', min: 0, max: 20, step: 0.5, precision: 1, default: 7.0 },
       { name: 'seed', label: '种子', widget: 'input' },
+      { name: 'loras', label: 'LoRA', widget: 'lora_stack' },
     ],
   },
 }

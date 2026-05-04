@@ -66,6 +66,11 @@ class ModelManager:
         v2: passes `paths: dict[str, str]` to the adapter __init__. Single-component
         adapters (vLLM/SGLang/TTS) read `paths['main']`; image-class adapters
         read `paths['transformer']`, `paths['text_encoder']`, `paths['vae']`.
+
+        For image specs, lora_paths is auto-injected from the lora_scanner
+        unless the yaml entry already supplied one. This means yaml never
+        has to enumerate individual LoRAs — drop a .safetensors into a
+        configured LORA_PATHS dir and it's available next adapter load.
         """
         dotted = spec.adapter_class
         module_path, _, class_name = dotted.rpartition(".")
@@ -75,7 +80,13 @@ class ModelManager:
             )
         module = importlib.import_module(module_path)
         cls = getattr(module, class_name)
-        return cls(paths=spec.paths, **spec.params)
+
+        params = dict(spec.params)
+        if spec.model_type == "image" and "lora_paths" not in params:
+            from src.services.lora_scanner import get_lora_paths
+            params["lora_paths"] = get_lora_paths()
+
+        return cls(paths=spec.paths, **params)
 
     def _detect_vllm_gpus_for_adapter(self, adapter) -> list[int]:
         """Map the adapter's subprocess (and its children) to GPU indices

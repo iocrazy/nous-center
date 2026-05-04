@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     NAS_MODELS_PATH: str = "/mnt/nas/models"
     NAS_OUTPUTS_PATH: str = "/mnt/nas/outputs"
     LOCAL_MODELS_PATH: str = "/media/heygo/Program/models/nous"
+    # Directories scanned by lora_scanner (comma-separated).
+    # Default includes ComfyUI loras dir so existing weights are reachable
+    # without copy / symlink. Image specs in models.yaml don't need to list
+    # individual LoRAs — registry injects them automatically into
+    # spec.params['lora_paths'].
+    LORA_PATHS: str = "/media/heygo/Program/models/comfyui/models/loras"
 
     COSYVOICE_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/CosyVoice"
     INDEXTTS_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/index-tts"
