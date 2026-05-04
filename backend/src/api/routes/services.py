@@ -106,7 +106,7 @@ class QuickProvisionBody(BaseModel):
 # ---------- Helpers ----------
 
 
-_METER_DIM_BY_CATEGORY = {"llm": "tokens", "tts": "chars", "vl": "calls"}
+_METER_DIM_BY_CATEGORY = {"llm": "tokens", "tts": "chars", "vl": "calls", "image": "images"}
 
 
 def _trivial_workflow_for(category: str, engine: str, params: dict[str, Any]) -> dict:
