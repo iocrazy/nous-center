@@ -42,6 +42,21 @@ const mockTasks = [
     result: null,
     current_node: null,
   },
+  {
+    id: 'wf_img_42',
+    workflow_name: 'flux-portrait',
+    status: 'completed',
+    nodes_done: 2,
+    nodes_total: 2,
+    duration_ms: 18500,
+    created_at: new Date().toISOString(),
+    error: null,
+    result: { 'node-1': { image_url: '/x.png', media_type: 'image/png' } },
+    current_node: null,
+    task_type: 'image',
+    image_width: 1024,
+    image_height: 1024,
+  },
 ]
 
 vi.mock('../../api/tasks', () => ({
@@ -66,7 +81,7 @@ describe('TaskPanel m15 alignment', () => {
 
   it('header summary shows correct counts', () => {
     render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
-    expect(screen.getByText(/1 运行中.*0 排队.*1 已完成/)).toBeTruthy()
+    expect(screen.getByText(/1 运行中.*0 排队.*2 已完成/)).toBeTruthy()
   })
 
   it('switching to 失败 tab shows only failed task', () => {
@@ -79,8 +94,16 @@ describe('TaskPanel m15 alignment', () => {
 
   it('switching to 最近 tab shows completed', () => {
     render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
-    fireEvent.click(screen.getByText('最近 1'))
+    fireEvent.click(screen.getByText('最近 2'))
     expect(screen.getByText('podcast-short')).toBeTruthy()
+    expect(screen.getByText('flux-portrait')).toBeTruthy()
+  })
+
+  it('image task surfaces icon + dimensions in 最近 tab', () => {
+    render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
+    fireEvent.click(screen.getByText('最近 2'))
+    expect(screen.getByLabelText('图像任务')).toBeTruthy()
+    expect(screen.getByText('1024×1024')).toBeTruthy()
   })
 
   it('hidden when open=false', () => {

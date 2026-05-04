@@ -4,6 +4,7 @@ import {
   Ban,
   CheckCircle2,
   Clock,
+  Image as ImageIcon,
   Loader2,
   RotateCcw,
   Trash2,
@@ -222,6 +223,13 @@ function TaskCard({ task }: { task: ExecutionTask }) {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <StatusIcon status={task.status} />
+        {task.task_type === 'image' && (
+          <ImageIcon
+            size={12}
+            aria-label="图像任务"
+            style={{ color: 'var(--info, #3b82f6)', flexShrink: 0 }}
+          />
+        )}
         <div
           style={{
             flex: 1,
@@ -264,6 +272,11 @@ function TaskCard({ task }: { task: ExecutionTask }) {
         {task.nodes_total > 0 && (
           <span>
             步骤 {task.nodes_done} / {task.nodes_total}
+          </span>
+        )}
+        {task.image_width && task.image_height && (
+          <span>
+            {task.image_width}×{task.image_height}
           </span>
         )}
         {task.duration_ms != null && task.duration_ms > 0 && (
