@@ -298,6 +298,25 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(log_cleanup_loop())
 
+        # Image output orphan reaper. PR-6's signed-URL TTL is 1h by
+        # default; once a URL expires the file is unreachable but stays
+        # on disk. Walk every 6h and delete files older than 24h
+        # (4× the URL TTL leaves enough room for a caller who fetched
+        # the URL near expiry to still pull the bytes once).
+        async def image_orphan_reap_loop(interval_seconds: int = 6 * 3600):
+            from src.services.image_output_storage import reap_orphans
+            while True:
+                try:
+                    reap_orphans(older_than_seconds=24 * 3600)
+                except Exception:
+                    logger.exception("image orphan reap error")
+                try:
+                    await asyncio.sleep(interval_seconds)
+                except asyncio.CancelledError:
+                    break
+
+        asyncio.create_task(image_orphan_reap_loop())
+
         async def context_cache_cleanup_loop(interval_seconds: int = 3600):
             from src.services.context_cache_service import cleanup_expired
             from src.models.database import create_session_factory as _csf

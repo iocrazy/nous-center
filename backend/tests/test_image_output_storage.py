@@ -285,3 +285,88 @@ def test_outputs_root_default_under_home(monkeypatch):
     from src.services.image_output_storage import _outputs_root
     root = _outputs_root()
     assert root == Path.home() / ".gstack" / "outputs" / "images"
+
+
+# ----- orphan reaper -----
+
+
+def test_reap_orphans_deletes_only_old_files(storage_tmp):
+    """Files older than cutoff get unlinked; fresh files survive."""
+    import os as _os
+    from src.services.image_output_storage import reap_orphans
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    bucket = storage_tmp / today
+    bucket.mkdir(parents=True)
+    fresh = bucket / "fresh.png"
+    old = bucket / "old.png"
+    fresh.write_bytes(b"\x89PNG-fresh")
+    old.write_bytes(b"\x89PNG-old")
+    # Backdate `old` 2 days
+    two_days = time.time() - 2 * 24 * 3600
+    _os.utime(old, (two_days, two_days))
+
+    summary = reap_orphans(older_than_seconds=24 * 3600)
+    assert summary["scanned"] == 2
+    assert summary["deleted"] == 1
+    assert fresh.exists()
+    assert not old.exists()
+
+
+def test_reap_orphans_prunes_empty_date_dirs(storage_tmp):
+    """After deletion the empty date subdir gets rmdir'd."""
+    import os as _os
+    from src.services.image_output_storage import reap_orphans
+
+    bucket = storage_tmp / "2026-04-01"
+    bucket.mkdir(parents=True)
+    f = bucket / "lonely.png"
+    f.write_bytes(b"x")
+    _os.utime(f, (time.time() - 7 * 24 * 3600, time.time() - 7 * 24 * 3600))
+
+    summary = reap_orphans(older_than_seconds=24 * 3600)
+    assert summary["deleted"] == 1
+    assert summary["dirs_pruned"] == 1
+    assert not bucket.exists()
+
+
+def test_reap_orphans_skips_non_image_files(storage_tmp):
+    """Stray .md / .log files alongside don't get touched even if old."""
+    import os as _os
+    from src.services.image_output_storage import reap_orphans
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    bucket = storage_tmp / today
+    bucket.mkdir(parents=True)
+    stray = bucket / "readme.md"
+    stray.write_bytes(b"keep me")
+    _os.utime(stray, (time.time() - 365 * 24 * 3600, time.time() - 365 * 24 * 3600))
+
+    reap_orphans(older_than_seconds=24 * 3600)
+    assert stray.exists()
+
+
+def test_reap_orphans_no_root_dir_returns_zero(monkeypatch, tmp_path):
+    """Outputs root never created yet → no error, summary all zeros."""
+    monkeypatch.setenv("NOUS_IMAGE_OUTPUTS", str(tmp_path / "missing"))
+    from src.services.image_output_storage import reap_orphans
+
+    summary = reap_orphans(older_than_seconds=3600)
+    assert summary == {"scanned": 0, "deleted": 0, "dirs_pruned": 0, "errors": 0}
+
+
+def test_reap_orphans_floor_60s(storage_tmp):
+    """older_than_seconds < 60 still keeps files newer than 60s — never
+    accidentally nuke a brand-new file by passing a 0 cutoff."""
+    from src.services.image_output_storage import reap_orphans
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    bucket = storage_tmp / today
+    bucket.mkdir(parents=True)
+    fresh = bucket / "just-written.png"
+    fresh.write_bytes(b"x")
+    # mtime = now (newer than the 60s floor)
+
+    summary = reap_orphans(older_than_seconds=0)  # operator passed 0
+    assert summary["deleted"] == 0
+    assert fresh.exists()
