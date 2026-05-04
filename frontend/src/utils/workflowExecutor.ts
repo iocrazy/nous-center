@@ -270,6 +270,11 @@ function unwrapOutputs(
       media_type: outputData.media_type ?? 'image/png',
       width: outputData.width ?? null,
       height: outputData.height ?? null,
+      // Generation metadata for the caption row.
+      seed: outputData.seed ?? null,
+      steps: outputData.steps ?? null,
+      cfg_scale: outputData.cfg_scale ?? null,
+      duration_ms: outputData.duration_ms ?? null,
     })
     return { audioBase64: '', sampleRate: 24000, duration: 0 }
   }

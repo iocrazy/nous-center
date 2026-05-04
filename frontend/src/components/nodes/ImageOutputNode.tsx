@@ -24,6 +24,19 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   const imageUrl = (data.image_url as string) || ''
   const mediaType = (data.media_type as string) || 'image/png'
   const dataUrl = imageUrl
+  const seed = data.seed as number | null | undefined
+  const steps = data.steps as number | null | undefined
+  const cfgScale = data.cfg_scale as number | null | undefined
+  const width = data.width as number | null | undefined
+  const height = data.height as number | null | undefined
+  const durationMs = data.duration_ms as number | null | undefined
+
+  const captionParts: string[] = []
+  if (seed !== null && seed !== undefined) captionParts.push(`seed: ${seed}`)
+  if (steps !== null && steps !== undefined) captionParts.push(`${steps} steps`)
+  if (cfgScale !== null && cfgScale !== undefined) captionParts.push(`cfg ${cfgScale}`)
+  if (width && height) captionParts.push(`${width}×${height}`)
+  if (durationMs !== null && durationMs !== undefined) captionParts.push(`${(durationMs / 1000).toFixed(1)}s`)
 
   useEffect(() => {
     if (imageUrl && phase !== 'success') setPhase('success')
@@ -162,6 +175,18 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
                 <Maximize2 size={10} />
                 放大
               </button>
+            </div>
+          )}
+          {phase === 'success' && captionParts.length > 0 && (
+            <div
+              style={{
+                fontSize: 9,
+                color: 'var(--muted)',
+                lineHeight: 1.4,
+                wordBreak: 'break-word',
+              }}
+            >
+              {captionParts.join(' · ')}
             </div>
           )}
         </div>
