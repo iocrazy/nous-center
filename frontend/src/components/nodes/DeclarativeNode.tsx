@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
-import { Zap, Check, ArrowUp, ArrowDown, X, Plus } from 'lucide-react'
+import { Zap, Check, ArrowUp, ArrowDown, X, Plus, ImageIcon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
@@ -314,6 +314,18 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   const firstTokenAtRef = useRef<number | null>(null)
   const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Image generation stage state (text_encode → denoise → vae_decode → done).
+  // Backend image adapter doesn't emit per-step events yet; phase advances on
+  // a known time budget driven by the node's `steps` config so the UI doesn't
+  // sit silent for ~50s. V1 will replace the timer with real per-step events
+  // once DiffusersImageBackend.infer_stream lands.
+  const [imageStage, setImageStage] = useState<{
+    phase: 'text_encode' | 'denoise' | 'vae_decode' | 'done'
+    elapsedSec: number
+  } | null>(null)
+  const imageStageTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const imageStartAtRef = useRef<number | null>(null)
+
   const updateStreamingStats = useCallback(() => {
     const count = tokenCountRef.current
     const first = firstTokenAtRef.current
@@ -350,11 +362,50 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         tokenCountRef.current = 0
         firstTokenAtRef.current = null
         setTokenStats(null)
+
+        // Image-only: start the 3-stage simulation. text_encode (~1s) →
+        // denoise (~stepsBudget) → vae_decode (~0.5s). Per-step time
+        // estimate is conservative for cpu_offload single-card; V1 swaps
+        // for real infer_stream events.
+        if (nodeType === 'image_generate') {
+          // Cancel any timers from a previous run on this node.
+          for (const t of imageStageTimersRef.current) clearTimeout(t)
+          imageStageTimersRef.current = []
+          imageStartAtRef.current = performance.now()
+
+          const steps = Math.max(1, Number(data.steps ?? 25))
+          const perStepSec = 1.0  // ernie cpu_offload baseline (see PR-8 verify: 10 steps in ~50s)
+          const denoiseSec = steps * perStepSec
+          const textEncodeSec = 1.0
+
+          setImageStage({ phase: 'text_encode', elapsedSec: 0 })
+          imageStageTimersRef.current.push(
+            setTimeout(() => setImageStage({ phase: 'denoise', elapsedSec: textEncodeSec }), textEncodeSec * 1000),
+            setTimeout(
+              () => setImageStage({ phase: 'vae_decode', elapsedSec: textEncodeSec + denoiseSec }),
+              (textEncodeSec + denoiseSec) * 1000,
+            ),
+          )
+        }
       }
       if (data.type === 'node_complete' && data.node_id === id) {
         if (throttleRef.current) {
           clearTimeout(throttleRef.current)
           throttleRef.current = null
+        }
+        // Image-only: stop the simulated stage timers and pin "done" with
+        // the actual elapsed from backend duration_ms (or measured locally).
+        if (nodeType === 'image_generate') {
+          for (const t of imageStageTimersRef.current) clearTimeout(t)
+          imageStageTimersRef.current = []
+          const start = imageStartAtRef.current
+          const realElapsed = data.duration_ms
+            ? data.duration_ms / 1000
+            : start
+              ? (performance.now() - start) / 1000
+              : 0
+          setImageStage({ phase: 'done', elapsedSec: realElapsed })
+          imageStartAtRef.current = null
         }
         const usage = data.usage
         const durationMs = data.duration_ms
@@ -386,8 +437,10 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
     return () => {
       window.removeEventListener('node-progress', handler as any)
       if (throttleRef.current) clearTimeout(throttleRef.current)
+      for (const t of imageStageTimersRef.current) clearTimeout(t)
+      imageStageTimersRef.current = []
     }
-  }, [id, updateStreamingStats])
+  }, [id, nodeType, data.steps, updateStreamingStats])
 
   if (!declDef || !portDef) return null
 
@@ -451,6 +504,30 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
               输入 {tokenStats.inputTokens} · 输出 {tokenStats.outputTokens} · 合计 {tokenStats.totalTokens} · {tokenStats.tokensPerSec} tok/s · {tokenStats.durationSec}s
             </span>
           )}
+        </div>
+      )}
+      {imageStage && (
+        <div
+          className="flex items-center gap-1.5"
+          style={{
+            fontSize: 9,
+            color: 'var(--muted)',
+            padding: '4px 10px 6px',
+            transition: 'opacity 0.5s',
+            opacity: imageStage.phase === 'done' ? 0.7 : 1,
+          }}
+        >
+          {imageStage.phase === 'done' ? (
+            <Check size={10} style={{ color: 'var(--ok)', flexShrink: 0 }} />
+          ) : (
+            <ImageIcon size={10} style={{ color: 'var(--info)', flexShrink: 0 }} />
+          )}
+          <span>
+            {imageStage.phase === 'text_encode' && 'Text encode...'}
+            {imageStage.phase === 'denoise' && `Denoise (~${Math.max(1, Math.round(Number(data.steps ?? 25)))} steps)...`}
+            {imageStage.phase === 'vae_decode' && 'VAE decode...'}
+            {imageStage.phase === 'done' && `完成 · ${Math.round(imageStage.elapsedSec * 10) / 10}s`}
+          </span>
         </div>
       )}
     </BaseNode>
