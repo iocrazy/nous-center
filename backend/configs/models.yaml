@@ -104,3 +104,12 @@ models:
   resident: true
   type: image
   vram_mb: 24000
+- adapter: src.services.inference.image_diffusers.DiffusersImageBackend
+  id: ernie-image
+  paths:
+    main: image/ERNIE-Image
+  params:
+    offload_strategy: single_card_offload
+  resident: false
+  type: image
+  vram_mb: 24000
