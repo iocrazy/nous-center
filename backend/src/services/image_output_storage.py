@@ -119,3 +119,54 @@ def resolve_path(date: str, uuid_str: str, ext: str) -> Path:
     caller-supplied date+uuid until verify_token has succeeded.
     """
     return _outputs_root() / date / f"{uuid_str}.{ext}"
+
+
+def reap_orphans(*, older_than_seconds: int) -> dict:
+    """Delete generated images older than `older_than_seconds`.
+
+    Run from a backend lifespan task. Walks every <date>/ subdir under
+    NOUS_IMAGE_OUTPUTS and unlinks files whose mtime is past the cutoff.
+    Empty <date>/ dirs are pruned afterwards so the listing stays tidy.
+
+    Returns a summary {scanned, deleted, dirs_pruned, errors} so the
+    caller can log it. Skips non-image extensions (defensive — the
+    static route only serves png/jpg/webp anyway, but operator may have
+    dropped readme/log files alongside).
+    """
+    root = _outputs_root()
+    summary = {"scanned": 0, "deleted": 0, "dirs_pruned": 0, "errors": 0}
+    if not root.exists():
+        return summary
+
+    cutoff = time.time() - max(60, int(older_than_seconds))
+    allowed_ext = {".png", ".jpg", ".jpeg", ".webp"}
+
+    for date_dir in sorted(root.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        for f in date_dir.iterdir():
+            if not f.is_file() or f.suffix.lower() not in allowed_ext:
+                continue
+            summary["scanned"] += 1
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    summary["deleted"] += 1
+            except OSError as e:
+                logger.warning("reap_orphans: failed to unlink %s: %s", f, e)
+                summary["errors"] += 1
+        # Prune the date dir if it's empty after deletion.
+        try:
+            if not any(date_dir.iterdir()):
+                date_dir.rmdir()
+                summary["dirs_pruned"] += 1
+        except OSError:
+            pass
+
+    if summary["deleted"] or summary["dirs_pruned"]:
+        logger.info(
+            "image_output_storage.reap_orphans: scanned=%d deleted=%d dirs_pruned=%d errors=%d (cutoff=%ds)",
+            summary["scanned"], summary["deleted"], summary["dirs_pruned"],
+            summary["errors"], older_than_seconds,
+        )
+    return summary
