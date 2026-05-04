@@ -228,6 +228,25 @@ class DiffusersImageBackend(InferenceAdapter):
                         f"(have: {sorted(self._lora_paths)})"
                     )
                 self._pipe.load_lora_weights(lora_path, adapter_name=spec.name)
+                # diffusers' load_lora_weights silently no-ops when the
+                # LoRA's tensor names don't match the pipeline architecture
+                # (e.g. an SDXL/SD1.5 LoRA on a Flux2/ERNIE pipeline). The
+                # downstream set_adapters then explodes with the cryptic
+                # "not in the list of present adapters: set()". Detect the
+                # architecture mismatch HERE with a useful message.
+                active = self._pipe.get_active_adapters() or []
+                # peft sometimes registers without activating; check both
+                if spec.name not in active and spec.name not in (
+                    getattr(self._pipe, "peft_config", {}) or {}
+                ):
+                    raise ValueError(
+                        f"LoRA {spec.name!r} loaded zero matching weights for "
+                        f"this pipeline ({type(self._pipe).__name__}). The "
+                        f"LoRA's tensor names don't match the model's "
+                        f"transformer layout — most often this means a "
+                        f"SD/SDXL LoRA was applied to a Flux/ERNIE pipeline. "
+                        f"Use a LoRA trained against the same base architecture."
+                    )
                 self._loaded_loras.add(spec.name)
 
             self._pipe.set_adapters(
