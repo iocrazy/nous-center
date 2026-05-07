@@ -181,15 +181,39 @@ async def test_preload_tasks_persist_on_app_state(monkeypatch):
 
 
 def test_models_yaml_includes_flux2_klein():
-    """Sanity: the new flux2-klein-9b yaml entry parses and exposes the
-    3-component paths shape."""
+    """Sanity: flux2-klein-9b yaml entry parses with the simplified single-path
+    layout (paths.main → BFL diffusers full layout dir).
+
+    PR #72 collapsed the 3-component (transformer / text_encoder / vae) paths
+    onto a single `main:` pointing at the diffusers-style dir, matching ERNIE
+    and what `_load_from_pretrained` expects.
+    """
     from src.config import load_model_configs
     cfgs = load_model_configs()
     assert "flux2-klein-9b" in cfgs
     flux = cfgs["flux2-klein-9b"]
     assert flux["type"] == "image"
     assert flux["resident"] is True
-    assert set(flux["paths"]) == {"transformer", "text_encoder", "vae"}
+    assert set(flux["paths"]) == {"main"}
     assert flux["adapter"].endswith("DiffusersImageBackend")
-    # local_path derives from transformer's parent
-    assert flux["local_path"] == str(Path(flux["paths"]["transformer"]).parent)
+    # local_path is the main dir itself
+    assert flux["local_path"] == str(Path(flux["paths"]["main"]))
+
+
+def test_models_yaml_includes_flux2_klein_wikeeyang():
+    """V0.6 P3: wikeeyang fp8mixed quantized variant yaml entry.
+
+    Uses BFL diffusers full layout for everything except transformer weights,
+    which come from a single fp8mixed safetensors. The runtime path runs a
+    dequant→bf16 step before handing state_dict to diffusers' built-in
+    convert_flux2_transformer_checkpoint_to_diffusers.
+    """
+    from src.config import load_model_configs
+    cfgs = load_model_configs()
+    assert "flux2-klein-9b-wikeeyang-fp8" in cfgs
+    spec = cfgs["flux2-klein-9b-wikeeyang-fp8"]
+    assert spec["type"] == "image"
+    # Both base layout + quantized transformer override
+    assert set(spec["paths"]) == {"main", "quantized_transformer"}
+    assert spec["paths"]["quantized_transformer"].endswith("fp8mixed.safetensors")
+    assert spec["adapter"].endswith("DiffusersImageBackend")

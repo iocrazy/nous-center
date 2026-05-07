@@ -103,6 +103,17 @@ models:
   type: image
   vram_mb: 24000
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
+  id: flux2-klein-9b-wikeeyang-fp8
+  paths:
+    main: image/Flux2-klein-9B
+    quantized_transformer: image/Flux2-klein-9B/transformer/quantized/Flux2-Klein-9B-True-v2-fp8mixed.safetensors
+  params:
+    offload_strategy: single_card_offload
+    quantized_dequant_to: bfloat16
+  resident: false
+  type: image
+  vram_mb: 18000
+- adapter: src.services.inference.image_diffusers.DiffusersImageBackend
   id: ernie-image
   paths:
     main: image/ERNIE-Image
