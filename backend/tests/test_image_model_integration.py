@@ -193,7 +193,7 @@ def test_models_yaml_includes_flux2_klein():
     assert "flux2-klein-9b" in cfgs
     flux = cfgs["flux2-klein-9b"]
     assert flux["type"] == "image"
-    assert flux["resident"] is True
+    assert flux["resident"] is False
     assert set(flux["paths"]) == {"main"}
     assert flux["adapter"].endswith("DiffusersImageBackend")
     # local_path is the main dir itself
@@ -210,8 +210,8 @@ def test_models_yaml_includes_flux2_klein_wikeeyang():
     """
     from src.config import load_model_configs
     cfgs = load_model_configs()
-    assert "flux2-klein-9b-wikeeyang-fp8" in cfgs
-    spec = cfgs["flux2-klein-9b-wikeeyang-fp8"]
+    assert "flux2-klein-9b-true-v2-fp8mixed" in cfgs
+    spec = cfgs["flux2-klein-9b-true-v2-fp8mixed"]
     assert spec["type"] == "image"
     # Both base layout + quantized transformer override
     assert set(spec["paths"]) == {"main", "quantized_transformer"}

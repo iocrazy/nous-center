@@ -95,33 +95,38 @@ models:
   vram_mb: 8000
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
   id: flux2-klein-9b
+  params:
+    accepts_lora_archs:
+    - flux2
+    - flux1
+    offload_strategy: single_card_offload
   paths:
     main: image/Flux2-klein-9B
-  params:
-    offload_strategy: single_card_offload
-    accepts_lora_archs: [flux2, flux1]
-  resident: true
+  resident: false
   type: image
   vram_mb: 24000
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
-  id: flux2-klein-9b-wikeeyang-fp8
+  id: flux2-klein-9b-true-v2-fp8mixed
+  params:
+    accepts_lora_archs:
+    - flux2
+    - flux1
+    offload_strategy: single_card_offload
+    quantized_dequant_to: bfloat16
   paths:
     main: image/Flux2-klein-9B
     quantized_transformer: image/Flux2-klein-9B/transformer/quantized/Flux2-Klein-9B-True-v2-fp8mixed.safetensors
-  params:
-    offload_strategy: single_card_offload
-    quantized_dequant_to: bfloat16
-    accepts_lora_archs: [flux2, flux1]
   resident: false
   type: image
   vram_mb: 18000
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
   id: ernie-image
+  params:
+    accepts_lora_archs:
+    - ernie
+    offload_strategy: single_card_offload
   paths:
     main: image/ERNIE-Image
-  params:
-    offload_strategy: single_card_offload
-    accepts_lora_archs: [ernie]
   resident: false
   type: image
   vram_mb: 24000
