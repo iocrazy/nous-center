@@ -99,27 +99,22 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         except (ValueError, IndexError):
             gpu_field = 0
 
-    # Image adapters expose lora_count via property; pull it through when
-    # the model is loaded. Falls back to architecture-filtered scanner count
-    # for unloaded image specs (operator sees "N compatible LoRAs" before
-    # clicking load).
+    # Image card chip: "<n> LoRA" — always architecture-filtered count, even
+    # when the model is loaded. Adapter holds ALL scanned LoRAs internally
+    # so existing workflows can reference incompatible ones (the apply path
+    # produces a friendly error if architecture mismatches at runtime). The
+    # chip should show the *useful* count, not the raw collection size, and
+    # must be consistent loaded vs unloaded — otherwise the same model
+    # flips from "12 LoRA" to "0 LoRA" just by toggling resident state.
     #
-    # V0.6 P4: lora_count is now per-model. yaml `params.accepts_lora_archs`
-    # lists which detected LoRA architectures this model can load (e.g.
-    # ['flux1', 'flux2'] for Flux2 Klein). Empty/missing → "everything"
-    # (legacy behaviour).
+    # yaml `params.accepts_lora_archs` lists architectures this model can
+    # load (e.g. ['flux1', 'flux2'] for Flux2 Klein). Empty/missing →
+    # "everything" (legacy behaviour, falls back to total count).
     lora_count: int | None = None
     if cfg.get("type") == "image":
         accepts = (cfg.get("params") or {}).get("accepts_lora_archs") or []
-        if request is not None:
-            mgr = _get_model_manager(request)
-            if mgr is not None and mgr.is_loaded(key):
-                adapter = mgr.get_adapter(key)
-                if adapter is not None and hasattr(adapter, "lora_count"):
-                    lora_count = adapter.lora_count
-        if lora_count is None:
-            from src.services.lora_scanner import count_loras_for_arches
-            lora_count = count_loras_for_arches(accepts)
+        from src.services.lora_scanner import count_loras_for_arches
+        lora_count = count_loras_for_arches(accepts)
 
     info = EngineInfo(
         name=key,
