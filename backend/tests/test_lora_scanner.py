@@ -298,3 +298,94 @@ def test_loras_dir_sanity():
     dirs = _search_dirs()
     assert all(isinstance(d, Path) for d in dirs)
     assert len(dirs) >= 1
+
+
+# ===== V0.6 P4: arch detection + per-model count =====
+
+
+def test_arch_from_metadata_recognises_standard_modelspec():
+    from src.services.lora_scanner import _arch_from_metadata
+    assert _arch_from_metadata({"modelspec.architecture": "stable-diffusion-xl-v1-base/lora"}) == "sdxl"
+    assert _arch_from_metadata({"modelspec.architecture": "stable-diffusion-v1/lora"}) == "sd1.5"
+    assert _arch_from_metadata({"modelspec.architecture": "flux-2-klein/lora"}) == "flux2"
+    assert _arch_from_metadata({"modelspec.architecture": "flux-1-dev/lora"}) == "flux1"
+    # Fallback on ss_base_model_version (no modelspec set)
+    assert _arch_from_metadata({"ss_base_model_version": "sdxl_base_v1"}) == "sdxl"
+    assert _arch_from_metadata({"ss_base_model_version": "sd_v1"}) == "sd1.5"
+    # Unknown / empty
+    assert _arch_from_metadata(None) is None
+    assert _arch_from_metadata({}) is None
+    assert _arch_from_metadata({"modelspec.architecture": "unrecognised"}) is None
+
+
+def test_arch_from_keys_sniffs_kohya_format():
+    from src.services.lora_scanner import _arch_from_keys
+    # SDXL — has te1 + te2 (two text encoders)
+    sdxl_keys = ["lora_te1_text_model_encoder_layers_0_mlp_fc1.alpha",
+                 "lora_te2_text_model_encoder_layers_0_mlp_fc1.alpha",
+                 "lora_unet_input_blocks_1_0_in_layers_2.alpha"]
+    assert _arch_from_keys(sdxl_keys) == "sdxl"
+    # SD1.5 — single te_legacy + input_blocks
+    sd15_keys = ["lora_te_text_model_encoder_layers_0_mlp_fc1.alpha",
+                 "lora_unet_input_blocks_1_0_in_layers_2.alpha"]
+    assert _arch_from_keys(sd15_keys) == "sd1.5"
+    # Flux family
+    flux_keys = ["double_blocks.0.img_attn.qkv.lora_A.weight",
+                 "single_blocks.0.linear1.lora_A.weight"]
+    assert _arch_from_keys(flux_keys) == "flux1"
+    # PEFT diffusers format (SD3 / Flux2 PEFT)
+    peft_keys = ["transformer_blocks.0.attn.to_q.lora_A.weight"]
+    assert _arch_from_keys(peft_keys) == "sd3"
+    # Unrecognised
+    assert _arch_from_keys(["random.weight"]) is None
+
+
+def test_arch_from_subdir_recognises_comfyui_buckets():
+    from src.services.lora_scanner import _arch_from_subdir
+    assert _arch_from_subdir("1_sdxl") == "sdxl"
+    assert _arch_from_subdir("5_sd1.5") == "sd1.5"
+    assert _arch_from_subdir("flux2_klein") == "flux2"
+    assert _arch_from_subdir("flux") == "flux1"
+    assert _arch_from_subdir("0_official") is None
+    assert _arch_from_subdir("") is None
+
+
+def test_count_loras_for_arches_filters_correctly(tmp_path, monkeypatch):
+    """count_loras_for_arches([accepts]) returns subset that matches one of
+    the listed arches. Empty accepts list returns full count (legacy)."""
+    root = tmp_path / "loras"
+    (root / "1_sdxl").mkdir(parents=True)
+    (root / "5_sd1.5").mkdir()
+    (root / "1_sdxl" / "x.safetensors").write_bytes(b"x")
+    (root / "5_sd1.5" / "y.safetensors").write_bytes(b"x")
+    (root / "5_sd1.5" / "z.safetensors").write_bytes(b"x")
+    _settings_with(monkeypatch, str(root))
+    from src.services.lora_scanner import count_loras_for_arches, invalidate_cache
+    invalidate_cache()
+
+    # Empty list = full count (legacy "accepts everything")
+    assert count_loras_for_arches([]) == 3
+    # Filter to SDXL only
+    assert count_loras_for_arches(["sdxl"]) == 1
+    # Filter to SD1.5 only
+    assert count_loras_for_arches(["sd1.5"]) == 2
+    # Multi-accept
+    assert count_loras_for_arches(["sdxl", "sd1.5"]) == 3
+    # Arch with 0 matches
+    assert count_loras_for_arches(["flux2"]) == 0
+
+
+def test_invalidate_cache_forces_rescan(tmp_path, monkeypatch):
+    root = tmp_path / "loras"
+    root.mkdir()
+    (root / "first.safetensors").write_bytes(b"x")
+    _settings_with(monkeypatch, str(root))
+    from src.services.lora_scanner import scan_loras, invalidate_cache
+
+    out1 = scan_loras()
+    assert len(out1) == 1
+    # Add a new LoRA, scan_loras should still see 1 (cached)
+    (root / "second.safetensors").write_bytes(b"x")
+    assert len(scan_loras()) == 1
+    invalidate_cache()
+    assert len(scan_loras()) == 2
