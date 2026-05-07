@@ -31,7 +31,7 @@ async def create_workflow(
     return wf
 
 
-@router.get("")
+@router.get("", response_model=list[WorkflowOut])
 @cached("workflows", ttl=30)
 async def list_workflows(
     request: Request,
@@ -45,7 +45,14 @@ async def list_workflows(
     if auto_generated is not None:
         stmt = stmt.where(Workflow.auto_generated == auto_generated)
     result = await session.execute(stmt)
-    return result.scalars().all()
+    # Force Pydantic serialization NOW (not via response_model alone) so the
+    # @cached layer stores the JSON-shaped dicts with id-as-string. Without
+    # this, ORM Workflow objects flow through cached() and then FastAPI
+    # serializes them after — losing field_serializer("id") and shipping
+    # snowflake IDs as raw numbers (which JS truncates to 17 digits, making
+    # every workflow look like the same one to the router).
+    rows = result.scalars().all()
+    return [WorkflowOut.model_validate(r).model_dump(mode="json") for r in rows]
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)
@@ -162,16 +169,25 @@ async def execute_workflow_direct(
     # Progress channel: client opens /ws/workflow/{channel_id} *before* POST
     # and we push node_start/complete/error events into that bucket.
     channel_id = body.get("channel_id")
+    logger.warning(
+        "DIAG execute_workflow_direct: channel_id=%r body_keys=%s nodes=%d",
+        channel_id, sorted(body.keys()), len(nodes),
+    )
 
     async def broadcast_progress(event: dict):
         if not channel_id:
             return
         from src.api.main import _ws_connections
-        for ws in list(_ws_connections.get(channel_id, [])):
+        ws_list = list(_ws_connections.get(channel_id, []))
+        logger.warning(
+            "DIAG broadcast_progress: channel=%s ws_count=%d type=%s node_id=%s",
+            channel_id, len(ws_list), event.get("type"), event.get("node_id"),
+        )
+        for ws in ws_list:
             try:
                 await ws.send_json(event)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("broadcast_progress send failed: %s", e)
 
     executor = WorkflowExecutor(
         {"nodes": nodes, "edges": edges},

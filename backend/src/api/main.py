@@ -44,11 +44,30 @@ async def lifespan(app: FastAPI):
     import src.models.api_gateway  # noqa: F401
     import src.models.admin_credentials  # noqa: F401
 
-    engine = create_engine()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await engine.dispose()
-    logger.info("Database tables ensured")
+    # Retry DB connect: docker postgres 容器可能 backend 启动时还在 healthcheck 阶段
+    # (race condition seen 2026-05-07). Backoff: 2s, 4s, 8s, 16s, 32s, 60s = 122s 总等
+    # 超时再死。SQLite URL 永远 1 次成功,这个循环退化为零成本。
+    import asyncio as _asyncio
+    last_err = None
+    for attempt in range(6):
+        try:
+            engine = create_engine()
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            await engine.dispose()
+            logger.info("Database tables ensured%s", f" (after {attempt} retries)" if attempt else "")
+            break
+        except Exception as e:
+            last_err = e
+            wait_s = min(2 ** (attempt + 1), 60)
+            logger.warning(
+                "DB connect attempt %d failed: %s — retrying in %ds",
+                attempt + 1, type(e).__name__, wait_s,
+            )
+            await _asyncio.sleep(wait_s)
+    else:
+        logger.error("DB connect failed after 6 retries; last error: %s", last_err)
+        raise last_err
 
     # Initialize log database
     from src.services.log_db import init_log_db

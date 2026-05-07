@@ -96,9 +96,7 @@ models:
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
   id: flux2-klein-9b
   paths:
-    transformer: image/diffusion_models/Flux2-Klein-9B-True-V2/Flux2-Klein-9B-True-v2-bf16.safetensors
-    text_encoder: ../comfyui/models/text_encoders/qwen_3_8b_fp8mixed.safetensors
-    vae: image/vae/flux2-vae.safetensors
+    main: image/Flux2-klein-9B
   params:
     offload_strategy: single_card_offload
   resident: true
