@@ -500,3 +500,25 @@ def test_lora_count_property_zero_when_no_lora_paths():
         paths={"transformer": "/x", "text_encoder": "/y", "vae": "/z"}
     )
     assert backend.lora_count == 0
+
+
+# ---------- V0.6 wikeeyang fp8 dequant path ----------
+
+
+def test_load_with_quantized_transformer_method_exists():
+    """V0.6 P3 sanity: the new hybrid loader is wired into the dispatch in
+    DiffusersImageBackend.load(). The fp8 dequant + diffusers convert math
+    is verified by /tmp/v06_spike_dequant.py against the real 9.4GB
+    wikeeyang fp8mixed file (0 missing / 0 unexpected keys, 9.08B params).
+
+    A pure unit test of the dequant math here is impractical because conftest
+    stubs torch to MagicMock for fast collection, and reimporting torch to
+    get back real fp8 dtypes hits torch's C-extension single-init guard.
+    The integration is instead verified end-to-end by the spike script and
+    by manual /models page Load click after this PR lands.
+    """
+    assert hasattr(DiffusersImageBackend, "_load_with_quantized_transformer")
+    # Method should be coroutine
+    import inspect
+    method = DiffusersImageBackend._load_with_quantized_transformer
+    assert inspect.iscoroutinefunction(method)

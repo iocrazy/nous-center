@@ -135,7 +135,9 @@ class DiffusersImageBackend(InferenceAdapter):
         import torch
         dtype = getattr(torch, self._torch_dtype)
 
-        if "main" in self.paths and "transformer_override" in self.paths:
+        if "main" in self.paths and "quantized_transformer" in self.paths:
+            await self._load_with_quantized_transformer(dtype)
+        elif "main" in self.paths and "transformer_override" in self.paths:
             await self._load_pretrained_with_single_file_transformer(dtype)
         elif "main" in self.paths:
             await self._load_from_pretrained(dtype)
@@ -161,6 +163,87 @@ class DiffusersImageBackend(InferenceAdapter):
         # falling back to a stock pipeline that doesn't fit the model.
         self._pipe = DiffusionPipeline.from_pretrained(
             str(path),
+            torch_dtype=dtype,
+            trust_remote_code=True,
+        )
+
+    async def _load_with_quantized_transformer(self, dtype) -> None:
+        """V0.6: load wikeeyang fp8mixed via manual dequant + diffusers' built-in
+        ComfyUI→diffusers key converter.
+
+        Why this exists: diffusers ships a ``convert_flux2_transformer_checkpoint_to_diffusers``
+        in ``loaders/single_file_utils.py`` that handles all of ComfyUI's standard
+        Flux2 key naming (FLUX2_TRANSFORMER_KEYS_RENAME_DICT + double/single block
+        maps). It crashes on wikeeyang's quantized format though, because the
+        ``.weight_scale`` 0-d scalars get fed through ``torch.chunk(..., 3)`` for
+        QKV splitting (single_file_utils.py:3881).
+
+        The fix: pre-process the state_dict so diffusers only sees clean bf16
+        tensors, then call the built-in converter with no surprises.
+
+        Pipeline: load_file → dequant fp8*scale → drop .comfy_quant/.weight_scale →
+        convert_flux2_transformer_checkpoint_to_diffusers → empty model + load_state_dict.
+        """
+        import json
+        import torch
+        from safetensors.torch import load_file
+        from diffusers import DiffusionPipeline, Flux2Transformer2DModel
+        from diffusers.loaders.single_file_utils import (
+            convert_flux2_transformer_checkpoint_to_diffusers,
+        )
+
+        main_path = self._resolve_path("main")
+        sf_path = self._resolve_path("quantized_transformer")
+        transformer_config_path = main_path / "transformer" / "config.json"
+
+        logger.info("image: loading quantized transformer state_dict %s", sf_path)
+        raw_sd = load_file(str(sf_path))
+
+        # Dequant fp8 → target dtype (default bf16). Each fp8 weight has a
+        # companion `.weight_scale` (0-d F32 scalar) for per-tensor scale.
+        # `.comfy_quant` (U8 metadata) is dropped — diffusers doesn't need it.
+        clean_sd: dict = {}
+        fp8_count = 0
+        for k, v in raw_sd.items():
+            if k.endswith(".comfy_quant") or k.endswith(".weight_scale"):
+                continue
+            if v.dtype == torch.float8_e4m3fn:
+                scale = raw_sd.get(k + "_scale")
+                if scale is not None:
+                    clean_sd[k] = (v.to(torch.float32) * scale.to(torch.float32)).to(dtype)
+                else:
+                    clean_sd[k] = v.to(dtype)
+                fp8_count += 1
+            else:
+                clean_sd[k] = v.to(dtype) if v.dtype in (torch.float32, torch.float16) else v
+        del raw_sd
+        logger.info(
+            "image: dequant fp8→%s done — %d fp8 weights, %d total clean keys",
+            dtype, fp8_count, len(clean_sd),
+        )
+
+        # Diffusers built-in remap: ComfyUI naming → diffusers naming +
+        # auto QKV split. Now safe because state_dict is clean bf16.
+        transformer_config = json.loads(transformer_config_path.read_text())
+        diffusers_sd = convert_flux2_transformer_checkpoint_to_diffusers(
+            clean_sd, config=transformer_config,
+        )
+        del clean_sd
+
+        transformer = Flux2Transformer2DModel.from_config(transformer_config).to(dtype)
+        missing, unexpected = transformer.load_state_dict(diffusers_sd, strict=False)
+        if missing or unexpected:
+            logger.warning(
+                "image: quantized transformer load — missing=%d unexpected=%d",
+                len(missing), len(unexpected),
+            )
+        else:
+            logger.info("image: quantized transformer load — 0 missing / 0 unexpected ✓")
+
+        logger.info("image: loading rest of pipeline from %s", main_path)
+        self._pipe = DiffusionPipeline.from_pretrained(
+            str(main_path),
+            transformer=transformer,
             torch_dtype=dtype,
             trust_remote_code=True,
         )
