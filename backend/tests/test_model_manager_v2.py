@@ -163,3 +163,95 @@ async def test_get_loaded_adapter_clears_failure_on_successful_reload():
     assert "test-model" not in mgr._load_failures
     adapter = await mgr.get_loaded_adapter("test-model")
     assert adapter.is_loaded
+
+
+async def test_image_allocator_minus1_falls_back_to_gpu0():
+    """V0.6 P5: When allocator returns -1 for an image-type model
+    (no GPU has spec.vram_mb free) we fall back to GPU 0 instead of
+    leaving gpu_index=-1 (which surfaces as 'GPU -1' in the UI).
+    Image adapters all use cpu_offload, so 'no full GPU available'
+    doesn't mean we can't run."""
+    import sys
+    from unittest.mock import MagicMock
+    from src.services.inference.base import InferenceAdapter, MediaModality
+    from src.services.inference.registry import ModelSpec
+    from src.services.model_manager import ModelManager
+
+    class FakeImageAdapter(InferenceAdapter):
+        modality = MediaModality.IMAGE
+        estimated_vram_mb = 24000
+
+        def __init__(self, paths, **kwargs):
+            super().__init__(paths=paths)
+
+        async def load(self, device): self._model = True
+        async def infer(self, req): ...
+
+    fake_mod = type(sys)("fake_img_alloc_mod")
+    fake_mod.FakeImageAdapter = FakeImageAdapter
+    sys.modules["fake_img_alloc_mod"] = fake_mod
+
+    spec = ModelSpec(
+        id="full-vram-image",
+        model_type="image",
+        adapter_class="fake_img_alloc_mod.FakeImageAdapter",
+        paths={"main": "/x"},
+        vram_mb=24000,  # demanding spec
+    )
+    registry = MagicMock()
+    registry.get = lambda mid: spec if mid == spec.id else None
+    registry.add_from_scan = MagicMock(return_value=None)
+    allocator = MagicMock()
+    allocator.get_best_gpu = MagicMock(return_value=-1)  # ← no GPU has 24GB free
+
+    mgr = ModelManager(registry=registry, allocator=allocator)
+    await mgr.load_model("full-vram-image")
+
+    lm = mgr._models["full-vram-image"]
+    assert lm.gpu_index == 0, f"expected fallback to GPU 0, got {lm.gpu_index}"
+    assert lm.gpu_indices == [0]
+
+
+async def test_non_image_allocator_minus1_keeps_minus1():
+    """LLM/TTS adapters honestly need full VRAM — leave -1 as a signal that
+    something is wrong. Only image fallback to 0 (cpu_offload semantics)."""
+    import sys
+    from unittest.mock import MagicMock
+    from src.services.inference.base import InferenceAdapter, MediaModality
+    from src.services.inference.registry import ModelSpec
+    from src.services.model_manager import ModelManager
+
+    class FakeTTSAdapter(InferenceAdapter):
+        modality = MediaModality.AUDIO
+        estimated_vram_mb = 8000
+
+        def __init__(self, paths, **kwargs):
+            super().__init__(paths=paths)
+
+        async def load(self, device): self._model = True
+        async def infer(self, req): ...
+
+    fake_mod = type(sys)("fake_tts_alloc_mod")
+    fake_mod.FakeTTSAdapter = FakeTTSAdapter
+    sys.modules["fake_tts_alloc_mod"] = fake_mod
+
+    spec = ModelSpec(
+        id="full-vram-tts",
+        model_type="tts",
+        adapter_class="fake_tts_alloc_mod.FakeTTSAdapter",
+        paths={"main": "/x"},
+        vram_mb=8000,
+    )
+    registry = MagicMock()
+    registry.get = lambda mid: spec if mid == spec.id else None
+    registry.add_from_scan = MagicMock(return_value=None)
+    allocator = MagicMock()
+    allocator.get_best_gpu = MagicMock(return_value=-1)
+
+    mgr = ModelManager(registry=registry, allocator=allocator)
+    await mgr.load_model("full-vram-tts")
+
+    lm = mgr._models["full-vram-tts"]
+    # TTS keeps -1 as honest signal (no fallback)
+    assert lm.gpu_index == -1
+    assert lm.gpu_indices == []

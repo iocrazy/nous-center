@@ -313,6 +313,22 @@ class ModelManager:
             elif spec.vram_mb > 0:
                 gpu_index = self._allocator.get_best_gpu(spec.vram_mb)
                 gpu_indices = [gpu_index] if gpu_index >= 0 else []
+                # Image adapters use diffusers `enable_model_cpu_offload` —
+                # weights live in CPU RAM and only the active block enters
+                # GPU during inference. Allocator's "no GPU has 24GB free"
+                # check (`get_best_gpu` → -1) doesn't mean we can't run; it
+                # means we need to share an existing GPU. Fall back to GPU 0
+                # so /api/v1/engines doesn't surface the placeholder -1
+                # ("running · GPU -1" in the UI). This matches what
+                # `enable_model_cpu_offload(gpu_id=0)` will use anyway.
+                if gpu_index < 0 and spec.model_type == "image":
+                    logger.warning(
+                        "Image model %r: allocator found no GPU with %dMB free; "
+                        "falling back to GPU 0 (cpu_offload mode shares it).",
+                        model_id, spec.vram_mb,
+                    )
+                    gpu_index = 0
+                    gpu_indices = [0]
                 detect_after_load = False
             else:
                 # External service (e.g. vLLM) — detect GPUs AFTER the process
