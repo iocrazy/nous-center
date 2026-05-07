@@ -83,16 +83,21 @@ class ModelManager:
 
         params = dict(spec.params)
         if spec.model_type == "image" and "lora_paths" not in params:
-            # V0.6 P4: filter by yaml `accepts_lora_archs` (e.g. ['flux2','flux1']
-            # for Flux2 Klein). Empty list → inject all (legacy behaviour).
-            accepts = params.get("accepts_lora_archs") or []
-            from src.services.lora_scanner import scan_loras
-            entries = scan_loras()
-            if accepts:
-                accepts_set = set(accepts)
-                entries = [e for e in entries if e["arch"] in accepts_set]
-            params["lora_paths"] = {e["name"]: e["path"] for e in entries}
-        # accepts_lora_archs is consumed here, not by adapter __init__
+            # Inject ALL scanned LoRAs (no arch filter). Pre-existing
+            # workflows that reference an "incompatible" LoRA name should
+            # still be loadable here so the adapter can produce its own
+            # friendly error at apply-time (image_diffusers.py:243 catches
+            # "zero matching weights" and explains the architecture
+            # mismatch). Filtering at injection-time silently breaks those
+            # workflows with a confusing "not in registered lora_paths"
+            # message — see post-mortem in PR #75 successor.
+            #
+            # The chip count on /api/v1/engines stays arch-aware (via
+            # `count_loras_for_arches(accepts)` in engines.py) so the UI
+            # still tells the truth about how many LoRAs are likely usable.
+            from src.services.lora_scanner import get_lora_paths
+            params["lora_paths"] = get_lora_paths()
+        # accepts_lora_archs is yaml-only metadata, never passed to adapter
         params.pop("accepts_lora_archs", None)
 
         return cls(paths=spec.paths, **params)
