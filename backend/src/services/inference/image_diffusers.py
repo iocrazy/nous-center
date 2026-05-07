@@ -135,7 +135,9 @@ class DiffusersImageBackend(InferenceAdapter):
         import torch
         dtype = getattr(torch, self._torch_dtype)
 
-        if "main" in self.paths:
+        if "main" in self.paths and "transformer_override" in self.paths:
+            await self._load_pretrained_with_single_file_transformer(dtype)
+        elif "main" in self.paths:
             await self._load_from_pretrained(dtype)
         else:
             await self._load_from_single_file_compose(dtype)
@@ -159,6 +161,40 @@ class DiffusersImageBackend(InferenceAdapter):
         # falling back to a stock pipeline that doesn't fit the model.
         self._pipe = DiffusionPipeline.from_pretrained(
             str(path),
+            torch_dtype=dtype,
+            trust_remote_code=True,
+        )
+
+    async def _load_pretrained_with_single_file_transformer(self, dtype) -> None:
+        """Hybrid: BFL full layout for everything, but transformer weights
+        come from a ComfyUI-style single-file safetensors (e.g. wikeeyang's
+        Flux2-Klein-9B-True-V2 quantized variants).
+
+        from_single_file knows how to map ComfyUI key names to diffusers
+        conventions; from_pretrained does not, so loading those files
+        through the standard layout silently leaves the transformer with
+        randomly-initialized weights.
+        """
+        from diffusers import DiffusionPipeline, FluxTransformer2DModel
+
+        main_path = self._resolve_path("main")
+        sf_path = self._resolve_path("transformer_override")
+        config_dir = main_path / "transformer"
+
+        logger.info(
+            "image: loading transformer (single-file) %s with config from %s",
+            sf_path, config_dir,
+        )
+        transformer = FluxTransformer2DModel.from_single_file(
+            str(sf_path),
+            config=str(config_dir),
+            torch_dtype=dtype,
+        )
+
+        logger.info("image: loading rest of pipeline from %s", main_path)
+        self._pipe = DiffusionPipeline.from_pretrained(
+            str(main_path),
+            transformer=transformer,
             torch_dtype=dtype,
             trust_remote_code=True,
         )
@@ -277,24 +313,36 @@ class DiffusersImageBackend(InferenceAdapter):
         if self._pipe is None:
             raise RuntimeError("DiffusersImageBackend.load() must be called before infer()")
 
+        import inspect
+        import secrets
+
         import torch
 
         self._apply_loras(req.loras)
 
-        generator = None
-        if req.seed is not None:
-            generator = torch.Generator(device=self.device).manual_seed(req.seed)
+        # ComfyUI-style: when no seed supplied, draw a fresh 64-bit random one
+        # so every run is reproducible (the seed is echoed back in metadata).
+        # secrets.randbelow is cryptographically random; matches ComfyUI's
+        # random.randint(0, 2**64-1) semantics for "no fixed seed".
+        seed = req.seed if req.seed is not None else secrets.randbelow(2**63)
+        generator = torch.Generator(device=self.device).manual_seed(seed)
+
+        # Flux2KleinPipeline (and other distilled Flux variants) don't accept
+        # negative_prompt — pass only kwargs the pipeline's __call__ declares.
+        candidate_kwargs = {
+            "prompt": req.prompt,
+            "negative_prompt": req.negative_prompt or None,
+            "width": req.width,
+            "height": req.height,
+            "num_inference_steps": req.steps,
+            "guidance_scale": req.cfg_scale,
+            "generator": generator,
+        }
+        accepted = set(inspect.signature(self._pipe.__call__).parameters.keys())
+        call_kwargs = {k: v for k, v in candidate_kwargs.items() if k in accepted}
 
         t0 = time.monotonic()
-        out = self._pipe(
-            prompt=req.prompt,
-            negative_prompt=req.negative_prompt or None,
-            width=req.width,
-            height=req.height,
-            num_inference_steps=req.steps,
-            guidance_scale=req.cfg_scale,
-            generator=generator,
-        )
+        out = self._pipe(**call_kwargs)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         image = out.images[0]
@@ -309,7 +357,7 @@ class DiffusersImageBackend(InferenceAdapter):
                 "width": req.width,
                 "height": req.height,
                 "steps": req.steps,
-                "seed": req.seed,
+                "seed": seed,
                 "loras": [{"name": s.name, "strength": s.strength} for s in req.loras],
             },
             usage=UsageMeter(image_count=1, latency_ms=latency_ms),

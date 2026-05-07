@@ -1,7 +1,28 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, useReactFlow, useNodeId } from '@xyflow/react'
 import type { PortDef } from '../../models/workflow'
+import { useExecutionStore } from '../../stores/execution'
 import TextareaPortalEditor from './TextareaPortalEditor'
+
+// Per-state outline colors used by the BaseNode wrapper. Subscribed via
+// useExecutionStore so node_start / node_complete events from the workflow
+// progress channel actually paint the node — without this, only the inner
+// status pill (DeclarativeNode caption) updated and the node frame stayed
+// dim.
+const STATE_OUTLINE: Record<string, { border: string; shadow: string }> = {
+  running: {
+    border: 'var(--info, #3b82f6)',
+    shadow: 'var(--shadow-md), 0 0 0 2px rgba(59,130,246,0.35)',
+  },
+  completed: {
+    border: 'var(--accent-2, #22c55e)',
+    shadow: 'var(--shadow-md), 0 0 0 2px rgba(34,197,94,0.30)',
+  },
+  error: {
+    border: 'var(--accent, #ef4444)',
+    shadow: 'var(--shadow-md), 0 0 0 2px rgba(239,68,68,0.35)',
+  },
+}
 
 const PORT_TYPE_COLORS: Record<string, string> = {
   text: 'var(--ok)',
@@ -24,6 +45,12 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
   const nodeId = useNodeId()
   const updateNodeInternals = useUpdateNodeInternals()
   const { setNodes } = useReactFlow()
+  const execState = useExecutionStore((s) => (nodeId ? s.nodeStates[nodeId] : undefined))
+  const stateOutline = execState ? STATE_OUTLINE[execState] : undefined
+  // DIAG: temporarily log to verify the subscription wakes on every state change
+  useEffect(() => {
+    if (execState) console.log('[BaseNode]', nodeId, '→', execState)
+  }, [execState, nodeId])
 
   // When collapsing: clear node height so wrapper auto-sizes
   // When expanding: restore height so resize works
@@ -57,11 +84,11 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--card)',
-        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        border: `1px solid ${stateOutline?.border ?? (selected ? 'var(--accent)' : 'var(--border)')}`,
         borderRadius: 8,
-        boxShadow: selected
-          ? 'var(--shadow-md), 0 0 0 2px var(--accent-subtle)'
-          : 'var(--shadow-md)',
+        boxShadow: stateOutline?.shadow
+          ?? (selected ? 'var(--shadow-md), 0 0 0 2px var(--accent-subtle)' : 'var(--shadow-md)'),
+        transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
       }}
     >
       {/* Header */}
