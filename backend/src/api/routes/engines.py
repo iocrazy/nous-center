@@ -100,12 +100,17 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
             gpu_field = 0
 
     # Image adapters expose lora_count via property; pull it through when
-    # the model is loaded so the UI can show "<n> LoRA" without another
-    # round-trip to /api/v1/loras. Falls back to the static scanner count
-    # for unloaded image specs (operator can still see "would have N
-    # LoRAs available" before clicking load).
+    # the model is loaded. Falls back to architecture-filtered scanner count
+    # for unloaded image specs (operator sees "N compatible LoRAs" before
+    # clicking load).
+    #
+    # V0.6 P4: lora_count is now per-model. yaml `params.accepts_lora_archs`
+    # lists which detected LoRA architectures this model can load (e.g.
+    # ['flux1', 'flux2'] for Flux2 Klein). Empty/missing → "everything"
+    # (legacy behaviour).
     lora_count: int | None = None
     if cfg.get("type") == "image":
+        accepts = (cfg.get("params") or {}).get("accepts_lora_archs") or []
         if request is not None:
             mgr = _get_model_manager(request)
             if mgr is not None and mgr.is_loaded(key):
@@ -113,8 +118,8 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
                 if adapter is not None and hasattr(adapter, "lora_count"):
                     lora_count = adapter.lora_count
         if lora_count is None:
-            from src.services.lora_scanner import scan_loras
-            lora_count = len(scan_loras())
+            from src.services.lora_scanner import count_loras_for_arches
+            lora_count = count_loras_for_arches(accepts)
 
     info = EngineInfo(
         name=key,
@@ -178,9 +183,12 @@ async def list_all_engines(
 
 @router.post("/scan", dependencies=[Depends(require_admin)])
 async def scan_models_endpoint():
-    """Re-scan models directory for new models."""
+    """Re-scan models directory for new models. Also drops LoRA arch cache so
+    newly-added LoRAs get architecture-detected on the next /api/v1/engines."""
     configs = scan_models()
     invalidate("engines")
+    from src.services.lora_scanner import invalidate_cache as _inv_lora
+    _inv_lora()
     return {"count": len(configs), "models": list(configs.keys())}
 
 

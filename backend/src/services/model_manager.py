@@ -83,8 +83,17 @@ class ModelManager:
 
         params = dict(spec.params)
         if spec.model_type == "image" and "lora_paths" not in params:
-            from src.services.lora_scanner import get_lora_paths
-            params["lora_paths"] = get_lora_paths()
+            # V0.6 P4: filter by yaml `accepts_lora_archs` (e.g. ['flux2','flux1']
+            # for Flux2 Klein). Empty list → inject all (legacy behaviour).
+            accepts = params.get("accepts_lora_archs") or []
+            from src.services.lora_scanner import scan_loras
+            entries = scan_loras()
+            if accepts:
+                accepts_set = set(accepts)
+                entries = [e for e in entries if e["arch"] in accepts_set]
+            params["lora_paths"] = {e["name"]: e["path"] for e in entries}
+        # accepts_lora_archs is consumed here, not by adapter __init__
+        params.pop("accepts_lora_archs", None)
 
         return cls(paths=spec.paths, **params)
 
