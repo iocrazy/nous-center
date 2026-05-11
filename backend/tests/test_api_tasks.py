@@ -25,10 +25,6 @@ async def test_health(client):
     assert resp.json()["status"] in ("ok", "degraded")
 
 
-@pytest.mark.asyncio
-async def test_models_endpoint(client):
-    resp = await client.get("/api/v1/models")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "gpu_status" in data
-    assert "models" in data
+# V1' P1: legacy /api/v1/models handler (formerly in tasks.py) was removed
+# in favor of the new scanner-backed endpoint in routes/models.py. Its
+# replacement is covered by test_model_scanner.py.
