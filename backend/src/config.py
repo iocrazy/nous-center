@@ -140,6 +140,11 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
             }
             if entry.get("params"):
                 result[model_id]["params"] = entry["params"]
+            # V1' P2: optional `files{}` declares which on-disk files compose
+            # this preset (transformer / text_encoder / vae). Lane C component
+            # nodes consume it for dropdowns; the adapter still loads via paths.
+            if entry.get("files"):
+                result[model_id]["files"] = entry["files"]
         return result
 
     # Old dict-based format: return as-is

@@ -34,6 +34,106 @@ from src.services.inference.base import (
 logger = logging.getLogger(__name__)
 
 
+# --- module-level helpers (V1' P2) -----------------------------------------
+#
+# These are called by DiffusersImageBackend below and will also be called
+# directly by the V1' Lane C component-node executors (LoadCheckpoint /
+# LoadDiffusionModel etc.) so they can compose a pipeline without going
+# through the adapter class. Three more helpers (encode_prompt / sample /
+# vae_decode) are intentionally deferred to Lane C — their signatures depend
+# on the MODEL/CONDITIONING/LATENT port shapes that the node executors land.
+
+
+def load_diffusers_pipeline(
+    main_path: Path,
+    dtype,
+    *,
+    transformer: Any | None = None,
+    trust_remote_code: bool = True,
+) -> Any:
+    """Load a diffusers full-layout dir into a pipeline.
+
+    Pass `transformer=` to splice in a pre-built transformer (e.g. from
+    `load_quantized_transformer`); otherwise diffusers reads the dir's
+    `transformer/` subdir directly. Returns the pipeline; caller is
+    responsible for `enable_model_cpu_offload` etc.
+    """
+    from diffusers import DiffusionPipeline
+
+    kwargs: dict[str, Any] = {
+        "torch_dtype": dtype,
+        "trust_remote_code": trust_remote_code,
+    }
+    if transformer is not None:
+        kwargs["transformer"] = transformer
+    logger.info("image: loading diffusers pipeline from %s (transformer=%s)",
+                main_path, "spliced" if transformer is not None else "from-dir")
+    return DiffusionPipeline.from_pretrained(str(main_path), **kwargs)
+
+
+def load_quantized_transformer(main_path: Path, sf_path: Path, dtype) -> Any:
+    """Load a wikeeyang-style fp8 single-file transformer into bf16.
+
+    Pipeline: load_file → dequant fp8*scale → drop .comfy_quant/.weight_scale
+    → convert_flux2_transformer_checkpoint_to_diffusers → empty model +
+    load_state_dict. See `_load_with_quantized_transformer`'s legacy comment
+    for why diffusers' built-in converter can't eat the raw quantized file.
+    """
+    import json
+
+    import torch
+    from diffusers import Flux2Transformer2DModel
+    from diffusers.loaders.single_file_utils import (
+        convert_flux2_transformer_checkpoint_to_diffusers,
+    )
+    from safetensors.torch import load_file
+
+    transformer_config_path = main_path / "transformer" / "config.json"
+
+    logger.info("image: loading quantized transformer state_dict %s", sf_path)
+    raw_sd = load_file(str(sf_path))
+
+    clean_sd: dict = {}
+    fp8_count = 0
+    for k, v in raw_sd.items():
+        if k.endswith(".comfy_quant") or k.endswith(".weight_scale"):
+            continue
+        if v.dtype == torch.float8_e4m3fn:
+            scale = raw_sd.get(k + "_scale")
+            if scale is not None:
+                clean_sd[k] = (v.to(torch.float32) * scale.to(torch.float32)).to(dtype)
+            else:
+                clean_sd[k] = v.to(dtype)
+            fp8_count += 1
+        else:
+            clean_sd[k] = v.to(dtype) if v.dtype in (torch.float32, torch.float16) else v
+    del raw_sd
+    logger.info(
+        "image: dequant fp8→%s done — %d fp8 weights, %d total clean keys",
+        dtype, fp8_count, len(clean_sd),
+    )
+
+    transformer_config = json.loads(transformer_config_path.read_text())
+    diffusers_sd = convert_flux2_transformer_checkpoint_to_diffusers(
+        clean_sd, config=transformer_config,
+    )
+    del clean_sd
+
+    transformer = Flux2Transformer2DModel.from_config(transformer_config).to(dtype)
+    missing, unexpected = transformer.load_state_dict(diffusers_sd, strict=False)
+    if missing or unexpected:
+        logger.warning(
+            "image: quantized transformer load — missing=%d unexpected=%d",
+            len(missing), len(unexpected),
+        )
+    else:
+        logger.info("image: quantized transformer load — 0 missing / 0 unexpected ✓")
+    return transformer
+
+
+# ---------------------------------------------------------------------------
+
+
 class DiffusersImageBackend(InferenceAdapter):
     """Adapter for diffusers-based image models (Flux.2 first).
 
@@ -154,133 +254,34 @@ class DiffusersImageBackend(InferenceAdapter):
         self._model = self._pipe
 
     async def _load_from_pretrained(self, dtype) -> None:
-        from diffusers import DiffusionPipeline
-
         path = self._resolve_path("main")
-        logger.info("image: loading diffusers pipeline from %s", path)
-        # trust_remote_code=True so model dirs that ship a custom pipeline
-        # class (ErnieImagePipeline, etc.) load it from the dir instead of
-        # falling back to a stock pipeline that doesn't fit the model.
-        self._pipe = DiffusionPipeline.from_pretrained(
-            str(path),
-            torch_dtype=dtype,
-            trust_remote_code=True,
-        )
+        self._pipe = load_diffusers_pipeline(path, dtype)
 
     async def _load_with_quantized_transformer(self, dtype) -> None:
-        """V0.6: load wikeeyang fp8mixed via manual dequant + diffusers' built-in
-        ComfyUI→diffusers key converter.
-
-        Why this exists: diffusers ships a ``convert_flux2_transformer_checkpoint_to_diffusers``
-        in ``loaders/single_file_utils.py`` that handles all of ComfyUI's standard
-        Flux2 key naming (FLUX2_TRANSFORMER_KEYS_RENAME_DICT + double/single block
-        maps). It crashes on wikeeyang's quantized format though, because the
-        ``.weight_scale`` 0-d scalars get fed through ``torch.chunk(..., 3)`` for
-        QKV splitting (single_file_utils.py:3881).
-
-        The fix: pre-process the state_dict so diffusers only sees clean bf16
-        tensors, then call the built-in converter with no surprises.
-
-        Pipeline: load_file → dequant fp8*scale → drop .comfy_quant/.weight_scale →
-        convert_flux2_transformer_checkpoint_to_diffusers → empty model + load_state_dict.
-        """
-        import json
-        import torch
-        from safetensors.torch import load_file
-        from diffusers import DiffusionPipeline, Flux2Transformer2DModel
-        from diffusers.loaders.single_file_utils import (
-            convert_flux2_transformer_checkpoint_to_diffusers,
-        )
-
+        """V0.6: wikeeyang fp8mixed loaded via dequant + diffusers' built-in
+        ComfyUI→diffusers converter, then spliced into the BFL pipeline."""
         main_path = self._resolve_path("main")
         sf_path = self._resolve_path("quantized_transformer")
-        transformer_config_path = main_path / "transformer" / "config.json"
-
-        logger.info("image: loading quantized transformer state_dict %s", sf_path)
-        raw_sd = load_file(str(sf_path))
-
-        # Dequant fp8 → target dtype (default bf16). Each fp8 weight has a
-        # companion `.weight_scale` (0-d F32 scalar) for per-tensor scale.
-        # `.comfy_quant` (U8 metadata) is dropped — diffusers doesn't need it.
-        clean_sd: dict = {}
-        fp8_count = 0
-        for k, v in raw_sd.items():
-            if k.endswith(".comfy_quant") or k.endswith(".weight_scale"):
-                continue
-            if v.dtype == torch.float8_e4m3fn:
-                scale = raw_sd.get(k + "_scale")
-                if scale is not None:
-                    clean_sd[k] = (v.to(torch.float32) * scale.to(torch.float32)).to(dtype)
-                else:
-                    clean_sd[k] = v.to(dtype)
-                fp8_count += 1
-            else:
-                clean_sd[k] = v.to(dtype) if v.dtype in (torch.float32, torch.float16) else v
-        del raw_sd
-        logger.info(
-            "image: dequant fp8→%s done — %d fp8 weights, %d total clean keys",
-            dtype, fp8_count, len(clean_sd),
-        )
-
-        # Diffusers built-in remap: ComfyUI naming → diffusers naming +
-        # auto QKV split. Now safe because state_dict is clean bf16.
-        transformer_config = json.loads(transformer_config_path.read_text())
-        diffusers_sd = convert_flux2_transformer_checkpoint_to_diffusers(
-            clean_sd, config=transformer_config,
-        )
-        del clean_sd
-
-        transformer = Flux2Transformer2DModel.from_config(transformer_config).to(dtype)
-        missing, unexpected = transformer.load_state_dict(diffusers_sd, strict=False)
-        if missing or unexpected:
-            logger.warning(
-                "image: quantized transformer load — missing=%d unexpected=%d",
-                len(missing), len(unexpected),
-            )
-        else:
-            logger.info("image: quantized transformer load — 0 missing / 0 unexpected ✓")
-
-        logger.info("image: loading rest of pipeline from %s", main_path)
-        self._pipe = DiffusionPipeline.from_pretrained(
-            str(main_path),
-            transformer=transformer,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-        )
+        transformer = load_quantized_transformer(main_path, sf_path, dtype)
+        self._pipe = load_diffusers_pipeline(main_path, dtype, transformer=transformer)
 
     async def _load_pretrained_with_single_file_transformer(self, dtype) -> None:
         """Hybrid: BFL full layout for everything, but transformer weights
-        come from a ComfyUI-style single-file safetensors (e.g. wikeeyang's
-        Flux2-Klein-9B-True-V2 quantized variants).
-
-        from_single_file knows how to map ComfyUI key names to diffusers
-        conventions; from_pretrained does not, so loading those files
-        through the standard layout silently leaves the transformer with
-        randomly-initialized weights.
-        """
-        from diffusers import DiffusionPipeline, FluxTransformer2DModel
+        come from a ComfyUI-style single-file safetensors that diffusers'
+        from_single_file can map directly (no manual dequant needed)."""
+        from diffusers import FluxTransformer2DModel
 
         main_path = self._resolve_path("main")
         sf_path = self._resolve_path("transformer_override")
         config_dir = main_path / "transformer"
-
         logger.info(
             "image: loading transformer (single-file) %s with config from %s",
             sf_path, config_dir,
         )
         transformer = FluxTransformer2DModel.from_single_file(
-            str(sf_path),
-            config=str(config_dir),
-            torch_dtype=dtype,
+            str(sf_path), config=str(config_dir), torch_dtype=dtype,
         )
-
-        logger.info("image: loading rest of pipeline from %s", main_path)
-        self._pipe = DiffusionPipeline.from_pretrained(
-            str(main_path),
-            transformer=transformer,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-        )
+        self._pipe = load_diffusers_pipeline(main_path, dtype, transformer=transformer)
 
     async def _load_from_single_file_compose(self, dtype) -> None:
         from transformers import AutoModel, AutoTokenizer
