@@ -9,12 +9,42 @@ from src.config import get_settings, load_model_configs
 logger = logging.getLogger(__name__)
 
 
+# V1' P0 reorganized image/ into ComfyUI-style subdirs. `diffusers/` holds
+# full-layout model dirs (depth 3); the others hold single-file components
+# (.safetensors / .gguf) that are NOT auto-detectable models on their own
+# and should be enumerated by V1' Lane C component-node executors, not here.
+_IMAGE_MODEL_SUBDIRS = {"diffusers"}
+_IMAGE_COMPONENT_SUBDIRS = {"diffusion_models", "text_encoders", "vae"}
+
+
+def _iter_candidate_model_dirs(type_dir: Path):
+    """Yield (model_dir, local_path) pairs for one type/ tree.
+
+    LLM/TTS/VL stay depth-2 (`<type>/<model>`). Image is depth-3 under the
+    `diffusers/` sub-bucket since V1' P0, and we explicitly skip the
+    component sub-buckets so their single-file weights aren't surfaced as
+    bogus "models" in /engines (the V1' Lane C component nodes will list
+    those separately).
+    """
+    if type_dir.name == "image":
+        for sub in sorted(type_dir.iterdir()):
+            if not sub.is_dir() or sub.name not in _IMAGE_MODEL_SUBDIRS:
+                continue
+            for model_dir in sorted(sub.iterdir()):
+                if model_dir.is_dir():
+                    yield model_dir, f"{type_dir.name}/{sub.name}/{model_dir.name}"
+        return
+    for model_dir in sorted(type_dir.iterdir()):
+        if model_dir.is_dir():
+            yield model_dir, f"{type_dir.name}/{model_dir.name}"
+
+
 def scan_models() -> dict[str, dict[str, Any]]:
     """Scan LOCAL_MODELS_PATH and merge with models.yaml configs.
 
     Auto-detects:
     - LLM: has config.json with "model_type" field
-    - Image (diffusers): has model_index.json
+    - Image (diffusers): has model_index.json (under `image/diffusers/<X>/`)
     - TTS: matched by models.yaml only (no auto-detect)
 
     Returns merged dict: models.yaml configs + auto-detected models.
@@ -29,31 +59,20 @@ def scan_models() -> dict[str, dict[str, Any]]:
     if not base.exists():
         return result
 
-    # Scan subdirectories (depth 2: type/model-name)
     for type_dir in sorted(base.iterdir()):
         if not type_dir.is_dir():
             continue
-        for model_dir in sorted(type_dir.iterdir()):
-            if not model_dir.is_dir():
-                continue
-
-            local_path = f"{type_dir.name}/{model_dir.name}"
-
-            # Skip if already in yaml config (by matching local_path)
+        for model_dir, local_path in _iter_candidate_model_dirs(type_dir):
             yaml_key = _find_yaml_key(yaml_configs, local_path)
             if yaml_key:
                 continue
-
-            # Try auto-detect
             detected = _detect_model(model_dir, local_path)
             if detected:
                 key = _make_key(model_dir.name)
                 result[key] = detected
                 logger.info(
                     "Auto-detected model: %s (%s) at %s",
-                    key,
-                    detected["type"],
-                    local_path,
+                    key, detected["type"], local_path,
                 )
 
     return result
