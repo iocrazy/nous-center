@@ -79,9 +79,22 @@ async def lifespan(app: FastAPI):
     import logging as _logging
     db_handler = DbLogHandler()
     db_handler.setLevel(_logging.INFO)
-    _logging.getLogger("src").addHandler(db_handler)
-    _logging.getLogger("nous").addHandler(db_handler)
-    logger.info("Application log collector installed")
+    # Surface application INFO logs to stdout too — otherwise operators tailing
+    # uvicorn only see the access log, and slow image-load helpers (which print
+    # "image: dequant fp8→bf16 done ..." progress markers) look like a black
+    # hole from the terminal. Without these handlers the lines went only to
+    # the DB log handler, which is queryable but invisible to humans.
+    stream_handler = _logging.StreamHandler()
+    stream_handler.setLevel(_logging.INFO)
+    stream_handler.setFormatter(
+        _logging.Formatter("%(asctime)s %(levelname)-5s %(name)s — %(message)s")
+    )
+    for _logger_name in ("src", "nous"):
+        _l = _logging.getLogger(_logger_name)
+        _l.setLevel(_logging.INFO)
+        _l.addHandler(db_handler)
+        _l.addHandler(stream_handler)
+    logger.info("Application log collector installed (db + stdout)")
 
     # Auto-sync model metadata for any new engines
     from src.models.database import create_session_factory
