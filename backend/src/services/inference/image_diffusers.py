@@ -16,6 +16,7 @@ model is offloaded triggers cross-device tensor errors.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import time
@@ -254,16 +255,29 @@ class DiffusersImageBackend(InferenceAdapter):
         self._model = self._pipe
 
     async def _load_from_pretrained(self, dtype) -> None:
+        # Helpers do synchronous filesystem + tensor IO (multi-GB reads). Hand
+        # them off to a worker thread so the asyncio event loop keeps serving
+        # /health, /engines, etc. while diffusers reads from disk — otherwise
+        # the whole UI goes dark for 60-120s and the user thinks the backend
+        # crashed.
         path = self._resolve_path("main")
-        self._pipe = load_diffusers_pipeline(path, dtype)
+        self._pipe = await asyncio.to_thread(load_diffusers_pipeline, path, dtype)
 
     async def _load_with_quantized_transformer(self, dtype) -> None:
         """V0.6: wikeeyang fp8mixed loaded via dequant + diffusers' built-in
-        ComfyUI→diffusers converter, then spliced into the BFL pipeline."""
+        ComfyUI→diffusers converter, then spliced into the BFL pipeline.
+
+        Both helpers run in a worker thread (asyncio.to_thread) so the event
+        loop stays responsive during the ~9GB safetensors read + dequant +
+        ~25GB pipeline build."""
         main_path = self._resolve_path("main")
         sf_path = self._resolve_path("quantized_transformer")
-        transformer = load_quantized_transformer(main_path, sf_path, dtype)
-        self._pipe = load_diffusers_pipeline(main_path, dtype, transformer=transformer)
+        transformer = await asyncio.to_thread(
+            load_quantized_transformer, main_path, sf_path, dtype,
+        )
+        self._pipe = await asyncio.to_thread(
+            load_diffusers_pipeline, main_path, dtype, transformer=transformer,
+        )
 
     async def _load_pretrained_with_single_file_transformer(self, dtype) -> None:
         """Hybrid: BFL full layout for everything, but transformer weights
@@ -278,10 +292,13 @@ class DiffusersImageBackend(InferenceAdapter):
             "image: loading transformer (single-file) %s with config from %s",
             sf_path, config_dir,
         )
-        transformer = FluxTransformer2DModel.from_single_file(
+        transformer = await asyncio.to_thread(
+            FluxTransformer2DModel.from_single_file,
             str(sf_path), config=str(config_dir), torch_dtype=dtype,
         )
-        self._pipe = load_diffusers_pipeline(main_path, dtype, transformer=transformer)
+        self._pipe = await asyncio.to_thread(
+            load_diffusers_pipeline, main_path, dtype, transformer=transformer,
+        )
 
     async def _load_from_single_file_compose(self, dtype) -> None:
         from transformers import AutoModel, AutoTokenizer

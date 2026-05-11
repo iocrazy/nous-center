@@ -9,6 +9,7 @@ not the visual quality of the output.
 from __future__ import annotations
 
 import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -576,3 +577,45 @@ def test_yaml_image_entries_have_files_block():
     # text_encoder + vae still ride on BFL's full layout
     assert "Flux2-klein-9B/text_encoder" in fp8["text_encoder"]
     assert "Flux2-klein-9B/vae" in fp8["vae"]
+
+
+# --- fix/image-load-unblock: adapter must NOT block the event loop ---------
+
+
+async def test_load_does_not_block_event_loop(tmp_path, _stub_diffusers, monkeypatch):
+    """Regression: load_quantized_transformer's safetensors.load_file is a
+    9GB synchronous read that used to freeze the asyncio event loop for
+    60-120s. The adapter must now hand it off via asyncio.to_thread so other
+    coroutines (e.g. /health, /engines) keep running during a load.
+    """
+    import asyncio
+    from src.services.inference import image_diffusers as mod
+
+    # Replace the helper with one that sleeps synchronously for 400ms — long
+    # enough that a NEW asyncio task scheduled mid-load can race to finish
+    # if (and only if) the helper actually runs in a worker thread.
+    def slow_helper(*_args, **_kwargs):
+        time.sleep(0.4)
+        return MagicMock(name="slow_pipe")
+
+    monkeypatch.setattr(mod, "load_diffusers_pipeline", slow_helper)
+
+    paths = {"main": str(tmp_path)}
+    backend = mod.DiffusersImageBackend(paths=paths)
+
+    sentinel = []
+
+    async def heartbeat():
+        # If the event loop is blocked, this never appends until slow_helper
+        # returns; if not blocked, it appends within ~10ms.
+        await asyncio.sleep(0.05)
+        sentinel.append("alive")
+
+    t0 = time.monotonic()
+    await asyncio.gather(backend.load(device="cuda:0"), heartbeat())
+    elapsed = time.monotonic() - t0
+
+    assert sentinel == ["alive"], "event loop appears to be blocked during load"
+    # Backend.load also calls enable_model_cpu_offload on _pipe, which is the
+    # MagicMock returned by slow_helper — that's fine, it's a MagicMock chain.
+    assert elapsed >= 0.4, "slow_helper did not actually run"
