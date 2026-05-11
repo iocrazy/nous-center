@@ -424,7 +424,7 @@ def test_yaml_includes_ernie_image_entry():
     assert "ernie-image" in cfgs
     e = cfgs["ernie-image"]
     assert e["type"] == "image"
-    assert e["paths"] == {"main": "image/ERNIE-Image"}
+    assert e["paths"] == {"main": "image/diffusers/ERNIE-Image"}
     assert e["adapter"].endswith("DiffusersImageBackend")
 
 

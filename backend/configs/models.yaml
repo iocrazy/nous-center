@@ -101,7 +101,7 @@ models:
     - flux1
     offload_strategy: single_card_offload
   paths:
-    main: image/Flux2-klein-9B
+    main: image/diffusers/Flux2-klein-9B
   resident: false
   type: image
   vram_mb: 24000
@@ -114,8 +114,8 @@ models:
     offload_strategy: single_card_offload
     quantized_dequant_to: bfloat16
   paths:
-    main: image/Flux2-klein-9B
-    quantized_transformer: image/Flux2-klein-9B/transformer/quantized/Flux2-Klein-9B-True-v2-fp8mixed.safetensors
+    main: image/diffusers/Flux2-klein-9B
+    quantized_transformer: image/diffusion_models/Flux2-Klein-9B-True-v2-fp8mixed.safetensors
   resident: false
   type: image
   vram_mb: 18000
@@ -126,7 +126,7 @@ models:
     - ernie
     offload_strategy: single_card_offload
   paths:
-    main: image/ERNIE-Image
+    main: image/diffusers/ERNIE-Image
   resident: false
   type: image
   vram_mb: 24000

@@ -93,7 +93,7 @@ async def test_load_rejects_engine_without_adapter(client, monkeypatch):
     monkeypatch.setattr(engines_route, "scan_models", lambda: {
         "ernie_image": {
             "name": "ernie_image", "type": "image", "vram_gb": 35.3,
-            "resident": False, "local_path": "image/ERNIE-Image",
+            "resident": False, "local_path": "image/diffusers/ERNIE-Image",
             "auto_detected": True,
             # No adapter — this is the case we're guarding.
         },
