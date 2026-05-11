@@ -522,3 +522,57 @@ def test_load_with_quantized_transformer_method_exists():
     import inspect
     method = DiffusersImageBackend._load_with_quantized_transformer
     assert inspect.iscoroutinefunction(method)
+
+
+# --- V1' P2: module-level helpers + yaml files{} preset --------------------
+
+
+def test_helpers_exposed_at_module_level():
+    """Lane C component-node executors will import these directly so they
+    can compose a pipeline without going through DiffusersImageBackend."""
+    from src.services.inference import image_diffusers as mod
+    assert callable(mod.load_diffusers_pipeline)
+    assert callable(mod.load_quantized_transformer)
+
+
+def test_load_diffusers_pipeline_passes_transformer_through(tmp_path, _stub_diffusers):
+    """Helper must hand a pre-built transformer to from_pretrained when given."""
+    from src.services.inference.image_diffusers import load_diffusers_pipeline
+
+    sentinel_transformer = object()
+    load_diffusers_pipeline(tmp_path, dtype="bfloat16-marker", transformer=sentinel_transformer)
+    diffusers = _stub_diffusers["diffusers"]
+    diffusers.DiffusionPipeline.from_pretrained.assert_called_once()
+    _args, kwargs = diffusers.DiffusionPipeline.from_pretrained.call_args
+    assert kwargs["transformer"] is sentinel_transformer
+    assert kwargs["trust_remote_code"] is True
+
+
+def test_load_diffusers_pipeline_omits_transformer_kwarg_when_none(tmp_path, _stub_diffusers):
+    """When transformer=None the kwarg must NOT be sent — diffusers reads
+    the dir's transformer/ subdir on its own. Passing transformer=None
+    explicitly would override that with a None, breaking the load."""
+    from src.services.inference.image_diffusers import load_diffusers_pipeline
+
+    load_diffusers_pipeline(tmp_path, dtype="bfloat16-marker")
+    diffusers = _stub_diffusers["diffusers"]
+    _args, kwargs = diffusers.DiffusionPipeline.from_pretrained.call_args
+    assert "transformer" not in kwargs
+
+
+def test_yaml_image_entries_have_files_block():
+    """All three image entries declare files{transformer, text_encoder, vae}
+    so Lane C component nodes know which on-disk files compose each preset.
+    fp8mixed's transformer must point at the single-file safetensors, not
+    BFL's transformer/ dir."""
+    from src.config import load_model_configs
+    cfgs = load_model_configs()
+    for spec_id in ("flux2-klein-9b", "flux2-klein-9b-true-v2-fp8mixed", "ernie-image"):
+        files = cfgs[spec_id].get("files", {})
+        assert {"transformer", "text_encoder", "vae"} <= set(files), spec_id
+
+    fp8 = cfgs["flux2-klein-9b-true-v2-fp8mixed"]["files"]
+    assert fp8["transformer"].endswith("fp8mixed.safetensors")
+    # text_encoder + vae still ride on BFL's full layout
+    assert "Flux2-klein-9B/text_encoder" in fp8["text_encoder"]
+    assert "Flux2-klein-9B/vae" in fp8["vae"]

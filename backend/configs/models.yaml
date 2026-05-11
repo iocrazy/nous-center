@@ -94,6 +94,10 @@ models:
   type: tts
   vram_mb: 8000
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
+  files:
+    text_encoder: image/diffusers/Flux2-klein-9B/text_encoder
+    transformer: image/diffusers/Flux2-klein-9B/transformer
+    vae: image/diffusers/Flux2-klein-9B/vae
   id: flux2-klein-9b
   params:
     accepts_lora_archs:
@@ -106,6 +110,10 @@ models:
   type: image
   vram_mb: 24000
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
+  files:
+    text_encoder: image/diffusers/Flux2-klein-9B/text_encoder
+    transformer: image/diffusion_models/Flux2-Klein-9B-True-v2-fp8mixed.safetensors
+    vae: image/diffusers/Flux2-klein-9B/vae
   id: flux2-klein-9b-true-v2-fp8mixed
   params:
     accepts_lora_archs:
@@ -120,6 +128,10 @@ models:
   type: image
   vram_mb: 18000
 - adapter: src.services.inference.image_diffusers.DiffusersImageBackend
+  files:
+    text_encoder: image/diffusers/ERNIE-Image/text_encoder
+    transformer: image/diffusers/ERNIE-Image/transformer
+    vae: image/diffusers/ERNIE-Image/vae
   id: ernie-image
   params:
     accepts_lora_archs:
