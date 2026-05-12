@@ -1,14 +1,12 @@
 name: flux2-components
-version: "0.1"
+version: "0.2"
 description: "Flux2 / Diffusers 组件节点 — ComfyUI 风格的可组装图像生成节点(V1' Lane C)"
 author: "nous-center"
 
-# Each node here outputs/consumes a typed bundle dict so downstream nodes can
-# tell what kind of object they're holding (MODEL / CLIP / VAE / CONDITIONING /
-# LATENT / IMAGE). The widget for picking the underlying yaml spec is the same
-# `model_key` field image_generate uses today — frontend selects from the same
-# pool, so V1' Lane C ships without a new dynamic-source widget. PR-C4 will
-# upgrade these to scanner-driven dropdowns.
+# Port types follow ComfyUI conventions: MODEL / CLIP / VAE / CONDITIONING /
+# LATENT / IMAGE. Frontend ReactFlow enforces sourceType === targetType so a
+# CLIP output can't be wired into a MODEL input — typed bundles catch
+# category mismatches at draw time instead of at sampling.
 
 nodes:
 
@@ -19,9 +17,9 @@ nodes:
     badgeColor: "var(--accent)"
     inputs: []
     outputs:
-      - { id: model, type: data, label: MODEL }
-      - { id: clip,  type: data, label: CLIP }
-      - { id: vae,   type: data, label: VAE }
+      - { id: model, type: MODEL, label: MODEL }
+      - { id: clip,  type: CLIP,  label: CLIP }
+      - { id: vae,   type: VAE,   label: VAE }
     widgets:
       - { name: model_key, label: "模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
@@ -32,7 +30,7 @@ nodes:
     badgeColor: "var(--accent)"
     inputs: []
     outputs:
-      - { id: model, type: data, label: MODEL }
+      - { id: model, type: MODEL, label: MODEL }
     widgets:
       - { name: model_key, label: "模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
@@ -43,7 +41,7 @@ nodes:
     badgeColor: "var(--accent)"
     inputs: []
     outputs:
-      - { id: clip, type: data, label: CLIP }
+      - { id: clip, type: CLIP, label: CLIP }
     widgets:
       - { name: model_key, label: "源模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
@@ -54,7 +52,7 @@ nodes:
     badgeColor: "var(--accent)"
     inputs: []
     outputs:
-      - { id: vae, type: data, label: VAE }
+      - { id: vae, type: VAE, label: VAE }
     widgets:
       - { name: model_key, label: "源模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
@@ -64,9 +62,9 @@ nodes:
     badge: LoRA
     badgeColor: "var(--warn)"
     inputs:
-      - { id: model, type: data, label: MODEL }
+      - { id: model, type: MODEL, label: MODEL }
     outputs:
-      - { id: model, type: data, label: MODEL }
+      - { id: model, type: MODEL, label: MODEL }
     widgets:
       - { name: lora_name, label: "LoRA 名称", widget: input, default: "" }
       - { name: strength,  label: "强度",      widget: slider, min: 0, max: 2, step: 0.05, default: 1.0 }
@@ -77,10 +75,10 @@ nodes:
     badge: Conditioning
     badgeColor: "var(--info, #3b82f6)"
     inputs:
-      - { id: clip, type: data, label: CLIP }
+      - { id: clip, type: CLIP, label: CLIP }
       - { id: text, type: text, label: 文本 }
     outputs:
-      - { id: conditioning, type: data, label: CONDITIONING }
+      - { id: conditioning, type: CONDITIONING, label: CONDITIONING }
     widgets:
       - { name: text, label: "Prompt", widget: textarea, rows: 3, default: "" }
 
@@ -90,10 +88,10 @@ nodes:
     badge: Sampler
     badgeColor: "var(--accent-2)"
     inputs:
-      - { id: model,         type: data, label: MODEL }
-      - { id: conditioning,  type: data, label: CONDITIONING }
+      - { id: model,         type: MODEL,        label: MODEL }
+      - { id: conditioning,  type: CONDITIONING, label: CONDITIONING }
     outputs:
-      - { id: latent, type: data, label: LATENT }
+      - { id: latent, type: LATENT, label: LATENT }
     widgets:
       - { name: width,      label: "宽度",  widget: slider, min: 256, max: 2048, step: 64, default: 1024 }
       - { name: height,     label: "高度",  widget: slider, min: 256, max: 2048, step: 64, default: 1024 }
@@ -107,12 +105,13 @@ nodes:
     badge: Decoder
     badgeColor: "var(--err)"
     inputs:
-      - { id: vae,    type: data, label: VAE }
-      - { id: latent, type: data, label: LATENT }
+      - { id: vae,    type: VAE,    label: VAE }
+      - { id: latent, type: LATENT, label: LATENT }
+    # Single `image` port matching what image_output expects so VAEDecode
+    # can wire straight into the existing ImageOutputNode. The executor
+    # returns the same {image_url, media_type, width, height} bundle
+    # image_generate emits — workflow_executor forwards the full dict.
     outputs:
-      - { id: image_url,  type: text, label: 图片 URL }
-      - { id: media_type, type: text, label: media_type }
-      - { id: width,      type: text, label: 宽度 }
-      - { id: height,     type: text, label: 高度 }
+      - { id: image, type: image, label: 图像 }
     widgets:
       - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }
