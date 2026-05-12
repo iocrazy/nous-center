@@ -287,6 +287,26 @@ class DiffusersImageBackend(InferenceAdapter):
         list endpoint to surface "<n> LoRA" badges in the UI."""
         return len(self._lora_paths)
 
+    @property
+    def pipe(self) -> Any:
+        """Public handle to the underlying diffusers pipeline.
+
+        Lane C component-node executors need this to invoke the sampling
+        helpers directly (encode_prompt / sample / vae_decode). Returning
+        the raw pipe rather than wrapping is intentional — the helpers
+        already accept any pipe-like object and the alternative (proxy
+        methods) doubles the surface area for every new helper. Callers
+        MUST treat the pipe as read-only structurally; mutating state
+        (e.g. set_adapters) needs to go through `_apply_loras` so the
+        offload/LoRA invariants stay consistent.
+        """
+        if self._pipe is None:
+            raise RuntimeError(
+                "DiffusersImageBackend.pipe accessed before load() — call "
+                "model_manager.get_loaded_adapter() and await it first."
+            )
+        return self._pipe
+
     def _resolve_path(self, key: str) -> Path:
         """Resolve a paths[key] entry to an absolute on-disk path.
 
@@ -460,6 +480,16 @@ class DiffusersImageBackend(InferenceAdapter):
     def _is_offloaded(self) -> bool:
         # diffusers exposes _is_offloaded on the pipeline once cpu_offload runs.
         return bool(getattr(self._pipe, "_is_offloaded", False))
+
+    def set_active_loras(self, loras: list) -> None:
+        """Public alias of `_apply_loras` for Lane C component-node executors.
+
+        Component nodes flow LoRAs through the MODEL bundle's `.loras` list
+        and call this on the adapter right before sampling. Accepts the
+        same `list[LoRASpec]` shape `_apply_loras` does — keeps the
+        offload/load ordering invariants centralised in one place.
+        """
+        self._apply_loras(loras)
 
     def _apply_loras(self, loras: list) -> None:
         """Switch the active LoRA adapter set with the offload-safe ordering.
