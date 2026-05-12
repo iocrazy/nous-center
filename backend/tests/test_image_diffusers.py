@@ -619,3 +619,88 @@ async def test_load_does_not_block_event_loop(tmp_path, _stub_diffusers, monkeyp
     # Backend.load also calls enable_model_cpu_offload on _pipe, which is the
     # MagicMock returned by slow_helper — that's fine, it's a MagicMock chain.
     assert elapsed >= 0.4, "slow_helper did not actually run"
+
+
+# --- Lane C / P3: sampling helpers (encode_prompt + sample + vae_decode) ---
+
+
+def test_sampling_helpers_exposed_at_module_level():
+    """Lane C component-node executors import these three by name."""
+    from src.services.inference import image_diffusers as mod
+    assert callable(mod.encode_prompt)
+    assert callable(mod.sample)
+    assert callable(mod.vae_decode)
+
+
+def test_encode_prompt_delegates_to_pipe_and_bundles_outputs():
+    """encode_prompt must call pipe.encode_prompt and wrap the (embeds, ids)
+    tuple it returns into a dict so downstream nodes get a stable shape."""
+    from src.services.inference.image_diffusers import encode_prompt
+
+    pipe = MagicMock()
+    pipe.encode_prompt = MagicMock(return_value=("EMBEDS", "TEXT_IDS"))
+
+    bundle = encode_prompt(pipe, "a cat")
+
+    pipe.encode_prompt.assert_called_once_with(prompt="a cat")
+    assert bundle == {"prompt_embeds": "EMBEDS", "text_ids": "TEXT_IDS"}
+
+
+def test_sample_calls_pipe_with_latent_output_type_and_unpacks():
+    """sample must (a) call pipe with output_type='latent' + return_dict=False
+    so the user gets raw latents, and (b) unpack the packed shape using
+    pipe._prepare_latent_ids reconstructed from the requested width/height."""
+    from src.services.inference.image_diffusers import sample
+
+    pipe = MagicMock()
+    pipe.vae_scale_factor = 8
+    packed_latents = MagicMock(name="packed")
+    packed_latents.shape = (1, 256, 64)        # (B, H*W, C) shape attribute
+    packed_latents.device = "cuda:0"
+    pipe.return_value = (packed_latents,)
+    unpacked = MagicMock(name="unpacked")
+    pipe._prepare_latent_ids = MagicMock(return_value=MagicMock(to=MagicMock(return_value="LATENT_IDS")))
+    pipe._unpack_latents_with_ids = MagicMock(return_value=unpacked)
+
+    out = sample(
+        pipe,
+        {"prompt_embeds": "E"},
+        width=512, height=512,
+        num_inference_steps=20, guidance_scale=4.0,
+    )
+
+    _args, kwargs = pipe.call_args
+    assert kwargs["output_type"] == "latent"
+    assert kwargs["return_dict"] is False
+    assert kwargs["prompt_embeds"] == "E"
+    pipe._unpack_latents_with_ids.assert_called_once_with(packed_latents, "LATENT_IDS")
+    assert out is unpacked
+
+
+def test_vae_decode_runs_bn_rescale_unpatchify_and_postprocess(_stub_diffusers):
+    """vae_decode must mirror Flux2Pipeline.__call__'s output_type!='latent'
+    tail: scale by VAE batchnorm stats, unpatchify, vae.decode, postprocess.
+
+    Uses fake torch so torch.sqrt is a MagicMock (not the real C extension)
+    and string/numeric mock plumbing won't choke."""
+    from src.services.inference.image_diffusers import vae_decode
+
+    pipe = MagicMock()
+    # batchnorm stats — both view().to(...) chains return MagicMock so
+    # tensor ops downstream don't blow up the type system.
+    pipe.vae.bn.running_mean.view.return_value.to.return_value = MagicMock(name="mean")
+    pipe.vae.bn.running_var.view.return_value = MagicMock(name="var_view")
+    pipe.vae.config.batch_norm_eps = 1e-5
+
+    latents = MagicMock(name="latents")
+    pipe._unpatchify_latents = MagicMock(return_value="UNPATCHED")
+    pipe.vae.decode = MagicMock(return_value=("DECODED",))
+    expected_image = MagicMock(name="pil")
+    pipe.image_processor.postprocess = MagicMock(return_value=[expected_image])
+
+    out = vae_decode(pipe, latents)
+
+    pipe._unpatchify_latents.assert_called_once()
+    pipe.vae.decode.assert_called_once_with("UNPATCHED", return_dict=False)
+    pipe.image_processor.postprocess.assert_called_once_with("DECODED", output_type="pil")
+    assert out is expected_image
