@@ -30,17 +30,20 @@ def _load_executors():
     return mod.EXECUTORS
 
 
-def test_yaml_declares_five_loader_nodes():
+def test_yaml_declares_loader_nodes():
+    """The five loaders this file is about. P3.3 added three more sampling
+    nodes (encode_prompt / ksampler / vae_decode) which are covered by
+    test_flux2_components_sampling.py."""
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
     nodes = cfg["nodes"]
-    expected = {
+    loader_nodes = {
         "flux2_load_checkpoint",
         "flux2_load_diffusion_model",
         "flux2_load_clip",
         "flux2_load_vae",
         "flux2_load_lora",
     }
-    assert set(nodes) == expected
+    assert loader_nodes <= set(nodes)
 
 
 def test_yaml_node_widgets_have_model_key_options():

@@ -86,3 +86,49 @@ nodes:
     widgets:
       - { name: lora_name, label: "LoRA 名称", widget: input, default: "" }
       - { name: strength,  label: "强度",      widget: slider, min: 0, max: 2, step: 0.05, default: 1.0 }
+
+  flux2_encode_prompt:
+    label: "Encode Prompt"
+    category: image
+    badge: Conditioning
+    badgeColor: "var(--info, #3b82f6)"
+    inputs:
+      - { id: clip, type: data, label: CLIP }
+      - { id: text, type: text, label: 文本 }
+    outputs:
+      - { id: conditioning, type: data, label: CONDITIONING }
+    widgets:
+      - { name: text, label: "Prompt", widget: textarea, rows: 3, default: "" }
+
+  flux2_ksampler:
+    label: "KSampler"
+    category: image
+    badge: Sampler
+    badgeColor: "var(--accent-2)"
+    inputs:
+      - { id: model,         type: data, label: MODEL }
+      - { id: conditioning,  type: data, label: CONDITIONING }
+    outputs:
+      - { id: latent, type: data, label: LATENT }
+    widgets:
+      - { name: width,      label: "宽度",  widget: slider, min: 256, max: 2048, step: 64, default: 1024 }
+      - { name: height,     label: "高度",  widget: slider, min: 256, max: 2048, step: 64, default: 1024 }
+      - { name: steps,      label: "步数",  widget: slider, min: 1,   max: 100,  step: 1,  default: 25 }
+      - { name: cfg_scale,  label: "CFG",   widget: slider, min: 0,   max: 20,   step: 0.1, default: 4.0 }
+      - { name: seed,       label: "Seed",  widget: input, default: "" }
+
+  flux2_vae_decode:
+    label: "VAE Decode"
+    category: image
+    badge: Decoder
+    badgeColor: "var(--err)"
+    inputs:
+      - { id: vae,    type: data, label: VAE }
+      - { id: latent, type: data, label: LATENT }
+    outputs:
+      - { id: image_url,  type: text, label: 图片 URL }
+      - { id: media_type, type: text, label: media_type }
+      - { id: width,      type: text, label: 宽度 }
+      - { id: height,     type: text, label: 高度 }
+    widgets:
+      - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }
