@@ -11,6 +11,32 @@ import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import { useLoras } from '../../api/loras'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
 
+function LoraSelectWidget({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  // V1' Lane C LoadLoRA component node uses this to pick a single LoRA
+  // by display name (vs the lora_stack widget which manages an ordered
+  // list with strengths for the integrated image_generate node). Source
+  // is the same /api/v1/loras scanner endpoint that lora_stack reads —
+  // so newly-dropped LoRA files appear in both without an edit.
+  const { data: loras } = useLoras()
+  return (
+    <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">— 不应用 LoRA —</option>
+      {loras?.map((lora) => (
+        <option key={lora.name} value={lora.name}>
+          {lora.name}
+        </option>
+      ))}
+    </NodeSelect>
+  )
+}
+
+
 function AgentSelectWidget({
   value,
   onChange,
@@ -287,6 +313,13 @@ function WidgetRenderer({
       return (
         <LoraStackWidget
           value={Array.isArray(resolved) ? (resolved as LoraEntry[]) : []}
+          onChange={(v) => onChange(v)}
+        />
+      )
+    case 'lora_select':
+      return (
+        <LoraSelectWidget
+          value={String(resolved ?? '')}
           onChange={(v) => onChange(v)}
         />
       )
