@@ -29,6 +29,16 @@ const PORT_TYPE_COLORS: Record<string, string> = {
   audio: 'var(--info)',
   control: 'var(--accent)',
   any: 'var(--purple)',
+  // V1' Lane C / P4.3 — ComfyUI-style typed bundles for the component
+  // node set under backend/nodes/flux2-components/. Colors mirror the
+  // ComfyUI palette so users migrating workflows don't have to relearn
+  // which port is which.
+  image: 'rgba(20,184,166,0.85)',        // teal-cyan
+  MODEL: 'rgba(244,114,182,0.9)',        // pink
+  CLIP: 'rgba(234,179,8,0.9)',           // yellow
+  VAE: 'rgba(239,68,68,0.85)',           // red
+  CONDITIONING: 'rgba(251,146,60,0.9)',  // orange
+  LATENT: 'rgba(168,85,247,0.85)',       // purple
 }
 
 interface BaseNodeProps {
