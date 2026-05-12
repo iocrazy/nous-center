@@ -1,0 +1,88 @@
+name: flux2-components
+version: "0.1"
+description: "Flux2 / Diffusers 组件节点 — ComfyUI 风格的可组装图像生成节点(V1' Lane C)"
+author: "nous-center"
+
+# Each node here outputs/consumes a typed bundle dict so downstream nodes can
+# tell what kind of object they're holding (MODEL / CLIP / VAE / CONDITIONING /
+# LATENT / IMAGE). The widget for picking the underlying yaml spec is the same
+# `model_key` field image_generate uses today — frontend selects from the same
+# pool, so V1' Lane C ships without a new dynamic-source widget. PR-C4 will
+# upgrade these to scanner-driven dropdowns.
+
+nodes:
+
+  flux2_load_checkpoint:
+    label: "Load Checkpoint"
+    category: image
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: model, type: data, label: MODEL }
+      - { id: clip,  type: data, label: CLIP }
+      - { id: vae,   type: data, label: VAE }
+    widgets:
+      - { name: model_key, label: "模型", widget: select, options: [
+          {label: "Flux2-klein-9B (BFL bf16)",          value: "flux2-klein-9b"},
+          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
+          {label: "ERNIE-Image",                        value: "ernie-image"},
+        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+
+  flux2_load_diffusion_model:
+    label: "Load Diffusion Model"
+    category: image
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: model, type: data, label: MODEL }
+    widgets:
+      - { name: model_key, label: "模型", widget: select, options: [
+          {label: "Flux2-klein-9B (BFL bf16)",          value: "flux2-klein-9b"},
+          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
+          {label: "ERNIE-Image",                        value: "ernie-image"},
+        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+
+  flux2_load_clip:
+    label: "Load CLIP"
+    category: image
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: clip, type: data, label: CLIP }
+    widgets:
+      - { name: model_key, label: "源模型", widget: select, options: [
+          {label: "Flux2-klein-9B",                     value: "flux2-klein-9b"},
+          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
+          {label: "ERNIE-Image",                        value: "ernie-image"},
+        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+
+  flux2_load_vae:
+    label: "Load VAE"
+    category: image
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: vae, type: data, label: VAE }
+    widgets:
+      - { name: model_key, label: "源模型", widget: select, options: [
+          {label: "Flux2-klein-9B",                     value: "flux2-klein-9b"},
+          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
+          {label: "ERNIE-Image",                        value: "ernie-image"},
+        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+
+  flux2_load_lora:
+    label: "Load LoRA"
+    category: image
+    badge: LoRA
+    badgeColor: "var(--warn)"
+    inputs:
+      - { id: model, type: data, label: MODEL }
+    outputs:
+      - { id: model, type: data, label: MODEL }
+    widgets:
+      - { name: lora_name, label: "LoRA 名称", widget: input, default: "" }
+      - { name: strength,  label: "强度",      widget: slider, min: 0, max: 2, step: 0.05, default: 1.0 }
