@@ -86,15 +86,44 @@ export default function NodeLibraryPanel() {
     e.dataTransfer.effectAllowed = 'move'
   }
 
-  // 插件包仍然按它们自己的 category 渲染在下面（保留可发现性）。
+  // V1' Lane C / P4: plugin packages whose `category` matches a builtin
+  // group (e.g. flux2-components advertises `category: image`) get merged
+  // into that builtin group instead of becoming a parallel `plugin:image`
+  // section. Otherwise the sidebar showed "图像 (2)" and "IMAGE (8)"
+  // side-by-side after Lane C P3 landed, which split the discovery surface.
+  // Plugins whose category doesn't match any builtin still render as a
+  // dedicated section below — that path stays unchanged.
+  // Build a per-render snapshot of merged categories. We must not mutate
+  // BUILTIN_CATEGORIES.nodes in place — React re-runs this function on
+  // every render and a naïve push() would accumulate duplicates each tick.
+  const mergedBuiltins: NodeCategory[] = BUILTIN_CATEGORIES.map((c) => ({
+    ...c,
+    nodes: [...c.nodes],
+  }))
+  const mergedByName: Record<string, NodeCategory> = {}
+  for (const c of mergedBuiltins) mergedByName[c.name] = c
+
+  const standalonePluginCats: NodeCategory[] = []
+  for (const c of PLUGIN_CATEGORIES) {
+    const rawName = c.name.startsWith('plugin:') ? c.name.slice('plugin:'.length) : c.name
+    const target = mergedByName[rawName]
+    if (target) {
+      // Append plugin nodes that aren't already declared by the builtin
+      // (don't double-list when names happen to clash).
+      const existing = new Set(target.nodes.map((n) => n.type))
+      for (const n of c.nodes) if (!existing.has(n.type)) target.nodes.push(n)
+    } else {
+      standalonePluginCats.push({
+        name: c.name,
+        label: c.label || c.name,
+        color: c.color,
+        nodes: c.nodes,
+      })
+    }
+  }
   const allCategories: NodeCategory[] = [
-    ...BUILTIN_CATEGORIES,
-    ...PLUGIN_CATEGORIES.map((c) => ({
-      name: c.name,
-      label: c.label || c.name,
-      color: c.color,
-      nodes: c.nodes,
-    })),
+    ...mergedBuiltins,
+    ...standalonePluginCats,
   ]
 
   return (
