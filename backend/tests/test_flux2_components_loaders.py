@@ -46,17 +46,22 @@ def test_yaml_declares_loader_nodes():
     assert loader_nodes <= set(nodes)
 
 
-def test_yaml_node_widgets_have_model_key_options():
+def test_yaml_node_widgets_use_scanner_driven_model_select():
+    """V1' Lane C P4.2: model_key widgets are `model_select, filter: image`
+    so the dropdown is populated dynamically from /api/v1/engines?type=image
+    by the existing ModelSelectWidget in DeclarativeNode.tsx. Newly-added
+    yaml specs (or auto-detected dirs) surface in the dropdown without an
+    options-list edit here."""
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
     for node_id in ("flux2_load_checkpoint", "flux2_load_diffusion_model",
                     "flux2_load_clip", "flux2_load_vae"):
         widgets = cfg["nodes"][node_id]["widgets"]
         mk = next((w for w in widgets if w["name"] == "model_key"), None)
         assert mk is not None, node_id
-        assert mk["widget"] == "select"
-        # All three image yaml entries surfaced
-        values = {opt["value"] for opt in mk["options"]}
-        assert {"flux2-klein-9b", "flux2-klein-9b-true-v2-fp8mixed", "ernie-image"} <= values
+        assert mk["widget"] == "model_select", node_id
+        assert mk["filter"] == "image", node_id
+        # Default fallback to wikeeyang so a freshly-dropped node is usable
+        assert mk["default"] == "flux2-klein-9b-true-v2-fp8mixed", node_id
 
 
 def test_executors_dict_has_five_entries_matching_yaml():
