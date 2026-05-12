@@ -1,4 +1,10 @@
-"""Tests for image_generate / image_output nodes (PR-4 backend half)."""
+"""Tests for image_generate / image_output nodes.
+
+V1' Lane D P5: image_generate now composes the Lane C helpers
+(encode_prompt + sample + vae_decode) instead of calling adapter.infer.
+The fixture mocks the three helpers + write_image so the node is
+exercised end-to-end without touching real diffusers / GPU.
+"""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -8,50 +14,81 @@ import pytest
 
 @pytest.fixture
 def fake_image_adapter(monkeypatch):
-    """Install a fake v2 IMAGE adapter on workflow_executor._model_manager.
+    """Mock the helper chain so we can assert what image_generate calls.
 
-    The fake captures the ImageRequest pydantic instance so tests can
-    assert field passthrough, and returns a tiny PNG-marker payload so
-    the node's base64 round-trip can be verified.
+    Returns a dict the tests use to read back:
+      adapter / mgr / encode_calls / sample_calls / vae_decode_calls
     """
     from src.services import workflow_executor as we
-    from src.services.inference.base import InferenceResult, UsageMeter
+    from src.services.inference import image_diffusers as image_mod
+    from src.services import image_output_storage
 
-    captured: dict = {}
+    encode_calls: list = []
+    sample_calls: list = []
+    vae_decode_calls: list = []
 
-    async def _infer(req):
-        captured["req"] = req
-        return InferenceResult(
-            media_type="image/png",
-            data=b"\x89PNGFAKE",
-            metadata={
-                "width": req.width,
-                "height": req.height,
-                "steps": req.steps,
-                "seed": req.seed,
-                "loras": [{"name": s.name, "strength": s.strength} for s in req.loras],
-            },
-            usage=UsageMeter(image_count=1, latency_ms=42),
-        )
+    def _encode(pipe, prompt, **kw):
+        encode_calls.append({"pipe": pipe, "prompt": prompt, "kw": kw})
+        return {"prompt_embeds": "EMBEDS", "text_ids": "TEXT_IDS"}
+
+    def _sample(pipe, conditioning, **kw):
+        sample_calls.append({"pipe": pipe, "conditioning": conditioning, "kw": kw})
+        return "LATENTS"
+
+    pil_image = MagicMock()
+    pil_image.save = MagicMock(side_effect=lambda buf, format="PNG": buf.write(b"\x89PNGFAKE"))
+
+    def _vae_decode(pipe, latents):
+        vae_decode_calls.append({"pipe": pipe, "latents": latents})
+        return pil_image
+
+    monkeypatch.setattr(image_mod, "encode_prompt", _encode)
+    monkeypatch.setattr(image_mod, "sample", _sample)
+    monkeypatch.setattr(image_mod, "vae_decode", _vae_decode)
 
     adapter = MagicMock()
     adapter.is_loaded = True
-    adapter.infer = _infer
+    adapter.device = "cuda:0"
+    adapter.pipe = MagicMock(name="pipe")
+    adapter.set_active_loras = MagicMock()
 
     mgr = MagicMock()
     mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
     monkeypatch.setattr(we, "_model_manager", mgr)
-    return captured
+
+    monkeypatch.setattr(
+        image_output_storage, "write_image",
+        MagicMock(return_value={
+            "url": "/files/images/2026-05-12/fake.png?token=t&expires=1",
+            "uuid": "fake",
+            "expires": 1778640000,
+        }),
+    )
+
+    # torch.Generator chain — patch so the test doesn't need CUDA.
+    import torch
+    gen = MagicMock()
+    gen.manual_seed = MagicMock(return_value=gen)
+    monkeypatch.setattr(torch, "Generator", MagicMock(return_value=gen))
+
+    return {
+        "adapter": adapter,
+        "mgr": mgr,
+        "encode_calls": encode_calls,
+        "sample_calls": sample_calls,
+        "vae_decode_calls": vae_decode_calls,
+    }
 
 
-async def test_image_generate_dispatches_to_adapter_with_typed_request(fake_image_adapter):
+async def test_image_generate_composes_helpers_in_correct_order(fake_image_adapter):
+    """Lane D P5 — image_generate composes encode_prompt → sample → vae_decode."""
     from src.services.nodes.image import ImageGenerateNode
 
     node = ImageGenerateNode()
     out = await node.invoke(
         data={
             "model_key": "flux2-klein-9b",
-            "negative_prompt": "blurry",
+            "negative_prompt": "blurry",   # accepted in data but not used by helpers yet
             "width": 768,
             "height": 768,
             "steps": 30,
@@ -62,51 +99,78 @@ async def test_image_generate_dispatches_to_adapter_with_typed_request(fake_imag
         inputs={"prompt": "a cat in space"},
     )
 
-    req = fake_image_adapter["req"]
-    assert req.prompt == "a cat in space"
-    assert req.negative_prompt == "blurry"
-    assert req.width == 768
-    assert req.height == 768
-    assert req.steps == 30
-    assert req.seed == 1234
-    assert req.cfg_scale == 5.5
-    assert len(req.loras) == 1
-    assert req.loras[0].name == "anime-v2"
-    assert req.loras[0].strength == 0.7
+    # 1. Adapter acquired by model_key
+    fake_image_adapter["mgr"].get_loaded_adapter.assert_awaited_once_with("flux2-klein-9b")
 
-    # Signed URL is the only render path now (p2-polish-3 dropped base64).
+    # 2. LoRAs applied through set_active_loras
+    adapter = fake_image_adapter["adapter"]
+    adapter.set_active_loras.assert_called_once()
+    loras = adapter.set_active_loras.call_args.args[0]
+    assert len(loras) == 1 and loras[0].name == "anime-v2" and loras[0].strength == 0.7
+
+    # 3. encode_prompt called with the prompt text
+    assert len(fake_image_adapter["encode_calls"]) == 1
+    assert fake_image_adapter["encode_calls"][0]["prompt"] == "a cat in space"
+
+    # 4. sample called with the conditioning bundle + sampling params
+    assert len(fake_image_adapter["sample_calls"]) == 1
+    s = fake_image_adapter["sample_calls"][0]
+    assert s["conditioning"]["prompt_embeds"] == "EMBEDS"
+    assert s["kw"]["width"] == 768
+    assert s["kw"]["height"] == 768
+    assert s["kw"]["num_inference_steps"] == 30
+    assert s["kw"]["guidance_scale"] == 5.5
+
+    # 5. vae_decode called with sample's output
+    assert len(fake_image_adapter["vae_decode_calls"]) == 1
+    assert fake_image_adapter["vae_decode_calls"][0]["latents"] == "LATENTS"
+
+    # 6. Output schema preserved byte-for-byte vs the old adapter.infer route
     assert out["image_url"].startswith("/files/images/")
     assert "image" not in out
     assert out["media_type"] == "image/png"
     assert out["width"] == 768
+    assert out["height"] == 768
+    assert out["steps"] == 30
     assert out["seed"] == 1234
+    assert out["cfg_scale"] == 5.5
     assert out["loras"] == [{"name": "anime-v2", "strength": 0.7}]
-    assert out["duration_ms"] == 42
+    assert isinstance(out["duration_ms"], int)
 
 
 async def test_image_generate_falls_back_to_text_input(fake_image_adapter):
     """Wired downstream of a text_input node, prompt arrives via inputs.text."""
     from src.services.nodes.image import ImageGenerateNode
 
-    node = ImageGenerateNode()
-    out = await node.invoke(
+    out = await ImageGenerateNode().invoke(
         data={"model_key": "flux2-klein-9b"},
         inputs={"text": "via text edge"},
     )
-    assert fake_image_adapter["req"].prompt == "via text edge"
+    assert fake_image_adapter["encode_calls"][0]["prompt"] == "via text edge"
     assert out["image_url"]
 
 
 async def test_image_generate_uses_data_prompt_when_no_input(fake_image_adapter):
     from src.services.nodes.image import ImageGenerateNode
 
-    node = ImageGenerateNode()
-    out = await node.invoke(
+    out = await ImageGenerateNode().invoke(
         data={"model_key": "flux2-klein-9b", "prompt": "from data"},
         inputs={},
     )
-    assert fake_image_adapter["req"].prompt == "from data"
+    assert fake_image_adapter["encode_calls"][0]["prompt"] == "from data"
     assert out["image_url"]
+
+
+async def test_image_generate_generates_random_seed_when_unset(fake_image_adapter):
+    """Omit seed → secrets.randbelow draws one, echoed back in metadata."""
+    from src.services.nodes.image import ImageGenerateNode
+
+    out = await ImageGenerateNode().invoke(
+        data={"model_key": "flux2-klein-9b"},
+        inputs={"prompt": "p"},
+    )
+    assert isinstance(out["seed"], int)
+    assert 0 <= out["seed"] < 2**63
 
 
 async def test_image_generate_missing_prompt_raises():
@@ -138,30 +202,33 @@ async def test_image_generate_missing_model_manager_raises(monkeypatch):
 
 
 async def test_image_generate_default_field_values(fake_image_adapter):
-    """Omit advanced fields → schema defaults from ImageRequest."""
+    """Omit advanced fields → defaults flow through to the helpers + metadata."""
     from src.services.nodes.image import ImageGenerateNode
 
-    node = ImageGenerateNode()
-    await node.invoke(
+    out = await ImageGenerateNode().invoke(
         data={"model_key": "flux2-klein-9b"},
         inputs={"prompt": "default size"},
     )
-    req = fake_image_adapter["req"]
-    assert req.width == 1024
-    assert req.height == 1024
-    assert req.steps == 25
-    assert req.seed is None
-    assert req.cfg_scale == 7.0
-    assert req.loras == []
+    s = fake_image_adapter["sample_calls"][0]
+    assert s["kw"]["width"] == 1024
+    assert s["kw"]["height"] == 1024
+    assert s["kw"]["num_inference_steps"] == 25
+    assert s["kw"]["guidance_scale"] == 7.0
+
+    assert out["width"] == 1024
+    assert out["height"] == 1024
+    assert out["steps"] == 25
+    assert out["cfg_scale"] == 7.0
+    assert out["loras"] == []
 
 
 async def test_image_generate_skips_lora_entries_without_name(fake_image_adapter):
     """Defensive: a UI dropdown left blank arrives as {'name': '', 'strength': 1}.
-    The adapter would crash at lora_paths lookup; coerce filters first."""
+    set_active_loras would crash at lora_paths lookup with a blank name;
+    _coerce_loras filters those out before they reach the adapter."""
     from src.services.nodes.image import ImageGenerateNode
 
-    node = ImageGenerateNode()
-    await node.invoke(
+    out = await ImageGenerateNode().invoke(
         data={
             "model_key": "flux2-klein-9b",
             "loras": [
@@ -172,8 +239,10 @@ async def test_image_generate_skips_lora_entries_without_name(fake_image_adapter
         },
         inputs={"prompt": "p"},
     )
-    req = fake_image_adapter["req"]
-    assert [s.name for s in req.loras] == ["valid"]
+    adapter = fake_image_adapter["adapter"]
+    specs = adapter.set_active_loras.call_args.args[0]
+    assert [s.name for s in specs] == ["valid"]
+    assert out["loras"] == [{"name": "valid", "strength": 0.5}]
 
 
 async def test_image_output_passes_through_image_envelope():
