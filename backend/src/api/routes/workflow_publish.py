@@ -33,12 +33,19 @@ from src.models.workflow import Workflow
 
 router = APIRouter(prefix="/api/v1", tags=["workflow-publish"])
 
-# Output fields image_generate emits — exposed_outputs pointing at an
-# image_generate node may only reference one of these. Anything else is
-# either a typo (image_url vs image_uri) or a mistake about the envelope
-# shape; either way, surfacing 422 at publish time beats a 500 at runtime
-# when the caller hits the service.
-_IMAGE_GENERATE_OUTPUT_FIELDS = {
+# Output fields image-producing nodes emit — exposed_outputs pointing at
+# any node in `_IMAGE_NODE_TYPES` may only reference one of these.
+# Anything else is either a typo (image_url vs image_uri) or a mistake
+# about the envelope shape; either way, surfacing 422 at publish time
+# beats a 500 at runtime when the caller hits the service.
+#
+# Both nodes (the V0 integrated image_generate and the V1' Lane C
+# component-path terminus flux2_vae_decode) emit the same {image_url,
+# media_type, width, height, image_uuid, image_expires} bundle —
+# image_generate additionally carries steps/seed/cfg/loras/duration_ms
+# metadata. We use the union as the allowlist; the field check is
+# inclusive across both terminus types.
+_IMAGE_OUTPUT_FIELDS = {
     "image_url",
     "image",          # base64 fallback for dev mode
     "image_uuid",
@@ -51,6 +58,8 @@ _IMAGE_GENERATE_OUTPUT_FIELDS = {
     "loras",
     "duration_ms",
 }
+
+_IMAGE_NODE_TYPES = {"image_generate", "flux2_vae_decode"}
 
 
 def _snapshot_hash(snapshot: dict) -> str:
@@ -96,7 +105,7 @@ def _detect_category(snapshot: dict) -> str | None:
     body.category path that quick-provision already controls.
     """
     types = set(_node_types_by_id(snapshot).values())
-    if "image_generate" in types:
+    if types & _IMAGE_NODE_TYPES:
         return "image"
     return None
 
@@ -186,16 +195,17 @@ async def publish_workflow(
     # is `null`. Reject at publish time so the caller sees the mistake
     # before any downstream consumer integrates against it.
     for p in body.exposed_outputs:
-        if types_by_id.get(str(p.node_id)) != "image_generate":
+        node_type = types_by_id.get(str(p.node_id))
+        if node_type not in _IMAGE_NODE_TYPES:
             continue
         field = p.input_name
-        if field and field not in _IMAGE_GENERATE_OUTPUT_FIELDS:
+        if field and field not in _IMAGE_OUTPUT_FIELDS:
             raise HTTPException(
                 422,
                 detail=(
                     f"exposed output input_name={field!r} is not emitted by "
-                    f"image_generate; allowed: "
-                    f"{sorted(_IMAGE_GENERATE_OUTPUT_FIELDS)}"
+                    f"{node_type}; allowed: "
+                    f"{sorted(_IMAGE_OUTPUT_FIELDS)}"
                 ),
             )
 

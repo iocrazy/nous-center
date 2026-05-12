@@ -218,3 +218,109 @@ def test_detect_category_from_snapshot():
     }
     assert _detect_category(img_snap) == "image"
     assert _detect_category(text_snap) is None
+
+
+def test_detect_category_recognises_flux2_vae_decode_terminus():
+    """V1' Lane C component workflows end on flux2_vae_decode (the
+    counterpart to image_generate's integrated terminus). Both paths
+    must auto-tag the published service as category=image so quick-
+    provision wires up the image meter automatically."""
+    from src.api.routes.workflow_publish import _detect_category
+
+    component_snap = {
+        "schema": "comfy/api-1",
+        "nodes": {
+            "n1": {"class_type": "flux2_load_checkpoint", "inputs": {}},
+            "n2": {"class_type": "flux2_encode_prompt", "inputs": {}},
+            "n3": {"class_type": "flux2_ksampler", "inputs": {}},
+            "n4": {"class_type": "flux2_vae_decode", "inputs": {}},
+        },
+    }
+    assert _detect_category(component_snap) == "image"
+
+
+@pytest.fixture
+async def component_image_workflow(db_session):
+    """V1' Lane C component workflow:
+    text_input → LoadCheckpoint → EncodePrompt → KSampler → VAEDecode → image_output."""
+    wf = Workflow(
+        name="component-img-flow",
+        nodes=[
+            {"id": "in_1",   "type": "text_input",                "data": {"text": "a cat"}},
+            {"id": "load",   "type": "flux2_load_checkpoint",
+             "data": {"model_key": "flux2-klein-9b-true-v2-fp8mixed"}},
+            {"id": "enc",    "type": "flux2_encode_prompt",       "data": {}},
+            {"id": "ksm",    "type": "flux2_ksampler",            "data": {"width": 512, "height": 512}},
+            {"id": "dec",    "type": "flux2_vae_decode",          "data": {}},
+            {"id": "out_1",  "type": "image_output",              "data": {}},
+        ],
+        edges=[
+            {"id": "e1", "source": "in_1",  "sourceHandle": "text",
+             "target": "enc",   "targetHandle": "text"},
+            {"id": "e2", "source": "load",  "sourceHandle": "clip",
+             "target": "enc",   "targetHandle": "clip"},
+            {"id": "e3", "source": "load",  "sourceHandle": "model",
+             "target": "ksm",   "targetHandle": "model"},
+            {"id": "e4", "source": "enc",   "sourceHandle": "conditioning",
+             "target": "ksm",   "targetHandle": "conditioning"},
+            {"id": "e5", "source": "load",  "sourceHandle": "vae",
+             "target": "dec",   "targetHandle": "vae"},
+            {"id": "e6", "source": "ksm",   "sourceHandle": "latent",
+             "target": "dec",   "targetHandle": "latent"},
+            {"id": "e7", "source": "dec",   "sourceHandle": "image",
+             "target": "out_1", "targetHandle": "image"},
+        ],
+        status="active",
+        auto_generated=False,
+    )
+    db_session.add(wf)
+    await db_session.commit()
+    await db_session.refresh(wf)
+    return wf
+
+
+@pytest.mark.asyncio
+async def test_publish_flux2_component_workflow_auto_detects_image_category(
+    db_client, component_image_workflow,
+):
+    """The Lane C component path terminates on flux2_vae_decode rather
+    than image_generate. _detect_category must pick that up so quick-
+    provision wires the image meter without an explicit category in
+    the publish body."""
+    r = await db_client.post(
+        f"/api/v1/workflows/{component_image_workflow.id}/publish",
+        headers=_admin_headers(),
+        json={
+            "name": "component-img-svc",
+            "label": "Component Image",
+            "exposed_inputs": [],
+            "exposed_outputs": [
+                {"name": "image_url", "node_id": "dec", "input_name": "image_url"},
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["category"] == "image"
+
+
+@pytest.mark.asyncio
+async def test_publish_component_workflow_rejects_typo_in_vae_decode_output(
+    db_client, component_image_workflow,
+):
+    """exposed_outputs pointing at a flux2_vae_decode node must use a
+    canonical image-envelope field. Typos 422 at publish time so the
+    consumer doesn't get null from the service."""
+    r = await db_client.post(
+        f"/api/v1/workflows/{component_image_workflow.id}/publish",
+        headers=_admin_headers(),
+        json={
+            "name": "component-img-bad",
+            "exposed_inputs": [],
+            "exposed_outputs": [
+                {"name": "img", "node_id": "dec", "input_name": "image_uri"},
+            ],
+        },
+    )
+    assert r.status_code == 422
+    assert "image_uri" in r.text
+    assert "flux2_vae_decode" in r.text
