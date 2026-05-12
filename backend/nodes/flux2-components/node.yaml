@@ -23,11 +23,7 @@ nodes:
       - { id: clip,  type: data, label: CLIP }
       - { id: vae,   type: data, label: VAE }
     widgets:
-      - { name: model_key, label: "模型", widget: select, options: [
-          {label: "Flux2-klein-9B (BFL bf16)",          value: "flux2-klein-9b"},
-          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
-          {label: "ERNIE-Image",                        value: "ernie-image"},
-        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+      - { name: model_key, label: "模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
   flux2_load_diffusion_model:
     label: "Load Diffusion Model"
@@ -38,11 +34,7 @@ nodes:
     outputs:
       - { id: model, type: data, label: MODEL }
     widgets:
-      - { name: model_key, label: "模型", widget: select, options: [
-          {label: "Flux2-klein-9B (BFL bf16)",          value: "flux2-klein-9b"},
-          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
-          {label: "ERNIE-Image",                        value: "ernie-image"},
-        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+      - { name: model_key, label: "模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
   flux2_load_clip:
     label: "Load CLIP"
@@ -53,11 +45,7 @@ nodes:
     outputs:
       - { id: clip, type: data, label: CLIP }
     widgets:
-      - { name: model_key, label: "源模型", widget: select, options: [
-          {label: "Flux2-klein-9B",                     value: "flux2-klein-9b"},
-          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
-          {label: "ERNIE-Image",                        value: "ernie-image"},
-        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+      - { name: model_key, label: "源模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
   flux2_load_vae:
     label: "Load VAE"
@@ -68,11 +56,7 @@ nodes:
     outputs:
       - { id: vae, type: data, label: VAE }
     widgets:
-      - { name: model_key, label: "源模型", widget: select, options: [
-          {label: "Flux2-klein-9B",                     value: "flux2-klein-9b"},
-          {label: "Flux2-klein-9B Wikeeyang FP8 mixed", value: "flux2-klein-9b-true-v2-fp8mixed"},
-          {label: "ERNIE-Image",                        value: "ernie-image"},
-        ], default: "flux2-klein-9b-true-v2-fp8mixed" }
+      - { name: model_key, label: "源模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
 
   flux2_load_lora:
     label: "Load LoRA"
