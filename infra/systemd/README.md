@@ -37,7 +37,11 @@ sudo ./infra/systemd/install.sh uninstall
   backend 直 serve `frontend/dist`（PR #32），不需要常驻。
 - **`nous-cloudflared` `Requires=nous-backend`** — backend 死了就把 tunnel 也
   停掉，避免 cloudflare 把空 origin 挂在域名上扔 502 给用户。
-- **`MemoryMax=8G`** on backend — vLLM 之类有 OOM 史，给 host 留余地。
+- **`MemoryMax=64G`** on backend — vLLM 之类有 OOM 史，给 host 留余地。早期是
+  8G，但 V1' Lane A 之后 wikeeyang fp8mixed 的 dequant 中间态会冲到 ~18G，
+  8G 上限会让加载在没有 journal 输出的情况下被 SIGKILL。64G 在 96G 主机上
+  留 ~30G 给 OS + cloudflared。如果你计划同时加载多个 image 模型，提高到
+  `MemoryHigh=80G` + `MemoryMax=88G` 更稳。
 - **`--protocol http2`** for cloudflared — 国内某些 ISP 屏蔽 UDP/7844 (QUIC)，
   http2 是已知能 work 的回落。
 

@@ -17,8 +17,13 @@ RestartSec=5
 # Log to journald — view with `journalctl -u nous-backend -f`
 StandardOutput=journal
 StandardError=journal
-# Hard memory cap so a vLLM bug can't OOM the host
-MemoryMax=8G
+# Hard memory cap so a vLLM bug or runaway loader can't OOM the host.
+# 8G (the pre-V1 value) was below wikeeyang fp8mixed's ~18G dequant peak —
+# image_generate would get SIGKILL mid-load with no useful journal output.
+# 64G leaves ~30G headroom on a 96G host for OS + cloudflared + ad-hoc
+# tools. Bump to MemoryHigh=80G + MemoryMax=88G if you have more RAM and
+# routinely load multiple image models concurrently.
+MemoryMax=64G
 
 [Install]
 WantedBy=multi-user.target
