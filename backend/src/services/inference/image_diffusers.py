@@ -162,8 +162,18 @@ def encode_prompt(pipe: Any, prompt: str, **kwargs: Any) -> dict[str, Any]:
     Returns a dict (rather than the raw `(prompt_embeds, text_ids)` tuple
     diffusers exposes) so future fields (negative-prompt embeds, attention
     masks, pooled embeds) can be added without breaking node IO shapes.
+
+    `kwargs` go through an `inspect.signature` filter so callers can pass
+    optional fields (notably `negative_prompt`) without crashing on
+    pipelines that don't declare them — Flux2 / Flux2Klein silently
+    ignore the negative prompt, ERNIE / future SD pipelines honor it.
+    Same shape preservation the V0 adapter.infer route had before Lane D
+    P5 collapsed onto helpers.
     """
-    prompt_embeds, text_ids = pipe.encode_prompt(prompt=prompt, **kwargs)
+    import inspect
+    accepted = set(inspect.signature(pipe.encode_prompt).parameters.keys())
+    safe = {k: v for k, v in kwargs.items() if k in accepted}
+    prompt_embeds, text_ids = pipe.encode_prompt(prompt=prompt, **safe)
     return {"prompt_embeds": prompt_embeds, "text_ids": text_ids}
 
 

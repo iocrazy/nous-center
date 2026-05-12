@@ -646,6 +646,44 @@ def test_encode_prompt_delegates_to_pipe_and_bundles_outputs():
     assert bundle == {"prompt_embeds": "EMBEDS", "text_ids": "TEXT_IDS"}
 
 
+def test_encode_prompt_drops_negative_prompt_when_pipe_rejects_it():
+    """Flux2 / Flux2Klein doesn't declare negative_prompt in encode_prompt's
+    signature. Helper must filter it out instead of crashing the caller
+    with an unexpected-kwarg TypeError. Preserves the V0 adapter.infer
+    inspect-filter behavior that integrated callers (image_generate) and
+    the Lane C EncodePrompt node both depend on."""
+    from src.services.inference.image_diffusers import encode_prompt
+
+    # Real fn with explicit signature — no negative_prompt.
+    def flux2_encode_prompt(prompt: str, device=None, num_images_per_prompt: int = 1):
+        return ("EMBEDS", "TEXT_IDS")
+
+    pipe = MagicMock()
+    pipe.encode_prompt = flux2_encode_prompt
+
+    # negative_prompt MUST be silently dropped; call should succeed.
+    bundle = encode_prompt(pipe, "a cat", negative_prompt="bad")
+    assert bundle == {"prompt_embeds": "EMBEDS", "text_ids": "TEXT_IDS"}
+
+
+def test_encode_prompt_forwards_negative_prompt_when_pipe_accepts_it():
+    """Conversely, a pipe whose encode_prompt declares negative_prompt
+    (think future ERNIE / SD adapters) must receive it intact."""
+    from src.services.inference.image_diffusers import encode_prompt
+
+    captured = {}
+
+    def ernie_encode_prompt(prompt: str, negative_prompt: str | None = None):
+        captured["negative"] = negative_prompt
+        return ("EMBEDS", "TEXT_IDS")
+
+    pipe = MagicMock()
+    pipe.encode_prompt = ernie_encode_prompt
+
+    encode_prompt(pipe, "a cat", negative_prompt="bad")
+    assert captured["negative"] == "bad"
+
+
 def test_sample_calls_pipe_with_latent_output_type_and_unpacks():
     """sample must (a) call pipe with output_type='latent' + return_dict=False
     so the user gets raw latents, and (b) unpack the packed shape using
