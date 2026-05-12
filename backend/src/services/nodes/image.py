@@ -63,6 +63,7 @@ class ImageGenerateNode:
         height = int(data.get("height", 1024))
         steps = int(data.get("steps", 25))
         cfg_scale = float(data.get("cfg_scale", 7.0))
+        negative_prompt = data.get("negative_prompt", "") or ""
         loras = _coerce_loras(data.get("loras"))
 
         # ComfyUI-style: draw a fresh 64-bit seed when none supplied so every
@@ -82,7 +83,14 @@ class ImageGenerateNode:
         generator = torch.Generator(device=adapter.device).manual_seed(seed)
 
         t0 = time.monotonic()
-        cond = await asyncio.to_thread(encode_prompt, adapter.pipe, prompt)
+        # encode_prompt drops negative_prompt automatically on pipelines
+        # that don't declare it (Flux2 / Flux2Klein) and honors it on the
+        # ones that do (ERNIE / future SD). Same behavior as the V0
+        # adapter.infer route — preserves back-compat for ERNIE workflows.
+        cond = await asyncio.to_thread(
+            encode_prompt, adapter.pipe, prompt,
+            negative_prompt=negative_prompt or None,
+        )
         latents = await asyncio.to_thread(
             sample, adapter.pipe, cond,
             width=width, height=height,

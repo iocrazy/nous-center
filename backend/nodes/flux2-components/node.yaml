@@ -80,7 +80,11 @@ nodes:
     outputs:
       - { id: conditioning, type: CONDITIONING, label: CONDITIONING }
     widgets:
-      - { name: text, label: "Prompt", widget: textarea, rows: 3, default: "" }
+      - { name: text,            label: "Prompt",   widget: textarea, rows: 3, default: "" }
+      # Flux2 / Flux2Klein 不支持 negative prompt — encode_prompt helper
+      # 内部用 inspect.signature 过滤掉,留空即可。ERNIE / SD 等支持
+      # negative prompt 的 pipeline 会自动 honor 这个字段。
+      - { name: negative_prompt, label: "Negative", widget: textarea, rows: 2, default: "" }
 
   flux2_ksampler:
     label: "KSampler"

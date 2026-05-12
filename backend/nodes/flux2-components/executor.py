@@ -131,9 +131,13 @@ async def exec_encode_prompt(data: dict, inputs: dict) -> dict:
     text = inputs.get("text") or data.get("text") or ""
     if not text:
         raise RuntimeError("EncodePrompt 节点缺少 text 输入")
+    negative = data.get("negative_prompt", "") or ""
 
     adapter = await _acquire_adapter(clip["model_id"])
-    cond = await asyncio.to_thread(encode_prompt, adapter.pipe, text)
+    cond = await asyncio.to_thread(
+        encode_prompt, adapter.pipe, text,
+        negative_prompt=negative or None,
+    )
     return {
         "conditioning": {
             "_type": "flux2_conditioning",
