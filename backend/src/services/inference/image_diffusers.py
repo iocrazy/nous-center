@@ -132,6 +132,118 @@ def load_quantized_transformer(main_path: Path, sf_path: Path, dtype) -> Any:
     return transformer
 
 
+# --- sampling helpers (V1' Lane C / P3) ------------------------------------
+#
+# Three more helpers split the diffusers pipeline.__call__ into the discrete
+# stages that ComfyUI-style component nodes need:
+#
+#     EncodePrompt(CLIP, text) -> CONDITIONING            (encode_prompt)
+#     KSampler(MODEL, CONDITIONING) -> LATENT             (sample)
+#     VAEDecode(VAE, LATENT) -> IMAGE                     (vae_decode)
+#
+# The signatures were intentionally deferred from P2 because they depend on
+# the port shapes (MODEL/CLIP/VAE/LATENT/CONDITIONING) that the V1' Lane C
+# component-node executors will produce/consume. Each helper here corresponds
+# to one node. They are synchronous so the node executor can compose them
+# under a single `asyncio.to_thread` block instead of paying thread-handoff
+# cost three times per generation.
+#
+# Pipeline-class polymorphism: vae_decode in particular is Flux2-specific
+# (the bn-rescale + _unpatchify_latents dance). When ERNIE / future
+# pipelines need their own component-node path, branch on `type(pipe)` or
+# add an explicit `pipeline_family` argument. For Flux2 we just inline the
+# 5 lines from Flux2Pipeline.__call__'s tail.
+
+
+def encode_prompt(pipe: Any, prompt: str, **kwargs: Any) -> dict[str, Any]:
+    """Run the text encoder + tokenizer attached to *pipe* and return the
+    CONDITIONING bundle.
+
+    Returns a dict (rather than the raw `(prompt_embeds, text_ids)` tuple
+    diffusers exposes) so future fields (negative-prompt embeds, attention
+    masks, pooled embeds) can be added without breaking node IO shapes.
+    """
+    prompt_embeds, text_ids = pipe.encode_prompt(prompt=prompt, **kwargs)
+    return {"prompt_embeds": prompt_embeds, "text_ids": text_ids}
+
+
+def sample(
+    pipe: Any,
+    conditioning: dict[str, Any],
+    *,
+    width: int,
+    height: int,
+    num_inference_steps: int,
+    guidance_scale: float,
+    generator: Any | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Run the denoising loop and return an unpacked LATENT tensor (B,C,H,W).
+
+    Implementation note: rather than copy diffusers' ~80-line denoising loop
+    we ride pipe.__call__(output_type="latent"). That keeps us shielded from
+    scheduler/quantization edge cases the pipeline already handles. The
+    cost is one extra encode_prompt call inside __call__; we eat that and
+    save the maintenance burden of duplicating the loop here.
+
+    diffusers returns packed latents (B, H*W, C) for output_type="latent",
+    which loses the spatial layout the VAE decode needs. We unpack here
+    using ids reconstructed from the requested (height, width) — that
+    matches the same arithmetic Flux2Pipeline.prepare_latents uses, so
+    vae_decode below can stay agnostic of the original resolution.
+    """
+    import torch
+
+    out = pipe(
+        prompt_embeds=conditioning["prompt_embeds"],
+        width=width,
+        height=height,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        generator=generator,
+        output_type="latent",
+        return_dict=False,
+        **kwargs,
+    )
+    packed = out[0] if isinstance(out, tuple) else out
+
+    # Reconstruct latent_ids the same way Flux2Pipeline.prepare_latents does:
+    # round H,W to (vae_scale_factor*2) multiples, halve once for the
+    # transformer's patchified shape.
+    sf = pipe.vae_scale_factor
+    latent_h = 2 * (height // (sf * 2))
+    latent_w = 2 * (width // (sf * 2))
+    batch_size = packed.shape[0]
+    shape_proxy = torch.empty(
+        (batch_size, 1, latent_h // 2, latent_w // 2),
+        device=packed.device,
+    )
+    latent_ids = pipe._prepare_latent_ids(shape_proxy).to(packed.device)
+    return pipe._unpack_latents_with_ids(packed, latent_ids)
+
+
+def vae_decode(pipe: Any, latents: Any) -> Any:
+    """Decode unpacked latents (B,C,H,W) to a PIL image.
+
+    Mirrors Flux2Pipeline.__call__'s tail (the `output_type != "latent"`
+    branch) but operates on the unpacked tensor `sample` returned, so this
+    helper doesn't need height/width metadata. ERNIE / future pipelines
+    would dispatch differently — for now Flux2 is the only consumer.
+    """
+    import torch
+
+    bn = pipe.vae.bn
+    latents_bn_mean = bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+    latents_bn_std = torch.sqrt(
+        bn.running_var.view(1, -1, 1, 1) + pipe.vae.config.batch_norm_eps
+    ).to(latents.device, latents.dtype)
+    latents = latents * latents_bn_std + latents_bn_mean
+    latents = pipe._unpatchify_latents(latents)
+
+    image = pipe.vae.decode(latents, return_dict=False)[0]
+    return pipe.image_processor.postprocess(image, output_type="pil")[0]
+
+
 # ---------------------------------------------------------------------------
 
 
