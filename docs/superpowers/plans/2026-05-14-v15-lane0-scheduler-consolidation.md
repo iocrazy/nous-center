@@ -242,7 +242,7 @@ class _FakeModelManager:
     def __init__(self):
         self.evict_calls: list[int | None] = []
 
-    def evict_lru(self, gpu_index=None):
+    async def evict_lru(self, gpu_index=None):
         self.evict_calls.append(gpu_index)
         return None  # 没有可驱逐的模型
 
@@ -297,7 +297,7 @@ async def check_and_evict(model_manager, reserved_gb: float = DEFAULT_RESERVED_G
                 "GPU %d low memory: %.1fGB free (threshold: %.1fGB). Evicting LRU...",
                 gpu["index"], free_gb, reserved_gb,
             )
-            evicted = model_manager.evict_lru(gpu_index=gpu["index"])
+            evicted = await model_manager.evict_lru(gpu_index=gpu["index"])
             if evicted:
                 logger.info("Auto-evicted model %s from GPU %d", evicted, gpu["index"])
 
@@ -311,7 +311,7 @@ async def memory_guard_loop(model_manager, reserved_gb: float = DEFAULT_RESERVED
         except Exception as e:
             logger.warning("GPU memory guard failed: %s", e)
 ```
-（删掉原 `check_and_evict` 里 `from src.services import model_scheduler` / `load_model_configs` / 手动 candidates 收集那一整段。`evict_lru` 是同步方法，不需要 `await`。）
+（删掉原 `check_and_evict` 里 `from src.services import model_scheduler` / `load_model_configs` / 手动 candidates 收集那一整段。注意：`services/model_manager.py` 的 `evict_lru` 是 `async def`，必须 `await`——`check_and_evict` 本身已是 `async`，且 `_FakeModelManager.evict_lru` 在 Step 1 也定义为 `async def`。）
 
 - [ ] **Step 4: 跑测试确认通过**
 
