@@ -744,6 +744,48 @@ V1.6 设计将单独写 spec doc。
 
 无。本 spec 决策点全部锁定。
 
+---
+
+## REVIEW IN PROGRESS — plan-eng-review 2026-05-14（待重写并入正文）
+
+`/plan-eng-review` 审查中。下列决策已获用户确认，**尚未并入上面的正文**，下次会话需据此重写 spec。
+
+- **D1 复杂度门禁** — 按 10-Lane 全量推进，设计不拆、实施不拆。
+- **D2 (A1) CUDA IPC** — 删除 CUDA IPC / IPCRef / from_ipc_handle。每 group 恰好 1 worker → 跨 worker 永远跨 group → P2P 路径是死代码。跨 worker tensor 一律 host pinned memory 中转。§3.3/§3.4 重写。
+- **D3 (A2) 调度器整合** — 新增前置 **Lane 0**：删除 `model_scheduler.py`，`monitor.py` + `gpu_monitor.py` 改用 `model_manager`；盘点 `src/gpu/model_manager.py` 职责后合并或删除。零行为变化的独立 refactor PR，先于所有 V1.5 Lane。
+- **D4 (A3) 硬件错配** — spec 保持 N-group 通用（不写死 3 worker），启动按探测/yaml 动态决定 worker 数。新增「当前 2 卡部署」一节，明确画出 2×3090 的 group 布局并选定取舍（NVLink 对优先 tp-LLM vs 拆开优先并发）。`hardware.yaml` 发两份示例（2 卡当前 / 3 卡未来）。
+- **D5 (A4) 命名冲突** — spec 的「Worker 子进程」概念全部改名 **GPU Runner**：WorkerSupervisor→RunnerSupervisor，WorkerClient→RunnerClient，worker_id→runner_id。`src/workers/` 不动。
+- **D6 (A5) 两类 runner** — 区分：image/TTS runner 走 per-group 串行队列（一次一个 GPU job）；LLM runner 是 vLLM 的并发代理（不串行化）。新增一节枚举所有 inline 执行点（openai/anthropic/ollama compat + responses.py + workflow_executor）的改道方式。
+- **D7 (A6) DB reconcile** — 设计明确机制：ring buffer 每条 TaskSnapshot 加 `db_synced: bool`，DB 写失败置 false，后台任务检测 DB 恢复后遍历 ring buffer 批量补写。
+- **D8 (A7) LLM Runner 边界** — LLM Runner 只管 vLLM 生命周期（spawn/health/preload/abort/OOM 重启）；主进程 compat 路由直连 vLLM HTTP 端口，零 per-token pipe 开销。
+- **D9 (C3) Runner 内部并发** — spec §4.4 补 runner 内部并发设计：runner 内跑两个 asyncio task——pipe-reader（持续读消息，收 Abort 置位 CancelToken）+ node-executor（跑 adapter.run，长循环内轮询 CancelToken）。adapter.run 须为 async 可让出。
+- **D10 (C4) 混合节点 workflow** — workflow executor 留主进程：llm 节点 → executor 直接 HTTP 调 vLLM（与 compat 路由同路）；image/TTS 节点 → dispatch 到对应 runner 串行队列。workflow 分组逻辑区分「dispatch 节点」与「inline HTTP 节点」。
+- **D11 (P1) 大载荷传输** — image 节点结果 runner 直接写 `outputs/{task_id}/`（复用旧 spec 的 output_dir），pipe 只传路径 + 元数据；跨节点中间 tensor 走 host pinned；小标量/dict 走 msgpack pipe。
+
+### 重写时还需并入（review 翻出、无 A/B/C 备选的强制项）
+
+- **C1** — §3.5/§4.3 改为「复用 model_manager 已有的 `_load_failures` dict + `evict_lru(gpu_index)`」，不要重新发明。
+- **C2** — §3.3 IPC 协议整节重写：删 IPCRef；RunNode 只剩 image/TTS；保留 LoadModel/UnloadModel/Abort/Ping。
+- **C6** — §3.2 提一句现有 `_detect_vllm_gpus*` 与 hardware.yaml topo 探测的关系（整合或并存）。
+- **§5 测试** 需补 9 项，其中 4 项 CRITICAL 回归：
+  1. [回归] Lane 0 后 monitor.py / gpu_monitor.py 仍正确报告加载状态 + idle-TTL 卸载仍生效
+  2. [回归] A5 后 4 个 compat 路由仍产出正确输出
+  3. [回归] workflow inline → queued 后执行结果不变
+  4. [回归] src/gpu/model_manager.py 合并/删除后所有调用点仍工作
+  5. LLM lifecycle runner 不串行化 vLLM 请求
+  6. runner 内 pipe-reader + executor task 分离；Abort-during-node-execution within-node 生效
+  7. host-pinned 跨 worker tensor 传递
+  8. DB 恢复后 reconcile 路径：db_synced=false 批量补写
+  9. 混合节点 workflow：image dispatch + llm inline HTTP
+
+### review 剩余步骤（下次会话继续）
+
+- [ ] D12：是否要 outside voice（codex 独立挑战）—— 用户暂停于此，需先 clarify
+- [ ] 必需输出：NOT in scope / What already exists / TODOS.md updates / Failure modes / Worktree 并行化策略 / Completion summary
+- [ ] 据 D1–D11 + C1/C2/C6 + §5 重写 spec 正文，删除本「REVIEW IN PROGRESS」节
+- [ ] Review log + Readiness Dashboard + Plan file report
+- [ ] 用户审核重写后的 spec → 转 `superpowers:writing-plans`
+
 ## References
 
 - `docs/superpowers/specs/2026-03-25-global-task-management-design.md` — V1 ExecutionTask 表（本 spec 扩 schema）
