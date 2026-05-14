@@ -793,12 +793,26 @@ V1.6 设计将单独写 spec doc。
   9. 混合节点 workflow：image dispatch + llm inline HTTP
   10. [D14] image adapter `callback_on_step_end` 接入 + cancel/timeout 信号穿过 to_thread 边界（threading.Event）
 
+### plan-design-review 决策（2026-05-14，7-pass 完成，待并入正文）
+
+V1.5 前端 = TaskPanel 重构 + Dashboard 标识。设计完整度 ~2/10 → ~8/10。下列决策待并入 spec 正文的前端章节。
+
+- **DD3 (Pass 1) TaskPanel 重构为 Buildkite 风** — 顶部是 per-runner 泳道区（视觉 hero），每条泳道 = 一个 GPU runner 的当前任务 + 进度 + 排队数；下方是「最近完成」列表。取消原「3-tab + 扁平列表 + 独立队列折叠区」结构。**这是 TaskPanel 重构，超 V1.5 原「扩展」scope。**
+- **DD4 (Pass 1) 点 Run 反馈** — D17 异步后，点 Run → toast「任务已入队 · image runner」+ IconRail 任务图标 badge 计数；面板不自动打开。toast 带「查看」跳转。
+- **DD5 (Pass 2) runner 泳道异常态** — 泳道内联表达：重启中 = 黄色脉冲点 + 「重启中 2/4」；加载失败 = 红色点 + 「加载失败: qwen3-35b OOM」+ Retry 按钮；idle/busy 照旧。
+- **DD6 (Pass 3) 任务完成通知** — 完成 → app 内 toast「flux2-人物立绘 完成 · 34s」（带「查看」）+ badge 更新 + 浏览器通知（Notification API，权限首次询问、拒绝则降级为仅 toast，仅在页面失焦时发系统通知）。失败同样发。
+- **DD7 (Pass 6) 响应式** — TaskPanel / Dashboard 做响应式：<768px 抽屉变全屏布局，runner 泳道堆叠。
+- **DD8 (Pass 7) 排队位置可见** — runner 泳道「排队 N」可点击展开成有序列表，每条带序号 #1 #2 #3，刚提交的/当前用户的任务高亮。
+- **DD9 (Pass 7→V1.5) 缩略图历史拉进 V1.5** — image 类任务完成后，「最近完成」列表直接显示输出缩略图（数据源 = D11 的 `outputs/{task_id}/`），不只是文字 + ImageIcon。并入 Lane I。
+- **a11y 必加清单（Pass 6，无备选）** — 折叠 toggle 用真 `<button>` + `aria-expanded`；runner 状态文字始终伴随色点（色盲）；toast 用 `aria-live`；Retry/取消按钮键盘可达；浏览器通知权限流。
+- **设计系统对齐（Pass 5，无备选）** — runner 泳道 + Dashboard 标识复用 `TaskPanel.tsx` 既有 CSS vars（`--bg/--bg-accent/--border/--text/--muted/--accent/--accent-2/--info/--mono`）+ lucide 图标 + status badge 模式。无正式 DESIGN.md（建议某天单独跑 /design-consultation，非 V1.5 阻塞）。
+
 ### review 剩余步骤（下次会话继续）
 
-- [x] review 四个 section + outside voice 全部完成，D1–D17 全部确认
-- [ ] 必需输出：NOT in scope / What already exists / TODOS.md updates / Failure modes / Worktree 并行化策略 / Completion summary（本次会话已在对话中给出，重写时并入 spec）
-- [ ] 据 D1–D17 + G4/G5/F1/F2/S3 + §5 重写 spec 正文，删除本「REVIEW IN PROGRESS」节
-- [ ] Review log + Readiness Dashboard + Plan file report
+- [x] plan-eng-review 四个 section + outside voice 全部完成，D1–D18 全部确认
+- [x] plan-design-review 7-pass 完成，DD3–DD9 + a11y 清单确认；click-to-restore 进 TODOS.md
+- [ ] 必需输出：NOT in scope / What already exists / TODOS.md updates / Failure modes / Worktree 并行化策略 / Completion summary（已在对话中给出，重写时并入 spec）
+- [ ] 据 D1–D18 + G4/G5/F1/F2/S3 + DD3–DD9 + §5 重写 spec 正文，删除本「REVIEW IN PROGRESS」节
 - [ ] 用户审核重写后的 spec → 转 `superpowers:writing-plans`
 
 ## References
@@ -817,10 +831,11 @@ V1.6 设计将单独写 spec doc。
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
 | Codex Review | `/codex review` | Independent 2nd opinion | 1 | ISSUES_FOUND (claude subagent) | 11 findings, 4 → cross-model tension, all resolved D13–D17 |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_OPEN (PLAN) | 13 issues (7 arch + 1 quality-decisions + 1 perf + 4 critical regressions), 2 critical gaps; 18 decisions confirmed, rewrite pending |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | ISSUES_OPEN (FULL) | score 2/10 → 8/10, 7 decisions (DD3–DD9); thumbnail history pulled into V1.5, click-to-restore → TODOS |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
 - **OUTSIDE VOICE:** codex 配置损坏（`tui.alternate_screen`），回退 Claude 独立子代理。翻出 G1/G2（adapter 非 async-cancellable）、G3（DB 恢复矛盾）、G4（`get_llm_base_url` 接缝）、G5（两个 ModelManager 互补非重叠）、F1/F2/S3，战略挑战 D1。
 - **CROSS-MODEL:** 4 处 tension（D1 scope / within-node cancel / topo 探测 / DB reconcile）全部经 AskUserQuestion 由用户裁决（D13–D17）。
-- **UNRESOLVED:** 0（18 项决策全部确认）。
-- **VERDICT:** NOT CLEARED — 18 项决策已确认但尚未并入 spec 正文；2 个 CRITICAL GAP（G2 to_thread cancel 泄漏、F1 Pipe 无 timeout）须在重写时设计落地。重写完成 + 并入正文后方可 CLEARED。
+- **DESIGN:** plan-design-review 7-pass 完成。TaskPanel 从「3-tab 扁平列表」重构为 Buildkite 风 runner 泳道（DD3）；点 Run 反馈、runner 异常态、完成通知、响应式、排队位置全部补齐设计决策。这是 TaskPanel 重构，超 V1.5 原「扩展」scope。
+- **UNRESOLVED:** 0（plan-eng-review 18 项 + plan-design-review 7 项决策全部确认）。
+- **VERDICT:** NOT CLEARED — 25 项决策已确认但尚未并入 spec 正文；2 个 CRITICAL GAP（G2 to_thread cancel 泄漏、F1 Pipe 无 timeout）须在重写时设计落地。重写完成 + 并入正文后方可 CLEARED。
