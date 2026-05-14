@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3 / FastAPI / pytest / asyncio。`services/model_manager.py` 是保留的基础类（asyncio.Lock，`ModelManager(registry, allocator)`，存在 `app.state.model_manager`）。
 
-> **⚠️ 与 spec 的偏差（已核实，须知会）：** V1.5 spec 的 Lane 0 描述（源自 plan-eng-review 的 G5）说要「设计并实现 `services/model_manager.py` + `src/gpu/model_manager.py` 的合并，后者的 VRAMTracker 是 NVLink allocator 需要的真实 VRAM 核算」。**这个判断基于未完整追踪调用方的假设。** 实际代码审计结论：`src/gpu/model_manager.py` 的 ModelManager 仅被 `deps.py:get_model_manager()` import，而该函数无任何真实调用方（grep 无 `Depends(get_model_manager)`、无 `from src.api.deps import get_model_manager`）；且 live 的 `GPUAllocator`（`gpu_allocator.py`）直接 poll nvidia-smi 取真实 free_mb，**不使用** VRAMTracker。所以没有「合并」要做，是「删除死代码」。Task 1 的审计会再次验证此结论——若审计发现实际有调用方，停下来重新评估，不要盲删。
+> **注意 — 与 spec 的偏差（已核实，须知会）：** V1.5 spec 的 Lane 0 描述（源自 plan-eng-review 的 G5）说要「设计并实现 `services/model_manager.py` + `src/gpu/model_manager.py` 的合并，后者的 VRAMTracker 是 NVLink allocator 需要的真实 VRAM 核算」。**这个判断基于未完整追踪调用方的假设。** 实际代码审计结论：`src/gpu/model_manager.py` 的 ModelManager 仅被 `deps.py:get_model_manager()` import，而该函数无任何真实调用方（grep 无 `Depends(get_model_manager)`、无 `from src.api.deps import get_model_manager`）；且 live 的 `GPUAllocator`（`gpu_allocator.py`）直接 poll nvidia-smi 取真实 free_mb，**不使用** VRAMTracker。所以没有「合并」要做，是「删除死代码」。Task 1 的审计会再次验证此结论——若审计发现实际有调用方，停下来重新评估，不要盲删。
 
 ---
 
@@ -458,9 +458,9 @@ EOF
 
 **Spec 覆盖检查：** Lane 0 在 spec §「实施分 Lane」表里的职责是「删 `model_scheduler.py`；`monitor.py` + `gpu_monitor.py` 改用 `model_manager`；删除前把 `get_llm_base_url()` 重新安置；设计并实现两个 ModelManager 的合并（G5）」。
 
-- 删 `model_scheduler.py` → Task 5 ✓
-- `monitor.py` 改道 → Task 3 ✓
-- `gpu_monitor.py` 改道 → Task 4 ✓
+- 删 `model_scheduler.py` → Task 5
+- `monitor.py` 改道 → Task 3
+- `gpu_monitor.py` 改道 → Task 4
 - `get_llm_base_url` 重新安置 → **偏差**：审计发现它零调用方，是死代码，随 model_scheduler.py 删除（Task 5），不需要重新安置。V1.5 Lane E 届时新建 vLLM base-URL 查找。已在 plan 顶部「与 spec 的偏差」+ Task 5 commit message 明确说明。
 - 两个 ModelManager 合并（G5）→ **偏差**：审计发现 `src/gpu/model_manager.py` 是死代码（零真实调用方），不是「互补」，是删除（Task 2）。已在 plan 顶部明确说明，Task 1 审计会再次验证；若审计推翻此结论则停下重评。
 
