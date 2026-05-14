@@ -762,27 +762,42 @@ V1.6 设计将单独写 spec doc。
 - **D10 (C4) 混合节点 workflow** — workflow executor 留主进程：llm 节点 → executor 直接 HTTP 调 vLLM（与 compat 路由同路）；image/TTS 节点 → dispatch 到对应 runner 串行队列。workflow 分组逻辑区分「dispatch 节点」与「inline HTTP 节点」。
 - **D11 (P1) 大载荷传输** — image 节点结果 runner 直接写 `outputs/{task_id}/`（复用旧 spec 的 output_dir），pipe 只传路径 + 元数据；跨节点中间 tensor 走 host pinned；小标量/dict 走 msgpack pipe。
 
+### Outside voice（codex 配置坏，回退 Claude 子代理）翻出的 cross-model tension，已用户确认
+
+- **D13 (战略) 维持 D1** — outside voice 主张「证明设计的硬件没到，子进程架构今天无法验证」，建议重开 D1。用户重新确认：维持 D1，10-Lane 全量现在全建，Pro 6000 到了即用。
+- **D14 (G1/G2) within-node cancel 含 adapter 重写** — `adapter.run` 现在不是 async-cancellable（`image_diffusers.py` 把扩散 pipe 当 `to_thread` 里一个不透明阻塞调用）。V1.5 包含 adapter 重写：image adapter 接 diffusers `callback_on_step_end`，callback 在 worker 线程里检查 `threading.Event`，pipe-reader 收到 Abort 就 set。`asyncio.wait_for` 超时路径也走同一个 callback flag（`wait_for` 取消 `to_thread` 不会停 CUDA kernel）。
+- **D15 (F3) topo 探测 manual-only** — V1.5 不解析 `nvidia-smi topo -m`。`hardware.yaml` 是唯一真相源，手写。auto 探测推迟到 Pro 6000 到货（届时有 2 套硬件可验证解析器）。`detection.mode` 字段从 spec §3.2 删除。
+- **D16 (G3) 接受罕见双重故障窗口** — §2.2「DB enqueue 前 commit」与 D7「DB 不可达 fail-soft」的恢复路径矛盾：spec §4.7 明写「DB 在 enqueue 时就不可达 + 主进程在 DB 恢复前重启」这个双重故障下该 task 会丢失。不建 durable spool（本机 Postgres + systemd 同机，DB 独立不可达极罕见，为它建持久化层是 over-engineering）。
+- **D17 (S3) workflow `/run` 端点改纯异步** — `/v1/workflows/{id}/run` 立即返回 202 + task_id，客户端轮询 `/v1/tasks/{id}` 或订阅 WS 看进度/结果（SeedDance 模式）。mediahub 等上游调用方迁移到新契约。注意：单次 LLM 调用的同步体验不受影响——compat 路由按 D6/D8 直连 vLLM HTTP，本来就同步、不进队列。D17 只改多节点 workflow 端点。新增一节说明 `/run` 契约变更 + 上游迁移指引。
+
 ### 重写时还需并入（review 翻出、无 A/B/C 备选的强制项）
+
+- **G4** — Lane 0 删 `model_scheduler.py`，但它持有 `get_llm_base_url()`（`model_scheduler.py:233`），正是 D8/D10 依赖的「主进程直连 vLLM HTTP」接缝。Lane 0 必须在删除前把这个 URL 查找重新安置（迁入合并后的 model_manager）。
+- **G5** — `services/model_manager.py`（`asyncio.Lock`）与 `src/gpu/model_manager.py`（`threading.Lock` + `VRAMTracker`）不是重叠是互补：后者有 NVLink allocator 需要的真实 VRAM 核算（`can_load` / `VRAMTracker`）。Lane 0「合并或删除」必须真正设计这个合并（asyncio-locked 类 + thread-locked 类 → 跑自己 event loop 的 runner 子进程内），不是 hand-wave 的 refactor。
+- **F1** — `multiprocessing.Pipe` 对象不可 await：D9 的 pipe-reader asyncio task 需要 `loop.connect_read_pipe` / `add_reader` / 线程桥。`Pipe.send` 无 timeout 参数——§4.1「IPC pipe 阻塞 5s 超时」需写线程或非阻塞 fd。spec §3.3 须明确这个实现约束。
+- **F2** — §4.2 worker 重启 re-preload 前需加「等 nvidia-smi 显示 GPU free」的 gate：OOM 相关 native fault 后死进程的 CUDA context 回收是异步的，backoff `[5,15,60,300]` 可能太短。
+- **S3** — 新增一个 Lane 显式拥有 `workflow_executor.py` 重写（`execute()` 现在是 `workflow_executor.py:102` 一个扁平顺序循环，D10 要拆成 dispatch 节点 vs inline-HTTP 节点）。`execute_workflow_direct`（`workflows.py:142`）的 inline 执行 + D17 的契约变更都在这个 Lane。
 
 - **C1** — §3.5/§4.3 改为「复用 model_manager 已有的 `_load_failures` dict + `evict_lru(gpu_index)`」，不要重新发明。
 - **C2** — §3.3 IPC 协议整节重写：删 IPCRef；RunNode 只剩 image/TTS；保留 LoadModel/UnloadModel/Abort/Ping。
 - **C6** — §3.2 提一句现有 `_detect_vllm_gpus*` 与 hardware.yaml topo 探测的关系（整合或并存）。
-- **§5 测试** 需补 9 项，其中 4 项 CRITICAL 回归：
+- **§5 测试** 需补 10 项，其中 4 项 CRITICAL 回归：
   1. [回归] Lane 0 后 monitor.py / gpu_monitor.py 仍正确报告加载状态 + idle-TTL 卸载仍生效
   2. [回归] A5 后 4 个 compat 路由仍产出正确输出
-  3. [回归] workflow inline → queued 后执行结果不变
+  3. [回归] workflow inline → queued（D17 改纯异步 202）后执行结果不变
   4. [回归] src/gpu/model_manager.py 合并/删除后所有调用点仍工作
   5. LLM lifecycle runner 不串行化 vLLM 请求
   6. runner 内 pipe-reader + executor task 分离；Abort-during-node-execution within-node 生效
   7. host-pinned 跨 worker tensor 传递
   8. DB 恢复后 reconcile 路径：db_synced=false 批量补写
   9. 混合节点 workflow：image dispatch + llm inline HTTP
+  10. [D14] image adapter `callback_on_step_end` 接入 + cancel/timeout 信号穿过 to_thread 边界（threading.Event）
 
 ### review 剩余步骤（下次会话继续）
 
-- [ ] D12：是否要 outside voice（codex 独立挑战）—— 用户暂停于此，需先 clarify
-- [ ] 必需输出：NOT in scope / What already exists / TODOS.md updates / Failure modes / Worktree 并行化策略 / Completion summary
-- [ ] 据 D1–D11 + C1/C2/C6 + §5 重写 spec 正文，删除本「REVIEW IN PROGRESS」节
+- [x] review 四个 section + outside voice 全部完成，D1–D17 全部确认
+- [ ] 必需输出：NOT in scope / What already exists / TODOS.md updates / Failure modes / Worktree 并行化策略 / Completion summary（本次会话已在对话中给出，重写时并入 spec）
+- [ ] 据 D1–D17 + G4/G5/F1/F2/S3 + §5 重写 spec 正文，删除本「REVIEW IN PROGRESS」节
 - [ ] Review log + Readiness Dashboard + Plan file report
 - [ ] 用户审核重写后的 spec → 转 `superpowers:writing-plans`
 
@@ -792,3 +807,20 @@ V1.6 设计将单独写 spec doc。
 - `docs/superpowers/specs/2026-04-10-gpu-process-management-design.md` — V1 orphan handling + kill endpoint
 - ComfyUI `execution.py` + `model_management.py` — 节点缓存、smart memory free、WS 事件词表的灵感来源
 - ComfyUI-MultiGPU — Loader 节点 device 字段的设计参考
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | ISSUES_FOUND (claude subagent) | 11 findings, 4 → cross-model tension, all resolved D13–D17 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_OPEN (PLAN) | 13 issues (7 arch + 1 quality-decisions + 1 perf + 4 critical regressions), 2 critical gaps; 18 decisions confirmed, rewrite pending |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE VOICE:** codex 配置损坏（`tui.alternate_screen`），回退 Claude 独立子代理。翻出 G1/G2（adapter 非 async-cancellable）、G3（DB 恢复矛盾）、G4（`get_llm_base_url` 接缝）、G5（两个 ModelManager 互补非重叠）、F1/F2/S3，战略挑战 D1。
+- **CROSS-MODEL:** 4 处 tension（D1 scope / within-node cancel / topo 探测 / DB reconcile）全部经 AskUserQuestion 由用户裁决（D13–D17）。
+- **UNRESOLVED:** 0（18 项决策全部确认）。
+- **VERDICT:** NOT CLEARED — 18 项决策已确认但尚未并入 spec 正文；2 个 CRITICAL GAP（G2 to_thread cancel 泄漏、F1 Pipe 无 timeout）须在重写时设计落地。重写完成 + 并入正文后方可 CLEARED。
