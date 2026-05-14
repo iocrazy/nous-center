@@ -883,7 +883,102 @@ Lane A wires it, runners is [] until then. V1.5 Lane H."
 
 ---
 
-## Task 6: `models.yaml` 字段注释 + 整合验证
+## Task 6: `GET /api/v1/monitor/runners` 端点 —— 给前端 TaskPanel 供 runner 数据
+
+Lane I 的 TaskPanel 重构（Buildkite 风 runner 泳道，spec §6.1）需要 per-runner 状态数据。Lane I plan 的 `useRunners` hook 假设有这么一个端点，但 spec §6 没指定归属——这是缺失的交付物。Task 4/5 已经造好 `RunnerSupervisor.health_snapshot()` 这个数据源，本 Task 把它暴露成一个正式数据端点。`/health` 是健康检查（运维视角），不是前端数据 API，所以另开一个 `/api/v1/monitor/runners`（沿用 `monitor.py` 既有 `/api/v1/monitor` 前缀，与 `/api/v1/monitor/stats` 一致）。
+
+注意：Lane I 的 `useRunners` hook 必须 target `/api/v1/monitor/runners`（不是 spec §6 草图里那个未定义的 `/api/v1/runners`）。两份 plan 都属本 V1.5 计划集，路径以此 Task 为准。
+
+**Files:**
+- Modify: `backend/src/api/routes/monitor.py`
+- Test: `backend/tests/test_api_runners.py`（新建）
+
+- [ ] **Step 1: 写失败测试 — /api/v1/monitor/runners 返回 runner 列表**
+
+新建 `backend/tests/test_api_runners.py`：
+```python
+"""Lane H: GET /api/v1/monitor/runners 端点测试 —— 给前端供 per-runner 状态。"""
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from src.api.main import create_app
+
+
+@pytest.mark.asyncio
+async def test_runners_endpoint_empty_when_supervisors_unset():
+    """app.state.runner_supervisors 未设置（Lane A 还没接入）→ 返回空列表，200 不报错。"""
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/monitor/runners")
+    assert resp.status_code == 200
+    assert resp.json() == {"runners": []}
+
+
+@pytest.mark.asyncio
+async def test_runners_endpoint_reports_supervisor_snapshots():
+    """有 supervisor → runners 列表含其 health_snapshot。"""
+    class _FakeSupervisor:
+        def health_snapshot(self):
+            return {
+                "group_id": "image", "gpus": [2], "running": True,
+                "restart_count": 0, "pid": 12345,
+            }
+
+    app = create_app()
+    app.state.runner_supervisors = [_FakeSupervisor()]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/monitor/runners")
+    assert resp.status_code == 200
+    assert resp.json() == {"runners": [{
+        "group_id": "image", "gpus": [2], "running": True,
+        "restart_count": 0, "pid": 12345,
+    }]}
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `cd backend && ADMIN_PASSWORD="" python -m pytest tests/test_api_runners.py -v`
+Expected: 全 FAIL —— `/api/v1/monitor/runners` 路由不存在（404）。
+
+- [ ] **Step 3: 加 `/runners` 路由到 `monitor.py`**
+
+`backend/src/api/routes/monitor.py`，在文件已有路由旁加（与 `/stats` 同一 `router`，prefix `/api/v1/monitor` 已在 router 定义处设好）：
+```python
+@router.get("/runners")
+async def list_runners(request: Request) -> dict:
+    """Per-runner 状态，给前端 TaskPanel 的 Buildkite 风 runner 泳道用。
+
+    数据源 = RunnerSupervisor.health_snapshot()（Lane H Task 4）。
+    runner_supervisors 由 scheduler / Lane A 接入填充；未接入时返回空列表。
+    """
+    supervisors = getattr(request.app.state, "runner_supervisors", [])
+    return {"runners": [s.health_snapshot() for s in supervisors]}
+```
+（`Request` 若 `monitor.py` 顶部未 import，加 `from fastapi import Request`——Lane 0 的 monitor.py 改道已用到 `request`，大概率已 import；确认即可。）
+
+- [ ] **Step 4: 跑测试确认通过 + monitor suite 无回归**
+
+Run: `cd backend && ADMIN_PASSWORD="" python -m pytest tests/test_api_runners.py tests/test_api_monitor.py -v`
+Expected: `test_api_runners.py` 2 个用例 PASS，`test_api_monitor.py` 原有用例全 PASS。
+
+- [ ] **Step 5: lint + Commit**
+
+```bash
+cd backend && ruff check src/api/routes/monitor.py
+git add src/api/routes/monitor.py tests/test_api_runners.py
+git commit -m "feat(monitor): add GET /api/v1/monitor/runners for frontend runner lanes
+
+Exposes RunnerSupervisor.health_snapshot() as a proper data endpoint —
+spec 6.1's TaskPanel runner lanes need per-runner state but no lane owned
+the endpoint. /health stays the ops-facing health check; this is the
+frontend data API. Lane I's useRunners hook targets this path. V1.5 Lane H."
+```
+
+---
+
+## Task 7: `models.yaml` 字段注释 + 整合验证
 
 `configs/models.yaml` 当前无 resident 模型，所以 `preload_order` 暂时只需文档化。加注释说明字段语义，将来加 resident 模型时有据可依。
 
@@ -974,7 +1069,8 @@ EOF
 
 **Spec 覆盖检查：** Lane H 在 spec「实施分 Lane」表里的职责是「resident `preload_order` + `_load_failures` + `/health` 扩展 + Runner 重启 GPU-free gate（F2）。依赖：D」。
 
-- **resident `preload_order`**（spec §3.2 / §4.2）→ Task 1（`ModelSpec` 加字段）+ Task 2（`preload_residents` 升序遍历）+ Task 6（yaml 文档）。spec §5.2「`preload_order` 排序」测试要点「resident:true + preload_order 升序；null 排最后」→ `test_model_manager_preload_residents.py::test_preload_residents_orders_by_preload_order` 直接覆盖。
+- **resident `preload_order`**（spec §3.2 / §4.2）→ Task 1（`ModelSpec` 加字段）+ Task 2（`preload_residents` 升序遍历）+ Task 7（yaml 文档）。spec §5.2「`preload_order` 排序」测试要点「resident:true + preload_order 升序；null 排最后」→ `test_model_manager_preload_residents.py::test_preload_residents_orders_by_preload_order` 直接覆盖。
+- **`/api/v1/monitor/runners` 端点**（spec §6.1 前端 runner 泳道的数据源，原 spec 未指定归属——这是 review 翻出的缺失交付物）→ Task 6。暴露 `RunnerSupervisor.health_snapshot()`，Lane I 的 `useRunners` hook target 此路径。
 - **`_load_failures` fail-soft**（spec §4.2「load_failed 写 `_load_failures`，不阻断后续 preload，不阻断 API server start」+ §4.3）→ Task 2 的 `preload_residents` 内 `except Exception → 写 _load_failures + continue`，**绝不向上抛**。`test_preload_residents_fail_soft_does_not_block` 是简报点名的「关键测试」—— resident 模型 load 失败不阻断启动 + 失败在 `_load_failures` 可见（再经 Task 5 暴露到 `/health`）。
 - **`/health` 扩展**（spec §4.2「暴露到 `/health`」+ §6.2 Dashboard degraded banner）→ Task 5。`/health` 加 `load_failures` + `runners`，degraded 状态判定。`test_health_degraded_when_load_failure_present` 闭合「fail-soft 失败 → `/health` 可见 → Dashboard degraded banner」这条链。
 - **F2 GPU-free gate**（spec §4.2）→ Task 4。Lane C 的 `_default_gpu_free_probe` `return True` 骨架换成 `gpu_free_probe.make_gpu_free_probe()` 真探针（nvidia-smi-backed，基线 = 每卡 total 80%）。Lane C 的 `RunnerSupervisor._restart()` 第 4 步已经调 `self._gpu_free_probe(self.gpus)` 轮询 —— Lane H 只换探针实现，不动 supervisor 的 restart 流程。
@@ -990,7 +1086,7 @@ EOF
 
 **Spec 歧义 flag：** spec §4.2 的 GPU-free gate「显存回落到基线」没定义「基线」的具体数值。Lane H 取「每卡 total 显存的 80%」作为默认基线（`_DEFAULT_BASELINE_FRACTION = 0.8`），并让 `make_gpu_free_probe` 接受显式 `baseline_free_mb` 覆盖。理由：空载 GPU（仅驱动 + compositor 占用）通常有 >90% free，80% 留了余量避免误判，又足够低能检出「上个进程 context 还没回收」（OOM 进程往往占满显存）。这是判断不是 spec 明文 —— 已在 plan 头部 + 此处 flag，Lane A/J 整合时若发现误判可调 `baseline_free_mb`。
 
-**Placeholder 扫描：** 无 TBD / TODO / 「类似 Task N」。6 个 Task 全是「写失败测试 → 跑确认失败 → 最小实现 → 跑确认通过 → lint → commit」闭环（Task 6 是文档 + 验证，无新测试但有冒烟）。所有代码（`ModelSpec` 字段、`preload_residents`、`gpu_free_probe.py`、`health_snapshot`、`/health` 扩展）完整给出，命令带预期输出。`_default_gpu_free_probe` 委托 `make_gpu_free_probe()` 不是 placeholder —— 是 Lane C 骨架的真实现替换。
+**Placeholder 扫描：** 无 TBD / TODO / 「类似 Task N」。7 个 Task：Task 1-6 是「写失败测试 → 跑确认失败 → 最小实现 → 跑确认通过 → lint → commit」闭环，Task 7 是文档 + 验证（无新测试但有冒烟）。所有代码（`ModelSpec` 字段、`preload_residents`、`gpu_free_probe.py`、`health_snapshot`、`/health` 扩展、`/api/v1/monitor/runners` 路由）完整给出，命令带预期输出。`_default_gpu_free_probe` 委托 `make_gpu_free_probe()` 不是 placeholder —— 是 Lane C 骨架的真实现替换。
 
 **类型一致性：**
 - `ModelSpec.preload_order: int | None = None` ↔ registry `_load` / `add_from_scan` 的 `entry.get("preload_order")` / `cfg.get("preload_order")`（缺失返回 `None`，与默认一致）。
