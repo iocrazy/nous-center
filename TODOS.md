@@ -26,3 +26,21 @@ Project-level deferred work items captured during reviews. Each item: what / why
 - **Why:** LTX 短剧这类 workflow 有中间节点（CFGGuider / KSamplerSelect）的 cfg / steps 参数也值得暴露给调用方
 - **Context:** 首期 v3 为了控制复杂度只扫 I/O 节点；v2 放开后，UI 上需要一个"高级模式"折叠栏展示所有节点 + 所有 input name 的勾选树
 - **Depends on:** v3 PR-A + PR-B 合并后
+
+---
+
+## V1.5 workflow queue + GPU scheduler · 延后项（2026-05-14）
+
+### [ ] auto GPU topo 探测（解析 `nvidia-smi topo -m`）
+
+- **What:** 实现解析 `nvidia-smi topo -m` 的 auto GPU 拓扑探测，与 `hardware.yaml` 互补（yaml override）。启动时探测出 NVLink group 划分，与 yaml diff 不一致告警。
+- **Why:** 加卡/换卡不用手改 `hardware.yaml`；且 Pro 6000 到货后有 2 套硬件配置（双 3090 / 三卡）能真正验证跨驱动版本的解析器。
+- **Context:** V1.5 plan-eng-review 决策 D15 把这个推迟——`nvidia-smi topo -m` 输出格式跨驱动版本变化（NV4/NV2/SYS/PHB/PIX），单一硬件无法验证脆弱解析器，所以 V1.5 只发 manual 模式（`hardware.yaml` 是唯一真相源）。
+- **Depends on:** Pro 6000 到货 + V1.5 完成（spec: `docs/superpowers/specs/2026-05-13-workflow-queue-and-gpu-scheduler-design.md`）
+
+### [ ] 点击历史任务恢复 workflow 到 canvas（ComfyUI 式）
+
+- **What:** 点 TaskPanel 里一个完成的任务 → 把那次的 workflow 定义 + 输入参数加载回 canvas 编辑器，方便调一个参数重跑。
+- **Why:** 快速迭代——不用从头重搭 workflow。ComfyUI 新版 queue 侧栏有这个交互。
+- **Context:** V1.5 plan-design-review 决策 D10 把这个推迟。需要每个 task 存 workflow 快照；`execution_tasks` 表有 `workflow_id` 但不一定有完整快照，V1 的「重试」读原 workflow 定义。「恢复到 canvas」是前端动作 + 需快照可用。比缩略图历史重（需快照存储 schema + canvas 加载路径），可独立交付。
+- **Depends on:** V1.5 TaskPanel 重构（direction A）+ workflow 快照存储设计
