@@ -1,9 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   Ban,
   CheckCircle2,
-  Clock,
   Image as ImageIcon,
   Loader2,
   RotateCcw,
@@ -17,86 +16,52 @@ import {
   useTasks,
   type ExecutionTask,
 } from '../../api/tasks'
+import { useRunners, type RunnerInfo } from '../../api/runners'
 
-// m15 mockup 对齐：460px 抽屉、3 tab（活跃/最近/失败）、汇总数字、
-// 每条 task = spinner + 状态徽章 + 进度条 + 操作按钮组。
-// 详情按钮（输出/日志）暂时 placeholder，后续接通。
+// Lane I（spec §6）：TaskPanel 从「3-tab 扁平列表」重构为 Buildkite 风：
+//   - 顶部 per-runner 泳道区（视觉 hero）—— 每条泳道 = 一个 GPU runner 的
+//     当前任务 + 进度条 + 排队数（可展开）+ 异常态内联。
+//   - 下方「最近完成」列表 —— image 任务带输出缩略图。
+// 响应式：<768px 抽屉变全屏、泳道堆叠。a11y：折叠 toggle 用真 button +
+// aria-expanded、状态文字始终伴随色点、动作键盘可达。
 
-type TabId = 'active' | 'recent' | 'failed'
+const TERMINAL: ReadonlySet<ExecutionTask['status']> = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+])
 
-const TAB_DEFS: { id: TabId; label: string; match: (t: ExecutionTask) => boolean }[] = [
-  { id: 'active', label: '活跃', match: (t) => t.status === 'running' || t.status === 'queued' },
-  { id: 'recent', label: '最近', match: (t) => t.status === 'completed' || t.status === 'cancelled' },
-  { id: 'failed', label: '失败', match: (t) => t.status === 'failed' },
-]
-
-const STATUS_STYLE: Record<string, { label: string; bg: string; color: string; border?: string }> = {
-  running: {
-    label: '运行中',
-    bg: 'rgba(59,130,246,0.15)',
-    color: 'var(--info, #3b82f6)',
-  },
-  queued: {
-    label: '排队',
-    bg: 'var(--bg-accent)',
-    color: 'var(--muted)',
-    border: '1px solid var(--border)',
-  },
-  completed: {
-    label: '已完成',
-    bg: 'rgba(34,197,94,0.15)',
-    color: 'var(--accent-2, #22c55e)',
-  },
-  failed: {
-    label: '失败',
-    bg: 'rgba(239,68,68,0.15)',
-    color: 'var(--accent, #ef4444)',
-  },
-  cancelled: {
-    label: '已取消',
-    bg: 'var(--bg-accent)',
-    color: 'var(--muted)',
-    border: '1px solid var(--border)',
-  },
+/** <768px 判定 —— 抽屉全屏 + 泳道堆叠（DD7）。 */
+function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
+  )
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < 768)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return narrow
 }
 
 export default function TaskPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { data: tasks } = useTasks()
-  const [tab, setTab] = useState<TabId>('active')
+  const { data: runners } = useRunners()
+  const isNarrow = useIsNarrow()
 
-  const counts = useMemo(() => {
-    const out = { running: 0, queued: 0, completed: 0, failed: 0, cancelled: 0 }
-    for (const t of tasks ?? []) {
-      const k = t.status as keyof typeof out
-      if (k in out) out[k]++
-    }
-    return out
-  }, [tasks])
-
-  const tabCounts: Record<TabId, number> = {
-    active: counts.running + counts.queued,
-    recent: counts.completed + counts.cancelled,
-    failed: counts.failed,
-  }
-
-  const visibleTasks = useMemo(() => {
-    const matcher = TAB_DEFS.find((t) => t.id === tab)?.match ?? (() => true)
-    return (tasks ?? []).filter(matcher)
-  }, [tasks, tab])
+  const recent = useMemo(
+    () => (tasks ?? []).filter((t) => TERMINAL.has(t.status)),
+    [tasks],
+  )
 
   if (!open) return null
 
   return (
     <>
-      {/* 半透明遮罩 — m15 mockup 用 rgba(0,0,0,.4) 让背景画布失焦 */}
+      {/* 半透明遮罩 —— 点击关闭。<768px 全屏抽屉时遮罩仍铺满（点不到也无妨）。 */}
       <div
         onClick={onClose}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(0,0,0,0.35)',
-          zIndex: 49,
-        }}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 49 }}
       />
 
       <aside
@@ -105,10 +70,11 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
           right: 0,
           top: 0,
           bottom: 0,
-          width: 460,
+          // DD7 响应式：<768px 全屏，否则 460px 抽屉。
+          width: isNarrow ? '100vw' : 460,
           background: 'var(--bg-accent)',
-          borderLeft: '1px solid var(--border)',
-          boxShadow: '-8px 0 24px rgba(0,0,0,0.3)',
+          borderLeft: isNarrow ? 'none' : '1px solid var(--border)',
+          boxShadow: isNarrow ? 'none' : '-8px 0 24px rgba(0,0,0,0.3)',
           zIndex: 50,
           display: 'flex',
           flexDirection: 'column',
@@ -127,9 +93,6 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
           <h2 style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
             任务面板
           </h2>
-          <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-            {counts.running} 运行中 · {counts.queued} 排队 · {counts.completed} 已完成
-          </span>
           <button
             type="button"
             onClick={onClose}
@@ -151,65 +114,201 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
           </button>
         </div>
 
-        {/* tabs */}
-        <div
-          style={{
-            display: 'flex',
-            borderBottom: '1px solid var(--border)',
-            padding: '0 18px',
-          }}
-        >
-          {TAB_DEFS.map((t) => {
-            const active = tab === t.id
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setTab(t.id)}
+        {/* body —— 泳道区（hero）+ 最近完成 */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 18px' }}>
+          {/* per-runner 泳道区 */}
+          <section aria-label="GPU runner 泳道" style={{ marginBottom: 18 }}>
+            {(runners ?? []).length === 0 ? (
+              <div
                 style={{
-                  padding: '10px 14px',
+                  padding: 24,
+                  textAlign: 'center',
                   fontSize: 12,
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: '2px solid',
-                  borderBottomColor: active ? 'var(--accent)' : 'transparent',
-                  color: active ? 'var(--text)' : 'var(--muted)',
-                  cursor: 'pointer',
+                  color: 'var(--muted)',
+                  border: '1px dashed var(--border)',
+                  borderRadius: 6,
                 }}
               >
-                {t.label} {tabCounts[t.id]}
-              </button>
-            )
-          })}
-        </div>
+                暂无 runner 数据（调度器未就绪或端点未上线）
+              </div>
+            ) : (
+              <div
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  overflow: 'hidden',
+                }}
+              >
+                {(runners ?? []).map((r) => (
+                  <RunnerLane key={r.id} runner={r} />
+                ))}
+              </div>
+            )}
+          </section>
 
-        {/* body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 18px' }}>
-          {visibleTasks.length === 0 ? (
-            <Empty tab={tab} />
-          ) : (
-            visibleTasks.map((t) => <TaskCard key={t.id} task={t} />)
-          )}
+          {/* 最近完成 */}
+          <section aria-label="最近完成">
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--muted)',
+                textTransform: 'uppercase',
+                letterSpacing: 0.5,
+                marginBottom: 8,
+              }}
+            >
+              最近完成
+            </div>
+            {recent.length === 0 ? (
+              <div
+                style={{
+                  padding: 24,
+                  textAlign: 'center',
+                  fontSize: 12,
+                  color: 'var(--muted)',
+                }}
+              >
+                还没有完成的任务。
+              </div>
+            ) : (
+              recent.map((t) => <RecentRow key={t.id} task={t} />)
+            )}
+          </section>
         </div>
       </aside>
     </>
   )
 }
 
-// ---------- subviews ----------
+// ---------- runner 泳道（Task 9 加异常态 + Task 10 加排队展开）----------
 
-function TaskCard({ task }: { task: ExecutionTask }) {
+function RunnerLane({ runner }: { runner: RunnerInfo }) {
+  return (
+    <div
+      style={{
+        padding: '12px 14px',
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--bg)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <RunnerStateDot state={runner.state} />
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+          {runner.label}
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>({runner.role})</span>
+        <span style={{ flex: 1 }} />
+        {/* 状态文字始终伴随色点（a11y：色盲不能只靠颜色）。 */}
+        <RunnerStateText runner={runner} />
+      </div>
+
+      {runner.state === 'busy' && runner.current_task && (
+        <div style={{ marginTop: 8 }}>
+          <div
+            style={{
+              fontSize: 12,
+              color: 'var(--text)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {runner.current_task.workflow_name}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+            <div
+              style={{
+                flex: 1,
+                height: 4,
+                background: 'var(--bg-accent)',
+                borderRadius: 2,
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${Math.round((runner.current_task.progress ?? 0) * 100)}%`,
+                  height: '100%',
+                  background: 'var(--accent-2, #22c55e)',
+                  transition: 'width 0.3s ease',
+                }}
+              />
+            </div>
+            {runner.current_task.detail && (
+              <span
+                style={{
+                  fontSize: 11,
+                  color: 'var(--muted)',
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                {runner.current_task.detail}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 排队数 —— Task 10 替换为可展开的 QueueExpand。 */}
+      {runner.queue.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+          排队 {runner.queue.length}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RunnerStateDot({ state }: { state: RunnerInfo['state'] }) {
+  const color =
+    state === 'busy'
+      ? 'var(--accent-2, #22c55e)'
+      : state === 'restarting'
+        ? 'var(--warn, #f59e0b)'
+        : state === 'load_failed'
+          ? 'var(--accent, #ef4444)'
+          : 'var(--muted)'
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        background: color,
+        flexShrink: 0,
+        // restarting 态脉冲（Task 9 接入 keyframes）。
+        animation: state === 'restarting' ? 'pulse 1.2s ease-in-out infinite' : undefined,
+      }}
+    />
+  )
+}
+
+function RunnerStateText({ runner }: { runner: RunnerInfo }) {
+  // Task 9 把 restarting / load_failed 的文案 + Retry 按钮做全；
+  // 本 Task 先给 idle / busy 的文字。
+  if (runner.state === 'idle') {
+    return <span style={{ fontSize: 11, color: 'var(--muted)' }}>idle</span>
+  }
+  if (runner.state === 'busy') {
+    return <span style={{ fontSize: 11, color: 'var(--accent-2, #22c55e)' }}>busy</span>
+  }
+  if (runner.state === 'restarting') {
+    return <span style={{ fontSize: 11, color: 'var(--warn, #f59e0b)' }}>重启中</span>
+  }
+  return <span style={{ fontSize: 11, color: 'var(--accent, #ef4444)' }}>加载失败</span>
+}
+
+// ---------- 最近完成列表行（Task 11 加缩略图）----------
+
+function RecentRow({ task }: { task: ExecutionTask }) {
   const cancelTask = useCancelTask()
   const retryTask = useRetryTask()
   const deleteTask = useDeleteTask()
 
-  const cfg = STATUS_STYLE[task.status] ?? STATUS_STYLE.queued
-  const isRunning = task.status === 'running'
   const isFailed = task.status === 'failed'
   const isCancelled = task.status === 'cancelled'
-  const canCancel = task.status === 'queued' || task.status === 'running'
   const canRetry = isFailed || isCancelled
-  const progress = task.nodes_total > 0 ? (task.nodes_done / task.nodes_total) * 100 : 0
 
   return (
     <div
@@ -217,22 +316,18 @@ function TaskCard({ task }: { task: ExecutionTask }) {
         background: 'var(--bg)',
         border: '1px solid var(--border)',
         borderRadius: 6,
-        padding: '12px 14px',
-        marginBottom: 10,
+        padding: '10px 12px',
+        marginBottom: 8,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <StatusIcon status={task.status} />
-        {task.task_type === 'image' && (
-          <ImageIcon
-            size={12}
-            aria-label="图像任务"
-            style={{ color: 'var(--info, #3b82f6)', flexShrink: 0 }}
-          />
-        )}
+      {/* Task 11：image 任务这里放缩略图，否则状态图标。 */}
+      <RecentLeading task={task} />
+      <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
-            flex: 1,
             fontSize: 13,
             fontWeight: 500,
             color: 'var(--text)',
@@ -243,110 +338,26 @@ function TaskCard({ task }: { task: ExecutionTask }) {
         >
           {task.workflow_name || '未命名任务'}
         </div>
-        <span
-          style={{
-            fontSize: 11,
-            padding: '2px 7px',
-            borderRadius: 3,
-            background: cfg.bg,
-            color: cfg.color,
-            border: cfg.border,
-          }}
-        >
-          {cfg.label}
-        </span>
-      </div>
-
-      <div
-        style={{
-          display: 'flex',
-          gap: 12,
-          fontSize: 11,
-          color: 'var(--muted)',
-          marginTop: 4,
-          flexWrap: 'wrap',
-        }}
-      >
-        <span style={{ fontFamily: 'var(--mono, monospace)' }}>#{shortId(task.id)}</span>
-        <span>started {formatTime(task.created_at)}</span>
-        {task.nodes_total > 0 && (
-          <span>
-            步骤 {task.nodes_done} / {task.nodes_total}
-          </span>
-        )}
-        {task.image_width && task.image_height && (
-          <span>
-            {task.image_width}×{task.image_height}
-          </span>
-        )}
-        {task.duration_ms != null && task.duration_ms > 0 && (
-          <span>耗时 {formatDuration(task.duration_ms)}</span>
-        )}
-      </div>
-
-      {(isRunning || (task.nodes_total > 0 && !isCancelled)) && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+          {statusLabel(task.status)}
+          {task.duration_ms != null && task.duration_ms > 0
+            ? ` · ${formatDuration(task.duration_ms)}`
+            : ''}
+        </div>
+        {task.error && (
           <div
             style={{
-              flex: 1,
-              height: 4,
-              background: 'var(--bg-accent)',
-              borderRadius: 2,
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              style={{
-                width: `${progress}%`,
-                height: '100%',
-                background: isFailed ? 'var(--accent)' : 'var(--accent-2, #22c55e)',
-                transition: 'width 0.3s ease',
-              }}
-            />
-          </div>
-          <span
-            style={{
+              marginTop: 6,
               fontSize: 11,
-              color: 'var(--muted)',
-              minWidth: 36,
-              textAlign: 'right',
-              fontVariantNumeric: 'tabular-nums',
+              color: 'var(--accent, #ef4444)',
+              wordBreak: 'break-all',
             }}
           >
-            {Math.round(progress)}%
-          </span>
-        </div>
-      )}
-
-      {task.error && (
-        <div
-          style={{
-            marginTop: 8,
-            padding: '6px 10px',
-            borderRadius: 4,
-            background: 'rgba(239,68,68,0.08)',
-            color: 'var(--accent, #ef4444)',
-            fontSize: 11,
-            wordBreak: 'break-all',
-            maxHeight: 80,
-            overflowY: 'auto',
-            border: '1px solid rgba(239,68,68,0.25)',
-          }}
-        >
-          {task.error}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-        {canCancel && (
-          <ActionBtn
-            onClick={() => cancelTask.mutate(task.id)}
-            disabled={cancelTask.isPending}
-            icon={<Ban size={11} />}
-            label="取消"
-            danger
-          />
+            {task.error}
+          </div>
         )}
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
         {canRetry && (
           <ActionBtn
             onClick={() => retryTask.mutate(task.id)}
@@ -361,36 +372,29 @@ function TaskCard({ task }: { task: ExecutionTask }) {
           icon={<Trash2 size={11} />}
           label="删除"
         />
+        {task.status === 'queued' || task.status === 'running' ? (
+          <ActionBtn
+            onClick={() => cancelTask.mutate(task.id)}
+            disabled={cancelTask.isPending}
+            icon={<Ban size={11} />}
+            label="取消"
+            danger
+          />
+        ) : null}
       </div>
     </div>
   )
 }
 
-function StatusIcon({ status }: { status: string }) {
-  if (status === 'running') {
-    return (
-      <Loader2
-        size={14}
-        style={{
-          color: 'var(--info, #3b82f6)',
-          animation: 'spin 1.5s linear infinite',
-          flexShrink: 0,
-        }}
-      />
-    )
+function RecentLeading({ task }: { task: ExecutionTask }) {
+  // Task 11 用 ImageThumb 替换；本 Task 先放状态图标。
+  if (task.status === 'completed') {
+    return <CheckCircle2 size={16} style={{ color: 'var(--accent-2, #22c55e)', flexShrink: 0 }} />
   }
-  if (status === 'queued') {
-    return <Clock size={14} style={{ color: 'var(--muted)', flexShrink: 0 }} />
+  if (task.status === 'failed') {
+    return <AlertCircle size={16} style={{ color: 'var(--accent, #ef4444)', flexShrink: 0 }} />
   }
-  if (status === 'completed') {
-    return (
-      <CheckCircle2 size={14} style={{ color: 'var(--accent-2, #22c55e)', flexShrink: 0 }} />
-    )
-  }
-  if (status === 'failed') {
-    return <AlertCircle size={14} style={{ color: 'var(--accent, #ef4444)', flexShrink: 0 }} />
-  }
-  return <Clock size={14} style={{ color: 'var(--muted)', flexShrink: 0 }} />
+  return <Loader2 size={16} style={{ color: 'var(--muted)', flexShrink: 0 }} />
 }
 
 function ActionBtn({
@@ -414,6 +418,7 @@ function ActionBtn({
         onClick()
       }}
       disabled={disabled}
+      aria-label={label}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -434,39 +439,17 @@ function ActionBtn({
   )
 }
 
-function Empty({ tab }: { tab: TabId }) {
-  const map: Record<TabId, string> = {
-    active: '当前没有运行中或排队的任务。',
-    recent: '没有最近完成的任务。',
-    failed: '没有失败任务（很好）。',
-  }
-  return (
-    <div
-      style={{
-        padding: 32,
-        textAlign: 'center',
-        fontSize: 12,
-        color: 'var(--muted)',
-      }}
-    >
-      {map[tab]}
-    </div>
-  )
-}
-
 // ---------- helpers ----------
 
-function shortId(id: string): string {
-  if (id.length <= 12) return id
-  return id.slice(0, 8)
-}
-
-function formatTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString('zh-CN', { hour12: false })
-  } catch {
-    return iso
+function statusLabel(status: string): string {
+  const map: Record<string, string> = {
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    running: '运行中',
+    queued: '排队',
   }
+  return map[status] ?? status
 }
 
 function formatDuration(ms: number): string {
@@ -476,3 +459,6 @@ function formatDuration(ms: number): string {
   const m = Math.floor(s / 60)
   return `${m}m${Math.round(s - m * 60)}s`
 }
+
+// 占位：ImageIcon 在 Task 11 被 ImageThumb 用到，先 re-export 防 unused-import。
+export const _ImageIcon = ImageIcon
