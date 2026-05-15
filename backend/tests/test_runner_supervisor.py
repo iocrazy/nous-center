@@ -1,13 +1,18 @@
 """Lane C: RunnerSupervisor 测试 —— spawn / watchdog / crash 重启 / GPU-free gate.
 
 用 fake runner 子进程 + 注入的 GPU-free 探针（不碰 nvidia-smi）。
+
+Lane D 后：supervisor 从 adapter_class 转 fake_adapter + models_yaml_path。
 """
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from src.runner import protocol as P
 from src.runner.supervisor import RunnerSupervisor
+
+_FIXTURE = str(Path(__file__).parent / "fixtures" / "runner_models.yaml")
 
 
 def _make_supervisor(**overrides) -> RunnerSupervisor:
@@ -15,7 +20,8 @@ def _make_supervisor(**overrides) -> RunnerSupervisor:
     kw = dict(
         group_id="image",
         gpus=[2],
-        adapter_class="src.runner.fake_adapter.FakeAdapter",
+        models_yaml_path=_FIXTURE,
+        fake_adapter=True,
         ping_interval=0.3,
         ping_timeout=0.5,
         restart_backoff=[0.1, 0.2, 0.3],
@@ -33,10 +39,10 @@ async def test_start_spawns_runner_and_handshakes():
         assert sup.is_running
         assert sup.client.is_ready
         # 能正常派活
-        await sup.client.load_model("fake-img", config={})
+        await sup.client.load_model("fake-img-a", config={})
         result = await sup.client.run_node(P.RunNode(
             task_id=1, node_id="n", node_type="image",
-            model_key="fake-img", inputs={"steps": 2},
+            model_key="fake-img-a", inputs={"steps": 2},
         ))
         assert result.status == "completed"
     finally:
@@ -58,10 +64,10 @@ async def test_watchdog_detects_crash_and_restarts():
         assert sup.pid != old_pid  # 新进程
         assert sup.restart_count == 1
         # 新 runner 能干活
-        await sup.client.load_model("fake-img", config={})
+        await sup.client.load_model("fake-img-a", config={})
         result = await sup.client.run_node(P.RunNode(
             task_id=2, node_id="n", node_type="image",
-            model_key="fake-img", inputs={"steps": 2},
+            model_key="fake-img-a", inputs={"steps": 2},
         ))
         assert result.status == "completed"
     finally:

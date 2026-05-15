@@ -3,9 +3,14 @@
 用 spawn context（与 CUDA 子进程惯例一致）。runner 内跑 FakeAdapter，
 不碰真 GPU。验证 Ready 握手 + LoadModel + RunNode + NodeProgress/NodeResult +
 Abort-during-node。
+
+Lane D 后：runner_main 用 ModelManager 替换 Lane C 极简 adapter dict；
+kwarg `adapter_class` 已替换为 `fake_adapter=True` + `models_yaml_path`，
+model_key 必须在 yaml fixture 里（"fake-img-a"/"fake-img-b"）。
 """
 import asyncio
 import multiprocessing as mp
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +19,7 @@ from src.runner.pipe_channel import PipeChannel
 from src.runner.runner_process import runner_main
 
 _SPAWN = mp.get_context("spawn")
+_FIXTURE = str(Path(__file__).parent / "fixtures" / "runner_models.yaml")
 
 
 def _spawn_runner(group_id="image", gpus=(2,)):
@@ -22,7 +28,7 @@ def _spawn_runner(group_id="image", gpus=(2,)):
     proc = _SPAWN.Process(
         target=runner_main,
         args=(group_id, list(gpus), child_conn),
-        kwargs={"adapter_class": "src.runner.fake_adapter.FakeAdapter"},
+        kwargs={"models_yaml_path": _FIXTURE, "fake_adapter": True},
         daemon=True,
     )
     proc.start()
@@ -50,13 +56,13 @@ async def test_load_model_then_run_node():
     proc, ch = _spawn_runner()
     try:
         await _recv(ch)  # 吞掉 Ready
-        await ch.send_message(P.LoadModel(model_key="fake-img", config={}))
+        await ch.send_message(P.LoadModel(model_key="fake-img-a", config={}))
         ev = await _recv(ch)
         assert isinstance(ev, P.ModelEvent) and ev.event == "loaded"
 
         await ch.send_message(P.RunNode(
             task_id=7, node_id="sampler", node_type="image",
-            model_key="fake-img", inputs={"steps": 3},
+            model_key="fake-img-a", inputs={"steps": 3},
         ))
         progresses, result = await _collect_until_result(ch)
         assert len(progresses) == 3  # 每 step 一个 NodeProgress
@@ -89,7 +95,7 @@ async def test_load_failed_emits_model_event():
         await _recv(ch)  # Ready
         # config 里的 fail_load 透传给 FakeAdapter 构造
         await ch.send_message(P.LoadModel(
-            model_key="bad-model", config={"fail_load": True},
+            model_key="fake-img-b", config={"fail_load": True},
         ))
         ev = await _recv(ch)
         assert isinstance(ev, P.ModelEvent)
@@ -112,12 +118,12 @@ async def test_abort_during_node_cancels_it():
     proc, ch = _spawn_runner()
     try:
         await _recv(ch)  # Ready
-        await ch.send_message(P.LoadModel(model_key="fake-img", config={"infer_seconds": 0.1}))
+        await ch.send_message(P.LoadModel(model_key="fake-img-a", config={"infer_seconds": 0.1}))
         assert isinstance(await _recv(ch), P.ModelEvent)
         # 跑一个 20 step 的长节点
         await ch.send_message(P.RunNode(
             task_id=9, node_id="sampler", node_type="image",
-            model_key="fake-img", inputs={"steps": 20},
+            model_key="fake-img-a", inputs={"steps": 20},
         ))
         # 收到第一个 progress 后立刻 Abort
         first = await _recv(ch)
