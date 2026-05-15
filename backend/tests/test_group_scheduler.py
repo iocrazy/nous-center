@@ -61,3 +61,164 @@ async def test_queued_task_works_in_priority_queue():
     while not q.empty():
         order.append((await q.get()).task_id)
     assert order == [2, 1, 3]  # interactive 先, 然后 batch 内 FIFO
+
+
+# ---------------------------------------------------------------------------
+# GroupScheduler tests (Task 5)
+# ---------------------------------------------------------------------------
+
+from src.services.inference.exceptions import NodeCancelled, QueueFullError  # noqa: E402
+from src.services.scheduler.group_scheduler import (  # noqa: E402
+    QUEUE_CAPACITY,
+    GroupScheduler,
+)
+
+
+def _make_scheduler(executor):
+    return GroupScheduler(group_id="image", executor=executor)
+
+
+async def test_enqueue_dispatch_completes():
+    """enqueue → dispatcher 弹出 → executor 跑 → task 进 results。"""
+    results = {}
+
+    async def fake_executor(task_id, spec, cancel_event, cancel_flag):
+        results[task_id] = {"ok": True, "spec": spec}
+        return results[task_id]
+
+    sched = _make_scheduler(fake_executor)
+    await sched.start()
+    await sched.enqueue(
+        task_id=1, priority=PRIORITY_INTERACTIVE,
+        queued_at=_T0, workflow_spec={"id": 1},
+    )
+    await sched.join()  # 等队列里的 task 全部派发完
+    await sched.stop()
+    assert results == {1: {"ok": True, "spec": {"id": 1}}}
+
+
+async def test_priority_order_interactive_first():
+    """batch task 先入队，interactive 后入队 —— interactive 先被 executor 跑。"""
+    run_order = []
+
+    async def fake_executor(task_id, spec, cancel_event, cancel_flag):
+        run_order.append(task_id)
+        return {}
+
+    sched = _make_scheduler(fake_executor)
+    # 先把两个 task 灌进队列再 start —— 保证 dispatcher 启动时队列里已有 2 个，
+    # 排序才有意义（否则先 enqueue 的可能在第二个 enqueue 前就被弹走了）。
+    await sched.enqueue(task_id=1, priority=PRIORITY_BATCH,
+                        queued_at=_T0, workflow_spec={})
+    await sched.enqueue(task_id=2, priority=PRIORITY_INTERACTIVE,
+                        queued_at=_T0, workflow_spec={})
+    await sched.start()
+    await sched.join()
+    await sched.stop()
+    assert run_order == [2, 1]  # interactive 先
+
+
+async def test_cancel_while_queued_skips_executor():
+    """task 还在排队（未 dispatch）时 cancel —— dispatcher 弹出时跳过，
+    executor 根本不被调用，task 标 cancelled。"""
+    executor_calls = []
+
+    async def fake_executor(task_id, spec, cancel_event, cancel_flag):
+        executor_calls.append(task_id)
+        return {}
+
+    sched = _make_scheduler(fake_executor)
+    # 不 start —— 先 enqueue + cancel，再 start，保证 cancel 发生在 dispatch 前
+    await sched.enqueue(task_id=1, priority=PRIORITY_BATCH,
+                        queued_at=_T0, workflow_spec={})
+    sched.request_cancel(1, reason="user changed mind")
+    await sched.start()
+    await sched.join()
+    await sched.stop()
+    assert executor_calls == []  # executor 从未被调
+    assert sched.get_status(1) == "cancelled"
+
+
+async def test_cancel_inflight_sets_cancel_flag():
+    """task 正在执行时 cancel —— cancel_event 和 CancelFlag 都被 set，
+    executor 能观察到 → 抛 NodeCancelled → task 标 cancelled。"""
+    started = asyncio.Event()
+
+    async def fake_executor(task_id, spec, cancel_event, cancel_flag):
+        started.set()
+        # 模拟一个长节点：轮询 cancel_flag（adapter 实际是 callback 里 check）
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if cancel_flag.is_set():
+                raise NodeCancelled(cancel_flag.reason or "cancelled")
+        return {}
+
+    sched = _make_scheduler(fake_executor)
+    await sched.start()
+    await sched.enqueue(task_id=1, priority=PRIORITY_INTERACTIVE,
+                        queued_at=_T0, workflow_spec={})
+    await started.wait()  # 等 executor 真的开始跑
+    sched.request_cancel(1, reason="abort inflight")
+    await sched.join()
+    await sched.stop()
+    assert sched.get_status(1) == "cancelled"
+    assert sched.get_cancel_reason(1) == "abort inflight"
+
+
+async def test_executor_exception_marks_failed():
+    """executor 抛非 cancel 异常 —— task 标 failed，dispatcher 不挂、继续服务。"""
+    async def fake_executor(task_id, spec, cancel_event, cancel_flag):
+        raise RuntimeError("node OOM")
+
+    sched = _make_scheduler(fake_executor)
+    await sched.start()
+    await sched.enqueue(task_id=1, priority=PRIORITY_BATCH,
+                        queued_at=_T0, workflow_spec={})
+    await sched.join()
+    # dispatcher 仍活着 —— 再灌一个能成功的
+    ok = {}
+
+    async def ok_executor(task_id, spec, cancel_event, cancel_flag):
+        ok[task_id] = True
+        return {}
+
+    sched._executor = ok_executor  # 换 executor 验证 loop 没死
+    await sched.enqueue(task_id=2, priority=PRIORITY_BATCH,
+                        queued_at=_T0, workflow_spec={})
+    await sched.join()
+    await sched.stop()
+    assert sched.get_status(1) == "failed"
+    assert sched.get_status(2) == "completed"
+
+
+async def test_enqueue_raises_queue_full_on_backlog():
+    """队列堆积到 QUEUE_CAPACITY 后，enqueue 抛 QueueFullError。"""
+    async def slow_executor(task_id, spec, cancel_event, cancel_flag):
+        await asyncio.sleep(60)  # 永远跑不完 —— 让队列堆起来
+        return {}
+
+    sched = _make_scheduler(slow_executor)
+    # 不 start dispatcher —— 队列只进不出，直接灌满
+    for i in range(QUEUE_CAPACITY):
+        await sched.enqueue(task_id=i, priority=PRIORITY_BATCH,
+                            queued_at=_T0, workflow_spec={})
+    with pytest.raises(QueueFullError) as ei:
+        await sched.enqueue(task_id=99999, priority=PRIORITY_BATCH,
+                            queued_at=_T0, workflow_spec={})
+    assert ei.value.group_id == "image"
+    assert ei.value.capacity == QUEUE_CAPACITY
+
+
+async def test_inflight_cleared_after_completion():
+    """task 终态后从 inflight_tasks / cancel_events 清理，不泄漏。"""
+    async def fake_executor(task_id, spec, cancel_event, cancel_flag):
+        return {}
+
+    sched = _make_scheduler(fake_executor)
+    await sched.start()
+    await sched.enqueue(task_id=1, priority=PRIORITY_BATCH,
+                        queued_at=_T0, workflow_spec={})
+    await sched.join()
+    await sched.stop()
+    assert 1 not in sched.inflight_tasks
+    assert 1 not in sched.cancel_events
