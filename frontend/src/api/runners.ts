@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 
 /** runner 泳道当前正在跑的任务（spec §6.1 进度条 + step 文案的数据源）。 */
@@ -61,5 +61,16 @@ export function useRunners() {
     },
     // runner 状态变化频繁（进度条、排队数），3s 轮询；WS 推送由后续 Lane 接。
     refetchInterval: 3_000,
+  })
+}
+
+/** 触发某 runner 重新加载失败的模型（spec §6.2 DD5 的 Retry 按钮）。
+ * 后端 POST /api/v1/runners/{id}/retry 由 Lane H 提供。 */
+export function useRetryRunner() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (runnerId: string) =>
+      apiFetch(`/api/v1/runners/${runnerId}/retry`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['runners'] }),
   })
 }

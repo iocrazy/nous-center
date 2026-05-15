@@ -16,7 +16,7 @@ import {
   useTasks,
   type ExecutionTask,
 } from '../../api/tasks'
-import { useRunners, type RunnerInfo } from '../../api/runners'
+import { useRunners, useRetryRunner, type RunnerInfo } from '../../api/runners'
 
 // Lane I（spec §6）：TaskPanel 从「3-tab 扁平列表」重构为 Buildkite 风：
 //   - 顶部 per-runner 泳道区（视觉 hero）—— 每条泳道 = 一个 GPU runner 的
@@ -58,6 +58,8 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
 
   return (
     <>
+      {/* restarting 态脉冲动画的 keyframes（内联 style 无法定义 @keyframes）。 */}
+      <style>{`@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
       {/* 半透明遮罩 —— 点击关闭。<768px 全屏抽屉时遮罩仍铺满（点不到也无妨）。 */}
       <div
         onClick={onClose}
@@ -249,6 +251,26 @@ function RunnerLane({ runner }: { runner: RunnerInfo }) {
         </div>
       )}
 
+      {runner.state === 'load_failed' && (
+        <div
+          style={{
+            marginTop: 8,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 10px',
+            borderRadius: 4,
+            background: 'rgba(239,68,68,0.08)',
+            border: '1px solid rgba(239,68,68,0.25)',
+          }}
+        >
+          <span style={{ flex: 1, fontSize: 11, color: 'var(--accent, #ef4444)' }}>
+            加载失败: {runner.load_error ?? '未知错误'}
+          </span>
+          <RunnerRetryButton runnerId={runner.id} />
+        </div>
+      )}
+
       {/* 排队数 —— Task 10 替换为可展开的 QueueExpand。 */}
       {runner.queue.length > 0 && (
         <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
@@ -285,8 +307,6 @@ function RunnerStateDot({ state }: { state: RunnerInfo['state'] }) {
 }
 
 function RunnerStateText({ runner }: { runner: RunnerInfo }) {
-  // Task 9 把 restarting / load_failed 的文案 + Retry 按钮做全；
-  // 本 Task 先给 idle / busy 的文字。
   if (runner.state === 'idle') {
     return <span style={{ fontSize: 11, color: 'var(--muted)' }}>idle</span>
   }
@@ -294,9 +314,44 @@ function RunnerStateText({ runner }: { runner: RunnerInfo }) {
     return <span style={{ fontSize: 11, color: 'var(--accent-2, #22c55e)' }}>busy</span>
   }
   if (runner.state === 'restarting') {
-    return <span style={{ fontSize: 11, color: 'var(--warn, #f59e0b)' }}>重启中</span>
+    // restart_attempt = [当前第几次, 总次数] → 「重启中 2/4」（spec §6.2）。
+    const attempt = runner.restart_attempt
+    return (
+      <span style={{ fontSize: 11, color: 'var(--warn, #f59e0b)' }}>
+        {attempt ? `重启中 ${attempt[0]}/${attempt[1]}` : '重启中'}
+      </span>
+    )
   }
+  // load_failed —— 文案 + Retry 在 RunnerLane 里渲染（这里只给状态词）。
   return <span style={{ fontSize: 11, color: 'var(--accent, #ef4444)' }}>加载失败</span>
+}
+
+function RunnerRetryButton({ runnerId }: { runnerId: string }) {
+  const retry = useRetryRunner()
+  return (
+    <button
+      type="button"
+      onClick={() => retry.mutate(runnerId)}
+      disabled={retry.isPending}
+      aria-label="重试加载"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '3px 9px',
+        fontSize: 11,
+        borderRadius: 4,
+        border: '1px solid var(--accent, #ef4444)',
+        background: 'transparent',
+        color: 'var(--accent, #ef4444)',
+        cursor: retry.isPending ? 'wait' : 'pointer',
+        opacity: retry.isPending ? 0.5 : 1,
+      }}
+    >
+      <RotateCcw size={11} />
+      重试加载
+    </button>
+  )
 }
 
 // ---------- 最近完成列表行（Task 11 加缩略图）----------

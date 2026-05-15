@@ -111,3 +111,34 @@ describe('TaskPanel — Buildkite-style structure (DD3)', () => {
     expect(drawer.style.width).toBe('100vw')
   })
 })
+
+describe('TaskPanel — runner abnormal states (DD5)', () => {
+  beforeEach(() => {
+    window.innerWidth = 1280
+  })
+
+  it('restarting lane shows "重启中 N/M" with attempt numbers', () => {
+    runnersData = [
+      {
+        id: 'runner-t', label: 'Runner-T', role: 'tts', state: 'restarting',
+        current_task: null, queue: [], restart_attempt: [2, 4], load_error: null, gpus: [0],
+      },
+    ]
+    render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
+    expect(screen.getByText('重启中 2/4')).toBeTruthy()
+  })
+
+  it('load_failed lane shows the error text + a keyboard-reachable Retry button', () => {
+    runnersData = [
+      {
+        id: 'runner-l', label: 'Runner-L', role: 'llm', state: 'load_failed',
+        current_task: null, queue: [], restart_attempt: null,
+        load_error: 'qwen3-35b OOM', gpus: [1],
+      },
+    ]
+    render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
+    expect(screen.getByText(/qwen3-35b OOM/)).toBeTruthy()
+    const retry = screen.getByRole('button', { name: '重试加载' })
+    expect(retry.tagName).toBe('BUTTON')
+  })
+})
