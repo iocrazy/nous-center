@@ -28,3 +28,21 @@ class ExecutionTask(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+    # —— V1.5 新增（Lane B，spec §3.1）——
+    # 全部 nullable，旧行保持 NULL；priority 有 default=10（batch 级），
+    # 调度器入队时显式写 0（interactive）或 10（batch）。
+    priority: Mapped[int] = mapped_column(Integer, default=10)
+    gpu_group: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    runner_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    node_timings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
