@@ -49,7 +49,8 @@ class RunnerSupervisor:
         *,
         group_id: str,
         gpus: list[int],
-        adapter_class: str = "src.runner.fake_adapter.FakeAdapter",
+        models_yaml_path: str | None = None,
+        fake_adapter: bool = False,
         ping_interval: float = DEFAULT_PING_INTERVAL,
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
         restart_backoff: list[float] | None = None,
@@ -60,7 +61,10 @@ class RunnerSupervisor:
     ) -> None:
         self.group_id = group_id
         self.gpus = gpus
-        self.adapter_class = adapter_class
+        # Lane D: 替换 adapter_class —— 模型用哪个 adapter 由 ModelSpec.adapter_class
+        # （yaml）决定；supervisor 只传「fake 测试模式」开关 + yaml 路径。
+        self.models_yaml_path = models_yaml_path
+        self.fake_adapter = fake_adapter
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
         self.restart_backoff = restart_backoff or DEFAULT_RESTART_BACKOFF
@@ -127,7 +131,10 @@ class RunnerSupervisor:
         proc = _SPAWN.Process(
             target=runner_main,
             args=(self.group_id, self.gpus, child_conn),
-            kwargs={"adapter_class": self.adapter_class},
+            kwargs={
+                "models_yaml_path": self.models_yaml_path,
+                "fake_adapter": self.fake_adapter,
+            },
             daemon=True,
             name=f"runner-{self.group_id}",
         )

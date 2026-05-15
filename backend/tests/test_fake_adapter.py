@@ -88,3 +88,27 @@ async def test_infer_yields_to_event_loop():
 
     await asyncio.gather(a.infer(_img_req(steps=3)), _other())
     assert other_ran.is_set()
+
+
+# —— Lane D 追加：OOM 模拟 ——
+
+@pytest.mark.asyncio
+async def test_fake_oom_on_load_then_succeeds():
+    """oom_on_load_count=1 —— 第 1 次 load 抛 FakeOOMError，第 2 次成功。"""
+    from src.runner.fake_adapter import FakeAdapter, FakeOOMError
+
+    a = FakeAdapter(paths={"main": "/fake"}, oom_on_load_count=1)
+    with pytest.raises(FakeOOMError):
+        await a.load("cpu")
+    assert not a.is_loaded
+    # 第二次成功
+    await a.load("cpu")
+    assert a.is_loaded
+
+
+def test_fake_oom_error_classname_triggers_is_oom():
+    """FakeOOMError 类名含 OutOfMemoryError —— ModelManager._is_oom 认得它。"""
+    from src.runner.fake_adapter import FakeOOMError
+    from src.services.model_manager import ModelManager
+
+    assert ModelManager._is_oom(FakeOOMError("CUDA out of memory"))
