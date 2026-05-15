@@ -35,12 +35,14 @@ _SPAWN = mp.get_context("spawn")  # CUDA 子进程惯例：spawn 不 fork
 
 
 def _default_gpu_free_probe(gpus: list[int]) -> bool:
-    """生产用 GPU-free 探针：nvidia-smi 查这些 GPU 的显存是否回落到基线.
+    """生产用 GPU-free 探针：nvidia-smi 查这些 GPU 的显存是否回落到基线（spec 4.2 F2）。
 
-    本 Lane 测试注入 fake 探针；这个默认实现是 Lane H 接 resident preload 时
-    会用到的真探针骨架 —— 此处保守返回 True（无 GPU 环境不阻塞）。
+    Lane H 把 Lane C 的 `return True` 骨架换成真实现 —— 委托
+    `gpu_free_probe.make_gpu_free_probe()`（默认基线 = 每卡 total 的 80%）。
+    无 GPU 环境下该探针仍保守返回 True，不阻塞重启。
     """
-    return True
+    from src.runner.gpu_free_probe import make_gpu_free_probe
+    return make_gpu_free_probe()(gpus)
 
 
 class RunnerSupervisor:
@@ -104,6 +106,20 @@ class RunnerSupervisor:
         if restart_index < len(self.restart_backoff):
             return self.restart_backoff[restart_index]
         return self.restart_backoff[-1]
+
+    def health_snapshot(self) -> dict:
+        """给 /health 端点用的 runner 状态快照（spec 4.2 / Lane H）。
+
+        纯读现有属性，无副作用。Lane I 的 Dashboard 用 `running` / `restart_count`
+        判断是否显示 degraded banner + 「重启中 N/M」。
+        """
+        return {
+            "group_id": self.group_id,
+            "gpus": list(self.gpus),
+            "running": self.is_running,
+            "restart_count": self.restart_count,
+            "pid": self.pid,
+        }
 
     # ------------------------------------------------------------------
     # inflight task 登记（crash 时全标 failed）
