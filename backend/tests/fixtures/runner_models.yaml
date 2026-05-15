@@ -1,0 +1,18 @@
+# Lane D: runner ModelManager 测试用最小 models.yaml fixture。
+# 两个 fake image 模型 —— adapter_class 指向 FakeAdapter，无真权重。
+models:
+  - id: fake-img-a
+    type: image
+    adapter: src.runner.fake_adapter.FakeAdapter
+    paths:
+      main: /fake/fake-img-a
+    vram_mb: 1024
+    resident: false
+
+  - id: fake-img-b
+    type: image
+    adapter: src.runner.fake_adapter.FakeAdapter
+    paths:
+      main: /fake/fake-img-b
+    vram_mb: 1024
+    resident: false
