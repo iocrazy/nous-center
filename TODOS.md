@@ -44,3 +44,15 @@ Project-level deferred work items captured during reviews. Each item: what / why
 - **Why:** 快速迭代——不用从头重搭 workflow。ComfyUI 新版 queue 侧栏有这个交互。
 - **Context:** V1.5 plan-design-review 决策 D10 把这个推迟。需要每个 task 存 workflow 快照；`execution_tasks` 表有 `workflow_id` 但不一定有完整快照，V1 的「重试」读原 workflow 定义。「恢复到 canvas」是前端动作 + 需快照可用。比缩略图历史重（需快照存储 schema + canvas 加载路径），可独立交付。
 - **Depends on:** V1.5 TaskPanel 重构（direction A）+ workflow 快照存储设计
+
+### [ ] **Lane K: lifespan wiring（V1.5 真正可用的最后一里）** ⚠ 高优先级
+
+- **What:** 在 `backend/src/api/main.py` 的 lifespan 里，在 `model_mgr = ModelManager(...)` 之后：
+  - 遍历 `allocator.groups()`，为每个非 LLM group（`role != "llm"`）`spawn` 一个 `RunnerSupervisor`（`backend/src/runner/supervisor.py`），传 `models_yaml_path` + `fake_adapter=False` + 真实 `gpu_free_probe`（`backend/src/runner/gpu_free_probe.py:make_gpu_free_probe()`）；放进 `app.state.runner_supervisors` 列表
+  - 为 `role == "llm"` group 启 `LLMRunner`（`backend/src/runner/llm_runner.py`），放进 `app.state.llm_runner`
+  - 创建 `RunnerClient` dict（group_id → client），注入到 `WorkflowExecutor` / `GroupScheduler`（Lane S/G 产物）
+  - lifespan shutdown 阶段 terminate 所有 supervisor / LLMRunner
+- **Why:** V1.5 的 12 个 lane 都建好了零件（`RunnerSupervisor` 类、`LLMRunner` 类、`RunnerClient`、CancelFlag、image adapter `callback_on_step_end` 重写、GroupScheduler），**但没人在 lifespan 里 instantiate 它们**。Smoke 实测 `curl /api/v1/monitor/runners` 返回 `{"runners": []}`——前端 TaskPanel 的 Buildkite-style runner 泳道全空，image workflow 提交后 dispatch 找不到 supervisor。`app.state.runner_supervisors` 全仓**零 write**（grep 确认：`main.py:474` 和 `monitor.py:323` 只 read，无任何 write），main.py 注释自承认 "populated by the scheduler/Lane A integration; until then it's unset"——但 Lane A 只产 `allocator.groups()`，没 spawn。
+- **Context:** V1.5 12 个 lane 在 PR #95–#106 全部 merged 到 master (`9ea32c7..0dd3206`)。Lane K 是收尾的 integration PR。规划阶段未识别这个 wiring 缺口——每个 lane 的 plan 都假设 "上游/Lane A 会接"，结果谁都没接（典型 "everyone's responsibility = no one's responsibility"）。spec: `docs/superpowers/specs/2026-05-13-workflow-queue-and-gpu-scheduler-design.md`；plans 在 `docs/superpowers/plans/2026-05-14-v15-lane*.md`。Backend 启动:`cd backend && /home/linuxbrew/.linuxbrew/bin/uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000`（venv pytest:`backend/.venv/bin/python -m pytest`）。Admin login:`POST /sys/admin/login {"password":...}`。
+- **Exit criteria:** `curl -b admin.cookies /api/v1/monitor/runners` 非空、image workflow 端到端跑通(提交→runner 泳道显示进度→出图)、cancel mid-sampler 500ms 内停。
+- **Depends on:** 无（master 已含全部 V1.5 零件，只欠这层 wiring）
