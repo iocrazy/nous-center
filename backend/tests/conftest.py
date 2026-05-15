@@ -41,6 +41,15 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
+# Lane J (spec §5.6): register shared integration/chaos fixtures so any
+# test under tests/ can request `hardware_2gpu` / `hardware_3gpu` /
+# `fake_runner` / `fake_vllm` without local imports.
+pytest_plugins = [
+    "tests.fixtures.hardware_topo",
+    "tests.fixtures.fake_runner",
+    "tests.fixtures.fake_vllm",
+]
+
 # Stub out heavy GPU dependencies so tests run without torch/torchaudio/etc.
 for mod_name in [
     "torch", "torch.nn", "torch.nn.functional", "torch.cuda",
