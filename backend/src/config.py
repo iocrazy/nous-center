@@ -149,3 +149,28 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
 
     # Old dict-based format: return as-is
     return models
+
+
+@lru_cache
+def load_hardware_config(path: str = "configs/hardware.yaml") -> dict:
+    """Load the manual GPU topology config (hardware.yaml).
+
+    Returns a dict with a "groups" list. fail-soft: missing file, corrupt
+    YAML, or missing "groups" key all return {"groups": []} so the
+    GPUAllocator can degrade to detect-based single-card groups instead
+    of crashing API server startup (spec §3.2, manual-only topology).
+    """
+    # path may be absolute (tests) or relative-to-backend (default).
+    candidate = Path(path)
+    resolved = candidate if candidate.is_absolute() else _resolve_path(path)
+    if not resolved.exists():
+        return {"groups": []}
+    try:
+        with open(resolved) as f:
+            data = yaml.safe_load(f) or {}
+    except yaml.YAMLError:
+        return {"groups": []}
+    groups = data.get("groups")
+    if not isinstance(groups, list):
+        return {"groups": []}
+    return {"groups": groups}
