@@ -38,6 +38,11 @@ from src.models.service_instance import ServiceInstance
 from src.services.context.base import ContextOverflowError
 from src.services.context.gzip_compact import GzipCompactContextEngine
 from src.services.context_cache_service import resolve_for_request
+from src.services.inference.vllm_endpoint import (
+    VLLMNoEndpoint,
+    VLLMNotLoaded,
+    get_vllm_base_url,
+)
 from src.services.prompt_composer import (
     AgentLoadFailed,
     AgentNotFound,
@@ -340,22 +345,16 @@ async def create_response(
         )
     engine_name = instance.source_name or str(instance.source_id)
 
-    # Adapter resolution
+    # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
-    if model_mgr is None:
-        raise APIError("Model manager unavailable", code="model_manager_missing")
+    try:
+        base_url = get_vllm_base_url(model_mgr, engine_name)
+    except VLLMNotLoaded as e:
+        raise APIError(str(e), code="model_not_loaded") from e
+    except VLLMNoEndpoint as e:
+        raise APIError(str(e), code="no_inference_endpoint") from e
+    # Adapter handle still needed downstream for max_model_len clamp.
     adapter = model_mgr.get_adapter(engine_name)
-    if adapter is None or not adapter.is_loaded:
-        raise APIError(
-            f"Model '{engine_name}' is not loaded",
-            code="model_not_loaded",
-        )
-    base_url = getattr(adapter, "base_url", None)
-    if not base_url:
-        raise APIError(
-            "Model has no inference endpoint",
-            code="no_inference_endpoint",
-        )
     max_model_len = getattr(adapter, "max_model_len", 4096) or 4096
 
     # Step 3 cache resolution
