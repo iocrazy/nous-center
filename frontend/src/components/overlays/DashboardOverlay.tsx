@@ -8,6 +8,7 @@ import { useEngines } from '../../api/engines'
 import { useDashboardSummary, type AlertItem, type TopServiceRow } from '../../api/dashboard'
 import { useRuntimeMetrics, type RuntimeSnapshot } from '../../api/observability'
 import { useVLLMMetrics, useUpdateLaunchParams } from '../../api/vllm'
+import { useRunners, type RunnerInfo } from '../../api/runners'
 
 /**
  * m04 Dashboard — v3 layout.
@@ -476,6 +477,7 @@ function CollapsibleSystem({
   const { data: sysStats } = useSysStats()
   const { data: procData } = useSysProcesses()
   const killProcess = useKillProcess()
+  const { data: runners } = useRunners()
 
   const loadedModels = (engines ?? []).filter((e) => e.status === 'loaded')
   const subtitle = `${gpuData?.gpus.length ?? 0}× GPU · ${loadedModels.length} 模型常驻`
@@ -538,6 +540,7 @@ function CollapsibleSystem({
               <GpuCard
                 key={gpu.index}
                 gpu={gpu}
+                runner={(runners ?? []).find((r) => r.gpus.includes(gpu.index)) ?? null}
                 onKill={(pid, mem) => {
                   if (
                     window.confirm(
@@ -755,9 +758,11 @@ function MiniStat({
 
 function GpuCard({
   gpu,
+  runner,
   onKill,
 }: {
   gpu: SysGpuInfo
+  runner: RunnerInfo | null
   onKill: (pid: number, mem: number) => void
 }) {
   const memPct =
@@ -789,6 +794,11 @@ function GpuCard({
         </span>
       </div>
       <div style={{ fontSize: 13, color: 'var(--text)', marginTop: 4 }}>{gpu.name}</div>
+      {runner && (
+        <div style={{ fontSize: 11, color: 'var(--info, #3b82f6)', marginTop: 2 }}>
+          Runner: {runner.label} ({runner.role})
+        </div>
+      )}
       <div
         style={{
           fontSize: 11,

@@ -39,6 +39,9 @@ export interface RunnerInfo {
   restart_attempt: [number, number] | null
   /** load_failed 态：失败文案，如 "qwen3-35b OOM"。 */
   load_error: string | null
+  /** 该 runner 占用的 GPU index 列表（对齐 hardware.yaml groups[].gpus）。
+   * Dashboard GpuPanel 用它给每张 GPU 标「属于哪个 runner」（spec §6 DD3）。 */
+  gpus: number[]
 }
 
 /** 拉 runner 泳道数据。

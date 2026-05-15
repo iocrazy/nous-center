@@ -29,6 +29,7 @@ describe('useRunners', () => {
         queue: [{ task_id: '9p1q', workflow_name: 'sd-背景', position: 1 }],
         restart_attempt: null,
         load_error: null,
+        gpus: [2],
       },
     ])
     const { result } = renderHook(() => useRunners(), { wrapper: wrapper() })
