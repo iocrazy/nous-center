@@ -174,3 +174,24 @@ describe('TaskPanel — queue position expand (DD8)', () => {
     expect(screen.getByText('#2')).toBeTruthy()
   })
 })
+
+describe('TaskPanel — image thumbnail history (DD9)', () => {
+  beforeEach(() => {
+    window.innerWidth = 1280
+    runnersData = []
+  })
+
+  it('image task with output_thumbnails renders an <img> thumbnail', () => {
+    render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
+    // mockTasks[0] = flux2-人物立绘，task_type image，带 output_thumbnails
+    const thumb = screen.getByAltText(/flux2-人物立绘/) as HTMLImageElement
+    expect(thumb.tagName).toBe('IMG')
+    expect(thumb.src).toContain('/files/outputs/wf_done_1/0.webp')
+  })
+
+  it('non-image completed task falls back to the status icon (no img)', () => {
+    render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
+    // mockTasks[1] = cosy-旁白，task_type null —— 不应有 img alt 含它的名字
+    expect(screen.queryByAltText(/cosy-旁白/)).toBeNull()
+  })
+})

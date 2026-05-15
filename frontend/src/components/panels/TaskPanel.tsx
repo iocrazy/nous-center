@@ -514,7 +514,29 @@ function RecentRow({ task }: { task: ExecutionTask }) {
 }
 
 function RecentLeading({ task }: { task: ExecutionTask }) {
-  // Task 11 用 ImageThumb 替换；本 Task 先放状态图标。
+  // DD9：image 任务且有缩略图 → 显示输出缩略图；否则降级状态图标。
+  const thumb = task.output_thumbnails?.[0]
+  if (task.task_type === 'image' && thumb) {
+    return (
+      <img
+        src={thumb}
+        alt={task.workflow_name || '图像任务输出'}
+        loading="lazy"
+        style={{
+          width: 36,
+          height: 36,
+          objectFit: 'cover',
+          borderRadius: 4,
+          flexShrink: 0,
+          background: 'var(--bg-accent)',
+        }}
+      />
+    )
+  }
+  if (task.task_type === 'image') {
+    // image 任务但还没拿到缩略图 URL（后端 outputs/ 落盘未就绪）→ ImageIcon。
+    return <ImageIcon size={16} style={{ color: 'var(--info, #3b82f6)', flexShrink: 0 }} />
+  }
   if (task.status === 'completed') {
     return <CheckCircle2 size={16} style={{ color: 'var(--accent-2, #22c55e)', flexShrink: 0 }} />
   }
@@ -587,5 +609,3 @@ function formatDuration(ms: number): string {
   return `${m}m${Math.round(s - m * 60)}s`
 }
 
-// 占位：ImageIcon 在 Task 11 被 ImageThumb 用到，先 re-export 防 unused-import。
-export const _ImageIcon = ImageIcon
