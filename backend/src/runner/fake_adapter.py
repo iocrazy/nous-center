@@ -33,6 +33,15 @@ class FakeLoadError(Exception):
     """FakeAdapter.load() 在 fail_load=True 时抛 —— 模拟加载失败。"""
 
 
+class FakeOOMError(RuntimeError):
+    """FakeAdapter.load() 在 oom_on_load_count 未耗尽时抛 —— 模拟 CUDA OOM。
+
+    类名刻意含 'OutOfMemoryError' 子串，让 ModelManager._is_oom 据类名判定它
+    走 OOM-evict-retry 路径（不能依赖 torch.cuda.OutOfMemoryError —— 测试里
+    torch 是 MagicMock）。
+    """
+
+
 class FakeAdapter(InferenceAdapter):
     """假 adapter：可配置 crash / slow / fail-load / 多 step 进度。"""
 
@@ -47,15 +56,23 @@ class FakeAdapter(InferenceAdapter):
         fail_load: bool = False,
         crash_on_infer: bool = False,
         infer_seconds: float = 0.01,
+        oom_on_load_count: int = 0,
         **params: Any,
     ) -> None:
         super().__init__(paths, device, **params)
         self._fail_load = fail_load
         self._crash_on_infer = crash_on_infer
         self._infer_seconds = infer_seconds
+        self._oom_on_load_count = oom_on_load_count
+        self._load_attempts = 0
 
     async def load(self, device: str) -> None:
         await asyncio.sleep(0)  # 可让出
+        self._load_attempts += 1
+        if self._load_attempts <= self._oom_on_load_count:
+            raise FakeOOMError(
+                f"CUDA out of memory (fake, attempt {self._load_attempts})"
+            )
         if self._fail_load:
             raise FakeLoadError(f"fake load failure for paths={self.paths}")
         self.device = device
