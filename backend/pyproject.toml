@@ -20,6 +20,10 @@ dependencies = [
     # WebAuthn / passkey + TOTP for /sys/admin/passkey + /sys/admin/totp routes
     "webauthn>=2.5",
     "pyotp>=2.9",
+    # msgpack: V1.5 GPU Runner IPC wire format (main process <-> image/TTS
+    # runner subprocess over multiprocessing.Pipe). Small, pure-wheel, no
+    # native CUDA deps — safe in the API-server venv. See spec 3.3.
+    "msgpack>=1.1",
 ]
 
 [project.optional-dependencies]
