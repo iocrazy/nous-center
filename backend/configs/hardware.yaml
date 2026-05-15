@@ -1,0 +1,13 @@
+# hardware.yaml — 实际生效的 GPU 拓扑（代码加载此文件，唯一真相源）
+#
+# 当前 = 2×3090 NVLink 配对布局，内容等同 hardware.2gpu.yaml。
+# 切换布局：cp configs/hardware.3gpu.yaml configs/hardware.yaml （Pro 6000 到货后）。
+#
+# 字段语义见 hardware.2gpu.yaml 头注释。
+# V1.5 manual-only：不解析 nvidia-smi topo -m，无 detection 字段。
+groups:
+  - id: llm-tp
+    gpus: [0, 1]
+    nvlink: true
+    role: llm            # image/TTS 节点也落此 group，与 LLM 时分复用
+    vram_gb: 48

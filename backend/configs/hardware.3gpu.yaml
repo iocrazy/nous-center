@@ -1,0 +1,27 @@
+# hardware.3gpu.yaml — 参考样板（只读，代码不加载此文件）
+#
+# 未来部署：Pro 6000 到货后的 3-group 独立布局（spec §3.2）。
+# image 独占 96GB Pro 6000；LLM 用 2×3090 NVLink pair 跑 tensor-parallel；
+# TTS 独占一张 24GB 卡。
+#
+# 生效方式：Pro 6000 到货后 `cp hardware.3gpu.yaml hardware.yaml`。
+#
+# 字段语义见 hardware.2gpu.yaml 头注释。vram_gb = group 合计 VRAM。
+groups:
+  - id: image
+    gpus: [2]
+    nvlink: false
+    role: image
+    vram_gb: 96
+
+  - id: llm-tp
+    gpus: [0, 1]
+    nvlink: true
+    role: llm
+    vram_gb: 48          # GPU0(24) + GPU1(24) 合计
+
+  - id: tts
+    gpus: [3]
+    nvlink: false
+    role: tts
+    vram_gb: 24
