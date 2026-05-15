@@ -458,9 +458,24 @@ def create_app() -> FastAPI:
         gpus = get_gpu_stats()
         checks["gpus"] = len(gpus)
 
-        # Loaded models
+        # Loaded models + resident-preload failures (spec 4.3). A non-empty
+        # load_failures dict means at least one resident model failed to
+        # preload — the Dashboard renders a degraded banner + Retry from this.
         mgr = getattr(app.state, "model_manager", None)
         checks["models_loaded"] = len(mgr.loaded_model_ids) if mgr else 0
+        load_failures = dict(mgr._load_failures) if mgr else {}
+        checks["load_failures"] = load_failures
+        if load_failures:
+            checks["status"] = "degraded"
+
+        # Per-runner state (spec 4.2). runner_supervisors is populated by the
+        # scheduler/Lane A integration; until then it's unset and runners is
+        # []. A runner that isn't running (crashed / mid-restart) degrades.
+        supervisors = getattr(app.state, "runner_supervisors", [])
+        runners = [s.health_snapshot() for s in supervisors]
+        checks["runners"] = runners
+        if any(not r.get("running", False) for r in runners):
+            checks["status"] = "degraded"
 
         return checks
     app.include_router(understand.router)
