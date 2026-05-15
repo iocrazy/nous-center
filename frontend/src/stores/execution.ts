@@ -32,6 +32,11 @@ export interface ExecutionState {
   // Task panel
   taskPanelOpen: boolean
   toggleTaskPanel: () => void
+  /** IconRail 任务图标 badge 计数（DD4）：点 Run 累加，打开面板清零。
+   * 与「running task 数」解耦 —— 它表达的是「有未查看的新提交」。 */
+  taskIconBadge: number
+  bumpTaskBadge: () => void
+  clearTaskBadge: () => void
 }
 
 export const useExecutionStore = create<ExecutionState>((set, get) => ({
@@ -45,6 +50,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   currentNodeId: null,
   currentNodeType: null,
   taskPanelOpen: false,
+  taskIconBadge: 0,
 
   start: (taskId) =>
     set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null }),
@@ -77,6 +83,10 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 
   toggleTaskPanel: () =>
     set((s) => ({ taskPanelOpen: !s.taskPanelOpen })),
+
+  bumpTaskBadge: () => set((s) => ({ taskIconBadge: s.taskIconBadge + 1 })),
+
+  clearTaskBadge: () => set({ taskIconBadge: 0 }),
 
   wsConnect: (instanceId: string) => {
     const existing = get()._ws
