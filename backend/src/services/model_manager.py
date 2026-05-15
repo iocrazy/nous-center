@@ -265,6 +265,85 @@ class ModelManager:
             raise ModelLoadError(model_id, self._load_failures[model_id])
         return adapter
 
+    @staticmethod
+    def _is_oom(exc: BaseException) -> bool:
+        """判定异常是不是 CUDA OOM。
+
+        不能在模块顶层 import torch（runner venv 测试里 torch 是 MagicMock，
+        且 ModelManager 应能在无 torch 的纯逻辑测试中跑）。改用类名 + 文本判定：
+        torch.cuda.OutOfMemoryError 的类名就是 'OutOfMemoryError'；其它库的
+        OOM 一般文案里有 'out of memory'。
+        """
+        name = type(exc).__name__
+        if "OutOfMemoryError" in name:
+            return True
+        return "out of memory" in str(exc).lower()
+
+    async def get_or_load(
+        self,
+        model_id: str,
+        adapter_factory: Callable[[ModelSpec], InferenceAdapter] | None = None,
+    ) -> InferenceAdapter:
+        """Get adapter, loading on demand with OOM-evict-retry (spec §4.3).
+
+        在 `get_loaded_adapter` 的 lazy-load 之上加一层 OOM 韧性：首次 load 撞
+        CUDA OOM → evict 同 GPU 的 LRU 非 resident / 非 referenced 模型 → 重试
+        一次。重试仍 OOM（或非 OOM 异常）→ 落 `_load_failures` 并 raise
+        ModelLoadError。**runner 子进程的 node-executor 唯一的加载入口** —— OOM
+        重试逻辑全收在这里，调用方不感知。
+
+        Raises:
+            ModelNotFoundError: model_id 无 spec (HTTP 404).
+            ModelLoadError:     load 失败 / 二次 OOM (HTTP 503).
+        """
+        # Fast path: already loaded
+        adapter = self.get_adapter(model_id)
+        if adapter is not None and adapter.is_loaded:
+            return adapter
+        # Prior failure check —— 不重试
+        if model_id in self._load_failures:
+            raise ModelLoadError(model_id, self._load_failures[model_id])
+
+        spec = self._registry.get(model_id)
+        if spec is None:
+            spec = self._registry.add_from_scan(model_id)
+        if spec is None:
+            raise ModelNotFoundError(model_id)
+
+        last_err: BaseException | None = None
+        for attempt in range(2):
+            try:
+                await self.load_model(model_id, adapter_factory=adapter_factory)
+                loaded = self.get_adapter(model_id)
+                if loaded is None or not loaded.is_loaded:
+                    self._load_failures[model_id] = (
+                        "load_model returned but adapter is not loaded"
+                    )
+                    raise ModelLoadError(model_id, self._load_failures[model_id])
+                self._load_failures.pop(model_id, None)
+                return loaded
+            except ModelLoadError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if self._is_oom(e) and attempt == 0:
+                    gpu = spec.gpu if isinstance(spec.gpu, int) else None
+                    evicted = await self.evict_lru(gpu_index=gpu)
+                    logger.warning(
+                        "get_or_load(%r): OOM on first load, evicted %r, retrying",
+                        model_id, evicted,
+                    )
+                    continue
+                msg = (
+                    f"OOM after evict: {e}" if self._is_oom(e)
+                    else f"{type(e).__name__}: {e}"
+                )
+                self._load_failures[model_id] = msg
+                raise ModelLoadError(model_id, msg) from e
+        # 防御：循环必定 return 或 raise
+        self._load_failures[model_id] = f"{type(last_err).__name__}: {last_err}"
+        raise ModelLoadError(model_id, self._load_failures[model_id])
+
     def get_references(self, model_id: str) -> set[str]:
         return set(self._references.get(model_id, set()))
 
