@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 # `fake_runner` / `fake_vllm` without local imports.
 pytest_plugins = [
     "tests.fixtures.hardware_topo",
+    "tests.fixtures.fake_runner",
 ]
 
 # Stub out heavy GPU dependencies so tests run without torch/torchaudio/etc.
