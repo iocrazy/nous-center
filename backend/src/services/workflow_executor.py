@@ -47,12 +47,16 @@ class ExecutionError(Exception):
 class WorkflowExecutor:
     """Execute a workflow DAG (topological sort + per-node execution)."""
 
-    def __init__(self, workflow: dict, on_progress=None):
+    def __init__(self, workflow: dict, on_progress=None, runner_client=None):
         self.nodes: list[dict] = workflow.get("nodes", [])
         self.edges: list[dict] = workflow.get("edges", [])
         self._node_map: dict[str, dict] = {n["id"]: n for n in self.nodes}
         self._outputs: dict[str, dict[str, Any]] = {}
         self._on_progress = on_progress  # async callback(data: dict)
+        # Lane C RunnerClient（spec §3.3）；inline-only workflow 可传 None。
+        # 出现 dispatch 节点但 runner_client=None 时，_dispatch_node 显式报错，
+        # 绝不静默在主进程 inline 跑 GPU 节点（那正是 V1.5 要消灭的 GPU race）。
+        self._runner_client = runner_client
 
     def _topological_sort(self) -> list[str]:
         if not self.nodes:
@@ -119,7 +123,7 @@ class WorkflowExecutor:
                 })
 
             try:
-                output = await self._execute_node(node, inputs)
+                output = await self._run_node_routed(node, inputs)
                 self._outputs[node_id] = output
             except Exception as e:
                 if self._on_progress:
@@ -149,7 +153,31 @@ class WorkflowExecutor:
 
         return {"outputs": self._outputs}
 
-    async def _execute_node(self, node: dict, inputs: dict) -> dict[str, Any]:
+    async def _run_node_routed(self, node: dict, inputs: dict) -> dict[str, Any]:
+        """按节点类型分流：inline 节点主进程内 await，dispatch 节点投 RunnerClient。
+
+        spec §2.1 step 9 / §4.5「Inline 执行点改道清单」。
+        """
+        from src.services.node_routing import node_exec_class
+
+        if node_exec_class(node["type"]) == "dispatch":
+            return await self._dispatch_node(node, inputs)
+        return await self._execute_inline_node(node, inputs)
+
+    async def _dispatch_node(self, node: dict, inputs: dict) -> dict[str, Any]:
+        """GPU 节点 → RunnerClient.run_node（spec §3.3 RunNode/NodeResult RPC）。
+
+        runner_client 缺失时显式报错 —— 绝不静默在主进程内 inline 跑 GPU 节点
+        （那正是 V1.5 要消灭的 GPU race）。
+        """
+        if self._runner_client is None:
+            raise ExecutionError(
+                f"节点 {node['id']} ({node['type']}) 需要 GPU runner，"
+                f"但 executor 未注入 runner_client"
+            )
+        return await self._runner_client.run_node(node, inputs)
+
+    async def _execute_inline_node(self, node: dict, inputs: dict) -> dict[str, Any]:
         """Execute a single node via registered class + protocol dispatch."""
         from src.services.nodes.base import InvokableNode, StreamableNode
         from src.services.nodes.registry import get_node_class

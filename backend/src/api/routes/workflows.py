@@ -139,87 +139,42 @@ async def unpublish_workflow(
     return {"status": "unpublished"}
 
 
-@router.post("/execute")
+@router.post("/execute", status_code=202)
 async def execute_workflow_direct(
     body: dict,
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Execute a workflow directly without publishing. Used by frontend Run for plugin nodes."""
-    import time
-    from src.services.workflow_executor import WorkflowExecutor, ExecutionError
+    """入队一个 workflow 直接执行（D17 纯异步）：建 task → 后台跑 → 立即返回 202 + task_id。
+
+    客户端拿结果：轮询 GET /api/v1/tasks/{task_id} 或订阅 WS /ws/workflow/{task_id}。
+    """
+    import asyncio
+
     from src.models.execution_task import ExecutionTask
+    from src.services.workflow_runner import run_workflow_task
 
     nodes = body.get("nodes", [])
     edges = body.get("edges", [])
     if not nodes:
         raise HTTPException(400, "Workflow is empty")
 
-    # Create task record
     task = ExecutionTask(
         workflow_name=body.get("name", "直接执行"),
-        status="running",
+        status="queued",
         nodes_total=len(nodes),
     )
     session.add(task)
     await session.commit()
     await session.refresh(task)
 
-    start = time.monotonic()
+    # channel_id：D17 之后客户端订阅 WS 用 task_id 作为 channel；兼容旧的
+    # 显式 channel_id（前端在 POST 前先开 WS 的老流程）。
+    channel_id = body.get("channel_id") or str(task.id)
+    runner_client = getattr(request.app.state, "runner_client", None)
 
-    # Progress channel: client opens /ws/workflow/{channel_id} *before* POST
-    # and we push node_start/complete/error events into that bucket.
-    channel_id = body.get("channel_id")
-    logger.warning(
-        "DIAG execute_workflow_direct: channel_id=%r body_keys=%s nodes=%d",
-        channel_id, sorted(body.keys()), len(nodes),
-    )
-
-    async def broadcast_progress(event: dict):
-        if not channel_id:
-            return
-        from src.api.main import _ws_connections
-        ws_list = list(_ws_connections.get(channel_id, []))
-        logger.warning(
-            "DIAG broadcast_progress: channel=%s ws_count=%d type=%s node_id=%s",
-            channel_id, len(ws_list), event.get("type"), event.get("node_id"),
-        )
-        for ws in ws_list:
-            try:
-                await ws.send_json(event)
-            except Exception as e:
-                logger.warning("broadcast_progress send failed: %s", e)
-
-    executor = WorkflowExecutor(
-        {"nodes": nodes, "edges": edges},
-        on_progress=broadcast_progress if channel_id else None,
-    )
-
-    try:
-        result = await executor.execute()
-        if channel_id:
-            await broadcast_progress({"type": "complete", "progress": 100})
-        elapsed = int((time.monotonic() - start) * 1000)
-        task.status = "completed"
-        task.result = result
-        task.duration_ms = elapsed
-        task.nodes_done = len(nodes)
-        task.current_node = None
-    except ExecutionError as e:
-        elapsed = int((time.monotonic() - start) * 1000)
-        task.status = "failed"
-        task.error = str(e)
-        task.duration_ms = elapsed
-        await session.commit()
-        logger.error("Workflow execution failed: %s", e)
-        raise HTTPException(500, str(e))
-    except Exception as e:
-        elapsed = int((time.monotonic() - start) * 1000)
-        task.status = "failed"
-        task.error = str(e)
-        task.duration_ms = elapsed
-        await session.commit()
-        logger.error("Workflow execution error: %s", e, exc_info=True)
-        raise HTTPException(500, str(e))
-
-    await session.commit()
-    return result
+    asyncio.create_task(run_workflow_task(
+        task.id, {"nodes": nodes, "edges": edges},
+        runner_client=runner_client, channel_id=channel_id,
+    ))
+    return {"task_id": str(task.id), "status": "queued", "channel_id": channel_id}

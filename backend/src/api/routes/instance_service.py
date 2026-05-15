@@ -4,7 +4,7 @@ import base64
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -90,15 +90,22 @@ class InstanceRunRequest(BaseModel):
     inputs: dict | None = None
 
 
-@router.post("/{instance_id}/run")
+@router.post("/{instance_id}/run", status_code=202)
 async def instance_run(
     req: InstanceRunRequest,
+    request: Request,
     auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_instance_key),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Execute a published workflow instance."""
-    from src.services.workflow_executor import WorkflowExecutor, ExecutionError
+    """入队一个已发布 workflow 实例的执行（D17 纯异步）。
+
+    返回 202 + task_id。客户端轮询 GET /api/v1/tasks/{task_id} 或订阅
+    WS /ws/workflow/{instance_id} 拿结果。迁移指引见 docs/run-async-migration.md。
+    """
+    import asyncio
+
     from src.models.execution_task import ExecutionTask
+    from src.services.workflow_runner import run_workflow_task
 
     instance, api_key = auth
 
@@ -107,55 +114,33 @@ async def instance_run(
             400, detail="Only workflow-based instances support /run"
         )
 
-    # The workflow DAG is stored in params_override at publish time
     workflow_data = instance.params_override or {}
     nodes = workflow_data.get("nodes", [])
     if not nodes:
         raise HTTPException(400, detail="Workflow has no nodes")
 
-    # Create task record
     task = ExecutionTask(
         workflow_id=instance.source_id,
         workflow_name=instance.name or "API 执行",
-        status="running",
+        status="queued",
         nodes_total=len(nodes),
     )
     session.add(task)
     await session.commit()
     await session.refresh(task)
 
-    async def broadcast_progress(data: dict):
-        from src.api.main import _ws_connections
-        for ws in _ws_connections.get(str(instance.id), []):
-            try:
-                await ws.send_json(data)
-            except Exception:
-                pass
-
-    start = time.monotonic()
-    executor = WorkflowExecutor(workflow_data, on_progress=broadcast_progress)
-
-    try:
-        result = await executor.execute()
-        elapsed = int((time.monotonic() - start) * 1000)
-        task.status = "completed"
-        task.result = result
-        task.duration_ms = elapsed
-        task.nodes_done = len(nodes)
-        task.current_node = None
-    except ExecutionError as e:
-        elapsed = int((time.monotonic() - start) * 1000)
-        task.status = "failed"
-        task.error = str(e)
-        task.duration_ms = elapsed
-        await session.commit()
-        raise HTTPException(422, detail=str(e))
-
-    await broadcast_progress({"type": "complete", "progress": 100})
-
-    # Update usage counters
+    # 用量计数：入队即计一次调用（异步契约下无法等执行完）
     api_key.usage_calls += 1
     api_key.last_used_at = datetime.now(timezone.utc)
     await session.commit()
 
-    return result
+    # WS channel 仍用 instance.id（上游订阅 /ws/workflow/{instance_id} 的老约定不变），
+    # 但同时把 task_id 回给客户端用于轮询。
+    channel_id = str(instance.id)
+    runner_client = getattr(request.app.state, "runner_client", None)
+
+    asyncio.create_task(run_workflow_task(
+        task.id, workflow_data,
+        runner_client=runner_client, channel_id=channel_id,
+    ))
+    return {"task_id": str(task.id), "status": "queued"}

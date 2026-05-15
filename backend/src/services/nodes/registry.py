@@ -1,7 +1,8 @@
 """Registry mapping node type string → class.
 
 Populated by each node module's import (side effect). Lookup is done by
-WorkflowExecutor._execute_node.
+WorkflowExecutor._execute_inline_node (Lane S split: dispatch nodes go
+to RunnerClient, inline nodes resolve through this registry).
 """
 
 from __future__ import annotations
