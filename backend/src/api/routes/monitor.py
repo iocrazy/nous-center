@@ -190,12 +190,11 @@ async def get_system_stats(request: Request):
         gpu["low_memory"] = free_gb < DEFAULT_RESERVED_GB
 
     # Add loaded models to GPU info
-    from src.services import model_scheduler
     from src.config import load_model_configs
     from src.gpu.detector import get_device_for_engine
 
     configs = load_model_configs()
-    loaded = model_scheduler.get_status()["loaded"]
+    loaded = model_mgr.loaded_model_ids if model_mgr is not None else []
     for model_key in loaded:
         cfg = configs.get(model_key, {})
         gpu_idx = cfg.get("gpu")

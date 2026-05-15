@@ -30,3 +30,14 @@ async def test_monitor_stats(db_client: AsyncClient):
     data = resp.json()
     assert "gpus" in data
     assert "system" in data
+
+
+def test_monitor_loaded_models_from_model_manager():
+    """monitor 端点的 loaded_models 来自 app.state.model_manager，不依赖 model_scheduler。"""
+    import src.api.routes.monitor as monitor_mod
+
+    # model_scheduler 模块被删后，monitor.py 不应再 import 它
+    src = monitor_mod.__file__
+    with open(src) as f:
+        content = f.read()
+    assert "model_scheduler" not in content, "monitor.py 不应再引用 model_scheduler"
