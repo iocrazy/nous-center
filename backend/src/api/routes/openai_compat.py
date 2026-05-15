@@ -19,6 +19,11 @@ from src.models.service_instance import ServiceInstance
 from src.models.instance_api_key import InstanceApiKey
 from src.models.database import get_async_session
 
+from src.services.inference.vllm_endpoint import (
+    VLLMNoEndpoint,
+    VLLMNotLoaded,
+    get_vllm_base_url,
+)
 from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.prompt_composer import (
     AgentLoadFailed,
@@ -191,17 +196,17 @@ async def chat_completions(
         )
 
     engine_name = instance.source_name or str(instance.source_id)
+    # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
-    if model_mgr is None:
-        raise HTTPException(500, detail="Model manager not available")
+    try:
+        base_url = get_vllm_base_url(model_mgr, engine_name)
+    except VLLMNotLoaded as e:
+        raise HTTPException(503, detail=str(e)) from e
+    except VLLMNoEndpoint as e:
+        raise HTTPException(500, detail=str(e)) from e
 
+    # Adapter handle still needed downstream for max_model_len clamp (line ~283).
     adapter = model_mgr.get_adapter(engine_name)
-    if adapter is None or not adapter.is_loaded:
-        raise HTTPException(503, detail=f"Model '{engine_name}' is not loaded. Load it from the management page.")
-
-    base_url = getattr(adapter, "base_url", None)
-    if not base_url:
-        raise HTTPException(500, detail="Model has no inference endpoint")
 
     body["model"] = ""  # vLLM uses its own model path
 
