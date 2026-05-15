@@ -266,46 +266,25 @@ async def lifespan(app: FastAPI):
         if wf_model_deps:
             asyncio.create_task(_load_wf_deps())
 
-        # Image models marked resident: preload in the background so the
-        # ~120s diffusers compose doesn't block /health (cloudflared /
-        # systemd probes would mark backend down). Each spec gets its own
-        # task so one failure doesn't poison the others. On success:
-        # invalidate the engines cache + push a ws/models event so the UI
-        # flips the badge within 1s. On failure: write the reason into
-        # mm._load_failures so subsequent get_loaded_adapter raises a
-        # ModelLoadError instead of retrying indefinitely.
-        async def _preload_image_model(spec_id: str):
-            try:
-                await model_mgr.load_model(spec_id)
-                logger.info("Image preload succeeded: %s", spec_id)
-                from src.api.response_cache import invalidate as _invalidate
-                _invalidate("models", "engines")
-                from src.api.websocket import ws_manager as _ws
-                await _ws.broadcast_model_status(spec_id, "loaded")
-            except Exception as e:
-                detail = f"{type(e).__name__}: {e}"
-                model_mgr._load_failures[spec_id] = detail
-                logger.warning("Image preload failed for %s: %s", spec_id, detail)
-                try:
-                    from src.api.websocket import ws_manager as _ws
-                    await _ws.broadcast_model_status(spec_id, "error", detail)
-                except Exception:
-                    pass
+        # Resident models marked resident: preload in the background, ordered
+        # by preload_order ascending (spec 4.2). The ~120s diffusers compose
+        # must not block /health (cloudflared / systemd probes would mark the
+        # backend down). preload_residents is fail-soft: a single model's
+        # OOM / corrupt-weights failure records into mm._load_failures and is
+        # surfaced on /health — it never blocks startup or the rest of the
+        # preload sequence (spec 4.3). on_loaded flips the engines/models
+        # cache + UI badge within ~1s per successful load.
+        async def _on_resident_loaded(spec_id: str) -> None:
+            from src.api.response_cache import invalidate as _invalidate
+            _invalidate("models", "engines")
+            from src.api.websocket import ws_manager as _ws
+            await _ws.broadcast_model_status(spec_id, "loaded")
 
-        image_specs = [
-            s for s in registry.specs
-            if s.model_type == "image" and s.resident and s.id not in reconnected
-        ]
-        # Persist task refs so 3.11+ doesn't garbage-collect a still-running
-        # background coroutine and silently drop the load.
-        app.state._image_preload_tasks = [
-            asyncio.create_task(_preload_image_model(s.id)) for s in image_specs
-        ]
-        if image_specs:
-            logger.info(
-                "Started background preload for %d resident image model(s): %s",
-                len(image_specs), [s.id for s in image_specs],
-            )
+        # Persist the task ref so 3.11+ doesn't garbage-collect a still-running
+        # background coroutine and silently drop the preload.
+        app.state._resident_preload_task = asyncio.create_task(
+            model_mgr.preload_residents(on_loaded=_on_resident_loaded)
+        )
 
         # Start idle model checker background task
         async def idle_checker():
@@ -479,9 +458,24 @@ def create_app() -> FastAPI:
         gpus = get_gpu_stats()
         checks["gpus"] = len(gpus)
 
-        # Loaded models
+        # Loaded models + resident-preload failures (spec 4.3). A non-empty
+        # load_failures dict means at least one resident model failed to
+        # preload — the Dashboard renders a degraded banner + Retry from this.
         mgr = getattr(app.state, "model_manager", None)
         checks["models_loaded"] = len(mgr.loaded_model_ids) if mgr else 0
+        load_failures = dict(mgr._load_failures) if mgr else {}
+        checks["load_failures"] = load_failures
+        if load_failures:
+            checks["status"] = "degraded"
+
+        # Per-runner state (spec 4.2). runner_supervisors is populated by the
+        # scheduler/Lane A integration; until then it's unset and runners is
+        # []. A runner that isn't running (crashed / mid-restart) degrades.
+        supervisors = getattr(app.state, "runner_supervisors", [])
+        runners = [s.health_snapshot() for s in supervisors]
+        checks["runners"] = runners
+        if any(not r.get("running", False) for r in runners):
+            checks["status"] = "degraded"
 
         return checks
     app.include_router(understand.router)

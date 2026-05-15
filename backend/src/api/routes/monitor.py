@@ -313,6 +313,17 @@ async def kill_gpu_process(req: KillProcessRequest, request: Request):
         )
 
 
+@router.get("/runners")
+async def list_runners(request: Request) -> dict:
+    """Per-runner 状态，给前端 TaskPanel 的 Buildkite 风 runner 泳道用。
+
+    数据源 = RunnerSupervisor.health_snapshot()（Lane H Task 4）。
+    runner_supervisors 由 scheduler / Lane A 接入填充；未接入时返回空列表。
+    """
+    supervisors = getattr(request.app.state, "runner_supervisors", [])
+    return {"runners": [s.health_snapshot() for s in supervisors]}
+
+
 @router.get("/usage/summary")
 async def usage_summary():
     """Get aggregated usage stats for dashboard."""

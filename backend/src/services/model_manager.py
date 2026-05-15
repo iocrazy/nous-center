@@ -4,7 +4,7 @@ import asyncio
 import importlib
 import logging
 import time
-from typing import Callable
+from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -516,6 +516,58 @@ class ModelManager:
                     seen.add(model_key)
                     deps.append({"key": model_key, "type": spec.model_type})
         return deps
+
+    async def preload_residents(
+        self,
+        on_loaded: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        """Startup preload of resident models, ordered by `preload_order` (spec 4.2).
+
+        遍历 registry 里所有 `resident:true` 的 spec，按 `preload_order` 升序
+        load。`preload_order` 为 None 的排在最后（保持 registry 的 FIFO 顺序）。
+
+        **Fail-soft（spec 4.3）**：单个模型 `load_model` 抛任何异常 → 把原因写进
+        `_load_failures[model_id]` + 继续下一个模型，**绝不向上抛**。这样某个
+        resident 模型 OOM / 文件损坏不会阻断 API server 启动，也不会阻断后面
+        其它 resident 模型的 preload。失败的模型在 `/health` 的 `load_failures`
+        里可见，Dashboard 据此显示 degraded banner + Retry。
+
+        Parameters
+        ----------
+        on_loaded:
+            可选回调，每个模型成功 load 后以 `model_id` 调用一次。`main.py` 用它
+            做「invalidate engines/models cache + 推 ws/models 事件」。回调本身
+            抛异常会被吞掉（best-effort，不影响 preload 流程）。
+
+        LLM 类模型不在此处 preload —— vLLM 的 spawn / health 是 LLM Runner 的
+        职责（spec 4.2），走另一条路。本方法只处理 image / tts 等进 image/TTS
+        runner 的 resident 模型。
+        """
+        residents = [s for s in self._registry.specs if s.resident and s.model_type != "llm"]
+        # 升序 key：preload_order 有值的在前（按值升序），None 的统一排到最后。
+        # (0, order) < (1, 0) 保证所有 None 都在所有有值的之后。
+        residents.sort(
+            key=lambda s: (1, 0) if s.preload_order is None else (0, s.preload_order)
+        )
+        if residents:
+            logger.info(
+                "Preloading %d resident model(s) in order: %s",
+                len(residents), [s.id for s in residents],
+            )
+        for spec in residents:
+            try:
+                await self.load_model(spec.id)
+            except Exception as e:  # noqa: BLE001 — fail-soft is the whole point
+                detail = f"{type(e).__name__}: {e}"
+                self._load_failures[spec.id] = detail
+                logger.warning("Resident preload failed for %s: %s", spec.id, detail)
+                continue
+            logger.info("Resident preload succeeded: %s", spec.id)
+            if on_loaded is not None:
+                try:
+                    await on_loaded(spec.id)
+                except Exception:  # noqa: BLE001 — callback is best-effort
+                    logger.exception("preload_residents on_loaded callback failed for %s", spec.id)
 
     async def check_idle_models(self) -> None:
         """Unload models that have been idle too long with no references."""

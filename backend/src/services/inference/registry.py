@@ -25,6 +25,7 @@ class ModelSpec(BaseModel):
     resident: bool = False
     ttl_seconds: int = 300
     gpu: int | list[int] | None = None
+    preload_order: int | None = None
 
     model_config = ConfigDict(frozen=True)
 
@@ -66,6 +67,7 @@ class ModelRegistry:
                 resident=entry.get("resident", False),
                 ttl_seconds=entry.get("ttl_seconds", 3600 if entry["type"] == "llm" else 300),
                 gpu=entry.get("gpu"),
+                preload_order=entry.get("preload_order"),
             )
             self._specs[spec.id] = spec
             logger.debug("Loaded model spec: %s (%s)", spec.id, spec.model_type)
@@ -116,6 +118,7 @@ class ModelRegistry:
             resident=cfg.get("resident", False),
             ttl_seconds=cfg.get("ttl_seconds", 3600 if cfg.get("type") == "llm" else 300),
             gpu=cfg.get("gpu"),
+            preload_order=cfg.get("preload_order"),
         )
         self._specs[spec.id] = spec
         logger.info(
