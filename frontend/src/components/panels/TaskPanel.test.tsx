@@ -52,9 +52,6 @@ function withQuery(ui: React.ReactNode) {
   return <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
 }
 
-// Suppress unused-import warning until later tasks use fireEvent.
-void fireEvent
-
 describe('TaskPanel — Buildkite-style structure (DD3)', () => {
   beforeEach(() => {
     runnersData = mockRunners
@@ -140,5 +137,40 @@ describe('TaskPanel — runner abnormal states (DD5)', () => {
     expect(screen.getByText(/qwen3-35b OOM/)).toBeTruthy()
     const retry = screen.getByRole('button', { name: '重试加载' })
     expect(retry.tagName).toBe('BUTTON')
+  })
+})
+
+describe('TaskPanel — queue position expand (DD8)', () => {
+  beforeEach(() => {
+    window.innerWidth = 1280
+    runnersData = [
+      {
+        id: 'runner-i', label: 'Runner-I', role: 'image', state: 'busy',
+        current_task: { task_id: 'cur', workflow_name: 'cur-wf', progress: 0.3, detail: null },
+        queue: [
+          { task_id: 'q1', workflow_name: 'sd-背景', position: 1 },
+          { task_id: 'q2', workflow_name: 'flux-头像', position: 2 },
+        ],
+        restart_attempt: null, load_error: null, gpus: [0],
+      },
+    ]
+  })
+
+  it('queue toggle is a real button with aria-expanded, collapsed by default', () => {
+    render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
+    const toggle = screen.getByRole('button', { name: /排队 2/ })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('sd-背景')).toBeNull()
+  })
+
+  it('clicking the toggle expands an ordered list with #position numbers', () => {
+    render(withQuery(<TaskPanel open={true} onClose={() => {}} />))
+    const toggle = screen.getByRole('button', { name: /排队 2/ })
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('sd-背景')).toBeTruthy()
+    expect(screen.getByText('flux-头像')).toBeTruthy()
+    expect(screen.getByText('#1')).toBeTruthy()
+    expect(screen.getByText('#2')).toBeTruthy()
   })
 })

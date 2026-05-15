@@ -271,11 +271,83 @@ function RunnerLane({ runner }: { runner: RunnerInfo }) {
         </div>
       )}
 
-      {/* 排队数 —— Task 10 替换为可展开的 QueueExpand。 */}
-      {runner.queue.length > 0 && (
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
-          排队 {runner.queue.length}
-        </div>
+      {runner.queue.length > 0 && <QueueExpand queue={runner.queue} />}
+    </div>
+  )
+}
+
+function QueueExpand({ queue }: { queue: RunnerInfo['queue'] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div style={{ marginTop: 8 }}>
+      {/* a11y：折叠 toggle 用真 button + aria-expanded（spec §6.6）。 */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          padding: '2px 6px',
+          fontSize: 11,
+          color: 'var(--muted)',
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+        }}
+      >
+        排队 {queue.length}
+        <span aria-hidden="true" style={{ fontSize: 9 }}>
+          {open ? '▾' : '▸'}
+        </span>
+      </button>
+      {open && (
+        <ol
+          style={{
+            listStyle: 'none',
+            margin: '6px 0 0',
+            padding: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+          }}
+        >
+          {queue.map((item) => (
+            <li
+              key={item.task_id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 11,
+                color: 'var(--text)',
+                padding: '3px 6px',
+                background: 'var(--bg-accent)',
+                borderRadius: 3,
+              }}
+            >
+              <span
+                style={{
+                  color: 'var(--muted)',
+                  fontVariantNumeric: 'tabular-nums',
+                  minWidth: 22,
+                }}
+              >
+                #{item.position}
+              </span>
+              <span
+                style={{
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {item.workflow_name}
+              </span>
+            </li>
+          ))}
+        </ol>
       )}
     </div>
   )
