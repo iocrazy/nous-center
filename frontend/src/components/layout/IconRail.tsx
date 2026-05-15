@@ -17,7 +17,6 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
 import { useThemeStore } from '../../stores/theme'
 import { useExecutionStore } from '../../stores/execution'
-import { useTasks } from '../../api/tasks'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
 
 // v3 IA: 8 main navs (Dashboard / Services / Workflow / Engines / API Key /
@@ -239,6 +238,7 @@ function RailButton({
   return (
     <button
       onClick={onClick}
+      aria-label={label}
       className="group relative flex items-center justify-center mb-0.5"
       style={{
         width: 36,
@@ -287,17 +287,22 @@ function RailButton({
 }
 
 function TaskRailButton() {
-  const { taskPanelOpen, toggleTaskPanel } = useExecutionStore()
-  const { data: tasks } = useTasks()
-  const runningCount = tasks?.filter((t) => t.status === 'running').length ?? 0
+  const { taskPanelOpen, toggleTaskPanel, taskIconBadge, clearTaskBadge } = useExecutionStore()
+
+  const handleClick = () => {
+    // 打开面板即视为「已查看」—— 清掉未查看计数（spec §6.3 DD4）。
+    if (!taskPanelOpen) clearTaskBadge()
+    toggleTaskPanel()
+  }
 
   return (
     <div className="relative">
-      <RailButton active={taskPanelOpen} onClick={toggleTaskPanel} label="Tasks">
+      <RailButton active={taskPanelOpen} onClick={handleClick} label="Tasks">
         <ListTodo size={18} />
       </RailButton>
-      {runningCount > 0 && (
+      {taskIconBadge > 0 && (
         <span
+          aria-label={`${taskIconBadge} 个新任务`}
           className="absolute pointer-events-none"
           style={{
             top: 2,
@@ -315,7 +320,7 @@ function TaskRailButton() {
             padding: '0 3px',
           }}
         >
-          {runningCount}
+          {taskIconBadge}
         </span>
       )}
     </div>

@@ -13,6 +13,7 @@ import { useToastStore } from './stores/toast'
 import { useAdminMe } from './api/admin'
 import Login from './pages/Login'
 import { loadPluginDefinitions } from './models/nodeRegistry'
+import { useTaskCompletionNotifier } from './hooks/useTaskCompletionNotifier'
 
 const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/models': 'models',
@@ -91,6 +92,8 @@ function WorkflowRouteLoader() {
 function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
   const activeOverlay = usePanelStore((s) => s.activeOverlay)
   const isWorkflowView = !activeOverlay
+  // 全局监听任务终态翻转，发完成/失败通知（spec §6.3 DD6）。
+  useTaskCompletionNotifier()
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>

@@ -8,17 +8,18 @@ import { useExecutionStore } from '../../stores/execution'
 import { executeWorkflow } from '../../utils/workflowExecutor'
 import { useToastStore } from '../../stores/toast'
 import { useUnpublishWorkflow } from '../../api/workflows'
+import { useNotificationStore } from '../../stores/notifications'
 
 export default function Topbar() {
   const { tabs, activeTabId } = useWorkspaceStore()
   const getActiveWorkflow = useWorkspaceStore((s) => s.getActiveWorkflow)
   const setWorkflow = useWorkspaceStore((s) => s.setWorkflow)
-  const updateNode = useWorkspaceStore((s) => s.updateNode)
   const { activeOverlay } = usePanelStore()
   const navigate = useNavigate()
-  const { isRunning, progress, currentNodeType, start, succeed, fail, resetNodeStates } = useExecutionStore()
+  const { isRunning, progress, currentNodeType, start, succeed, fail, resetNodeStates, bumpTaskBadge } = useExecutionStore()
   const toast = useToastStore((s) => s.add)
   const unpublishWf = useUnpublishWorkflow()
+  const requestNotifyPermission = useNotificationStore((s) => s.requestPermission)
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const isPublished = activeTab?.workflow?.status === 'published'
@@ -41,32 +42,27 @@ export default function Topbar() {
 
   const handleRun = async () => {
     if (isRunning) return
+    // spec §6.6：浏览器通知权限「首次询问」—— 在用户首次点 Run 时问
+    // （比页面加载时弹更得体）。requestPermission 内部幂等：已问过就直接读快照。
+    void requestNotifyPermission()
     const workflow = getActiveWorkflow()
     start()
 
     try {
+      // Lane S（D17）：executeWorkflow 入队后立即返回 { task_id }，不再阻塞到完成。
+      // 反馈 UX（spec §6.3 DD4）：toast「已入队」+ IconRail badge 计数 +
+      // 面板【不】自动打开（用户点 IconRail 任务图标进面板）。
       const result = await executeWorkflow(workflow)
-      succeed(result)
-      toast('生成完成', 'success')
-
-      // Update output node with result
-      const outputNode = workflow.nodes.find((n) => n.type === 'output')
-      if (outputNode) {
-        updateNode(outputNode.id, {
-          audioBase64: result.audioBase64,
-          sampleRate: result.sampleRate,
-          duration: result.duration,
-        })
-      }
-
-      // Keep final states visible, then reset
-      setTimeout(() => resetNodeStates(), 3000)
+      const taskId = (result as { task_id?: string })?.task_id
+      bumpTaskBadge()
+      toast(taskId ? `任务已入队 · ${taskId}` : '任务已入队', 'info')
+      // 入队即结束「本次 Run」的 UI busy 态 —— 后续进度由 TaskPanel 泳道接管。
+      succeed(null)
+      resetNodeStates()
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       fail(msg)
       toast(msg, 'error')
-
-      // Keep error states visible, then reset
       setTimeout(() => resetNodeStates(), 5000)
     }
   }
