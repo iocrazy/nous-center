@@ -1,0 +1,20 @@
+# Lane F: runner TTS 测试用最小 models.yaml fixture。
+# 两个 fake TTS 模型 —— adapter_class 指向 FakeTTSAdapter，无真权重。
+# vram_mb: 0 + gpu: 未设 → ModelManager.load_model 会选 device="cpu"，
+# 不碰 GPU 分配器（FakeTTSAdapter.load_sync 不读 device）。
+models:
+  - id: fake-tts-a
+    type: tts
+    adapter: src.runner.fake_tts_adapter.FakeTTSAdapter
+    paths:
+      main: /fake/fake-tts-a
+    vram_mb: 0
+    resident: false
+
+  - id: fake-tts-b
+    type: tts
+    adapter: src.runner.fake_tts_adapter.FakeTTSAdapter
+    paths:
+      main: /fake/fake-tts-b
+    vram_mb: 0
+    resident: false

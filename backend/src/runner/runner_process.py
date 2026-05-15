@@ -50,6 +50,10 @@ class _RunnerState:
         self.run_queue: asyncio.Queue[P.RunNode] = asyncio.Queue()
         # task_id -> cancel flag（pipe-reader 收 Abort 时 set）
         self.cancel_flags: dict[int, threading.Event] = {}
+        # task_id 收到 Abort 但 RunNode 尚未到达 —— RunNode 到达时把这个标记翻成
+        # 立即置位的 cancel_flag。覆盖「先 Abort 后 RunNode」 / 「RunNode 还在
+        # pipe-reader 队列里就收到 Abort」两种节点边界 cancel 时序（spec §4.4）。
+        self.pending_aborts: set[int] = set()
         self.shutdown = asyncio.Event()
 
 
@@ -112,12 +116,22 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
             continue
 
         if isinstance(msg, P.RunNode):
-            state.cancel_flags[msg.task_id] = threading.Event()
+            flag = threading.Event()
+            # 先 Abort 后 RunNode（或 Abort 紧跟 RunNode 但还没 race 完）：
+            # pending_aborts 里有同 task_id → 立即置位 flag，让 node-executor
+            # 在 dispatch 前 boundary check 直接判 cancelled（spec §4.4）。
+            if msg.task_id in state.pending_aborts:
+                flag.set()
+                state.pending_aborts.discard(msg.task_id)
+            state.cancel_flags[msg.task_id] = flag
             state.run_queue.put_nowait(msg)
         elif isinstance(msg, P.Abort):
             flag = state.cancel_flags.get(msg.task_id)
             if flag is not None:
                 flag.set()  # node-executor 的 adapter 下一 step 边界看到
+            else:
+                # Abort 先到 / RunNode 还没到 —— 记下，RunNode 到了再合并
+                state.pending_aborts.add(msg.task_id)
         elif isinstance(msg, P.LoadModel):
             await _handle_load_model(state, ch, msg)
         elif isinstance(msg, P.UnloadModel):
@@ -128,6 +142,34 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
                 loaded_models=list(state.mm.loaded_model_ids),
             ))
         # 其余消息类型（runner→主进程方向的）不应收到，忽略
+
+
+def _build_request(node: P.RunNode):
+    """按 node_type 构造 typed InferenceRequest。
+
+    spec §3.3：RunNode.node_type 仅 "image" / "tts"。image 走 ImageRequest
+    （within-node cancel，progress callback per step）；tts 走 AudioRequest
+    （spec §4.4：boundary-cancel only，infer(req) 不接 progress/cancel kwargs）。
+    未知 node_type 抛 ValueError —— node-executor 转成 NodeResult status=failed。
+    """
+    from src.services.inference.base import AudioRequest, ImageRequest
+
+    if node.node_type == "image":
+        return ImageRequest(
+            request_id=f"task-{node.task_id}",
+            prompt=str(node.inputs.get("prompt", "")),
+            negative_prompt=str(node.inputs.get("negative_prompt", "")),
+            steps=int(node.inputs.get("steps", 1) or 1),
+        )
+    if node.node_type == "tts":
+        return AudioRequest(
+            request_id=f"task-{node.task_id}",
+            text=str(node.inputs.get("text", "")),
+            voice=str(node.inputs.get("voice", "default")),
+            speed=float(node.inputs.get("speed", 1.0) or 1.0),
+            sample_rate=int(node.inputs.get("sample_rate", 24000) or 24000),
+        )
+    raise ValueError(f"unsupported node_type {node.node_type!r} (expected image / tts)")
 
 
 async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
@@ -179,25 +221,39 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             progress_tasks.append(t)
 
         try:
-            from src.services.inference.base import ImageRequest
-
-            req = ImageRequest(
-                request_id=f"task-{node.task_id}",
-                prompt=str(node.inputs.get("prompt", "")),
-                steps=int(node.inputs.get("steps", 1) or 1),
-            )
-            # 真 image adapter 的 infer(req) 不接 progress_callback / cancel_flag
-            # —— 那是 Lane G（D14）给真 adapter 接 callback_on_step_end 的活。
-            # FakeAdapter 接受这俩 kwarg。用 signature 探测：支持就传（fake 路径
-            # 拿到 within-node progress + cancel），不支持就只传 req（真 adapter
-            # 路径 = 节点边界 cancel，within-node 留 Lane G）。
-            infer_params = inspect.signature(adapter.infer).parameters
-            infer_kwargs: dict = {}
-            if "progress_callback" in infer_params:
-                infer_kwargs["progress_callback"] = _on_progress
-            if "cancel_flag" in infer_params:
-                infer_kwargs["cancel_flag"] = cancel_flag
-            result = await adapter.infer(req, **infer_kwargs)
+            req = _build_request(node)
+            if node.node_type == "tts":
+                # spec §4.4：TTS = boundary-cancel only。TTSEngine.infer(req)
+                # 签名只收 req —— 不传 progress_callback / cancel_flag。节点边界
+                # 的 cancel 由 pipe-reader 在 dispatch 前置位的 cancel_flag +
+                # 下面的 boundary check 覆盖（含 Abort-before-RunNode）。
+                if cancel_flag.is_set():
+                    raise asyncio.CancelledError()
+                result = await adapter.infer(req)
+            else:
+                # image：用 signature 探测决定是否传 progress_callback / cancel_flag。
+                # FakeAdapter 接受这俩 kwarg；真 image adapter 由 Lane G/D14 接
+                # callback_on_step_end + CancelFlag。
+                infer_params = inspect.signature(adapter.infer).parameters
+                infer_kwargs: dict = {}
+                if "progress_callback" in infer_params:
+                    infer_kwargs["progress_callback"] = _on_progress
+                if "cancel_flag" in infer_params:
+                    infer_kwargs["cancel_flag"] = cancel_flag
+                result = await adapter.infer(req, **infer_kwargs)
+        except ValueError as e:
+            # 未知 node_type —— _build_request 抛 ValueError。明确判 failed，
+            # 不崩 runner。注意：必须放在泛 except Exception 之前，否则被吞掉、
+            # 错误信息里就没有 "node_type" 字样。
+            if progress_tasks:
+                await asyncio.gather(*progress_tasks, return_exceptions=True)
+            await ch.send_message(P.NodeResult(
+                task_id=node.task_id, node_id=node.node_id, status="failed",
+                outputs=None, error=str(e),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            ))
+            state.cancel_flags.pop(node.task_id, None)
+            continue
         except asyncio.CancelledError:
             # 先排空 progress 发送，保证 cancelled NodeResult 在最后
             if progress_tasks:
