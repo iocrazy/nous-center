@@ -31,8 +31,38 @@ from src.services.inference.base import (
     MediaModality,
     UsageMeter,
 )
+from src.services.inference.cancel_flag import CancelFlag
+from src.services.inference.exceptions import NodeCancelled, NodeTimeout
 
 logger = logging.getLogger(__name__)
+
+
+# --- within-node cancel (V1.5 Lane G / D14) --------------------------------
+#
+# spec §4.4 的关键机制：diffusers 的 callback_on_step_end 在 to_thread 工作
+# 线程里、每个采样步之间被 invoke。它是唯一能让 cancel/timeout 信号穿过
+# to_thread 边界、真正停掉 CUDA kernel 的钩子 —— asyncio.wait_for 单独用不行，
+# 它取消的是 awaiting，to_thread 里的 CUDA kernel 照跑。
+#
+# _make_step_callback 是闭包工厂：每次 sample()/infer() 调用绑定一个**当次**的
+# CancelFlag（不能模块级共享 —— spec §4.4 伪代码的模块级 cancel_flag 是简写）。
+
+
+def _make_step_callback(cancel_flag: CancelFlag | None):
+    """构造一个 diffusers callback_on_step_end 回调。
+
+    diffusers 0.38 的回调签名: (pipe, step, timestep, callback_kwargs) -> dict。
+    每个采样步之间被 invoke 一次。cancel_flag 为 None 时回调是 no-op（V1
+    直调兼容路径，无取消能力）。
+    """
+
+    def _on_step_end(pipe, step, timestep, callback_kwargs):
+        if cancel_flag is not None and cancel_flag.is_set():
+            # 抛出会中断 diffusers 的扩散循环 → 停掉后续 CUDA kernel launch。
+            raise NodeCancelled(cancel_flag.reason or "cancelled")
+        return callback_kwargs
+
+    return _on_step_end
 
 
 # --- module-level helpers (V1' P2) -----------------------------------------
@@ -186,9 +216,14 @@ def sample(
     num_inference_steps: int,
     guidance_scale: float,
     generator: Any | None = None,
+    cancel_flag: CancelFlag | None = None,
     **kwargs: Any,
 ) -> Any:
     """Run the denoising loop and return an unpacked LATENT tensor (B,C,H,W).
+
+    V1.5 Lane G: 接 diffusers callback_on_step_end —— 每采样步 check
+    cancel_flag，命中则抛 NodeCancelled 中断扩散循环（停 CUDA kernel）。
+    cancel_flag=None 时回调是 no-op，行为与 V1 一致。
 
     Implementation note: rather than copy diffusers' ~80-line denoising loop
     we ride pipe.__call__(output_type="latent"). That keeps us shielded from
@@ -213,6 +248,7 @@ def sample(
         generator=generator,
         output_type="latent",
         return_dict=False,
+        callback_on_step_end=_make_step_callback(cancel_flag),
         **kwargs,
     )
     packed = out[0] if isinstance(out, tuple) else out
@@ -558,7 +594,19 @@ class DiffusersImageBackend(InferenceAdapter):
         if was_offloaded and self._offload_strategy == "single_card_offload":
             self._pipe.enable_model_cpu_offload(gpu_id=self._gpu_index())
 
-    async def infer(self, req: InferenceRequest) -> InferenceResult:
+    async def infer(
+        self, req: InferenceRequest, cancel_flag: CancelFlag | None = None
+    ) -> InferenceResult:
+        """Run image generation.
+
+        V1.5 Lane G: 采样跑在 asyncio.to_thread 里，外面包 asyncio.wait_for
+        做超时；cancel_flag（runner pipe-reader 收 Abort 时 set）与超时分支
+        共用同一个 flag —— callback_on_step_end 在采样步之间 check 它，命中
+        就抛 NodeCancelled 停 CUDA kernel。
+
+        cancel_flag=None 时内部自建一个（V1 直调路径无外部取消源，但超时
+        路径仍需要一个 flag 来中断在飞的采样线程）。
+        """
         if not isinstance(req, ImageRequest):
             raise TypeError(
                 f"DiffusersImageBackend expects ImageRequest, got {type(req).__name__}"
@@ -570,6 +618,10 @@ class DiffusersImageBackend(InferenceAdapter):
         import secrets
 
         import torch
+
+        # 外部没传 flag（V1 直调）时内部自建 —— 超时分支也要靠它中断采样线程。
+        if cancel_flag is None:
+            cancel_flag = CancelFlag()
 
         self._apply_loras(req.loras)
 
@@ -593,9 +645,27 @@ class DiffusersImageBackend(InferenceAdapter):
         }
         accepted = set(inspect.signature(self._pipe.__call__).parameters.keys())
         call_kwargs = {k: v for k, v in candidate_kwargs.items() if k in accepted}
+        # diffusers 支持 callback_on_step_end 的 pipeline 才挂回调；fake / 老
+        # pipeline 不声明该参数时跳过（within-node cancel 退化为边界 cancel）。
+        if "callback_on_step_end" in accepted:
+            call_kwargs["callback_on_step_end"] = _make_step_callback(cancel_flag)
+
+        def _run_pipe():
+            return self._pipe(**call_kwargs)
 
         t0 = time.monotonic()
-        out = self._pipe(**call_kwargs)
+        try:
+            if req.timeout_s is not None:
+                out = await asyncio.wait_for(
+                    asyncio.to_thread(_run_pipe), timeout=req.timeout_s
+                )
+            else:
+                out = await asyncio.to_thread(_run_pipe)
+        except asyncio.TimeoutError:
+            # wait_for 取消的是 awaiting；to_thread 里的采样线程还在跑 CUDA。
+            # set flag → callback 在下一采样步抛 NodeCancelled → 线程自行退出。
+            cancel_flag.set("node timeout")
+            raise NodeTimeout(req.timeout_s)
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         image = out.images[0]
