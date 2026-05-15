@@ -1,3 +1,13 @@
+# Model registry. Each entry: {id, type, adapter, paths, vram_mb, ...}.
+#
+# resident: bool        — true → never auto-unloaded by the idle checker;
+#                         preloaded at startup (see preload_order).
+# preload_order: int    — startup preload priority, ASCENDING (lower loads
+#                         first). Only meaningful when resident: true.
+#                         Omit → preloaded last, after all ordered entries.
+#                         preload is fail-soft: one model's failure records
+#                         into _load_failures (surfaced on /health) and does
+#                         NOT block API server startup. See spec 4.2/4.3.
 models:
 - adapter: src.workers.tts_engines.cosyvoice2.CosyVoice2Engine
   id: cosyvoice2
