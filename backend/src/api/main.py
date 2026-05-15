@@ -317,7 +317,7 @@ async def lifespan(app: FastAPI):
                     logger.warning("Idle model check failed: %s", e)
 
         asyncio.create_task(idle_checker())
-        asyncio.create_task(memory_guard_loop(reserved_gb=4.0))
+        asyncio.create_task(memory_guard_loop(model_mgr, reserved_gb=4.0))
 
         async def log_cleanup_loop():
             while True:

@@ -77,62 +77,30 @@ def get_gpu_stats() -> list[dict]:
     return poll_gpu_stats()
 
 
-async def check_and_evict(reserved_gb: float = DEFAULT_RESERVED_GB) -> None:
-    """Check GPU memory and evict LRU models if free memory is below threshold."""
-    from src.services import model_scheduler
-    from src.config import load_model_configs
+async def check_and_evict(model_manager, reserved_gb: float = DEFAULT_RESERVED_GB) -> None:
+    """检查 GPU 显存，低于阈值时让 model_manager 驱逐该 GPU 上的 LRU 模型。
 
+    model_manager: services.model_manager.ModelManager 实例（evict_lru 内部已处理
+    resident / referenced 跳过 + last_used 排序 + force unload）。
+    """
     stats = poll_gpu_stats()
-    configs = load_model_configs()
-
     for gpu in stats:
         free_gb = gpu["free_mb"] / 1024
         if free_gb < reserved_gb:
             logger.debug(
-                "GPU %d low memory: %.1fGB free (threshold: %.1fGB). Checking for eviction...",
-                gpu["index"],
-                free_gb,
-                reserved_gb,
+                "GPU %d low memory: %.1fGB free (threshold: %.1fGB). Evicting LRU...",
+                gpu["index"], free_gb, reserved_gb,
             )
-
-            # Find loaded models on this GPU, sorted by last_used (oldest first)
-            candidates = []
-            async with model_scheduler._lock:
-                for model_key in model_scheduler.get_loaded_keys():
-                    cfg = configs.get(model_key, {})
-                    model_gpu = cfg.get("gpu", -1)
-                    if isinstance(model_gpu, list):
-                        on_this_gpu = gpu["index"] in model_gpu
-                    else:
-                        on_this_gpu = model_gpu == gpu["index"]
-
-                    if not on_this_gpu:
-                        continue
-                    if cfg.get("resident", False):
-                        continue  # Don't evict resident models
-                    if model_scheduler._references.get(model_key):
-                        continue  # Don't evict referenced models
-
-                    last_used = model_scheduler._last_used.get(model_key, 0)
-                    candidates.append((model_key, last_used))
-
-            # Sort by last_used ascending (oldest first)
-            candidates.sort(key=lambda x: x[1])
-
-            # Evict oldest
-            for model_key, _ in candidates:
-                logger.info(
-                    "Auto-evicting model %s from GPU %d", model_key, gpu["index"]
-                )
-                await model_scheduler.unload_model(model_key, force=True)
-                break  # Evict one at a time, re-check next cycle
+            evicted = await model_manager.evict_lru(gpu_index=gpu["index"])
+            if evicted:
+                logger.info("Auto-evicted model %s from GPU %d", evicted, gpu["index"])
 
 
-async def memory_guard_loop(reserved_gb: float = DEFAULT_RESERVED_GB) -> None:
-    """Background loop: check GPU memory every POLL_INTERVAL_SECONDS."""
+async def memory_guard_loop(model_manager, reserved_gb: float = DEFAULT_RESERVED_GB) -> None:
+    """后台 loop：每 POLL_INTERVAL_SECONDS 检查一次 GPU 显存。"""
     while True:
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
         try:
-            await check_and_evict(reserved_gb)
+            await check_and_evict(model_manager, reserved_gb)
         except Exception as e:
             logger.warning("GPU memory guard failed: %s", e)
