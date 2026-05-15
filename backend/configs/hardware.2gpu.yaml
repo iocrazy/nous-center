@@ -1,0 +1,21 @@
+# hardware.2gpu.yaml — 参考样板（只读，代码不加载此文件）
+#
+# 当前部署：2×3090 NVLink 配对（spec §1.4 方案 A）。
+# Pro 6000 未到货，image/TTS 节点与 LLM 时分复用同一 group 队列。
+#
+# 生效方式：把本文件内容同步到 configs/hardware.yaml（代码只加载 hardware.yaml）。
+#
+# 字段语义：
+#   id       group 唯一标识，runner / scheduler 用它寻址
+#   gpus     该 group 占用的 GPU index 列表（cuda:N 的 N）
+#   nvlink   组内 GPU 是否 NVLink 互联；vLLM tensor-parallel 模型强约束 nvlink:true
+#   role     image / llm / tts —— 节点按 role 找 group
+#   vram_gb  整个 group 的合计 VRAM（多卡 group = 各卡之和），不是单卡值
+#
+# V1.5 不解析 nvidia-smi topo -m，拓扑全靠本文件手写。
+groups:
+  - id: llm-tp
+    gpus: [0, 1]
+    nvlink: true
+    role: llm            # image/TTS 节点也落此 group，与 LLM 时分复用
+    vram_gb: 48
