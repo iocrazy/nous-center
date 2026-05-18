@@ -37,12 +37,16 @@ async def run_workflow_task(
     task_id: int,
     workflow_data: dict,
     runner_client: Any = None,
+    runner_clients: dict | None = None,
     channel_id: str | None = None,
 ) -> None:
     """后台执行一个 workflow，把终态写回 ExecutionTask。
 
     本函数不抛出 —— 所有异常都落到 task.status=failed + task.error。调用方
     （create_task）拿不到也不该拿返回值。
+
+    Lane K: runner_clients (dict) 是多 group 入口,routes 从 app.state 取后
+    传进来。runner_client (单数) 为兼容旧测试 / inline-only 老路径保留。
     """
     start = time.monotonic()
     nodes = workflow_data.get("nodes", [])
@@ -54,6 +58,7 @@ async def run_workflow_task(
         workflow_data,
         on_progress=on_progress if channel_id else None,
         runner_client=runner_client,
+        runner_clients=runner_clients,
     )
 
     session_factory = create_session_factory()

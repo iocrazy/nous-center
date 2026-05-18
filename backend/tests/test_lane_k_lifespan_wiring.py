@@ -12,9 +12,6 @@ instantiate 它们 —— smoke 实测 `app.state.runner_supervisors` 全仓零 
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
 
@@ -81,22 +78,18 @@ async def test_lifespan_populates_runner_supervisors_clients_and_llm_runner(monk
         return None
     monkeypatch.setattr(_sup_mod.RunnerSupervisor, "_watchdog", _noop_watchdog)
 
-    # Build app + drive lifespan via the same ASGITransport pattern as other tests.
-    from src.api.main import create_app
-    from httpx import ASGITransport, AsyncClient
+    # Build app + drive lifespan manually. ASGITransport does NOT trigger lifespan,
+    # so we open the lifespan context directly (Starlette's lifespan is an
+    # @asynccontextmanager).
+    from src.api.main import create_app, lifespan as _lifespan
 
     app = create_app()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 触发 lifespan startup —— 随便发一个请求让 ASGI 走 startup hook。
-        resp = await client.get("/healthz")
-        assert resp.status_code == 200
-
+    async with _lifespan(app):
         # ---- 主断言 ----
         supervisors = getattr(app.state, "runner_supervisors", None)
         assert supervisors is not None, \
             "Lane K should populate app.state.runner_supervisors during lifespan"
-        # 2 个非 llm group：image + tts。
+        # 2 个非 llm group:image + tts。
         sup_groups = sorted(s.group_id for s in supervisors)
         assert sup_groups == ["image", "tts"], \
             f"expected supervisors for image+tts only, got {sup_groups}"
@@ -107,7 +100,7 @@ async def test_lifespan_populates_runner_supervisors_clients_and_llm_runner(monk
         assert set(clients.keys()) == {"image", "tts"}, \
             f"expected runner_clients keyed image+tts, got {set(clients.keys())}"
 
-        # LLMRunner —— 单个对象（spec §4.1：每个 role:llm group 一个）。
+        # LLMRunner —— 单个对象（spec §4.1:每个 role:llm group 一个）。
         llm = getattr(app.state, "llm_runner", None)
         assert llm is not None, \
             "Lane K should populate app.state.llm_runner for the role:llm group"
@@ -127,19 +120,14 @@ async def test_lifespan_skips_runner_spawn_by_default():
     """
     # 不动 env vars —— 默认 conftest.py 已经 setdefault NOUS_DISABLE_BG_TASKS=1，
     # 这条 path 应该跳过整个 runner spawn 块。
-    from src.api.main import create_app
-    from httpx import ASGITransport, AsyncClient
+    from src.api.main import create_app, lifespan as _lifespan
 
     app = create_app()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/healthz")
-        assert resp.status_code == 200
-
-    supervisors = getattr(app.state, "runner_supervisors", None)
-    # 允许 None（未设置）或空 list —— 关键是不能有真 supervisor。
-    assert not supervisors, \
-        f"runner_supervisors should be empty by default, got {supervisors}"
+    async with _lifespan(app):
+        supervisors = getattr(app.state, "runner_supervisors", None)
+        # 允许 None（未设置）或空 list —— 关键是不能有真 supervisor。
+        assert not supervisors, \
+            f"runner_supervisors should be empty by default, got {supervisors}"
 
 
 @pytest.mark.asyncio

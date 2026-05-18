@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 _model_manager: ModelManager | None = None
 _on_progress_ref = None
 
+# Lane K: dispatch 节点 → runner group_id 路由表。group_id 约定与
+# hardware.yaml 的 role 名一致(image/tts/llm)。新增 GPU 节点必须在此登记。
+# 与 src.services.node_routing.DISPATCH_NODE_TYPES 配对维护。
+_NODE_TYPE_TO_GROUP_ID: dict[str, str] = {
+    "image_generate": "image",
+    "tts_engine": "tts",
+}
+
 
 def set_model_manager(mgr: ModelManager) -> None:
     global _model_manager
@@ -47,7 +55,8 @@ class ExecutionError(Exception):
 class WorkflowExecutor:
     """Execute a workflow DAG (topological sort + per-node execution)."""
 
-    def __init__(self, workflow: dict, on_progress=None, runner_client=None):
+    def __init__(self, workflow: dict, on_progress=None, runner_client=None,
+                 runner_clients: dict | None = None):
         self.nodes: list[dict] = workflow.get("nodes", [])
         self.edges: list[dict] = workflow.get("edges", [])
         self._node_map: dict[str, dict] = {n["id"]: n for n in self.nodes}
@@ -56,7 +65,13 @@ class WorkflowExecutor:
         # Lane C RunnerClient（spec §3.3）；inline-only workflow 可传 None。
         # 出现 dispatch 节点但 runner_client=None 时，_dispatch_node 显式报错，
         # 绝不静默在主进程 inline 跑 GPU 节点（那正是 V1.5 要消灭的 GPU race）。
+        #
+        # Lane K: runner_clients (dict group_id → client) 是新的多 group 入口 ——
+        # 节点按 type → role → group_id 选 client。runner_client (单数) 为兼容旧
+        # 调用方保留:有它就当 catch-all (任何 dispatch 节点都用它)。两者都给:
+        # runner_clients 优先,runner_client 作 fallback。
         self._runner_client = runner_client
+        self._runner_clients: dict = runner_clients or {}
 
     def _topological_sort(self) -> list[str]:
         if not self.nodes:
@@ -169,13 +184,34 @@ class WorkflowExecutor:
 
         runner_client 缺失时显式报错 —— 绝不静默在主进程内 inline 跑 GPU 节点
         （那正是 V1.5 要消灭的 GPU race）。
+
+        Lane K：先按 node_type → role → group_id 在 runner_clients dict 里挑;
+        没命中再 fallback 到单数 runner_client（兼容老调用方）。
         """
-        if self._runner_client is None:
+        client = self._pick_runner_client(node)
+        if client is None:
             raise ExecutionError(
                 f"节点 {node['id']} ({node['type']}) 需要 GPU runner，"
-                f"但 executor 未注入 runner_client"
+                f"但 executor 未注入 runner_client / runner_clients"
             )
-        return await self._runner_client.run_node(node, inputs)
+        return await client.run_node(node, inputs)
+
+    def _pick_runner_client(self, node: dict):
+        """按 node_type → role → group_id 在 runner_clients dict 里挑 RunnerClient。
+
+        当前 dispatch 节点白名单很短(image_generate / tts_engine)、role 与
+        group_id 一一对应；映射写在这里:image_generate→"image" / tts_engine→"tts"。
+        新增 dispatch 节点要在此登记。runner_clients 命中失败 → fallback
+        到单数 runner_client (向后兼容)。
+        """
+        node_type = node.get("type", "")
+        # node_type → group_id (按 hardware.yaml 的 role 名作 id 约定)。
+        group_id = _NODE_TYPE_TO_GROUP_ID.get(node_type)
+        if group_id is not None:
+            client = self._runner_clients.get(group_id)
+            if client is not None:
+                return client
+        return self._runner_client
 
     async def _execute_inline_node(self, node: dict, inputs: dict) -> dict[str, Any]:
         """Execute a single node via registered class + protocol dispatch."""
