@@ -575,11 +575,16 @@ def create_app() -> FastAPI:
         if load_failures:
             checks["status"] = "degraded"
 
-        # Per-runner state (spec 4.2). runner_supervisors is populated by the
-        # scheduler/Lane A integration; until then it's unset and runners is
-        # []. A runner that isn't running (crashed / mid-restart) degrades.
+        # Per-runner state (spec 4.2). runner_supervisors is populated by Lane K
+        # lifespan wiring; until then it's unset and runners is []. LLMRunner
+        # (主进程对象, app.state.llm_runner) 也并入此列表 —— 它有自己的
+        # health_snapshot()，让前端 TaskPanel 用同一个 runners 列表渲染所有泳道。
+        # 一个 runner 不 running（crashed / mid-restart）→ degraded.
         supervisors = getattr(app.state, "runner_supervisors", [])
         runners = [s.health_snapshot() for s in supervisors]
+        _llm = getattr(app.state, "llm_runner", None)
+        if _llm is not None:
+            runners.append(_llm.health_snapshot())
         checks["runners"] = runners
         if any(not r.get("running", False) for r in runners):
             checks["status"] = "degraded"

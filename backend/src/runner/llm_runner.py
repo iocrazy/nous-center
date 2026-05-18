@@ -164,8 +164,22 @@ class LLMRunner:
         # 3. re-spawn + re-preload（fail-soft）。
         await self.preload()
 
+    def health_snapshot(self) -> dict:
+        """给 /health 端点用的 LLM runner 状态快照（与 RunnerSupervisor.health_snapshot
+        同 shape，让前端 TaskPanel 用同一个 runners 列表渲染 LLM 泳道）。"""
+        return {
+            "group_id": "llm",
+            "gpus": list(self.llm_gpus),
+            "running": self.state == LLMRunnerState.RUNNING,
+            "restart_count": 0,
+            "pid": getattr(self.adapter, "pid", None) if self.adapter is not None else None,
+        }
+
     async def shutdown(self) -> None:
-        """优雅停止 —— 终结 vLLM 子进程。"""
+        """优雅停止 —— 终结 vLLM 子进程。adapter 为 None（lifespan 早期 / 测试）也 NO-OP。"""
+        if self.adapter is None:
+            self.state = LLMRunnerState.IDLE
+            return
         try:
             self.adapter.unload()
         finally:
