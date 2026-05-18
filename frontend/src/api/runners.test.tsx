@@ -18,24 +18,30 @@ function wrapper() {
 describe('useRunners', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('returns runner list from /api/v1/runners', async () => {
-    vi.mocked(apiFetch).mockResolvedValue([
-      {
-        id: 'runner-i',
-        label: 'Runner-I',
-        role: 'image',
-        state: 'busy',
-        current_task: { task_id: '7k2m', workflow_name: 'flux2-人物立绘', progress: 0.6, detail: 'step 18/30' },
-        queue: [{ task_id: '9p1q', workflow_name: 'sd-背景', position: 1 }],
-        restart_attempt: null,
-        load_error: null,
-        gpus: [2],
-      },
-    ])
+  it('adapts backend snapshot from /api/v1/monitor/runners to RunnerInfo', async () => {
+    // 后端实际返回的 shape (Lane H Task 6 + Lane K LLMRunner.health_snapshot)
+    vi.mocked(apiFetch).mockResolvedValue({
+      runners: [
+        { group_id: 'image', gpus: [0], running: true, restart_count: 0, pid: 12345 },
+        { group_id: 'tts', gpus: [2], running: false, restart_count: 2, pid: null },
+        { group_id: 'llm', gpus: [1], running: false, restart_count: 0, pid: null },
+      ],
+    })
     const { result } = renderHook(() => useRunners(), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.data).toBeDefined())
-    expect(result.current.data?.[0].id).toBe('runner-i')
-    expect(result.current.data?.[0].current_task?.detail).toBe('step 18/30')
+    expect(result.current.data?.length).toBe(3)
+    // image busy
+    expect(result.current.data?.[0]).toMatchObject({
+      id: 'image', role: 'image', state: 'busy', gpus: [0],
+    })
+    // tts restarting (restart_count>0 && !running)
+    expect(result.current.data?.[1]).toMatchObject({
+      id: 'tts', state: 'restarting', restart_attempt: [2, 4],
+    })
+    // llm idle (not running, restart_count=0)
+    expect(result.current.data?.[2]).toMatchObject({
+      id: 'llm', role: 'llm', state: 'idle', current_task: null, queue: [],
+    })
   })
 
   it('degrades to empty array when endpoint 404s', async () => {

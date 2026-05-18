@@ -44,18 +44,56 @@ export interface RunnerInfo {
   gpus: number[]
 }
 
+/** 后端 /api/v1/monitor/runners 实际返回的 snapshot 形状（Lane H Task 6 + Lane K
+ * LLMRunner.health_snapshot 合并）。current_task / queue 暂未由后端暴露 —— 等
+ * GroupScheduler 内部状态暴露后再扩。 */
+interface BackendRunnerSnapshot {
+  group_id: 'image' | 'tts' | 'llm'
+  gpus: number[]
+  running: boolean
+  restart_count: number
+  pid: number | null
+}
+
+interface BackendRunnersResponse {
+  runners: BackendRunnerSnapshot[]
+}
+
+/** 把后端 snapshot 适配成 UI 期望的 RunnerInfo。
+ * 后端目前只暴露 running/restart_count；UI 需要 state 枚举 + current_task + queue。
+ * 暂时:
+ *   - state: running → 'busy' (粗) ;否则 'idle';restart_count>0 给 restart_attempt 元组
+ *   - current_task / queue: null / [] —— 真实任务实时数据等 GroupScheduler 接 WS
+ *   - label: group_id 首字母大写,即 "Image" / "Llm" / "Tts"
+ */
+function adaptBackendSnapshot(s: BackendRunnerSnapshot): RunnerInfo {
+  const restarting = s.restart_count > 0 && !s.running
+  return {
+    id: s.group_id,
+    label: s.group_id.charAt(0).toUpperCase() + s.group_id.slice(1),
+    role: s.group_id,
+    state: restarting ? 'restarting' : s.running ? 'busy' : 'idle',
+    current_task: null,
+    queue: [],
+    restart_attempt: restarting ? [s.restart_count, 4] : null,
+    load_error: null,
+    gpus: s.gpus,
+  }
+}
+
 /** 拉 runner 泳道数据。
  *
- * 后端 /api/v1/runners 由 V1.5 Lane G/H 提供（RunnerSupervisor 调度态）。
- * 端点尚未落地时 hook 降级为空数组 —— TaskPanel 泳道区显示「暂无 runner 数据」，
- * 不阻塞 Lane I 独立 merge。
+ * 后端 /api/v1/monitor/runners 由 V1.5 Lane H Task 6 + Lane K 提供
+ * (RunnerSupervisor + LLMRunner 的 health_snapshot 合并)。
+ * 端点不可达时 hook 降级为空数组 —— TaskPanel 泳道区显示「暂无 runner 数据」。
  */
 export function useRunners() {
   return useQuery<RunnerInfo[]>({
     queryKey: ['runners'],
     queryFn: async () => {
       try {
-        return await apiFetch<RunnerInfo[]>('/api/v1/runners')
+        const resp = await apiFetch<BackendRunnersResponse>('/api/v1/monitor/runners')
+        return (resp.runners ?? []).map(adaptBackendSnapshot)
       } catch (e) {
         // 端点未落地（404）/ 暂时不可达 → 降级空泳道，不让整个面板崩。
         if ((e as { status?: number }).status === 404) return []
