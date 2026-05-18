@@ -41,8 +41,7 @@ class FakeRunnerClient:
         if node_id in self._fail_nodes:
             raise RuntimeError(f"fake runner: node {node_id} failed")
         outputs = self._results.get(node_id, {"result": f"dispatched:{node_id}"})
-        # WorkflowExecutor._dispatch_node 当前直接拿到 client.run_node 的返回值,
-        # 老 stub 返回 outputs dict。保持兼容 —— 真 RunnerClient 返回 P.NodeResult,
-        # 但 executor 也只读 .outputs;两边各自跑通,真接通后统一(见 Lane K
-        # follow-up issue:executor _dispatch_node 应 return result.outputs)。
+        # executor _dispatch_node 现在统一 unwrap:isinstance(result, P.NodeResult)
+        # → return result.outputs;否则透传 dict —— stub 维持返回 outputs dict,
+        # 老测试不动也通。
         return outputs

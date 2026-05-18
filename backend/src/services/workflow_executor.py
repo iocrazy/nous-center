@@ -219,7 +219,17 @@ class WorkflowExecutor:
             model_key=model_key,
             inputs=inputs,
         )
-        return await client.run_node(spec, workflow_name=self._workflow_name)
+        result = await client.run_node(spec, workflow_name=self._workflow_name)
+        # 真 RunnerClient 返回 P.NodeResult dataclass;Lane S FakeRunnerClient
+        # 直接返回 outputs dict(stub 简化)。统一在这里 unwrap —— executor 上层
+        # 把结果当 dict 走(_outputs 索引、下游 _get_inputs 迭代),不 unwrap 就
+        # 'NodeResult' is not iterable 炸。failed 状态显式抛,让 execute() 包装
+        # 成 ExecutionError + 发 node_error 事件,跟 inline 节点失败一致。
+        if isinstance(result, P.NodeResult):
+            if result.status != "completed":
+                raise RuntimeError(result.error or f"node {result.node_id} {result.status}")
+            return result.outputs or {}
+        return result
 
     def _pick_runner_client(self, node: dict):
         """按 node_type → role → group_id 在 runner_clients dict 里挑 RunnerClient。
