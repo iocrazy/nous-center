@@ -3,18 +3,25 @@ from src.config import load_hardware_config
 
 
 def test_load_default_hardware_yaml():
-    """configs/hardware.yaml 解析出 groups 列表。"""
+    """configs/hardware.yaml 解析出 groups 列表。
+
+    实际部署:Pro 6000 96GB (llm, gpu=1) + 两张 3090 (image gpu=0, tts gpu=2)，
+    三个独立 group,无 NVLink。
+    """
     cfg = load_hardware_config()
     assert "groups" in cfg
     groups = cfg["groups"]
     assert isinstance(groups, list)
     assert len(groups) >= 1
-    # 当前 2 卡布局：单个 llm-tp group
-    llm = next(g for g in groups if g["id"] == "llm-tp")
-    assert llm["gpus"] == [0, 1]
-    assert llm["nvlink"] is True
-    assert llm["role"] == "llm"
-    assert llm["vram_gb"] == 48
+    llm = next(g for g in groups if g["role"] == "llm")
+    assert llm["gpus"] == [1]
+    assert llm["nvlink"] is False
+    assert llm["vram_gb"] == 96
+    # image + tts 各占一张 3090
+    image = next(g for g in groups if g["role"] == "image")
+    assert image["gpus"] == [0]
+    tts = next(g for g in groups if g["role"] == "tts")
+    assert tts["gpus"] == [2]
 
 
 def test_load_3gpu_template(tmp_path):

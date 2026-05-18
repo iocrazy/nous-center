@@ -137,10 +137,14 @@ async def instance_run(
     # WS channel 仍用 instance.id（上游订阅 /ws/workflow/{instance_id} 的老约定不变），
     # 但同时把 task_id 回给客户端用于轮询。
     channel_id = str(instance.id)
+    # Lane K: runner_clients dict (group_id → client) 由 lifespan 填,
+    # executor 内按 node_type 选 client。runner_client 单数兼容老调用方。
     runner_client = getattr(request.app.state, "runner_client", None)
+    runner_clients = getattr(request.app.state, "runner_clients", None)
 
     asyncio.create_task(run_workflow_task(
         task.id, workflow_data,
-        runner_client=runner_client, channel_id=channel_id,
+        runner_client=runner_client, runner_clients=runner_clients,
+        channel_id=channel_id,
     ))
     return {"task_id": str(task.id), "status": "queued"}

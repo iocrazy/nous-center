@@ -174,6 +174,98 @@ async def lifespan(app: FastAPI):
     from src.services.workflow_executor import set_model_manager
     set_model_manager(model_mgr)
 
+    # ------------------------------------------------------------------
+    # Lane K: lifespan wiring —— spawn RunnerSupervisor / LLMRunner per
+    # hardware.yaml group + expose via app.state for /health, /runners,
+    # and workflow dispatch (spec §4.1 / §4.2).
+    #
+    # V1.5 lanes (#95–#106) shipped RunnerSupervisor / LLMRunner /
+    # RunnerClient as standalone classes but nobody instantiated them in
+    # lifespan, so app.state.runner_supervisors was unset, /runners
+    # returned [], and dispatch nodes hit "runner_client is None".
+    #
+    # Gate: NOUS_DISABLE_RUNNER_SPAWN=1 (or unset by default in tests via
+    # conftest.NOUS_DISABLE_BG_TASKS) skips the spawn block entirely so the
+    # existing test suite — which would otherwise multiprocessing.spawn real
+    # subprocesses + try to load real models — stays fast. Production
+    # systemd unit sets NOUS_DISABLE_RUNNER_SPAWN=0 explicitly.
+    # ------------------------------------------------------------------
+    runner_supervisors: list = []
+    runner_clients: dict[str, object] = {}
+    llm_runner = None
+    # Spawn runners only when explicitly enabled. Production systemd unit sets
+    # NOUS_DISABLE_RUNNER_SPAWN=0 ; tests / dev default = skip (= "1") so the
+    # existing fast pytest suite is unaffected, and conftest.NOUS_DISABLE_BG_TASKS
+    # cannot accidentally trigger real multiprocessing.spawn of runner subprocesses.
+    import os as _lane_k_os
+    _runner_spawn_enabled = _lane_k_os.getenv("NOUS_DISABLE_RUNNER_SPAWN", "1") == "0"
+    if _runner_spawn_enabled:
+        from src.runner.supervisor import RunnerSupervisor
+        from src.runner.llm_runner import LLMRunner
+        from src.runner.gpu_free_probe import make_gpu_free_probe
+
+        gpu_probe = make_gpu_free_probe()
+        models_yaml_path = config_path  # 同一份 models.yaml,runner 子进程也用它
+
+        for group in allocator.groups():
+            if group.role == "llm":
+                # LLMRunner —— per spec §4.1 每个 role:llm group 一个。
+                # 不在 lifespan 里 spawn vLLM —— vLLM 的实际启动走现有
+                # preload_residents 路径（下面 _resident_preload_task）。
+                # LLMRunner 这里只持有「将来要管的 adapter 引用」+ GPU 列表,
+                # 让 crash-recovery / health probe / restart 接口可用。
+                #
+                # 选取该 group 的代表 model_key:首个 type=llm 的 spec。无 spec
+                # → 仍构造一个空壳（adapter=None,model_key=空）—— 测试 / 早期
+                # 部署不带 yaml 时也要让 /health 等读 app.state.llm_runner 不崩。
+                llm_specs = [s for s in registry.specs if s.model_type == "llm"]
+                rep_model_key = llm_specs[0].id if llm_specs else f"llm-{group.id}"
+                rep_adapter = (
+                    model_mgr.get_adapter(rep_model_key) if llm_specs else None
+                )
+                llm_runner = LLMRunner(
+                    model_key=rep_model_key,
+                    adapter=rep_adapter,
+                    llm_gpus=list(group.gpus),
+                    gpu_free_probe=gpu_probe,
+                )
+                logger.info(
+                    "Lane K: LLMRunner instantiated (group=%s, gpus=%s, "
+                    "model_key=%s, adapter_present=%s)",
+                    group.id, group.gpus, rep_model_key, rep_adapter is not None,
+                )
+            else:
+                # image / tts group → fork runner 子进程 + 建 client。
+                sup = RunnerSupervisor(
+                    group_id=group.id,
+                    gpus=list(group.gpus),
+                    models_yaml_path=models_yaml_path,
+                    fake_adapter=False,
+                    gpu_free_probe=gpu_probe,
+                )
+                try:
+                    await sup.start()
+                except Exception:
+                    logger.exception(
+                        "Lane K: failed to start RunnerSupervisor for group %s — "
+                        "continuing without it (fail-soft, /health will report degraded)",
+                        group.id,
+                    )
+                    continue
+                runner_supervisors.append(sup)
+                # sup.client 是 supervisor._spawn 建好的 RunnerClient —— 复用即可,
+                # 不再自己新建一个（每对 pipe 只能有一个 reader）。
+                if sup.client is not None:
+                    runner_clients[group.id] = sup.client
+                logger.info(
+                    "Lane K: RunnerSupervisor spawned (group=%s, gpus=%s, pid=%s)",
+                    group.id, group.gpus, sup.pid,
+                )
+
+    app.state.runner_supervisors = runner_supervisors
+    app.state.runner_clients = runner_clients
+    app.state.llm_runner = llm_runner
+
     # Auto-detect running vLLM instances BEFORE resident auto-load
     # (so we reconnect to orphans instead of spawning duplicates)
     import os as _os
@@ -395,6 +487,21 @@ async def lifespan(app: FastAPI):
                     await asyncio.wait_for(partial_worker, timeout=5.0)
                 except asyncio.TimeoutError:
                     partial_worker.cancel()
+
+        # Lane K: stop runner supervisors + LLMRunner (terminate child subprocs).
+        # getattr 兜底:NOUS_DISABLE_RUNNER_SPAWN 默认 skip 时这些属性不一定有.
+        for sup in getattr(app.state, "runner_supervisors", []) or []:
+            try:
+                await sup.stop()
+            except Exception:
+                logger.exception("Lane K: RunnerSupervisor stop failed (group=%s)",
+                                 getattr(sup, "group_id", "?"))
+        _llm = getattr(app.state, "llm_runner", None)
+        if _llm is not None:
+            try:
+                await _llm.shutdown()
+            except Exception:
+                logger.exception("Lane K: LLMRunner shutdown failed")
 
 
 def create_app() -> FastAPI:

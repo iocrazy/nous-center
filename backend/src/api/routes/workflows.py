@@ -171,10 +171,14 @@ async def execute_workflow_direct(
     # channel_id：D17 之后客户端订阅 WS 用 task_id 作为 channel；兼容旧的
     # 显式 channel_id（前端在 POST 前先开 WS 的老流程）。
     channel_id = body.get("channel_id") or str(task.id)
+    # Lane K: runner_clients dict (group_id → client) 由 lifespan 填,
+    # executor 内按 node_type 选 client。runner_client 单数兼容老调用方。
     runner_client = getattr(request.app.state, "runner_client", None)
+    runner_clients = getattr(request.app.state, "runner_clients", None)
 
     asyncio.create_task(run_workflow_task(
         task.id, {"nodes": nodes, "edges": edges},
-        runner_client=runner_client, channel_id=channel_id,
+        runner_client=runner_client, runner_clients=runner_clients,
+        channel_id=channel_id,
     ))
     return {"task_id": str(task.id), "status": "queued", "channel_id": channel_id}
