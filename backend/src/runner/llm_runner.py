@@ -165,14 +165,21 @@ class LLMRunner:
         await self.preload()
 
     def health_snapshot(self) -> dict:
-        """给 /health 端点用的 LLM runner 状态快照（与 RunnerSupervisor.health_snapshot
-        同 shape，让前端 TaskPanel 用同一个 runners 列表渲染 LLM 泳道）。"""
+        """给 /health + /api/v1/monitor/runners 用的 LLM runner 状态快照
+        (与 RunnerSupervisor.health_snapshot 同 shape,前端用同一份 runners 列表渲染)。
+
+        current_task 暂时恒为 None —— LLM 不走 RunnerClient.run_node dispatch,
+        请求由 compat 路由直连 vLLM HTTP(D6/D8),per-token 状态不汇集到此处。
+        要把"正在生成 token"显示进 TaskPanel LLM 泳道,需在 compat 路由侧加
+        in-flight LLM 请求计数 → 单独 follow-up。
+        """
         return {
             "group_id": "llm",
             "gpus": list(self.llm_gpus),
             "running": self.state == LLMRunnerState.RUNNING,
             "restart_count": 0,
             "pid": getattr(self.adapter, "pid", None) if self.adapter is not None else None,
+            "current_task": None,
         }
 
     async def shutdown(self) -> None:

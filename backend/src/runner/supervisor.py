@@ -108,17 +108,20 @@ class RunnerSupervisor:
         return self.restart_backoff[-1]
 
     def health_snapshot(self) -> dict:
-        """给 /health 端点用的 runner 状态快照（spec 4.2 / Lane H）。
+        """给 /health + /api/v1/monitor/runners 端点用的 runner 状态快照。
 
-        纯读现有属性，无副作用。Lane I 的 Dashboard 用 `running` / `restart_count`
-        判断是否显示 degraded banner + 「重启中 N/M」。
+        纯读现有属性，无副作用。Lane I Dashboard 用 `running` / `restart_count`
+        判断 degraded banner + 「重启中 N/M」；current_task(Lane K follow-up)
+        让前端 TaskPanel 真显示「正在跑啥」+ 进度(spec §6.1 DD3)。
         """
+        current = self.client.current_dispatch if self.client is not None else None
         return {
             "group_id": self.group_id,
             "gpus": list(self.gpus),
             "running": self.is_running,
             "restart_count": self.restart_count,
             "pid": self.pid,
+            "current_task": current,
         }
 
     # ------------------------------------------------------------------
