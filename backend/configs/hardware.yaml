@@ -1,13 +1,37 @@
 # hardware.yaml — 实际生效的 GPU 拓扑（代码加载此文件，唯一真相源）
 #
-# 当前 = 2×3090 NVLink 配对布局，内容等同 hardware.2gpu.yaml。
-# 切换布局：cp configs/hardware.3gpu.yaml configs/hardware.yaml （Pro 6000 到货后）。
+# 当前 = Pro 6000 + 2x3090 三卡布局（无 NVLink bridge）。
+# 实测 nvidia-smi:
+#   GPU 0: RTX 3090         24 GB  → image (cpu_offload)
+#   GPU 1: RTX Pro 6000 Blackwell  96 GB  → llm (35B FP16 装得下)
+#   GPU 2: RTX 3090         24 GB  → tts
 #
-# 字段语义见 hardware.2gpu.yaml 头注释。
+# 三个 group 真独立，V1.5 "不同 group 并发" 前提成立。
+# 若未来装上 NVLink bridge，可改 llm group 用 [0,2] tp + nvlink:true。
+#
+# 字段语义：
+#   id      group 唯一标识，runner / scheduler 用它寻址
+#   gpus    该 group 占用的 GPU index 列表（cuda:N 的 N）
+#   nvlink  组内 GPU 是否 NVLink 互联；vLLM tp 模型强约束 nvlink:true
+#   role    image / llm / tts —— 节点按 role 找 group
+#   vram_gb 整个 group 的合计 VRAM
+#
 # V1.5 manual-only：不解析 nvidia-smi topo -m，无 detection 字段。
 groups:
-  - id: llm-tp
-    gpus: [0, 1]
-    nvlink: true
-    role: llm            # image/TTS 节点也落此 group，与 LLM 时分复用
-    vram_gb: 48
+  - id: llm
+    gpus: [1]              # Pro 6000 96GB
+    nvlink: false
+    role: llm
+    vram_gb: 96
+
+  - id: image
+    gpus: [0]              # 3090，enable_model_cpu_offload 模式
+    nvlink: false
+    role: image
+    vram_gb: 24
+
+  - id: tts
+    gpus: [2]              # 另一张 3090
+    nvlink: false
+    role: tts
+    vram_gb: 24
