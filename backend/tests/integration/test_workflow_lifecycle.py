@@ -14,7 +14,7 @@ from src.services.scheduler.group_scheduler import (
     PRIORITY_INTERACTIVE,
     GroupScheduler,
 )
-from src.services.task_ring_buffer import TaskRingBuffer, TaskSnapshot
+from src.services.task_ring_buffer import TaskSnapshot
 
 pytestmark = pytest.mark.integration
 
