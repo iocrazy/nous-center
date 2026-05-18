@@ -54,13 +54,7 @@ async def run_workflow_task(
     async def on_progress(event: dict) -> None:
         await _broadcast(channel_id, event)
 
-    executor = WorkflowExecutor(
-        workflow_data,
-        on_progress=on_progress if channel_id else None,
-        runner_client=runner_client,
-        runner_clients=runner_clients,
-    )
-
+    # 先取 workflow_name 给 executor → RunnerClient.run_node 用做 current_task 显示。
     session_factory = create_session_factory()
     async with session_factory() as session:
         task = await session.get(ExecutionTask, task_id)
@@ -69,6 +63,22 @@ async def run_workflow_task(
             return
         task.status = "running"
         await session.commit()
+        wf_name = task.workflow_name or ""
+
+    executor = WorkflowExecutor(
+        workflow_data,
+        on_progress=on_progress if channel_id else None,
+        runner_client=runner_client,
+        runner_clients=runner_clients,
+        task_id=task_id,
+        workflow_name=wf_name,
+    )
+
+    async with session_factory() as session:
+        task = await session.get(ExecutionTask, task_id)
+        if task is None:
+            logger.error("run_workflow_task: task %s vanished mid-exec", task_id)
+            return
 
         try:
             result = await executor.execute()

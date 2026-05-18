@@ -21,17 +21,23 @@ def _collector():
 @pytest.mark.asyncio
 async def test_fake_runner_client_records_calls():
     """stub self-check：run_node 记录调用、按 node_id 返回配置结果。"""
+    from src.runner import protocol as P
     rc = FakeRunnerClient(results={"n1": {"image_url": "x.png"}})
-    out = await rc.run_node({"id": "n1", "type": "image_generate"}, {"prompt": "cat"})
+    spec = P.RunNode(task_id=1, node_id="n1", node_type="image_generate",
+                     model_key=None, inputs={"prompt": "cat"})
+    out = await rc.run_node(spec, workflow_name="t1")
     assert out == {"image_url": "x.png"}
-    assert rc.calls == [("n1", "image_generate", {"prompt": "cat"})]
+    assert rc.calls == [("n1", "image_generate", {"prompt": "cat"}, "t1")]
 
 
 @pytest.mark.asyncio
 async def test_fake_runner_client_fail_nodes():
+    from src.runner import protocol as P
     rc = FakeRunnerClient(fail_nodes={"bad"})
+    spec = P.RunNode(task_id=2, node_id="bad", node_type="image_generate",
+                     model_key=None, inputs={})
     with pytest.raises(RuntimeError, match="node bad failed"):
-        await rc.run_node({"id": "bad", "type": "image_generate"}, {})
+        await rc.run_node(spec)
 
 
 @pytest.mark.asyncio

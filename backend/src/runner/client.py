@@ -15,6 +15,7 @@ ConnectionError 异常。
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Callable
 
 from src.runner import protocol as P
@@ -49,6 +50,11 @@ class RunnerClient:
 
         self._demux_task: asyncio.Task | None = None
 
+        # Lane K follow-up: inflight dispatch 状态跟踪 —— 给 /api/v1/monitor/runners
+        # 的 current_task 字段供数据，让前端 TaskPanel 真显示「正在跑啥」+ 进度条。
+        # task_id -> {task_id, workflow_name, node_id, node_type, started_at, progress, detail}
+        self._dispatches: dict[int, dict[str, Any]] = {}
+
     @property
     def is_ready(self) -> bool:
         return self._ready.is_set()
@@ -56,6 +62,20 @@ class RunnerClient:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    @property
+    def current_dispatch(self) -> dict[str, Any] | None:
+        """当前 runner 正在执行的任务信息 —— 给 /api/v1/monitor/runners 的 current_task
+        字段供数据。多个 inflight 时优先返回有 progress 的(= runner 在它身上发过
+        NodeProgress = 正在跑它);都没 progress 则返回最早入队的(probably-next-to-run)。
+        无 inflight 返回 None。
+        """
+        if not self._dispatches:
+            return None
+        progressing = [d for d in self._dispatches.values() if d.get("progress", 0) > 0]
+        if progressing:
+            return max(progressing, key=lambda d: d.get("progress", 0))
+        return min(self._dispatches.values(), key=lambda d: d.get("started_at", 0))
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -77,7 +97,7 @@ class RunnerClient:
         self._ch.close()
 
     def _fail_all_inflight(self, exc: Exception) -> None:
-        """runner 断连 —— 所有等待中的 future 置异常。"""
+        """runner 断连 —— 所有等待中的 future 置异常 + dispatch 跟踪清空。"""
         for fut in list(self._node_futures.values()):
             if not fut.done():
                 fut.set_exception(exc)
@@ -88,6 +108,7 @@ class RunnerClient:
             self._pong_future.set_exception(exc)
         self._node_futures.clear()
         self._model_futures.clear()
+        self._dispatches.clear()
 
     # ------------------------------------------------------------------
     # demux
@@ -109,12 +130,19 @@ class RunnerClient:
                 self.gpus = msg.gpus
                 self._ready.set()
             elif isinstance(msg, P.NodeProgress):
+                # Lane K follow-up: 把最新 progress 写进 dispatch 状态,/runners 暴露
+                d = self._dispatches.get(msg.task_id)
+                if d is not None:
+                    d["progress"] = msg.progress
+                    d["detail"] = msg.detail
                 cb = self._progress_cbs.get(msg.task_id)
                 if cb is not None:
                     cb(msg)
             elif isinstance(msg, P.NodeResult):
                 fut = self._node_futures.pop(msg.task_id, None)
                 self._progress_cbs.pop(msg.task_id, None)
+                # Lane K follow-up: dispatch 完成,从跟踪表移除
+                self._dispatches.pop(msg.task_id, None)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
             elif isinstance(msg, P.ModelEvent):
@@ -134,8 +162,13 @@ class RunnerClient:
         spec: P.RunNode,
         *,
         on_progress: Callable[[P.NodeProgress], None] | None = None,
+        workflow_name: str = "",
     ) -> P.NodeResult:
-        """发 RunNode，await 对应的 NodeResult。"""
+        """发 RunNode，await 对应的 NodeResult。
+
+        workflow_name: 给 /api/v1/monitor/runners current_task 显示用的人读字段
+        (前端 TaskPanel 泳道挂在 runner 上的「正在跑」名字)。无则空串。
+        """
         if not self._connected:
             raise ConnectionError("runner disconnected")
         loop = asyncio.get_running_loop()
@@ -143,8 +176,23 @@ class RunnerClient:
         self._node_futures[spec.task_id] = fut
         if on_progress is not None:
             self._progress_cbs[spec.task_id] = on_progress
-        await self._ch.send_message(spec)
-        return await fut
+        # Lane K follow-up: 登记 inflight dispatch,供 current_dispatch property 读
+        self._dispatches[spec.task_id] = {
+            "task_id": spec.task_id,
+            "workflow_name": workflow_name,
+            "node_id": spec.node_id,
+            "node_type": spec.node_type,
+            "started_at": time.monotonic(),
+            "progress": 0.0,
+            "detail": None,
+        }
+        try:
+            await self._ch.send_message(spec)
+            return await fut
+        finally:
+            # 兜底:_fail_all_inflight / NodeResult 都会移除,但异常路径(send_message 抛、
+            # 取消)也保证不残留。
+            self._dispatches.pop(spec.task_id, None)
 
     async def load_model(self, model_key: str, *, config: dict | None = None) -> bool:
         """发 LoadModel，await ModelEvent。返回是否加载成功。"""

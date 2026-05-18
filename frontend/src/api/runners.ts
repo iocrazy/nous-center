@@ -44,15 +44,27 @@ export interface RunnerInfo {
   gpus: number[]
 }
 
-/** 后端 /api/v1/monitor/runners 实际返回的 snapshot 形状（Lane H Task 6 + Lane K
- * LLMRunner.health_snapshot 合并）。current_task / queue 暂未由后端暴露 —— 等
- * GroupScheduler 内部状态暴露后再扩。 */
+/** 后端 /api/v1/monitor/runners 返回的 snapshot 形状（Lane H Task 6 + Lane K
+ * LLMRunner.health_snapshot + Lane K follow-up RunnerClient.current_dispatch）。
+ *
+ * current_task: RunnerClient 暴露的 inflight dispatch —— image/tts runner 真在
+ * 跑节点时非空；LLM runner 走 vLLM HTTP 直连不汇集到此处,恒为 null。
+ */
 interface BackendRunnerSnapshot {
   group_id: 'image' | 'tts' | 'llm'
   gpus: number[]
   running: boolean
   restart_count: number
   pid: number | null
+  current_task: {
+    task_id: number
+    workflow_name: string
+    node_id: string
+    node_type: string
+    started_at: number
+    progress: number   // 0.0 ~ 1.0
+    detail: string | null
+  } | null
 }
 
 interface BackendRunnersResponse {
@@ -61,29 +73,36 @@ interface BackendRunnersResponse {
 
 /** 把后端 snapshot 适配成 UI 期望的 RunnerInfo。
  *
- * 语义对齐(关键):
- *   后端 `running` = 进程存活(spawned + healthy),**不**等于「正在跑任务」。
- *   前端 `busy` = 「正在跑任务」(spec §6.2 = 绿点 + current_task + 进度条)。
- *
- * 当前后端只暴露存活 + restart_count,没暴露 current_task —— GroupScheduler 内
- * 的 inflight task 状态没接到 health_snapshot()。等接通后,adapter 才能在
- * current_task 非空时正确设 'busy'。在此之前,所有存活 runner 一律 'idle',
- * 否则会误导用户(看到 busy 以为在跑实际不空闲)。
+ * 语义对齐:
+ *   后端 `running` = 进程存活(spawned + healthy),与「在跑任务」无关。
+ *   后端 `current_task` = RunnerClient 跟踪的 inflight dispatch,有 = 真在跑。
  *
  * State 决策:
- *   - 不存活 + restart_count>0 → 'restarting'(挂了在重启,带 restart_attempt 元组)
- *   - 其它一律 'idle'(存活待命 / 未启动 / LLM 未 preload —— 都是「不在跑任务」)
+ *   - !alive + restart_count>0 → 'restarting'(挂了在重启,带 restart_attempt 元组)
+ *   - alive + current_task 非空 → 'busy'(spec §6.2 绿点 + 当前任务 + 进度条)
+ *   - 其它 → 'idle'(存活待命 / 未启动 / LLM 未 preload)
  *
  * label: group_id 首字母大写,即 "Image" / "Llm" / "Tts"
  */
 function adaptBackendSnapshot(s: BackendRunnerSnapshot): RunnerInfo {
   const restarting = s.restart_count > 0 && !s.running
+  const current = s.current_task && s.running
+    ? {
+        task_id: String(s.current_task.task_id),
+        workflow_name: s.current_task.workflow_name || s.current_task.node_type,
+        progress: s.current_task.progress,
+        detail: s.current_task.detail,
+      }
+    : null
+  let state: RunnerInfo['state'] = 'idle'
+  if (restarting) state = 'restarting'
+  else if (current) state = 'busy'
   return {
     id: s.group_id,
     label: s.group_id.charAt(0).toUpperCase() + s.group_id.slice(1),
     role: s.group_id,
-    state: restarting ? 'restarting' : 'idle',
-    current_task: null,
+    state,
+    current_task: current,
     queue: [],
     restart_attempt: restarting ? [s.restart_count, 4] : null,
     load_error: null,

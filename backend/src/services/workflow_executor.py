@@ -56,7 +56,8 @@ class WorkflowExecutor:
     """Execute a workflow DAG (topological sort + per-node execution)."""
 
     def __init__(self, workflow: dict, on_progress=None, runner_client=None,
-                 runner_clients: dict | None = None):
+                 runner_clients: dict | None = None,
+                 task_id: int | None = None, workflow_name: str = ""):
         self.nodes: list[dict] = workflow.get("nodes", [])
         self.edges: list[dict] = workflow.get("edges", [])
         self._node_map: dict[str, dict] = {n["id"]: n for n in self.nodes}
@@ -72,6 +73,10 @@ class WorkflowExecutor:
         # runner_clients 优先,runner_client 作 fallback。
         self._runner_client = runner_client
         self._runner_clients: dict = runner_clients or {}
+        # Lane K follow-up: 给 RunnerClient.run_node 传 task_id + workflow_name,
+        # supervisor.health_snapshot.current_task 才能正确显示「在跑哪个 task」。
+        self._task_id = task_id
+        self._workflow_name = workflow_name
 
     def _topological_sort(self) -> list[str]:
         if not self.nodes:
@@ -187,14 +192,34 @@ class WorkflowExecutor:
 
         Lane K：先按 node_type → role → group_id 在 runner_clients dict 里挑;
         没命中再 fallback 到单数 runner_client（兼容老调用方）。
+        构造 protocol.RunNode 传给 client.run_node —— 注意:client.run_node 签名
+        是 (spec: P.RunNode, *, on_progress=..., workflow_name=...),不是 (node, inputs)。
         """
+        from src.runner import protocol as P
+
         client = self._pick_runner_client(node)
         if client is None:
             raise ExecutionError(
                 f"节点 {node['id']} ({node['type']}) 需要 GPU runner，"
                 f"但 executor 未注入 runner_client / runner_clients"
             )
-        return await client.run_node(node, inputs)
+
+        # task_id: 没有 outer ExecutionTask 时(inline-only test 路径)用 node hash
+        # 做唯一 int —— 避免协议层 task_id=None 崩;UI current_task 仍能正确分。
+        task_id = self._task_id if self._task_id is not None else abs(hash(node["id"])) % (2**31)
+        # model_key:从 node.data 拿(LLM/TTS 有 engine/model_key 字段;image 节点 model
+        # 由 adapter 自决,这里 None 也合法)。
+        data = node.get("data", {})
+        model_key = data.get("model_key") or data.get("engine") or data.get("model")
+
+        spec = P.RunNode(
+            task_id=task_id,
+            node_id=node["id"],
+            node_type=node["type"],
+            model_key=model_key,
+            inputs=inputs,
+        )
+        return await client.run_node(spec, workflow_name=self._workflow_name)
 
     def _pick_runner_client(self, node: dict):
         """按 node_type → role → group_id 在 runner_clients dict 里挑 RunnerClient。
