@@ -60,11 +60,21 @@ interface BackendRunnersResponse {
 }
 
 /** 把后端 snapshot 适配成 UI 期望的 RunnerInfo。
- * 后端目前只暴露 running/restart_count；UI 需要 state 枚举 + current_task + queue。
- * 暂时:
- *   - state: running → 'busy' (粗) ;否则 'idle';restart_count>0 给 restart_attempt 元组
- *   - current_task / queue: null / [] —— 真实任务实时数据等 GroupScheduler 接 WS
- *   - label: group_id 首字母大写,即 "Image" / "Llm" / "Tts"
+ *
+ * 语义对齐(关键):
+ *   后端 `running` = 进程存活(spawned + healthy),**不**等于「正在跑任务」。
+ *   前端 `busy` = 「正在跑任务」(spec §6.2 = 绿点 + current_task + 进度条)。
+ *
+ * 当前后端只暴露存活 + restart_count,没暴露 current_task —— GroupScheduler 内
+ * 的 inflight task 状态没接到 health_snapshot()。等接通后,adapter 才能在
+ * current_task 非空时正确设 'busy'。在此之前,所有存活 runner 一律 'idle',
+ * 否则会误导用户(看到 busy 以为在跑实际不空闲)。
+ *
+ * State 决策:
+ *   - 不存活 + restart_count>0 → 'restarting'(挂了在重启,带 restart_attempt 元组)
+ *   - 其它一律 'idle'(存活待命 / 未启动 / LLM 未 preload —— 都是「不在跑任务」)
+ *
+ * label: group_id 首字母大写,即 "Image" / "Llm" / "Tts"
  */
 function adaptBackendSnapshot(s: BackendRunnerSnapshot): RunnerInfo {
   const restarting = s.restart_count > 0 && !s.running
@@ -72,7 +82,7 @@ function adaptBackendSnapshot(s: BackendRunnerSnapshot): RunnerInfo {
     id: s.group_id,
     label: s.group_id.charAt(0).toUpperCase() + s.group_id.slice(1),
     role: s.group_id,
-    state: restarting ? 'restarting' : s.running ? 'busy' : 'idle',
+    state: restarting ? 'restarting' : 'idle',
     current_task: null,
     queue: [],
     restart_attempt: restarting ? [s.restart_count, 4] : null,

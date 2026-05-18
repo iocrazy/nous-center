@@ -19,7 +19,9 @@ describe('useRunners', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('adapts backend snapshot from /api/v1/monitor/runners to RunnerInfo', async () => {
-    // 后端实际返回的 shape (Lane H Task 6 + Lane K LLMRunner.health_snapshot)
+    // 后端实际返回的 shape (Lane H Task 6 + Lane K LLMRunner.health_snapshot)。
+    // 关键:后端 running=进程存活 ≠ 「正在跑任务」 —— 适配器把存活映射成 idle,
+    // 而不是 busy(busy 需要 current_task 信号,GroupScheduler 尚未暴露)。
     vi.mocked(apiFetch).mockResolvedValue({
       runners: [
         { group_id: 'image', gpus: [0], running: true, restart_count: 0, pid: 12345 },
@@ -30,15 +32,15 @@ describe('useRunners', () => {
     const { result } = renderHook(() => useRunners(), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.data).toBeDefined())
     expect(result.current.data?.length).toBe(3)
-    // image busy
+    // image: 存活但无 current_task → idle(不是 busy!)
     expect(result.current.data?.[0]).toMatchObject({
-      id: 'image', role: 'image', state: 'busy', gpus: [0],
+      id: 'image', role: 'image', state: 'idle', gpus: [0],
     })
-    // tts restarting (restart_count>0 && !running)
+    // tts: 不存活 + restart_count>0 → restarting
     expect(result.current.data?.[1]).toMatchObject({
       id: 'tts', state: 'restarting', restart_attempt: [2, 4],
     })
-    // llm idle (not running, restart_count=0)
+    // llm: 不存活 + restart_count=0 → idle(未 preload,不是 failed)
     expect(result.current.data?.[2]).toMatchObject({
       id: 'llm', role: 'llm', state: 'idle', current_task: null, queue: [],
     })
