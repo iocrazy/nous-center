@@ -39,6 +39,11 @@ class LoadedModel(BaseModel):
         self.last_used = time.monotonic()
 
 
+# PR-1 Task 6: components are lighter than full LoadedModel — they're just a loaded
+# state_dict/module dict + metadata. Stored in ModelManager._components.
+LoadedComponent = dict  # opaque to ModelManager: {_state_dict, spec, loaded_at, ...}
+
+
 class ModelManager:
     """Unified model lifecycle manager: load, unload, evict, reference-count."""
 
@@ -52,6 +57,14 @@ class ModelManager:
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
         self._load_failures: dict[str, str] = {}
+        # PR-1 Task 6: component-level cache (parallel to _models). Old yaml-driven
+        # adapters keep using _models; PR-2's ImageSampler will use _components.
+        # Forward-ref the ComponentKey type as a tuple alias so the module-top
+        # import stays clean (component_spec doesn't import ModelManager).
+        from src.services.inference.component_spec import ComponentKey  # noqa: F401
+        self._components: dict[ComponentKey, LoadedComponent] = {}
+        self._component_locks: dict[ComponentKey, asyncio.Lock] = {}
+        self._component_failures: dict[ComponentKey, str] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -615,3 +628,69 @@ class ModelManager:
         await self.unload_model(model_id, force=True)
         logger.info("Evicted LRU model %r from gpu %s", model_id, lru.gpu_index)
         return model_id
+
+    # --- PR-1 Task 6: component-level cache APIs -----------------------------
+    #
+    # Per spec §5.5 these coexist with the legacy load_model/is_loaded/unload_model.
+    # PR-2's ImageSampler will exercise these directly without going through yaml.
+
+    def _component_lock_for(self, key) -> asyncio.Lock:
+        return self._component_locks.setdefault(key, asyncio.Lock())
+
+    def is_component_loaded(self, spec_or_key) -> str:
+        """Returns 'loaded' | 'loading' | 'cold' | 'failed'.
+
+        `spec_or_key` accepts ComponentSpec or ComponentKey for caller convenience.
+        """
+        from src.services.inference.component_spec import ComponentSpec, to_component_key
+        key = to_component_key(spec_or_key) if isinstance(spec_or_key, ComponentSpec) else spec_or_key
+        if key in self._components:
+            return "loaded"
+        lock = self._component_locks.get(key)
+        if lock is not None and lock.locked():
+            return "loading"
+        if key in self._component_failures:
+            return "failed"
+        return "cold"
+
+    async def get_or_load_component(self, spec):
+        """Idempotent component load. Returns the loaded module/state_dict.
+
+        Concurrency: per-key lock so two concurrent callers for same component
+        won't double-load. Distinct components load in parallel (no global lock).
+        """
+        from src.services.inference.component_spec import to_component_key
+        key = to_component_key(spec)
+        async with self._component_lock_for(key):
+            cached = self._components.get(key)
+            if cached is not None:
+                return cached
+            try:
+                loaded = await self._load_component_impl(spec)
+            except Exception as e:  # noqa: BLE001 — record + re-raise
+                self._component_failures[key] = f"{type(e).__name__}: {e}"
+                raise
+            self._components[key] = loaded
+            self._component_failures.pop(key, None)
+            return loaded
+
+    async def _load_component_impl(self, spec):
+        """The actual component load. PR-1: dispatches to quant_loaders for the
+        state_dict. Wrapping state_dict into an actual diffusers module is PR-2's
+        ImageSampler responsibility. Tests monkeypatch this method directly.
+
+        Returns: dict with {_state_dict, spec, loaded_at}.
+        """
+        from src.services.inference.quant_loaders import QUANT_LOADERS
+
+        state_dict = QUANT_LOADERS.dispatch(spec)
+        return {"_state_dict": state_dict, "spec": spec, "loaded_at": time.monotonic()}
+
+    async def unload_component(self, spec_or_key) -> None:
+        """Drop the cache entry. PR-1: caller is responsible for any GPU memory release.
+        Future PRs (LRU eviction) will call torch.cuda.empty_cache after pop."""
+        from src.services.inference.component_spec import ComponentSpec, to_component_key
+        key = to_component_key(spec_or_key) if isinstance(spec_or_key, ComponentSpec) else spec_or_key
+        async with self._component_lock_for(key):
+            self._components.pop(key, None)
+            self._component_failures.pop(key, None)

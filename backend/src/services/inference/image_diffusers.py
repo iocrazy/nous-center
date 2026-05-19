@@ -102,55 +102,57 @@ def load_diffusers_pipeline(
     return DiffusionPipeline.from_pretrained(str(main_path), **kwargs)
 
 
-def load_quantized_transformer(main_path: Path, sf_path: Path, dtype) -> Any:
-    """Load a wikeeyang-style fp8 single-file transformer into bf16.
+def _build_empty_transformer_from_dir(main_path: Path, dtype) -> tuple[Any, dict]:
+    """Build an empty Flux2Transformer2DModel from the HF diffusers `transformer/config.json`.
 
-    Pipeline: load_file → dequant fp8*scale → drop .comfy_quant/.weight_scale
-    → convert_flux2_transformer_checkpoint_to_diffusers → empty model +
-    load_state_dict. See `_load_with_quantized_transformer`'s legacy comment
-    for why diffusers' built-in converter can't eat the raw quantized file.
+    Pure rename of the inline block in load_quantized_transformer — no behavior
+    change. Returns (empty_module, transformer_config) so the caller can also
+    feed the config into `convert_flux2_transformer_checkpoint_to_diffusers`
+    (the diffusers state-dict-shape converter needs the same config dict).
     """
     import json
 
-    import torch
     from diffusers import Flux2Transformer2DModel
+
+    transformer_config_path = main_path / "transformer" / "config.json"
+    transformer_config = json.loads(transformer_config_path.read_text())
+    transformer = Flux2Transformer2DModel.from_config(transformer_config).to(dtype)
+    return transformer, transformer_config
+
+
+def load_quantized_transformer(main_path: Path, sf_path: Path, dtype) -> Any:
+    """Load a wikeeyang-style fp8 single-file transformer.
+
+    PR-1 refactor: state_dict dequant moved to quant_loaders.load_fp8mixed.
+    This function keeps building the empty transformer module from main_path
+    (HF diffusers layout), runs the diffusers shape converter, then loads the
+    dequant'd state_dict into it. Behavior is byte-identical to pre-PR-1 —
+    only the dequant code location moved.
+    """
+    import torch
     from diffusers.loaders.single_file_utils import (
         convert_flux2_transformer_checkpoint_to_diffusers,
     )
-    from safetensors.torch import load_file
 
-    transformer_config_path = main_path / "transformer" / "config.json"
+    from src.services.inference.component_spec import ComponentSpec
+    from src.services.inference.quant_loaders import QUANT_LOADERS
 
     logger.info("image: loading quantized transformer state_dict %s", sf_path)
-    raw_sd = load_file(str(sf_path))
 
-    clean_sd: dict = {}
-    fp8_count = 0
-    for k, v in raw_sd.items():
-        if k.endswith(".comfy_quant") or k.endswith(".weight_scale"):
-            continue
-        if v.dtype == torch.float8_e4m3fn:
-            scale = raw_sd.get(k + "_scale")
-            if scale is not None:
-                clean_sd[k] = (v.to(torch.float32) * scale.to(torch.float32)).to(dtype)
-            else:
-                clean_sd[k] = v.to(dtype)
-            fp8_count += 1
-        else:
-            clean_sd[k] = v.to(dtype) if v.dtype in (torch.float32, torch.float16) else v
-    del raw_sd
-    logger.info(
-        "image: dequant fp8→%s done — %d fp8 weights, %d total clean keys",
-        dtype, fp8_count, len(clean_sd),
-    )
+    # 1. Dequant state_dict via the new registry path (Block A).
+    dtype_str = {torch.bfloat16: "bfloat16", torch.float16: "float16"}.get(dtype, "bfloat16")
+    spec = ComponentSpec(kind="unet", file=str(sf_path), device="cpu", dtype=dtype_str)
+    clean_sd = QUANT_LOADERS.dispatch(spec)
 
-    transformer_config = json.loads(transformer_config_path.read_text())
+    # 2. Build the empty transformer module from the main diffusers directory.
+    transformer, transformer_config = _build_empty_transformer_from_dir(main_path, dtype)
+
+    # 3. Convert state_dict shape to diffusers layout, then load into the module.
     diffusers_sd = convert_flux2_transformer_checkpoint_to_diffusers(
         clean_sd, config=transformer_config,
     )
     del clean_sd
 
-    transformer = Flux2Transformer2DModel.from_config(transformer_config).to(dtype)
     missing, unexpected = transformer.load_state_dict(diffusers_sd, strict=False)
     if missing or unexpected:
         logger.warning(
