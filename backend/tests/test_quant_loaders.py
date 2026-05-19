@@ -141,3 +141,50 @@ def test_load_safetensors_plain_raises_on_unknown_dtype(tmp_path):
     spec_bad = ComponentSpec(kind="vae", file=str(p), device="cpu", dtype="bf16")
     with pytest.raises(UnsupportedQuantError, match="unknown target dtype"):
         QUANT_LOADERS.dispatch(spec_bad)
+
+
+# ---------- fp8mixed (PR-1 Task 3) ----------
+
+
+def _make_fp8mixed_safetensors(tmp_path: Path, name: str) -> Path:
+    """Synthetic comfy_quant-style fp8 fixture: 1 fp8 tensor + companion scale, plus 1 plain tensor."""
+    weight_fp8 = torch.randn(4, 4).to(torch.float8_e4m3fn)
+    weight_scale = torch.tensor([0.125], dtype=torch.float32)
+    plain = torch.randn(4, 4, dtype=torch.bfloat16)
+    sd = {
+        "block.0.weight": weight_fp8,
+        "block.0.weight_scale": weight_scale,
+        "block.0.weight.comfy_quant": torch.tensor([1], dtype=torch.uint8),  # marker
+        "block.1.weight": plain,
+    }
+    path = tmp_path / f"{name}.safetensors"
+    save_file(sd, str(path))
+    return path
+
+
+def test_fp8mixed_loader_dequants_and_drops_metadata(tmp_path):
+    sf = _make_fp8mixed_safetensors(tmp_path, "Flux2-Klein-9B-True-v2-fp8mixed")
+    spec = ComponentSpec(kind="unet", file=str(sf), device="cpu", dtype="bfloat16")
+
+    sd = QUANT_LOADERS.dispatch(spec)
+
+    # fp8 tensor was dequant'd (multiplied by scale) into bfloat16
+    assert "block.0.weight" in sd
+    assert sd["block.0.weight"].dtype == torch.bfloat16
+    # plain tensor passed through
+    assert sd["block.1.weight"].dtype == torch.bfloat16
+    # metadata keys must be dropped before caller's load_state_dict
+    assert "block.0.weight_scale" not in sd
+    assert "block.0.weight.comfy_quant" not in sd
+
+
+def test_fp8mixed_loader_match_priority_over_plain():
+    """File with 'fp8mixed' in name must dispatch to fp8 loader, not plain."""
+    matchers = [m for m, _fn in QUANT_LOADERS._loaders]
+    fp8_idx = next(i for i, m in enumerate(matchers)
+                   if m(ComponentSpec(kind="unet", file="x-fp8mixed.safetensors",
+                                      device="cpu", dtype="bfloat16")))
+    plain_idx = next(i for i, m in enumerate(matchers)
+                     if m(ComponentSpec(kind="unet", file="plain.safetensors",
+                                        device="cpu", dtype="bfloat16")))
+    assert fp8_idx < plain_idx

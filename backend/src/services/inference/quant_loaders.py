@@ -12,6 +12,7 @@ GGUF is rejected eagerly with UnsupportedQuantError; V2 PR-7 will add it.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Callable, NoReturn
 
 import torch
@@ -82,6 +83,61 @@ def _dtype_str_to_torch(dtype_str: str) -> torch.dtype:
         raise UnsupportedQuantError(
             f"unknown target dtype {dtype_str!r}; expected one of {sorted(_DTYPE_MAP)}"
         )
+
+
+def _has_comfy_quant_metadata(file_path: str) -> bool:
+    """Sniff a safetensors header for any `.comfy_quant` suffixed key (cheap — no full read)."""
+    try:
+        from safetensors import safe_open
+        with safe_open(file_path, framework="pt", device="cpu") as f:
+            for k in f.keys():
+                if k.endswith(".comfy_quant"):
+                    return True
+    except Exception:  # noqa: BLE001 — fail-soft on header read error
+        return False
+    return False
+
+
+@QUANT_LOADERS.register(match=lambda spec: (
+    "fp8mixed" in Path(spec.file).name.lower()
+    or _has_comfy_quant_metadata(spec.file)
+))
+def load_fp8mixed(spec: ComponentSpec) -> StateDict:
+    """Wikeeyang comfy_quant fp8 → dequant by `.weight_scale` companion → target dtype.
+
+    Algorithm (preserved from image_diffusers.py:105 load_quantized_transformer):
+      1. safetensors_load_file → state dict with fp8 weights + .weight_scale + .comfy_quant
+      2. For each fp8 tensor, multiply by float32 scale, cast to target dtype
+      3. Drop .weight_scale and .comfy_quant marker keys
+      4. Return clean state dict ready for caller's load_state_dict
+
+    Reference fixture: /media/heygo/Program/models/nous/image/diffusion_models/
+    Flux2-Klein-9B-True-v2-fp8mixed.safetensors
+    """
+    target = _dtype_str_to_torch(spec.dtype)
+    raw = load_file(spec.file, device="cpu")
+
+    clean: dict[str, torch.Tensor] = {}
+    fp8_count = 0
+    for key, tensor in raw.items():
+        if key.endswith(".weight_scale") or key.endswith(".comfy_quant"):
+            continue  # metadata key, drop
+        if tensor.dtype == torch.float8_e4m3fn:
+            scale_key = key + "_scale"
+            scale = raw.get(scale_key)
+            if scale is None:
+                logger.warning("fp8 tensor %s has no companion %s scale; loading at fp8 dtype", key, scale_key)
+                clean[key] = tensor.to(target)
+                continue
+            # dequant: fp8 × scale → fp32 → target
+            clean[key] = (tensor.to(torch.float32) * scale.to(torch.float32)).to(target)
+            fp8_count += 1
+        else:
+            clean[key] = tensor.to(target)
+
+    logger.info("quant_loaders.fp8mixed: %d fp8 weights dequant'd, %d total keys (%s)",
+                fp8_count, len(clean), Path(spec.file).name)
+    return clean
 
 
 # Plain bf16/fp16 safetensors — uniform state_dict loader. Caller (PR-2's
