@@ -45,6 +45,6 @@ def test_unknown_pipeline_class_not_in_registry():
 
 
 def test_protocol_can_type_check_adapter():
-    """ModelArchAdapter is a Protocol; FluxKleinArchAdapter satisfies it structurally."""
-    adapter: ModelArchAdapter = FluxKleinArchAdapter()  # type-check passes
-    assert adapter is not None
+    """@runtime_checkable allows isinstance check at runtime (validates structural conformance)."""
+    adapter = FluxKleinArchAdapter()
+    assert isinstance(adapter, ModelArchAdapter)

@@ -11,9 +11,10 @@ adapters in ~50 LOC each.
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
+@runtime_checkable
 class ModelArchAdapter(Protocol):
     """Per-Pipeline-class settings + behavior switches consumed by ImageSampler.
 
@@ -24,12 +25,14 @@ class ModelArchAdapter(Protocol):
     def supports_cfg(self) -> bool:
         """True if this Pipeline class uses classifier-free guidance (CFG)
         in its denoise loop. Distilled models (Klein, Z-Image-Turbo) → False.
+        Consumed by FluxDevArchAdapter (future PR adding CFG-branched models).
         """
         ...
 
     def supports_negative_prompt(self) -> bool:
         """True if encode_prompt accepts a negative_prompt argument.
         Distilled models reject it; mainline (Dev, SDXL) accept it.
+        Consumed by FluxDevArchAdapter / SDXLArchAdapter (future PRs).
         """
         ...
 
@@ -42,7 +45,9 @@ class ModelArchAdapter(Protocol):
 
     def default_guidance_scale(self) -> float:
         """Default guidance_scale parameter for the Pipeline call.
-        Distilled models ignore this but pipelines still expect the kwarg."""
+        Distilled models ignore this but pipelines still expect the kwarg.
+        Consumed by FluxDevArchAdapter (future PR). For distilled archs this
+        value is functionally ignored at inference."""
         ...
 
 
