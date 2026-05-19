@@ -1,4 +1,8 @@
-"""PR-1 Task 0 risk gate — verify diffusers Flux2Pipeline accepts cross-device components.
+"""PR-1 Task 0 risk gate — verify diffusers Flux2KleinPipeline accepts cross-device components.
+
+Flux2-klein-9B on disk uses Flux2KleinPipeline (Qwen3 text encoder + AutoencoderKLFlux2),
+NOT the FLUX.2-dev Flux2Pipeline (Mistral3 + AutoencoderKL). Pipeline class is determined
+by model_index.json `_class_name`.
 
 Runs manually before the rest of PR-1 work proceeds. Exit 0 = green light to continue.
 Exit 1 = stop PR-1; activate spec §5.2 fallback (single-device assembly only).
@@ -20,10 +24,12 @@ from pathlib import Path
 import torch
 
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
-TRANSFORMER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/transformer"
-TEXT_ENCODER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/text_encoder"
-TOKENIZER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/tokenizer"
-VAE_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/vae"
+MODEL_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B"
+TRANSFORMER_DIR = MODEL_DIR / "transformer"
+TEXT_ENCODER_DIR = MODEL_DIR / "text_encoder"
+TOKENIZER_DIR = MODEL_DIR / "tokenizer"
+VAE_DIR = MODEL_DIR / "vae"
+SCHEDULER_DIR = MODEL_DIR / "scheduler"
 
 # Device targets for the test (current hardware: cuda:0=3090, cuda:1=Pro 6000, cuda:2=3090)
 UNET_DEVICE = "cuda:1"   # largest VRAM, holds 18GB transformer
@@ -37,7 +43,12 @@ def main() -> int:
         p = torch.cuda.get_device_properties(i)
         print(f"  cuda:{i} {p.name} {p.total_memory / 1024**3:.1f}GB")
 
-    from diffusers import Flux2Pipeline, Flux2Transformer2DModel, AutoencoderKL
+    from diffusers import (
+        AutoencoderKLFlux2,
+        Flux2KleinPipeline,
+        Flux2Transformer2DModel,
+        FlowMatchEulerDiscreteScheduler,
+    )
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print(f"\nLoading transformer from {TRANSFORMER_DIR} -> {UNET_DEVICE}")
@@ -54,16 +65,20 @@ def main() -> int:
     print(f"  text_encoder.device={next(text_encoder.parameters()).device}")
 
     print(f"\nLoading vae from {VAE_DIR} -> {VAE_DEVICE}")
-    vae = AutoencoderKL.from_pretrained(VAE_DIR, torch_dtype=torch.bfloat16).to(VAE_DEVICE)
+    vae = AutoencoderKLFlux2.from_pretrained(VAE_DIR, torch_dtype=torch.bfloat16).to(VAE_DEVICE)
     print(f"  vae.device={next(vae.parameters()).device}")
 
-    print("\nAssembling Flux2Pipeline with cross-device components")
-    pipe = Flux2Pipeline(
-        transformer=transformer,
+    print(f"\nLoading scheduler from {SCHEDULER_DIR}")
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(SCHEDULER_DIR)
+
+    print("\nAssembling Flux2KleinPipeline with cross-device components")
+    pipe = Flux2KleinPipeline(
+        scheduler=scheduler,
+        vae=vae,
         text_encoder=text_encoder,
         tokenizer=tokenizer,
-        vae=vae,
-        scheduler=None,  # let Pipeline pick default
+        transformer=transformer,
+        is_distilled=True,
     )
 
     print("\nRunning 2-step inference as smoke test")
@@ -74,7 +89,7 @@ def main() -> int:
         print(f"  ERROR expected (512,512) got {img.size}")
         return 1
 
-    print("\n✅ Cross-device Flux2Pipeline assembly works")
+    print("\n✅ Cross-device Flux2KleinPipeline assembly works")
     return 0
 
 
