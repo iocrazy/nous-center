@@ -742,3 +742,49 @@ def test_vae_decode_runs_bn_rescale_unpatchify_and_postprocess(_stub_diffusers):
     pipe.vae.decode.assert_called_once_with("UNPATCHED", return_dict=False)
     pipe.image_processor.postprocess.assert_called_once_with("DECODED", output_type="pil")
     assert out is expected_image
+
+
+# ---------------------------------------------------------------------------
+# PR-2 Task 3: from_components factory + ImageSampler routing
+# ---------------------------------------------------------------------------
+
+
+def test_from_components_classmethod_exists():
+    """from_components is the PR-4-facing factory for component-level construction."""
+    from src.services.inference.image_diffusers import DiffusersImageBackend
+    assert hasattr(DiffusersImageBackend, "from_components")
+    assert callable(DiffusersImageBackend.from_components)
+
+
+def test_from_components_requires_all_three_kinds():
+    """Must have unet + clip + vae; missing any → ValueError."""
+    from src.services.inference.component_spec import ComponentSpec
+    from src.services.inference.image_diffusers import DiffusersImageBackend
+    with pytest.raises(ValueError, match="missing component kinds"):
+        DiffusersImageBackend.from_components({
+            "unet": ComponentSpec(kind="unet", file="/p/u", device="cpu", dtype="bfloat16"),
+            "clip": ComponentSpec(kind="clip", file="/p/c", device="cpu", dtype="bfloat16"),
+            # vae missing
+        })
+
+
+def test_from_components_stores_components_dict():
+    from src.services.inference.component_spec import ComponentSpec
+    from src.services.inference.image_diffusers import DiffusersImageBackend
+    components = {
+        "unet": ComponentSpec(kind="unet", file="/p/u", device="cpu", dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file="/p/c", device="cpu", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file="/p/v", device="cpu", dtype="bfloat16"),
+    }
+    adapter = DiffusersImageBackend.from_components(components, pipeline_class="Flux2KleinPipeline")
+    assert adapter._components == components
+    assert adapter._pipeline_class == "Flux2KleinPipeline"
+
+
+def test_legacy_init_path_still_works():
+    """Existing __init__(paths=..., device=...) must keep working for yaml flow."""
+    from src.services.inference.image_diffusers import DiffusersImageBackend
+    adapter = DiffusersImageBackend(paths={"main": "/some/path"}, device="cuda")
+    assert adapter.paths == {"main": "/some/path"}
+    # Crucially: no _components attribute on legacy path (or it's None)
+    assert not hasattr(adapter, "_components") or adapter._components is None

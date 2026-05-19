@@ -21,7 +21,10 @@ import io
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.services.inference.component_spec import ComponentSpec
 
 from src.services.inference.base import (
     ImageRequest,
@@ -328,6 +331,11 @@ class DiffusersImageBackend(InferenceAdapter):
         self._torch_dtype = torch_dtype
         self._loaded_loras: set[str] = set()
         self._pipe: Any = None  # diffusers Flux2Pipeline | FluxPipeline
+        # PR-2: component-level construction state. Default None on legacy
+        # yaml path so the load/infer dispatchers can switch on presence.
+        self._components: dict[str, Any] | None = None
+        self._pipeline_class: str | None = None
+        self._sampler: Any = None  # ImageSampler — set by load_from_components()
 
     @property
     def lora_count(self) -> int:
@@ -388,6 +396,18 @@ class DiffusersImageBackend(InferenceAdapter):
         return 0
 
     async def load(self, device: str | None = None) -> None:
+        """Dispatch to component-level or legacy yaml-level load.
+
+        Components path (from_components): `self._components` is set, so build
+        the Pipeline + ImageSampler via load_from_components().
+        Legacy yaml path: fall through to the original load body (now renamed).
+        """
+        if getattr(self, "_components", None) is not None:
+            await self.load_from_components()
+            return
+        await self._legacy_load_impl(device)
+
+    async def _legacy_load_impl(self, device: str | None = None) -> None:
         """Build a diffusers pipeline using the layout indicated by self.paths.
 
         Two supported layouts:
@@ -599,6 +619,17 @@ class DiffusersImageBackend(InferenceAdapter):
     async def infer(
         self, req: InferenceRequest, cancel_flag: CancelFlag | None = None
     ) -> InferenceResult:
+        """Dispatch to ImageSampler (component path) or legacy Pipeline.__call__."""
+        if self._sampler is not None:
+            # Wire the externally-provided cancel_flag into the sampler
+            if cancel_flag is not None:
+                self._sampler.cancel_flag = cancel_flag
+            return await self._sampler.sample(req)
+        return await self._legacy_infer_impl(req, cancel_flag)
+
+    async def _legacy_infer_impl(
+        self, req: InferenceRequest, cancel_flag: CancelFlag | None = None
+    ) -> InferenceResult:
         """Run image generation.
 
         V1.5 Lane G: 采样跑在 asyncio.to_thread 里，外面包 asyncio.wait_for
@@ -687,3 +718,122 @@ class DiffusersImageBackend(InferenceAdapter):
             },
             usage=UsageMeter(image_count=1, latency_ms=latency_ms),
         )
+
+    # ===== PR-2: component-level construction + ImageSampler routing =====
+    #
+    # from_components is a classmethod factory used by PR-4 workflow nodes.
+    # It bypasses the yaml model_key path entirely. The legacy
+    # __init__(paths=..., device=...) constructor stays untouched for yaml flow.
+
+    @classmethod
+    def from_components(
+        cls,
+        components: dict[str, "ComponentSpec"],
+        pipeline_class: str = "Flux2KleinPipeline",
+        **kwargs,
+    ) -> "DiffusersImageBackend":
+        """Build adapter from per-component descriptors.
+
+        Required kinds: 'unet', 'clip', 'vae'. Adapter holds the dict; load()
+        builds the cross-device Pipeline + ImageSampler.
+        """
+        required = {"unet", "clip", "vae"}
+        missing = required - set(components.keys())
+        if missing:
+            raise ValueError(f"from_components: missing component kinds {sorted(missing)}")
+
+        from src.services.inference.base import InferenceAdapter
+
+        instance = cls.__new__(cls)
+        # Bypass legacy __init__ — base wants `paths` dict but the component
+        # path doesn't use it. Sentinel value keeps the base class happy.
+        InferenceAdapter.__init__(instance, paths={"_from_components": "true"}, device="cuda")
+        instance._components = components
+        instance._pipeline_class = pipeline_class
+        instance._offload_strategy = "no_offload"
+        instance._lora_paths = {}
+        instance._torch_dtype = components["unet"].dtype
+        instance._loaded_loras = set()
+        instance._pipe = None
+        instance._sampler = None  # ImageSampler — built in load_from_components
+        return instance
+
+    async def load_from_components(self) -> None:
+        """Construct Pipeline (cross-device assembly) + ImageSampler.
+
+        Pipeline assembly is verified to work cross-device by Task 0 risk gate;
+        only Pipeline.__call__ crashes, which we sidestep by routing infer()
+        through ImageSampler.
+        """
+        from pathlib import Path
+
+        from diffusers import (
+            AutoencoderKLFlux2,
+            Flux2KleinPipeline,
+            Flux2Transformer2DModel,
+            FlowMatchEulerDiscreteScheduler,
+        )
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        from src.services.inference.image_sampler import ImageSampler
+        from src.services.inference.model_arch_adapter import MODEL_ARCH_REGISTRY
+
+        unet_spec = self._components["unet"]
+        clip_spec = self._components["clip"]
+        vae_spec = self._components["vae"]
+
+        def _torch_dtype_from(dtype_str: str):
+            import torch
+            return {
+                "bfloat16": torch.bfloat16,
+                "float16": torch.float16,
+                "fp8_e4m3": torch.float8_e4m3fn,
+            }.get(dtype_str, torch.bfloat16)
+
+        def _load_module(spec, hf_class):
+            """Try diffusers HF layout first (from_pretrained on parent dir);
+            fall back to quant_loaders registry for quantized single-file."""
+            parent_dir = Path(spec.file).parent
+            try:
+                return hf_class.from_pretrained(parent_dir, torch_dtype=_torch_dtype_from(spec.dtype))
+            except Exception:
+                from src.services.inference.quant_loaders import QUANT_LOADERS
+                sd = QUANT_LOADERS.dispatch(spec)
+                module = hf_class.from_config(parent_dir / "config.json")
+                module.load_state_dict(sd, strict=False)
+                return module
+
+        transformer = _load_module(unet_spec, Flux2Transformer2DModel).to(unet_spec.device)
+        text_encoder = _load_module(clip_spec, AutoModelForCausalLM).to(clip_spec.device)
+        vae = _load_module(vae_spec, AutoencoderKLFlux2).to(vae_spec.device)
+
+        # Tokenizer lives in <model>/tokenizer/ (peer of text_encoder/)
+        tokenizer_dir = Path(clip_spec.file).parent.parent / "tokenizer"
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
+
+        # Scheduler — load from <model>/scheduler/
+        scheduler_dir = Path(unet_spec.file).parent.parent / "scheduler"
+        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(scheduler_dir)
+
+        # Construct the pipe BEFORE applying LoRAs — _apply_loras reads
+        # self._pipe.peft_config and calls self._pipe.load_lora_weights /
+        # set_adapters, so the pipe must be wired up first.
+        self._pipe = Flux2KleinPipeline(
+            transformer=transformer,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            vae=vae,
+            scheduler=scheduler,
+        )
+
+        if unet_spec.loras:
+            self._apply_loras(unet_spec.loras)  # existing helper in this file
+
+        # Construct sampler — held alongside _pipe, used by infer()
+        arch_adapter = MODEL_ARCH_REGISTRY.get(self._pipeline_class)
+        if arch_adapter is None:
+            raise RuntimeError(
+                f"No ModelArchAdapter registered for {self._pipeline_class!r}. "
+                f"Known: {sorted(MODEL_ARCH_REGISTRY)}"
+            )
+        self._sampler = ImageSampler(pipe=self._pipe, arch_adapter=arch_adapter)
