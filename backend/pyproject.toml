@@ -60,6 +60,9 @@ image = [
     "safetensors>=0.4",
     "sentencepiece>=0.2",  # Qwen3 tokenizer
     "protobuf>=4.25",      # transformers tokenizer protobuf path
+    # PR-2 SSIM regression test gate (tests/test_image_sampler_ssim.py) —
+    # only loaded when NOUS_SSIM_TEST=1. scikit-image pulls scipy.
+    "scikit-image>=0.24",
 ]
 
 [tool.uv]
