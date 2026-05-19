@@ -211,13 +211,28 @@ class WorkflowExecutor:
         # 由 adapter 自决,这里 None 也合法)。
         data = node.get("data", {})
         model_key = data.get("model_key") or data.get("engine") or data.get("model")
+        # protocol §3.3:RunNode.node_type 是 role("image" / "tts"),不是
+        # workflow 画布的 type("image_generate" / "tts_engine") —— runner_process
+        # ._build_request 按 role 分流构造 ImageRequest / AudioRequest。
+        # _NODE_TYPE_TO_GROUP_ID 顶部维护的映射本就把 workflow type → role,这里复用。
+        group_id = _NODE_TYPE_TO_GROUP_ID.get(node["type"])
+        if group_id is None:
+            raise ExecutionError(
+                f"节点 {node['id']} 的 type {node['type']!r} 不在 dispatch 节点白名单"
+            )
+        # merge node.data → inputs:节点本地配置(steps/width/height/loras/cfg_scale/seed)
+        # 和上游 edges 传过来的 inputs 合并。inputs 后写覆盖 data —— 上游 text_input
+        # 给 prompt 时盖掉 data.prompt 是 inline 路径的语义(see image.py:49)。
+        # 不带本步,runner 端 ImageRequest 拿不到 steps/width,会用 Field default
+        # 25/1024,但 loras / cfg_scale / seed 全丢。
+        merged_inputs = {**{k: v for k, v in data.items() if not k.startswith("_")}, **inputs}
 
         spec = P.RunNode(
             task_id=task_id,
             node_id=node["id"],
-            node_type=node["type"],
+            node_type=group_id,
             model_key=model_key,
-            inputs=inputs,
+            inputs=merged_inputs,
         )
         result = await client.run_node(spec, workflow_name=self._workflow_name)
         # 真 RunnerClient 返回 P.NodeResult dataclass;Lane S FakeRunnerClient

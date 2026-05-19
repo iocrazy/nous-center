@@ -155,11 +155,20 @@ def _build_request(node: P.RunNode):
     from src.services.inference.base import AudioRequest, ImageRequest
 
     if node.node_type == "image":
+        # 转发 ImageRequest 全部字段 —— executor 已把 node.data 合并进 inputs,
+        # steps/width/height/cfg_scale/seed/loras 都在这里能拿到。缺省走 pydantic
+        # Field default(steps=25 / 1024x1024 / cfg_scale=7.0)。
+        loras_raw = node.inputs.get("loras") or []
         return ImageRequest(
             request_id=f"task-{node.task_id}",
             prompt=str(node.inputs.get("prompt", "")),
             negative_prompt=str(node.inputs.get("negative_prompt", "")),
-            steps=int(node.inputs.get("steps", 1) or 1),
+            steps=int(node.inputs.get("steps") or 25),
+            width=int(node.inputs.get("width") or 1024),
+            height=int(node.inputs.get("height") or 1024),
+            cfg_scale=float(node.inputs.get("cfg_scale") or 7.0),
+            seed=int(node.inputs["seed"]) if node.inputs.get("seed") not in (None, "") else None,
+            loras=loras_raw if isinstance(loras_raw, list) else [],
         )
     if node.node_type == "tts":
         return AudioRequest(
@@ -279,9 +288,28 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         # 排空 progress 发送 —— 保证「所有 NodeProgress 先到、NodeResult 后到」
         if progress_tasks:
             await asyncio.gather(*progress_tasks, return_exceptions=True)
+        # outputs payload —— 与 inline image_generate/tts 节点对齐(spec §3.3 +
+        # workflow_publish exposed_outputs 白名单)。image 走 write_image 落盘签
+        # URL(NAS_OUTPUTS_PATH + ADMIN_SESSION_SECRET HMAC),把 image_url 塞进
+        # outputs,下游 image_output 节点才能从 inputs.image_url 取到。把 bytes
+        # 通过 msgpack pipe 直接传 50MB 是反模式。
+        outputs: dict[str, Any] = {"meta": result.metadata, "media_type": result.media_type}
+        if node.node_type == "image" and result.media_type.startswith("image/") and result.data:
+            from src.services.image_output_storage import write_image
+            ext = result.media_type.split("/", 1)[1].split("+", 1)[0] or "png"
+            ttl = int(node.inputs.get("url_ttl_seconds") or 3600)
+            record = write_image(result.data, ext=ext, ttl_seconds=ttl)
+            meta = result.metadata or {}
+            outputs.update({
+                "image_url": record["url"],
+                "image_uuid": record["uuid"],
+                "image_expires": record["expires"],
+                "width": meta.get("width"),
+                "height": meta.get("height"),
+            })
         await ch.send_message(P.NodeResult(
             task_id=node.task_id, node_id=node.node_id, status="completed",
-            outputs={"meta": result.metadata, "media_type": result.media_type},
+            outputs=outputs,
             error=None,
             duration_ms=int((time.monotonic() - started) * 1000),
         ))
