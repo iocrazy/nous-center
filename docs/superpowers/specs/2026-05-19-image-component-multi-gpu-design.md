@@ -398,8 +398,11 @@ if node.node_type == "image":
 ```python
 ComponentKey = tuple[
     str,                            # file 绝对路径
-    str,                            # device,如 "cuda:1"
-    frozenset[tuple[str, float]],   # lora_set,每条 (lora_file, strength) 排序后 frozenset
+    str,                            # device,如 "cuda:1"(canonicalized — 无 leading zero)
+    str,                            # dtype,如 "bfloat16" / "fp8_e4m3" — 必须在 key 里!
+                                    # 同 file 在不同 target dtype 下 dequant 出的张量不同
+                                    # (bf16 vs fp16 内存表示不同),不能共享 cache entry。
+    frozenset[tuple[str, float]],   # lora_set,每条 (lora_file, strength) frozenset
 ]
 ```
 
@@ -407,6 +410,14 @@ ComponentKey = tuple[
 - `is_loaded(model_key)` 老 API 兼容:翻译后查询(三组件全 loaded → True)
 - 新 `is_component_loaded(key: ComponentKey) -> Literal["loaded","loading","cold","failed"]` API
 - `evict_lru(gpu_index)` 不变(按 entry.gpu_index 维度淘汰)
+- **Device canonicalization**:`cuda:00` / `cuda:007` 等带前导零的写法必须在 `ComponentSpec.device` validator 里规范化为 `cuda:0` / `cuda:7`,否则两 spec 物理同卡但 ComponentKey 不等,造成 cache 双装
+
+**ComponentSpec 跨字段约束**(rev 2 修订 — code review 第 2 条):
+- `loras` 非空 → `kind == "unet"`(Flux2 LoRA 只 patch DiT)
+- `adapter_arch is not None` → `kind == "unet"`
+- `clip_arch is not None` → `kind == "clip"`
+
+违反任一约束 pydantic ValidationError,防止静默丢字段。
 
 ### 5.6 ImageSampler(rev 2 新增 — 自写采样循环)
 
