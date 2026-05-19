@@ -3,7 +3,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src.services.component_scanner import load_model_paths_config, ROLE_DIRS
+
+
+@pytest.fixture(autouse=True)
+def _reset_component_cache():
+    """Drop the module-global component cache before AND after each test.
+    The cache has no base_path key, so a tmp_path monkeypatch from one test
+    would otherwise be invisible to a warm cache in the next test."""
+    from src.services.component_scanner import invalidate_component_cache
+    invalidate_component_cache()
+    yield
+    invalidate_component_cache()
 
 
 def test_load_model_paths_config_returns_role_dirs():
@@ -94,10 +107,19 @@ def test_get_component_index_returns_all_roles(tmp_path, monkeypatch):
     _make_file(tmp_path, "image/text_encoders/c.safetensors")
     _make_file(tmp_path, "image/vae/v.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
-    from src.services.component_scanner import get_component_index, invalidate_component_cache
-    invalidate_component_cache()
+    from src.services.component_scanner import get_component_index
     idx = get_component_index()
     assert set(idx.keys()) == {"unet", "clip", "vae", "loras"}
     assert len(idx["unet"]) == 1
     assert len(idx["clip"]) == 1
     assert len(idx["vae"]) == 1
+
+
+def test_load_model_paths_config_fail_soft_on_malformed(tmp_path, monkeypatch):
+    """Corrupt YAML → empty pattern lists, not a crash."""
+    bad = tmp_path / "model_paths.yaml"
+    bad.write_text("roles:\n  unet:\n    - [unclosed")  # malformed YAML
+    monkeypatch.setattr("src.services.component_scanner._CONFIG_PATH", bad)
+    from src.services.component_scanner import load_model_paths_config
+    cfg = load_model_paths_config()
+    assert cfg == {"unet": [], "clip": [], "vae": [], "loras": []}

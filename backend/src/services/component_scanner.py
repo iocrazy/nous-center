@@ -25,12 +25,17 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "configs" / "mode
 
 def load_model_paths_config() -> dict[str, list[str]]:
     """Load role → glob-patterns from model_paths.yaml. Fail-soft to empty
-    pattern lists if the file is missing."""
+    pattern lists if the file is missing OR malformed (keeps the scanner from
+    crashing the app on a fresh checkout or a hand-edited broken config)."""
     if not _CONFIG_PATH.exists():
         logger.warning("model_paths.yaml not found at %s; component index will be empty", _CONFIG_PATH)
         return {role: [] for role in ROLE_DIRS}
-    with open(_CONFIG_PATH) as f:
-        data = yaml.safe_load(f) or {}
+    try:
+        with open(_CONFIG_PATH) as f:
+            data = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        logger.error("model_paths.yaml malformed (%s); component index will be empty", e)
+        return {role: [] for role in ROLE_DIRS}
     roles = data.get("roles", {})
     return {role: list(roles.get(role, [])) for role in ROLE_DIRS}
 

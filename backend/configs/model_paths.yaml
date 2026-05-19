@@ -1,7 +1,8 @@
 # backend/configs/model_paths.yaml
 # role → glob-pattern dirs (relative to LOCAL_MODELS_PATH). Analogous to ComfyUI
 # extra_model_paths.yaml. component_scanner globs these to populate loader-node
-# file dropdowns (PR-4). Non-recursive globs — keep dirs flat.
+# file dropdowns (PR-4). Most patterns are flat globs; loras also has a
+# recursive (**) variant for nested LoRA collections.
 #
 # base_path is NOT in this file — it's read from settings.LOCAL_MODELS_PATH.
 
