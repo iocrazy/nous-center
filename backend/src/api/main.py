@@ -606,6 +606,8 @@ def create_app() -> FastAPI:
     app.include_router(models_routes.router)
     app.include_router(loras_routes.router)
     app.include_router(image_files_routes.router)
+    from src.api.routes import components as components_routes
+    app.include_router(components_routes.router)
     app.include_router(audio.router)
     app.include_router(voices.router)
     app.include_router(openai_compat.router)
