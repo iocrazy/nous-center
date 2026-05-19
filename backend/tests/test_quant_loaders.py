@@ -287,3 +287,59 @@ def test_mxfp8mixed_loader_priority_over_fp8mixed():
                    if m(ComponentSpec(kind="unet", file="x-fp8mixed.safetensors",
                                       device="cpu", dtype="bfloat16")))
     assert mxfp8_idx < fp8_idx, "mxfp8mixed matcher must register before fp8mixed"
+
+
+# ---------- nvfp4mixed (PR-1 Task 5) ----------
+
+
+def _make_nvfp4mixed_safetensors(tmp_path: Path, name: str) -> Path:
+    """Synthetic nvfp4 fixture: 4-bit weights packed 2-per-uint8 + per-16-block fp32 scale.
+
+    Format spec (community Flux2 nvfp4 quants):
+      <name>.weight        : uint8, shape = (numel / 2,)  — two 4-bit weights per byte
+      <name>.weight_scale  : float32, shape = (numel / 16,) — one scale per 16-element block
+      <name>.weight.comfy_quant : marker (uint8 [3])
+      <name>.weight_shape  : int32 [H, W] — original shape for unpack
+    """
+    NUMEL = 64
+    BLOCK = 16
+    packed = torch.randint(0, 256, (NUMEL // 2,), dtype=torch.uint8)
+    scale = torch.randn(NUMEL // BLOCK, dtype=torch.float32).abs() + 0.1
+    plain = torch.randn(2, 2, dtype=torch.bfloat16)
+    sd = {
+        "block.0.weight": packed,
+        "block.0.weight_scale": scale,
+        "block.0.weight.comfy_quant": torch.tensor([3], dtype=torch.uint8),
+        "block.0.weight_shape": torch.tensor([8, 8], dtype=torch.int32),  # original shape for unpack
+        "block.1.weight": plain,
+    }
+    path = tmp_path / f"{name}.safetensors"
+    save_file(sd, str(path))
+    return path
+
+
+def test_nvfp4mixed_loader_unpacks_4bit_blocks(tmp_path):
+    sf = _make_nvfp4mixed_safetensors(tmp_path, "Flux2-X-nvfp4mixed")
+    spec = ComponentSpec(kind="unet", file=str(sf), device="cpu", dtype="bfloat16")
+
+    sd = QUANT_LOADERS.dispatch(spec)
+
+    # 4-bit unpacked → 64 elements → reshaped to (8, 8)
+    assert sd["block.0.weight"].shape == (8, 8)
+    assert sd["block.0.weight"].dtype == torch.bfloat16
+    # metadata dropped
+    for suffix in ("_scale", ".comfy_quant", "_shape"):
+        assert not any(k.endswith(suffix) for k in sd)
+    # plain tensor preserved
+    assert sd["block.1.weight"].shape == (2, 2)
+
+
+def test_nvfp4mixed_loader_priority_over_mxfp8():
+    matchers = [m for m, _fn in QUANT_LOADERS._loaders]
+    nvfp4_idx = next(i for i, m in enumerate(matchers)
+                     if m(ComponentSpec(kind="unet", file="x-nvfp4mixed.safetensors",
+                                        device="cpu", dtype="bfloat16")))
+    mxfp8_idx = next(i for i, m in enumerate(matchers)
+                     if m(ComponentSpec(kind="unet", file="x-mxfp8mixed.safetensors",
+                                        device="cpu", dtype="bfloat16")))
+    assert nvfp4_idx < mxfp8_idx
