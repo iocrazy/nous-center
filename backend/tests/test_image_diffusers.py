@@ -788,3 +788,74 @@ def test_legacy_init_path_still_works():
     assert adapter.paths == {"main": "/some/path"}
     # Crucially: no _components attribute on legacy path (or it's None)
     assert not hasattr(adapter, "_components") or adapter._components is None
+
+
+@pytest.mark.asyncio
+async def test_load_dispatches_to_load_from_components(monkeypatch):
+    """from_components-built adapter → load() routes to load_from_components()."""
+    from src.services.inference.component_spec import ComponentSpec
+    from src.services.inference.image_diffusers import DiffusersImageBackend
+
+    called = {"lfc": False, "legacy": False}
+
+    async def fake_lfc(self):
+        called["lfc"] = True
+
+    async def fake_legacy(self, device=None):
+        called["legacy"] = True
+
+    monkeypatch.setattr(DiffusersImageBackend, "load_from_components", fake_lfc)
+    monkeypatch.setattr(DiffusersImageBackend, "_legacy_load_impl", fake_legacy)
+
+    adapter = DiffusersImageBackend.from_components({
+        "unet": ComponentSpec(kind="unet", file="/p/u", device="cpu", dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file="/p/c", device="cpu", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file="/p/v", device="cpu", dtype="bfloat16"),
+    })
+    await adapter.load()
+    assert called == {"lfc": True, "legacy": False}
+
+
+@pytest.mark.asyncio
+async def test_legacy_load_calls_legacy_impl(monkeypatch):
+    """Legacy __init__-built adapter → load() routes to _legacy_load_impl()."""
+    from src.services.inference.image_diffusers import DiffusersImageBackend
+
+    called = {"lfc": False, "legacy": False}
+
+    async def fake_lfc(self):
+        called["lfc"] = True
+
+    async def fake_legacy(self, device=None):
+        called["legacy"] = True
+
+    monkeypatch.setattr(DiffusersImageBackend, "load_from_components", fake_lfc)
+    monkeypatch.setattr(DiffusersImageBackend, "_legacy_load_impl", fake_legacy)
+
+    adapter = DiffusersImageBackend(paths={"main": "/x"}, device="cuda")
+    await adapter.load()
+    assert called == {"lfc": False, "legacy": True}
+
+
+@pytest.mark.asyncio
+async def test_infer_dispatches_to_sampler_when_set():
+    """When self._sampler is set, infer() calls sampler.sample(req)."""
+    from unittest.mock import AsyncMock
+    from src.services.inference.base import ImageRequest
+    from src.services.inference.component_spec import ComponentSpec
+    from src.services.inference.image_diffusers import DiffusersImageBackend
+
+    adapter = DiffusersImageBackend.from_components({
+        "unet": ComponentSpec(kind="unet", file="/p/u", device="cpu", dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file="/p/c", device="cpu", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file="/p/v", device="cpu", dtype="bfloat16"),
+    })
+    # Inject a mock sampler — bypass real load_from_components
+    fake_sampler = AsyncMock()
+    fake_sampler.sample.return_value = "fake_result"
+    adapter._sampler = fake_sampler
+
+    req = ImageRequest(request_id="t", prompt="cat", steps=1, width=64, height=64)
+    result = await adapter.infer(req)
+    assert result == "fake_result"
+    fake_sampler.sample.assert_awaited_once()

@@ -730,12 +730,15 @@ class DiffusersImageBackend(InferenceAdapter):
         cls,
         components: dict[str, "ComponentSpec"],
         pipeline_class: str = "Flux2KleinPipeline",
-        **kwargs,
     ) -> "DiffusersImageBackend":
         """Build adapter from per-component descriptors.
 
-        Required kinds: 'unet', 'clip', 'vae'. Adapter holds the dict; load()
-        builds the cross-device Pipeline + ImageSampler.
+        Args:
+            components: dict with required keys 'unet', 'clip', 'vae' (each ComponentSpec).
+            pipeline_class: must be a key in MODEL_ARCH_REGISTRY. PR-2 only
+                supports 'Flux2KleinPipeline'; PR-3+ adds SDXL/FluxDev/Z-Image.
+
+        Raises ValueError if any required component kind is missing.
         """
         required = {"unet", "clip", "vae"}
         missing = required - set(components.keys())
@@ -747,7 +750,11 @@ class DiffusersImageBackend(InferenceAdapter):
         instance = cls.__new__(cls)
         # Bypass legacy __init__ — base wants `paths` dict but the component
         # path doesn't use it. Sentinel value keeps the base class happy.
-        InferenceAdapter.__init__(instance, paths={"_from_components": "true"}, device="cuda")
+        # device="multi" signals that per-component devices live in
+        # components[kind].device, not self.device. Callers reading
+        # self.device on a component-path adapter get a clear sentinel
+        # instead of the misleading "cuda" default.
+        InferenceAdapter.__init__(instance, paths={"_from_components": "true"}, device="multi")
         instance._components = components
         instance._pipeline_class = pipeline_class
         instance._offload_strategy = "no_offload"
@@ -766,6 +773,8 @@ class DiffusersImageBackend(InferenceAdapter):
         through ImageSampler.
         """
         from pathlib import Path
+
+        import torch
 
         from diffusers import (
             AutoencoderKLFlux2,
@@ -792,48 +801,94 @@ class DiffusersImageBackend(InferenceAdapter):
 
         def _load_module(spec, hf_class):
             """Try diffusers HF layout first (from_pretrained on parent dir);
-            fall back to quant_loaders registry for quantized single-file."""
+            fall back to quant_loaders registry for quantized single-file.
+
+            Only catches OSError/ValueError from from_pretrained — those indicate
+            "this isn't a diffusers-layout dir" (missing config.json, malformed
+            HF metadata). Other exceptions (OOM, CUDA errors) propagate so the
+            real failure mode is visible.
+            """
             parent_dir = Path(spec.file).parent
             try:
                 return hf_class.from_pretrained(parent_dir, torch_dtype=_torch_dtype_from(spec.dtype))
-            except Exception:
-                from src.services.inference.quant_loaders import QUANT_LOADERS
-                sd = QUANT_LOADERS.dispatch(spec)
-                module = hf_class.from_config(parent_dir / "config.json")
-                module.load_state_dict(sd, strict=False)
-                return module
+            except (OSError, ValueError) as primary:
+                try:
+                    from src.services.inference.quant_loaders import QUANT_LOADERS
+                    sd = QUANT_LOADERS.dispatch(spec)
+                    module = hf_class.from_config(parent_dir / "config.json")
+                    missing, unexpected = module.load_state_dict(sd, strict=False)
+                    if missing or unexpected:
+                        logger.info(
+                            "_load_module(%s): quant fallback loaded with missing=%d unexpected=%d",
+                            type(hf_class).__name__, len(missing), len(unexpected),
+                        )
+                    return module
+                except Exception as quant_exc:
+                    raise RuntimeError(
+                        f"_load_module({spec.file}): from_pretrained failed ({type(primary).__name__}: {primary}); "
+                        f"quant_loaders fallback also failed ({type(quant_exc).__name__}: {quant_exc})"
+                    ) from quant_exc
 
-        transformer = _load_module(unet_spec, Flux2Transformer2DModel).to(unet_spec.device)
-        text_encoder = _load_module(clip_spec, AutoModelForCausalLM).to(clip_spec.device)
-        vae = _load_module(vae_spec, AutoencoderKLFlux2).to(vae_spec.device)
+        # Cleanup tracker — modules already moved to GPU at the point of failure
+        loaded_on_gpu: list = []
+        try:
+            transformer = _load_module(unet_spec, Flux2Transformer2DModel).to(unet_spec.device)
+            loaded_on_gpu.append(transformer)
+            text_encoder = _load_module(clip_spec, AutoModelForCausalLM).to(clip_spec.device)
+            loaded_on_gpu.append(text_encoder)
+            vae = _load_module(vae_spec, AutoencoderKLFlux2).to(vae_spec.device)
+            loaded_on_gpu.append(vae)
 
-        # Tokenizer lives in <model>/tokenizer/ (peer of text_encoder/)
-        tokenizer_dir = Path(clip_spec.file).parent.parent / "tokenizer"
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
+            # Tokenizer / scheduler from HF layout (sibling dirs)
+            tokenizer_dir = Path(clip_spec.file).parent.parent / "tokenizer"
+            if not tokenizer_dir.is_dir():
+                raise FileNotFoundError(
+                    f"tokenizer dir not found at {tokenizer_dir} — "
+                    f"component path expects HF layout <model_root>/{{transformer,text_encoder,vae,tokenizer,scheduler}}/"
+                )
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
 
-        # Scheduler — load from <model>/scheduler/
-        scheduler_dir = Path(unet_spec.file).parent.parent / "scheduler"
-        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(scheduler_dir)
+            scheduler_dir = Path(unet_spec.file).parent.parent / "scheduler"
+            if not scheduler_dir.is_dir():
+                raise FileNotFoundError(
+                    f"scheduler dir not found at {scheduler_dir} — "
+                    f"component path expects HF layout <model_root>/{{transformer,text_encoder,vae,tokenizer,scheduler}}/"
+                )
+            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(scheduler_dir)
 
-        # Construct the pipe BEFORE applying LoRAs — _apply_loras reads
-        # self._pipe.peft_config and calls self._pipe.load_lora_weights /
-        # set_adapters, so the pipe must be wired up first.
-        self._pipe = Flux2KleinPipeline(
-            transformer=transformer,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            vae=vae,
-            scheduler=scheduler,
-        )
-
-        if unet_spec.loras:
-            self._apply_loras(unet_spec.loras)  # existing helper in this file
-
-        # Construct sampler — held alongside _pipe, used by infer()
-        arch_adapter = MODEL_ARCH_REGISTRY.get(self._pipeline_class)
-        if arch_adapter is None:
-            raise RuntimeError(
-                f"No ModelArchAdapter registered for {self._pipeline_class!r}. "
-                f"Known: {sorted(MODEL_ARCH_REGISTRY)}"
+            # Construct the pipe BEFORE applying LoRAs — _apply_loras reads
+            # self._pipe.peft_config and calls self._pipe.load_lora_weights /
+            # set_adapters, so the pipe must be wired up first.
+            self._pipe = Flux2KleinPipeline(
+                transformer=transformer,
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                vae=vae,
+                scheduler=scheduler,
             )
-        self._sampler = ImageSampler(pipe=self._pipe, arch_adapter=arch_adapter)
+
+            if unet_spec.loras:
+                self._apply_loras(unet_spec.loras)  # existing helper in this file
+
+            # Construct sampler — held alongside _pipe, used by infer()
+            arch_adapter = MODEL_ARCH_REGISTRY.get(self._pipeline_class)
+            if arch_adapter is None:
+                raise RuntimeError(
+                    f"No ModelArchAdapter registered for {self._pipeline_class!r}. "
+                    f"Known: {sorted(MODEL_ARCH_REGISTRY)}"
+                )
+            self._sampler = ImageSampler(pipe=self._pipe, arch_adapter=arch_adapter)
+        except Exception:
+            # Free GPU memory from partially loaded modules
+            for mod in loaded_on_gpu:
+                try:
+                    mod.to("cpu")
+                except Exception:  # noqa: BLE001 — cleanup best-effort
+                    pass
+            try:
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            self._pipe = None
+            self._sampler = None
+            raise
