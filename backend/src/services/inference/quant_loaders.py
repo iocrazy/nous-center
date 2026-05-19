@@ -103,6 +103,59 @@ def _has_comfy_quant_metadata(file_path: str) -> bool:
     return False
 
 
+@QUANT_LOADERS.register(match=lambda spec: "mxfp8mixed" in Path(spec.file).name.lower())
+def load_mxfp8mixed(spec: ComponentSpec) -> StateDict:
+    """Microscaling fp8 → dequant by block-wise E8M0 scale → target dtype.
+
+    Format: per-32-element blocks, each with a uint8 E8M0 exponent in `.weight_scale`.
+    Real file: Flux2-Klein-9B-True-v2-mxfp8mixed.safetensors (9.7GB).
+
+    Algorithm:
+      1. Load fp8 weight + uint8 scale tensor (1 byte per 32-element block)
+      2. For each block: scale_fp32 = 2.0 ** (uint8_scale - 127)   # E8M0 with bias 127
+      3. fp32_weight = fp8_weight × scale (broadcast within block)
+      4. Cast to target dtype, drop metadata keys
+    """
+    target = _dtype_str_to_torch(spec.dtype)
+    raw = load_file(spec.file, device="cpu")
+    BLOCK_SIZE = 32
+
+    clean: dict[str, torch.Tensor] = {}
+    dequant_count = 0
+    for key, tensor in raw.items():
+        if key.endswith(".weight_scale") or key.endswith(".comfy_quant"):
+            continue
+        if tensor.dtype == torch.float8_e4m3fn:
+            scale_key = key + "_scale"
+            scale_uint8 = raw.get(scale_key)
+            if scale_uint8 is None:
+                logger.warning("mxfp8: tensor %s missing %s; using fp8 cast only", key, scale_key)
+                clean[key] = tensor.to(target)
+                continue
+            # E8M0: scale = 2^(uint8 - 127)
+            scale_fp32 = torch.pow(2.0, scale_uint8.to(torch.float32) - 127.0)
+            # Broadcast block-wise: flatten weights, repeat each scale BLOCK_SIZE times
+            flat = tensor.flatten().to(torch.float32)
+            assert flat.numel() % BLOCK_SIZE == 0, \
+                f"mxfp8: {key} numel {flat.numel()} not divisible by block {BLOCK_SIZE}"
+            assert scale_fp32.numel() * BLOCK_SIZE == flat.numel(), \
+                f"mxfp8: {key} scale count {scale_fp32.numel()} × block {BLOCK_SIZE} ≠ weight numel {flat.numel()}"
+            block_scales = scale_fp32.repeat_interleave(BLOCK_SIZE)
+            dequant = (flat * block_scales).to(target).reshape(tensor.shape)
+            clean[key] = dequant
+            dequant_count += 1
+        else:
+            # Same pass-through policy as load_fp8mixed: only cast fp32/fp16
+            if tensor.dtype in (torch.float32, torch.float16):
+                clean[key] = tensor.to(target)
+            else:
+                clean[key] = tensor
+
+    logger.info("quant_loaders.mxfp8mixed: %d block-quant tensors dequant'd, %d total keys (%s)",
+                dequant_count, len(clean), Path(spec.file).name)
+    return clean
+
+
 @QUANT_LOADERS.register(match=lambda spec: (
     "fp8mixed" in Path(spec.file).name.lower()
     or _has_comfy_quant_metadata(spec.file)

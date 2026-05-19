@@ -232,3 +232,58 @@ def test_has_comfy_quant_metadata_returns_false_on_missing_file(tmp_path):
     """Missing file → fail-soft False (not FileNotFoundError)."""
     from src.services.inference.quant_loaders import _has_comfy_quant_metadata
     assert _has_comfy_quant_metadata(str(tmp_path / "does-not-exist.safetensors")) is False
+
+
+# ---------- mxfp8mixed (PR-1 Task 4) ----------
+
+
+def _make_mxfp8mixed_safetensors(tmp_path: Path, name: str) -> Path:
+    """Synthetic mxfp8 fixture: tensor in mxfp8 format with per-block scale.
+
+    Layout used by community Flux2 mxfp8 quants:
+      <name>.weight        : fp8_e4m3 weights (flat)
+      <name>.weight_scale  : uint8 E8M0 per-32-element block scales (shape = numel/32)
+      <name>.weight.comfy_quant : marker tensor (uint8)
+    Real Flux2-Klein-9B-True-v2-mxfp8mixed.safetensors uses this layout.
+    """
+    # 64 elements → 2 blocks of 32 → 2 E8M0 scales
+    w_fp8 = torch.randn(64).to(torch.float8_e4m3fn)
+    # E8M0 scales: stored as uint8 representing power-of-2 exponent (bias 127)
+    w_scale = torch.tensor([130, 128], dtype=torch.uint8)  # 2^3 and 2^1
+    plain = torch.randn(4, 4, dtype=torch.bfloat16)
+    sd = {
+        "block.0.weight": w_fp8,
+        "block.0.weight_scale": w_scale,
+        "block.0.weight.comfy_quant": torch.tensor([2], dtype=torch.uint8),  # arch=2 == mxfp8
+        "block.1.weight": plain,
+    }
+    path = tmp_path / f"{name}.safetensors"
+    save_file(sd, str(path))
+    return path
+
+
+def test_mxfp8mixed_loader_block_dequants_to_target_dtype(tmp_path):
+    sf = _make_mxfp8mixed_safetensors(tmp_path, "Flux2-X-mxfp8mixed")
+    spec = ComponentSpec(kind="unet", file=str(sf), device="cpu", dtype="bfloat16")
+
+    sd = QUANT_LOADERS.dispatch(spec)
+
+    assert "block.0.weight" in sd
+    assert sd["block.0.weight"].dtype == torch.bfloat16
+    assert sd["block.0.weight"].numel() == 64
+    assert "block.0.weight_scale" not in sd
+    assert "block.0.weight.comfy_quant" not in sd
+    # plain tensor preserved
+    assert sd["block.1.weight"].shape == (4, 4)
+
+
+def test_mxfp8mixed_loader_priority_over_fp8mixed():
+    """File named mxfp8mixed must NOT fall through to fp8mixed loader."""
+    matchers = [m for m, _fn in QUANT_LOADERS._loaders]
+    mxfp8_idx = next(i for i, m in enumerate(matchers)
+                     if m(ComponentSpec(kind="unet", file="x-mxfp8mixed.safetensors",
+                                        device="cpu", dtype="bfloat16")))
+    fp8_idx = next(i for i, m in enumerate(matchers)
+                   if m(ComponentSpec(kind="unet", file="x-fp8mixed.safetensors",
+                                      device="cpu", dtype="bfloat16")))
+    assert mxfp8_idx < fp8_idx, "mxfp8mixed matcher must register before fp8mixed"
