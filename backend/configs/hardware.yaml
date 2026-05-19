@@ -1,8 +1,11 @@
 # hardware.yaml — 实际生效的 GPU 拓扑（代码加载此文件，唯一真相源）
 #
 # 当前 = Pro 6000 + 2x3090 三卡布局（无 NVLink bridge）。
-# 实测 nvidia-smi:
-#   GPU 0: RTX 3090         24 GB  → image (cpu_offload)
+# 索引 = PCI_BUS_ID（与 nvidia-smi 一致；backend/.env 强制
+# CUDA_DEVICE_ORDER=PCI_BUS_ID，否则 torch 默认 FASTEST_FIRST 会把 Pro 6000
+# 排到 cuda:0，与本 yaml + nvidia-smi 错位，导致 ModelManager
+# get_best_gpu(nvidia-smi index) 喂给 torch 当 cuda:N 装错卡）:
+#   GPU 0: RTX 3090         24 GB  → image (cpu_offload，3090 单卡 24GB 紧)
 #   GPU 1: RTX Pro 6000 Blackwell  96 GB  → llm (35B FP16 装得下)
 #   GPU 2: RTX 3090         24 GB  → tts
 #

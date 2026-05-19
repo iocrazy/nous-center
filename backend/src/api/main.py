@@ -1,5 +1,14 @@
 import asyncio
 import logging
+import os
+
+# torch 默认 CUDA_DEVICE_ORDER=FASTEST_FIRST,把最快的卡(Pro 6000)排到 cuda:0,
+# 跟 nvidia-smi(PCI 顺序)+ hardware.yaml(按 nvidia-smi 写)错位 ——
+# ModelManager.get_best_gpu() 用 nvidia-smi poll 取 PCI index,喂给 torch
+# 当 cuda:N 就装错卡(实测 flux2 想去 Pro 6000 → 装到 3090)。
+# setdefault 在 import torch 之前固定 PCI_BUS_ID,让三个索引系统一致;
+# 用户 .env 同名变量优先(setdefault 不覆盖)。
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 from contextlib import asynccontextmanager
 from pathlib import Path
