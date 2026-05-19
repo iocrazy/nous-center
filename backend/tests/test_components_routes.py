@@ -54,3 +54,15 @@ def test_post_scan_refreshes_index(client, tmp_path):
     assert resp.status_code == 200
     vae = client.get("/api/v1/components?role=vae").json()["components"]
     assert any(c["filename"] == "v2-new.safetensors" for c in vae)
+
+
+def test_lifespan_warms_component_index(tmp_path, monkeypatch):
+    """On app startup, app.state.component_index should be populated."""
+    _make_file(tmp_path, "image/diffusion_models/warm-bf16.safetensors")
+    monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
+    from src.services.component_scanner import invalidate_component_cache
+    invalidate_component_cache()
+    app = create_app()
+    with TestClient(app):  # triggers lifespan startup
+        assert hasattr(app.state, "component_index")
+        assert "unet" in app.state.component_index
