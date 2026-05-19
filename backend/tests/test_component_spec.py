@@ -57,9 +57,11 @@ def test_component_key_is_hashable_tuple():
     )
     key = to_component_key(spec)
     assert isinstance(key, tuple)
-    file_path, device, lora_frozenset = key
+    assert len(key) == 4
+    file_path, device, dtype, lora_frozenset = key
     assert file_path == "/p/u.safe"
     assert device == "cuda:1"
+    assert dtype == "bfloat16"
     assert isinstance(lora_frozenset, frozenset)
     assert lora_frozenset == frozenset({("a", 0.8), ("b", 0.4)})
     # Hashable → usable as dict key
@@ -88,3 +90,62 @@ def test_component_spec_re_exported_from_base():
     """Spec § 5.1 says ComponentSpec lives under inference.base for caller convenience."""
     from src.services.inference.base import ComponentSpec as CS_from_base
     assert CS_from_base is ComponentSpec
+
+
+def test_device_rejects_leading_zero_cuda_index():
+    """cuda:00 / cuda:007 would otherwise collide with cuda:0 / cuda:7 in ComponentKey."""
+    with pytest.raises(ValidationError):
+        ComponentSpec(kind="vae", file="/p/x", device="cuda:00", dtype="bfloat16")
+    with pytest.raises(ValidationError):
+        ComponentSpec(kind="vae", file="/p/x", device="cuda:007", dtype="bfloat16")
+
+
+def test_device_canonicalizes_already_canonical_form():
+    """Valid forms pass through unchanged (defensive — no normalization happens for already-canonical)."""
+    s = ComponentSpec(kind="vae", file="/p/x", device="cuda:0", dtype="bfloat16")
+    assert s.device == "cuda:0"
+    s = ComponentSpec(kind="vae", file="/p/x", device="cuda:7", dtype="bfloat16")
+    assert s.device == "cuda:7"
+
+
+def test_loras_rejected_on_non_unet():
+    with pytest.raises(ValidationError, match="loras is only meaningful"):
+        ComponentSpec(kind="vae", file="/p/x", device="cuda:0", dtype="bfloat16",
+                     loras=[LoRASpec(name="bad", strength=0.5)])
+    with pytest.raises(ValidationError, match="loras is only meaningful"):
+        ComponentSpec(kind="clip", file="/p/x", device="cuda:0", dtype="bfloat16",
+                     loras=[LoRASpec(name="bad", strength=0.5)])
+
+
+def test_adapter_arch_rejected_on_non_unet():
+    with pytest.raises(ValidationError, match="adapter_arch is unet-only"):
+        ComponentSpec(kind="vae", file="/p/x", device="cuda:0", dtype="bfloat16",
+                     adapter_arch="flux2")
+    with pytest.raises(ValidationError, match="adapter_arch is unet-only"):
+        ComponentSpec(kind="clip", file="/p/x", device="cuda:0", dtype="bfloat16",
+                     adapter_arch="flux2")
+
+
+def test_clip_arch_rejected_on_non_clip():
+    with pytest.raises(ValidationError, match="clip_arch is clip-only"):
+        ComponentSpec(kind="vae", file="/p/x", device="cuda:0", dtype="bfloat16",
+                     clip_arch="qwen")
+    with pytest.raises(ValidationError, match="clip_arch is clip-only"):
+        ComponentSpec(kind="unet", file="/p/x", device="cuda:0", dtype="bfloat16",
+                     clip_arch="qwen")
+
+
+def test_component_key_distinguishes_dtype():
+    """Same file + device + loras, different dtype → distinct cache keys."""
+    s_bf16 = ComponentSpec(kind="vae", file="/p/v.safe", device="cuda:0", dtype="bfloat16")
+    s_fp16 = ComponentSpec(kind="vae", file="/p/v.safe", device="cuda:0", dtype="float16")
+    assert to_component_key(s_bf16) != to_component_key(s_fp16)
+
+
+def test_component_key_unchanged_when_only_lora_order_differs():
+    """Sanity (regression): the existing frozenset-based stability still holds with 4-tuple."""
+    s1 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+                      loras=[LoRASpec(name="a", strength=0.8), LoRASpec(name="b", strength=0.4)])
+    s2 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+                      loras=[LoRASpec(name="b", strength=0.4), LoRASpec(name="a", strength=0.8)])
+    assert to_component_key(s1) == to_component_key(s2)
