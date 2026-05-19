@@ -86,14 +86,19 @@ def _dtype_str_to_torch(dtype_str: str) -> torch.dtype:
 
 
 def _has_comfy_quant_metadata(file_path: str) -> bool:
-    """Sniff a safetensors header for any `.comfy_quant` suffixed key (cheap — no full read)."""
+    """Sniff a safetensors header for any `.comfy_quant` suffixed key (cheap — no full read).
+
+    Fails soft (returns False) on any error — caller falls through to plain loader.
+    Operators can grep logs at DEBUG level to diagnose misdispatch.
+    """
     try:
         from safetensors import safe_open
         with safe_open(file_path, framework="pt", device="cpu") as f:
             for k in f.keys():
                 if k.endswith(".comfy_quant"):
                     return True
-    except Exception:  # noqa: BLE001 — fail-soft on header read error
+    except Exception as exc:  # noqa: BLE001 — fail-soft on header read error
+        logger.debug("comfy_quant header sniff failed for %s: %s", file_path, exc)
         return False
     return False
 
@@ -133,7 +138,15 @@ def load_fp8mixed(spec: ComponentSpec) -> StateDict:
             clean[key] = (tensor.to(torch.float32) * scale.to(torch.float32)).to(target)
             fp8_count += 1
         else:
-            clean[key] = tensor.to(target)
+            # Preserve pre-refactor behavior: only cast fp32/fp16 tensors to target;
+            # other dtypes (uint8/int/bool marker tensors) pass through unchanged.
+            # On Flux2 fp8mixed in practice the only non-fp8 tensors are bf16 weights,
+            # so this is a no-op vs the unconditional cast — but it makes the
+            # "byte-identical to pre-PR-1" claim in image_diffusers.py:129 honest.
+            if tensor.dtype in (torch.float32, torch.float16):
+                clean[key] = tensor.to(target)
+            else:
+                clean[key] = tensor
 
     logger.info("quant_loaders.fp8mixed: %d fp8 weights dequant'd, %d total keys (%s)",
                 fp8_count, len(clean), Path(spec.file).name)

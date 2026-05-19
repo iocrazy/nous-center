@@ -188,3 +188,47 @@ def test_fp8mixed_loader_match_priority_over_plain():
                      if m(ComponentSpec(kind="unet", file="plain.safetensors",
                                         device="cpu", dtype="bfloat16")))
     assert fp8_idx < plain_idx
+
+
+def test_fp8mixed_loader_dispatches_via_header_sniff_when_name_lacks_marker(tmp_path):
+    """A file WITHOUT 'fp8mixed' in name but WITH comfy_quant header keys must
+    still dispatch to load_fp8mixed (priority via _has_comfy_quant_metadata).
+    Regression for the case where users rename quantized files.
+    """
+    # Build a synthetic safetensors with comfy_quant marker keys, but named generically
+    weight_fp8 = torch.randn(4, 4).to(torch.float8_e4m3fn)
+    weight_scale = torch.tensor([0.125], dtype=torch.float32)
+    sd = {
+        "block.0.weight": weight_fp8,
+        "block.0.weight_scale": weight_scale,
+        "block.0.weight.comfy_quant": torch.tensor([1], dtype=torch.uint8),
+    }
+    p = tmp_path / "plain-looking-name.safetensors"   # no 'fp8mixed' substring
+    save_file(sd, str(p))
+    spec = ComponentSpec(kind="unet", file=str(p), device="cpu", dtype="bfloat16")
+
+    sd_loaded = QUANT_LOADERS.dispatch(spec)
+
+    # If dispatch went to plain loader, metadata keys would leak through.
+    # If dispatch went to fp8 loader (correct), metadata keys are dropped.
+    assert "block.0.weight" in sd_loaded
+    assert "block.0.weight_scale" not in sd_loaded
+    assert "block.0.weight.comfy_quant" not in sd_loaded
+    assert sd_loaded["block.0.weight"].dtype == torch.bfloat16  # dequant'd to target
+
+
+def test_has_comfy_quant_metadata_returns_false_on_malformed_file(tmp_path):
+    """Malformed safetensors file → _has_comfy_quant_metadata returns False
+    (fail-soft) so dispatch falls through to plain loader, not crash.
+    """
+    from src.services.inference.quant_loaders import _has_comfy_quant_metadata
+
+    bad = tmp_path / "garbage.safetensors"
+    bad.write_bytes(b"\x00\x01\x02\x03not a safetensors file at all")
+    assert _has_comfy_quant_metadata(str(bad)) is False
+
+
+def test_has_comfy_quant_metadata_returns_false_on_missing_file(tmp_path):
+    """Missing file → fail-soft False (not FileNotFoundError)."""
+    from src.services.inference.quant_loaders import _has_comfy_quant_metadata
+    assert _has_comfy_quant_metadata(str(tmp_path / "does-not-exist.safetensors")) is False
