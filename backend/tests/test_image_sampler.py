@@ -246,3 +246,70 @@ async def test_sample_returns_metadata():
     assert result.metadata["seed"] == 99
     assert "duration_ms" in result.metadata
     assert result.usage.latency_ms == result.metadata["duration_ms"]
+
+
+@pytest.mark.asyncio
+async def test_sampler_error_wraps_phase_failures():
+    """encode_prompt failure → SamplerError(phase='encode_prompt', step=None)."""
+    from src.services.inference.image_sampler import SamplerError
+
+    pipe = _stub_pipeline("cpu", "cpu", "cpu")
+    pipe.encode_prompt = MagicMock(side_effect=RuntimeError("bad prompt"))
+
+    sampler = ImageSampler(pipe=pipe, arch_adapter=FluxKleinArchAdapter())
+    with pytest.raises(SamplerError) as exc_info:
+        await sampler.sample(_stub_request(steps=1))
+    assert exc_info.value.phase == "encode_prompt"
+    assert exc_info.value.step is None
+    assert isinstance(exc_info.value.cause, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_sampler_error_in_denoise_includes_step_index():
+    """transformer failure at step 3 → SamplerError(phase='denoise', step=3)."""
+    from src.services.inference.image_sampler import SamplerError
+
+    torch = _t()
+    pipe = _stub_pipeline("cpu", "cpu", "cpu")
+    pipe.encode_prompt = MagicMock(return_value=(torch.randn(1, 1, 1), torch.zeros(1, 1, 3)))
+    pipe.prepare_latents = MagicMock(return_value=(torch.randn(1, 1, 64), torch.zeros(1, 1, 3)))
+    pipe.scheduler.timesteps = torch.tensor([1.0, 0.8, 0.6, 0.4, 0.2])
+    pipe._prepare_latent_image_ids = MagicMock(return_value=torch.zeros(1, 1, 3))
+
+    call_count = {"n": 0}
+    def _failing_transformer(**kw):
+        call_count["n"] += 1
+        if call_count["n"] == 4:  # step_idx=3 (0-indexed)
+            raise RuntimeError("synthetic OOM")
+        return (torch.randn(1, 1, 64),)
+    pipe.transformer.side_effect = _failing_transformer
+    pipe.scheduler.step = MagicMock(return_value=(torch.randn(1, 1, 64),))
+
+    sampler = ImageSampler(pipe=pipe, arch_adapter=FluxKleinArchAdapter())
+    with pytest.raises(SamplerError) as exc_info:
+        await sampler.sample(_stub_request(steps=5))
+    assert exc_info.value.phase == "denoise"
+    assert exc_info.value.step == 3
+    assert "synthetic OOM" in str(exc_info.value.cause)
+
+
+@pytest.mark.asyncio
+async def test_sampler_error_does_not_wrap_cancel():
+    """SamplerCancelled must pass through SamplerError (cancel != phase failure)."""
+    from src.services.inference.image_sampler import SamplerCancelled
+
+    torch = _t()
+    pipe = _stub_pipeline("cpu", "cpu", "cpu")
+    pipe.encode_prompt = MagicMock(return_value=(torch.randn(1, 1, 1), torch.zeros(1, 1, 3)))
+    pipe.prepare_latents = MagicMock(return_value=(torch.randn(1, 1, 64), torch.zeros(1, 1, 3)))
+    pipe.scheduler.timesteps = torch.tensor([1.0])
+    pipe._prepare_latent_image_ids = MagicMock(return_value=torch.zeros(1, 1, 3))
+
+    cancel_flag = CancelFlag()
+    cancel_flag.set("immediate_cancel")
+
+    sampler = ImageSampler(pipe=pipe, arch_adapter=FluxKleinArchAdapter(), cancel_flag=cancel_flag)
+    # Cancel is set immediately, _check_cancel fires before any phase work
+    with pytest.raises(SamplerCancelled, match="immediate_cancel"):
+        await sampler.sample(_stub_request(steps=1))
+    # MUST NOT be wrapped in SamplerError — propagates raw
