@@ -225,3 +225,8 @@ class InferenceAdapter(ABC):
         )
         if False:  # pragma: no cover  — satisfies AsyncIterator protocol
             yield  # type: ignore[unreachable]
+
+
+# Re-export for caller convenience — components are most commonly used by
+# DiffusersImageBackend (image_diffusers.py) and ModelManager.
+from src.services.inference.component_spec import ComponentSpec  # noqa: E402,F401
