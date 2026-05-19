@@ -9,8 +9,10 @@ Spec §4.6.
 """
 from __future__ import annotations
 
+import glob as _glob
 import logging
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -31,3 +33,89 @@ def load_model_paths_config() -> dict[str, list[str]]:
         data = yaml.safe_load(f) or {}
     roles = data.get("roles", {})
     return {role: list(roles.get(role, [])) for role in ROLE_DIRS}
+
+
+def _base_path() -> Path:
+    """LOCAL_MODELS_PATH from settings. Wrapped so tests can monkeypatch."""
+    from src.config import get_settings
+    return Path(get_settings().LOCAL_MODELS_PATH)
+
+
+def _detect_quant_type(path: Path) -> str:
+    """Filename-substring + extension based quant type. Mirrors quant_loaders matchers."""
+    name = path.name.lower()
+    if name.endswith(".gguf"):
+        return "gguf"
+    if "nvfp4mixed" in name:
+        return "nvfp4mixed"
+    if "mxfp8mixed" in name:
+        return "mxfp8mixed"
+    if "fp8mixed" in name:
+        return "fp8mixed"
+    if "fp16" in name or "float16" in name:
+        return "fp16"
+    return "bf16"
+
+
+_cache: dict[str, list[dict[str, Any]]] | None = None
+
+
+def scan_components(role: str, *, force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Return list of available files for a role. Cached module-level."""
+    if role not in ROLE_DIRS:
+        raise ValueError(f"unknown role {role!r}; expected one of {ROLE_DIRS}")
+    global _cache
+    if _cache is None or force_refresh:
+        _cache = _scan_all()
+    return _cache.get(role, [])
+
+
+def _scan_all() -> dict[str, list[dict[str, Any]]]:
+    """Glob every role's patterns under base_path; build the full index."""
+    base = _base_path()
+    cfg = load_model_paths_config()
+    index: dict[str, list[dict[str, Any]]] = {}
+    for role, patterns in cfg.items():
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for pattern in patterns:
+            for match in _glob.glob(str(base / pattern), recursive=True):
+                p = Path(match)
+                if not p.is_file():
+                    continue
+                abs_path = str(p.resolve())
+                if abs_path in seen:
+                    continue
+                seen.add(abs_path)
+                try:
+                    stat = p.stat()
+                    size_mb = round(stat.st_size / (1024 * 1024), 1)
+                    mtime = stat.st_mtime
+                except OSError:
+                    size_mb, mtime = 0.0, 0.0
+                entries.append({
+                    "filename": p.name,
+                    "abs_path": abs_path,
+                    "size_mb": size_mb,
+                    "quant_type": _detect_quant_type(p),
+                    "mtime": mtime,
+                })
+        entries.sort(key=lambda e: e["filename"])
+        index[role] = entries
+    total = sum(len(v) for v in index.values())
+    logger.info("component_scanner: indexed %d files across %d roles", total, len(index))
+    return index
+
+
+def get_component_index() -> dict[str, list[dict[str, Any]]]:
+    """Full role → entries index. Populates cache if cold."""
+    global _cache
+    if _cache is None:
+        _cache = _scan_all()
+    return dict(_cache)
+
+
+def invalidate_component_cache() -> None:
+    """Drop the cache so the next scan re-globs."""
+    global _cache
+    _cache = None
