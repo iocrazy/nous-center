@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.deps_admin import require_admin
+from src.api.websocket import ws_manager
 from src.services.component_scanner import (
     ROLE_DIRS,
     get_component_index,
@@ -35,6 +36,8 @@ async def rescan_components():
     invalidate_component_cache()
     index = get_component_index()
     total = sum(len(v) for v in index.values())
-    from src.api.websocket import ws_manager
+    # Piggyback the existing /ws/models channel with a sentinel model_id rather
+    # than open a dedicated WS channel. Frontend (PR-5) treats model_id
+    # "__components__" as the "rescan finished, refresh dropdowns" signal.
     await ws_manager.broadcast_model_status("__components__", "index_changed", f"{total} files")
     return {"status": "rescanned", "total": total}
