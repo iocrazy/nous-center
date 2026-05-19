@@ -164,15 +164,19 @@ class ImageSampler:
         # Pipeline source line 427-459. encode_prompt runs on text_encoder.device.
         # Returns (prompt_embeds, text_ids) — tensors on text_encoder.device.
         try:
-            prompt_embeds, text_ids = self.pipe.encode_prompt(
-                prompt=req.prompt,
-                device=text_encoder_device,
-                num_images_per_prompt=1,
-                max_sequence_length=512,
-            )
-            # Cross-device transfer: embeds + ids → transformer.device.
-            prompt_embeds = prompt_embeds.to(transformer_device)
-            text_ids = text_ids.to(transformer_device)
+            # no_grad: inference only — without it autograd builds a graph that
+            # accumulates across the whole sample() and OOMs on real models
+            # (diffusers Pipeline.__call__ has @torch.no_grad() on the whole method).
+            with torch.no_grad():
+                prompt_embeds, text_ids = self.pipe.encode_prompt(
+                    prompt=req.prompt,
+                    device=text_encoder_device,
+                    num_images_per_prompt=1,
+                    max_sequence_length=512,
+                )
+                # Cross-device transfer: embeds + ids → transformer.device.
+                prompt_embeds = prompt_embeds.to(transformer_device)
+                text_ids = text_ids.to(transformer_device)
         except SamplerCancelled:
             raise  # don't wrap cancels
         except Exception as e:
@@ -182,16 +186,17 @@ class ImageSampler:
         # Pipeline source line 478-509 + caller line 787-797.
         # num_latents_channels = in_channels // 4 (Flux2 packs 2x2 patches → 4x ch).
         try:
-            num_latents_channels = self.pipe.transformer.config.in_channels // 4
-            latents, latent_ids = self.pipe.prepare_latents(
-                batch_size=1,
-                num_latents_channels=num_latents_channels,
-                height=req.height,
-                width=req.width,
-                dtype=prompt_embeds.dtype,
-                device=transformer_device,
-                generator=generator,
-            )
+            with torch.no_grad():
+                num_latents_channels = self.pipe.transformer.config.in_channels // 4
+                latents, latent_ids = self.pipe.prepare_latents(
+                    batch_size=1,
+                    num_latents_channels=num_latents_channels,
+                    height=req.height,
+                    width=req.width,
+                    dtype=prompt_embeds.dtype,
+                    device=transformer_device,
+                    generator=generator,
+                )
         except SamplerCancelled:
             raise
         except Exception as e:
@@ -227,33 +232,38 @@ class ImageSampler:
             self._check_cancel()
 
             try:
-                # Broadcast t to batch dim (ONNX/CoreML-compatible).
-                timestep_input = t.expand(latents.shape[0]).to(latents.dtype)
-                latent_model_input = latents.to(self.pipe.transformer.dtype)
+                # no_grad per step — autograd graph would otherwise accumulate
+                # across all denoise steps and OOM (a 9B transformer at step ~6
+                # blows past 90GB without this). Matches diffusers
+                # Pipeline.__call__'s @torch.no_grad() decorator.
+                with torch.no_grad():
+                    # Broadcast t to batch dim (ONNX/CoreML-compatible).
+                    timestep_input = t.expand(latents.shape[0]).to(latents.dtype)
+                    latent_model_input = latents.to(self.pipe.transformer.dtype)
 
-                with self.pipe.transformer.cache_context("cond"):
-                    noise_pred = self.pipe.transformer(
-                        hidden_states=latent_model_input,
-                        timestep=timestep_input / 1000,
-                        guidance=None,                       # Klein is distilled
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,
-                        img_ids=latent_ids,
-                        joint_attention_kwargs=None,
-                        return_dict=False,
+                    with self.pipe.transformer.cache_context("cond"):
+                        noise_pred = self.pipe.transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep_input / 1000,
+                            guidance=None,                       # Klein is distilled
+                            encoder_hidden_states=prompt_embeds,
+                            txt_ids=text_ids,
+                            img_ids=latent_ids,
+                            joint_attention_kwargs=None,
+                            return_dict=False,
+                        )[0]
+                    # Slice off any trailing image-conditioning tokens. Trailing colon
+                    # mirrors diffusers Pipeline source pipeline_flux2_klein.py:858 byte-for-byte
+                    # (preserves auditability); equivalent to `[:, : latents.size(1)]`.
+                    noise_pred = noise_pred[:, : latents.size(1) :]
+
+                    # scheduler.step → next x_t. Preserve dtype across the step.
+                    latents_dtype = latents.dtype
+                    latents = self.pipe.scheduler.step(
+                        noise_pred, t, latents, return_dict=False
                     )[0]
-                # Slice off any trailing image-conditioning tokens. Trailing colon
-                # mirrors diffusers Pipeline source pipeline_flux2_klein.py:858 byte-for-byte
-                # (preserves auditability); equivalent to `[:, : latents.size(1)]`.
-                noise_pred = noise_pred[:, : latents.size(1) :]
-
-                # scheduler.step → next x_t. Preserve dtype across the step.
-                latents_dtype = latents.dtype
-                latents = self.pipe.scheduler.step(
-                    noise_pred, t, latents, return_dict=False
-                )[0]
-                if latents.dtype != latents_dtype:
-                    latents = latents.to(latents_dtype)
+                    if latents.dtype != latents_dtype:
+                        latents = latents.to(latents_dtype)
             except SamplerCancelled:
                 raise
             except Exception as e:
