@@ -8,12 +8,12 @@
 
 ## 1. 背景与问题
 
-V1.5 Lane G 重写后,`DiffusersImageBackend` 把 Flux2 三组件(transformer 17GB + Qwen3 text_encoder 6GB + VAE 0.4GB)整套装一张卡。在 Pro 6000 96GB + 双 3090 24GB 的三卡布局下,这导致:
+V1.5 Lane G 重写后,`DiffusersImageBackend` 把 Flux2 三组件(transformer 18GB + Qwen3 text_encoder 6GB + VAE 0.4GB,合计 ~25GB)**整套装一张卡**。PR #111 修了 CUDA_DEVICE_ORDER + ModelManager.get_best_gpu 后,单模型已经能自动落 Pro 6000,但组件级仍捆绑——三组件必须同卡。这导致 Pro 6000 + 双 3090 三卡布局下:
 
-1. **Pro 6000 闲置**:Flux2 默认走 image runner (V1.5 hardware.yaml 把 image group 钉在 3090),Pro 6000 长期 0 占用
-2. **无法跨卡 fine-grained 拆分**:即便手动调,也只能让"模型 A 整套在 GPU 1、模型 B 整套在 GPU 0",无法让单个模型的不同组件落不同卡
-3. **A/B 调试浪费**:改 LoRA strength 就得重 load 整个 17GB transformer,实际不变的 text_encoder/VAE 也跟着重来
-4. **ComfyUI 量化生态利用率低**:磁盘上躺着 6 个 Flux2 量化文件(fp8mixed/mxfp8mixed/nvfp4mixed/4 个 GGUF)总共 ~38GB,代码只跑通了 fp8mixed,其余浪费
+1. **无法跨卡 fine-grained 拆分**:flux2 整套去 Pro 6000(96GB)后,另外两张 3090 各 24GB 闲;反过来 flux2 落 3090(24GB)时又要靠 cpu_offload 保命,速度 5-6 倍慢于 Pro 6000(实测 PR #111 verified)。本来 VAE 0.4GB 完全可以推给某张 3090,但代码做不到
+2. **A/B 调试浪费**:改 LoRA strength 就得重 load 整个 18GB transformer,实际不变的 text_encoder/VAE 也跟着重来。LoRA 切换一次 ~30 秒
+3. **ComfyUI 量化生态利用率低**:磁盘上躺着 6 个 Flux2 量化文件(fp8mixed/mxfp8mixed/nvfp4mixed/4 个 GGUF)总共 ~38GB,代码只跑通了 fp8mixed,其余浪费
+4. **同 seed 调参反复跑**:确定性参数下二跑结果跟一跑同图,但每次都真采样 30+ 秒;无任何缓存复用
 
 ComfyUI 的 `UNETLoaderMultiGPU` / `CLIPLoaderMultiGPU` / `VAELoaderMultiGPU` 三节点解决了上述问题——每组件独立选 device + 文件,且节点级缓存让 A/B 调参近乎免费。
 
@@ -86,6 +86,33 @@ text_input (prompt)                      ──┘
 - **L2**:runner 内 image_generate output cache(LRU 50 条),hash 输入(全部组件描述符 + prompt + 采样参数 + seed)。`is_deterministic=True`(seed 非空)才参与;随机 seed 不缓存
 - L1/L2 均为 in-memory;backend 重启丢
 
+#### L2 cache entry schema
+
+**关键**:cache 不存 signed URL(URL 自带 expires,默认 3600s,缓存命中时大概率已过期 → 客户端拿到 403)。改存「图片磁盘 anchor + 元数据」,命中时**重签 URL**:
+
+```python
+@dataclass
+class L2CacheEntry:
+    image_uuid: str          # write_image 返回的 uuid hex
+    date: str                # outputs/<date>/<uuid>.png 路径用
+    ext: str                 # "png"
+    meta: dict               # steps, seed, loras, width, height(不含 URL / expires)
+    cached_at: float         # 命中频次统计 + LRU 用
+
+def serve_l2_hit(entry: L2CacheEntry, ttl_seconds: int) -> dict:
+    # 1. 校验底层 PNG 还在(TTL 清理脚本可能已删)
+    path = outputs_root() / entry.date / f"{entry.image_uuid}.{entry.ext}"
+    if not path.exists():
+        raise L2CacheMiss()  # 触发重跑 + 重写 cache entry
+    # 2. 重签 URL —— HMAC 只要几微秒
+    expires = int(time.time()) + ttl_seconds
+    token = _sign(entry.image_uuid, expires)
+    url = f"/files/images/{entry.date}/{entry.image_uuid}.{entry.ext}?token={token}&expires={expires}"
+    return {**entry.meta, "image_url": url, "image_uuid": entry.image_uuid, "image_expires": expires}
+```
+
+这样 backend 重启不影响(L2 已经丢),但即便 in-memory cache 跨多日存在,签出的 URL 永远是当前时刻起算 TTL 内有效。底层 PNG 也按现有 outputs TTL 清理逻辑走(不与 L2 互锁,L2 miss 就重跑)。
+
 ## 4. Node Schema
 
 ### 4.1 `image_unet_load`
@@ -105,9 +132,9 @@ form:
   file:    enum(component_index['clip'])
   device:  enum
   dtype:   enum["bfloat16","fp8_e4m3"]
-  tokenizer_type: enum["flux2","flux1","sdxl","qwen"]
+  clip_arch: enum["flux2","flux1","sdxl","qwen"]   # 编码器架构,与 unet 节点 adapter_arch 对称
 output_ports:
-  clip: dict {kind:"clip", file, device, dtype, tokenizer_type}
+  clip: dict {kind:"clip", file, device, dtype, clip_arch}
 ```
 
 ### 4.3 `image_vae_load`
@@ -130,10 +157,19 @@ form:
   bypass:     bool, default false
   adapter_arch_hint: enum["flux2","flux1","sdxl","auto"]
 output_ports:
-  unet:    dict {kind:"unet", ...上游所有 + (本节点 file, strength)}
+  unet:    dict  # 见下面语义
 ```
 
-`bypass=true` → 直接透传 input,不 append。
+**输出语义(明确无歧义)**:
+```python
+# bypass=True → 直接透传上游 unet 描述符,不动 loras 列表
+output_unet = input_unet if bypass else {
+    **input_unet,
+    "loras": [*input_unet["loras"], {"file": lora_file, "strength": strength}],
+}
+```
+
+也就是说,输出 dict = 上游 unet 描述符的浅复制 + 在 `loras` 列表末尾 append 一条 `{file, strength}`。bypass=True 时连复制都不做(完全透传)。多次链式应用 = loras list 依次扩展。
 
 ### 4.5 改造 `image_generate`
 ```yaml
@@ -197,7 +233,7 @@ class ComponentSpec(BaseModel):
     dtype: str                 # "bfloat16" / "float16" / "fp8_e4m3"
     loras: list[LoRASpec] = [] # 仅 kind=unet
     adapter_arch: str | None = None    # 仅 unet:"flux2"/"flux1"
-    tokenizer_type: str | None = None  # 仅 clip
+    clip_arch: str | None = None       # 仅 clip:"flux2"/"flux1"/"sdxl"/"qwen"
 ```
 
 ### 5.2 `DiffusersImageBackend` 重写
@@ -227,6 +263,25 @@ class DiffusersImageBackend(InferenceAdapter):
         self._pipe = Flux2Pipeline(transformer=transformer,
                                    text_encoder=text_encoder, vae=vae)
 ```
+
+#### ⚠️ 技术风险 — PR-1 第一步必须验证
+
+**Flux2Pipeline 跨 device 装配是本 spec 唯一未被现网验证的假设**。diffusers 0.38 部分 Pipeline 在 `__call__` 里隐式调 `self.transformer.device` 当 reference device,并 assume 所有子组件同 device。如果 Flux2Pipeline 内部有这种 assertion,跨 device 直接报错。
+
+PR-1 必须**第一个 commit 就跑 10 行验证脚本**:
+```python
+import torch
+from diffusers import Flux2Pipeline
+# Load 3 components独立 + cross-device  
+transformer = Flux2Transformer.from_single_file(...).to("cuda:1")
+text_encoder = AutoModelForCausalLM.from_single_file(...).to("cuda:0")
+vae = AutoencoderKL.from_single_file(...).to("cuda:2")
+pipe = Flux2Pipeline(transformer=transformer, text_encoder=text_encoder, vae=vae)
+img = pipe(prompt="cat", num_inference_steps=2)  # 2 steps 验证不崩即可
+print(img.images[0].size)  # 跑通 = 假设成立
+```
+
+**Fallback 方案**(如脚本失败):退到「单卡 + cpu_offload 选 device」模式,组件级 device 字段降级成 hint(影响 ModelManager get_best_gpu 优先级,而非真正落卡)。spec 主路径不变,只是 § 5.2 的 `to(device)` 改成把所有组件 to 同一卡(选 vram 最大的)。
 
 ### 5.3 Quant Loader 注册表
 
@@ -271,6 +326,10 @@ def load_safetensors_plain(spec: ComponentSpec):
 ```python
 if node.node_type == "image":
     if all(k in node.inputs for k in ("unet", "clip", "vae")):
+        # seed 处理:None / 空字符串 / 缺失 = 随机(影响 is_deterministic 标志);
+        # 整数 = 确定性(由上游 workflow_executor._dispatch_node 设 is_deterministic=True)。
+        raw_seed = node.inputs.get("seed")
+        seed: int | None = int(raw_seed) if raw_seed not in (None, "") else None
         return ImageRequest(
             request_id=f"task-{node.task_id}",
             prompt=str(node.inputs.get("prompt", "")),
@@ -279,14 +338,15 @@ if node.node_type == "image":
             width=int(node.inputs.get("width") or 1024),
             height=int(node.inputs.get("height") or 1024),
             cfg_scale=float(node.inputs.get("cfg_scale") or 7.0),
-            seed=...,
+            seed=seed,
             components={
                 "unet": ComponentSpec(**node.inputs["unet"]),
                 "clip": ComponentSpec(**node.inputs["clip"]),
                 "vae":  ComponentSpec(**node.inputs["vae"]),
             },
         )
-    # 老路径:有 model_key 无 components → yaml 展开
+    # 老路径:有 model_key 无 components → workflow_executor 已在 dispatch 前
+    # inline 展开成等价 components,本分支只是 defense-in-depth(理论上走不到)。
     return ImageRequest(..., model_key=node.model_key)
 ```
 
@@ -321,7 +381,23 @@ ComponentKey = tuple[
 ### 6.2 加载触发
 
 - **默认**:workflow 跑 → runner 发现组合不在 L1 cache → 先 load 再采样
-- **辅助 prewarm**:节点 UI 右上角图标 → `POST /api/v1/models/components/preload {file, device, lora_set}` → runner 主动 load
+- **辅助 prewarm**:节点 UI 右上角图标 → `POST /api/v1/models/components/preload` —— **批量接口**:
+
+```http
+POST /api/v1/models/components/preload
+Content-Type: application/json
+Authorization: admin cookie
+
+{
+  "components": [
+    {"file": "/path/to/unet.safetensors", "device": "cuda:1", "dtype": "bfloat16", "loras": [{"file": "...", "strength": 0.8}]},
+    {"file": "/path/to/clip.safetensors", "device": "cuda:0", "dtype": "bfloat16"},
+    {"file": "/path/to/vae.safetensors",  "device": "cuda:2", "dtype": "bfloat16"}
+  ]
+}
+```
+
+Backend 给 image runner 串行下发 LoadModel 命令(runner 内 per-model lock 自动串)。返回 `202` + task_id,客户端通过 WS `component_state_changed` 监听最终态。**批量是必须的**——用户场景一定是一次 warm 「unet + clip + vae(+ loras)」整套组合,逐个 endpoint 调三次额外 round-trip。
 
 ### 6.3 前端 hook
 
@@ -404,23 +480,25 @@ function useComponentState(keys: ComponentKey[]): Record<string, ComponentState>
 
 | PR | 目标 | 估计行数 |
 |---|---|---|
-| **PR-1** | `DiffusersImageBackend` 接 ComponentSpec dict;quant loader 注册表(bf16/fp16/fp8mixed 复用+mxfp8mixed/nvfp4mixed 新增);老 yaml 翻译兼容 | ~500 |
-| **PR-2** | `component_scanner` 服务 + `GET /api/v1/components` + `POST /scan` + WS `component_index_changed` + `backend/configs/model_paths.yaml` | ~250 |
-| **PR-3** | 4 个新节点(`unet_load` / `clip_load` / `vae_load` / `lora_apply`)+ `image_generate` 改造;`runner_process._build_request` 加 components 分支;workflow_executor 老格式 inline 展开 | ~700 |
-| **PR-4** | ModelManager 复合 key + `is_component_loaded` API + `/ws/models` 加 `component_state_changed`;前端 `useComponentState` hook + 4 节点 React 组件 + palette 子分类 | ~400 |
-| **PR-5** | L2 image_generate output cache(LRU 50)+ `is_deterministic` 标志贯通 + WS `node_cache_hit` + TaskPanel 节点 "(cached)" 角标 | ~200 |
+| **PR-1** | (a) **diffusers 跨 device 验证脚本**(§5.2 风险点,先验证再继续);(b) `DiffusersImageBackend` 接 ComponentSpec dict;(c) quant loader 注册表(bf16/fp16/fp8mixed 复用 + mxfp8mixed/nvfp4mixed 新增);(d) **ModelManager `_models` 从 model_key dict 重构成 ComponentKey dict + `is_component_loaded` 内部方法**;(e) 老 yaml 翻译成等价 ComponentKey 组合,旧 `is_loaded(model_key)` API 兼容 | ~650 |
+| **PR-2** | `component_scanner` 服务 + `GET /api/v1/components?role=...` + `POST /scan` + WS `component_index_changed` + `backend/configs/model_paths.yaml` | ~250 |
+| **PR-3** | 4 个新节点(`unet_load` / `clip_load` / `vae_load` / `lora_apply`)+ `image_generate` 改造;`runner_process._build_request` 加 components 分支;workflow_executor 老格式 inline 展开为 ComponentSpec 组合 | ~700 |
+| **PR-4** | `GET /api/v1/models/components/state` 批量查询 + `POST /api/v1/models/components/preload` 批量预热 + WS `/ws/models` 加 `component_state_changed`;前端 `useComponentState` hook + 4 节点 React 组件 + palette 子分类 | ~300 |
+| **PR-5** | L2 image_generate output cache(LRU 50,entry schema 见 §3.3)+ `is_deterministic` 标志贯通 + L2 命中时**重签 URL** + WS `node_cache_hit` + TaskPanel 节点 "(cached)" 角标 | ~250 |
 
 5 个 PR 串行依赖(PR-N 依赖 PR-N-1 全 merge),每个独立可 ship 可灰度。
+
+**PR-1 重 inception**:验证脚本(a)若失败立刻分叉,启用 §5.2 的 Fallback 方案(降级为单卡 + cpu_offload),并修订后续 PR 的「跨卡分组件」预设。这块**不要拖到后期 smoke 才发现**。
 
 ## 9. Test Plan
 
 | 层 | 覆盖 |
 |---|---|
-| Unit | ComponentSpec 序列化、quant dequant 每格式 fixture、component_scanner glob、is_component_loaded 状态机、L2 cache LRU |
-| Integration | 4 新节点 + image_generate 全链路(fake_adapter=True),描述符流转 + L1 复合 key 缓存命中 |
-| Smoke(真模型) | 1) Flux2-bf16 三组件分卡 ≤ 35s;2) Flux2-fp8mixed 单卡 Pro 6000 ≤ 25s;3) 改 LoRA strength 二跑 < 5s;4) 同 seed 二跑 < 0.1s |
-| 前端 | vitest:4 节点渲染 + 端口连接 + state hook + dropdown 数据源 |
-| Regression | master 上 image-e2e-test(309542918354374656)+ 新工作流(308084173191516160)零改动跑通 |
+| Unit | ComponentSpec 序列化 / quant dequant 每格式 fixture(bf16/fp16/fp8mixed/mxfp8mixed/nvfp4mixed)/ component_scanner glob / is_component_loaded 状态机 / L2 cache LRU + URL 重签 / lora_apply 输出语义(append + bypass)/ 老 model_key → ComponentKey 翻译 |
+| Integration | (a) 4 新节点 + image_generate 全链路(fake_adapter=True),描述符流转 + L1 复合 key 缓存命中;(b) **Loader 状态四态切换**:cold → preload 触发 loading → loaded → 强制 OOM 模拟 → failed → retry → loaded(每态 WS 事件断言)|
+| Smoke(真模型) | 1) Flux2-bf16 三组件分卡(unet→cuda:1, clip→cuda:0, vae→cuda:2)≤ 35s;2) Flux2-fp8mixed 单卡 Pro 6000 ≤ 25s;3) 改 LoRA strength 二跑 < 5s;4) 同 seed 二跑 < 0.1s(L2 命中 + URL 重签);5) **联合场景**:三组件分卡 + 2 LoRA + 同 seed 二跑,验 L1 unet 重 patch、clip/vae 复用、L2 命中签新 URL,总耗时 < 2s |
+| 前端 | vitest:4 节点渲染 + 端口连接 + useComponentState hook(订阅/取消订阅时序)+ dropdown 数据源拉取 |
+| Regression | master 上 image-e2e-test(309542918354374656)+ 新工作流(308084173191516160)零改动跑通,验 workflow_executor inline 展开正确 |
 
 ## 10. Future Work
 
