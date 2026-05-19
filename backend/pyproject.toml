@@ -84,6 +84,7 @@ markers = [
     "e2e: real-GPU tests, skipped in CI (run on dev box with pytest -m e2e)",
     "integration: mock-runner-subprocess integration tests",
     "chaos: fault-injection tests, weekly manual run",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 
 [tool.ruff]
