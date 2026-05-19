@@ -8,6 +8,12 @@ Usage:
 """
 from __future__ import annotations
 
+import os
+
+# Must run BEFORE any torch import — see PR #111. Without this torch uses
+# FASTEST_FIRST ordering and cuda:0/cuda:1 indices flip vs nvidia-smi.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
 import sys
 from pathlib import Path
 
@@ -16,6 +22,7 @@ import torch
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
 TRANSFORMER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/transformer"
 TEXT_ENCODER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/text_encoder"
+TOKENIZER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/tokenizer"
 VAE_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/vae"
 
 # Device targets for the test (current hardware: cuda:0=3090, cuda:1=Pro 6000, cuda:2=3090)
@@ -43,7 +50,7 @@ def main() -> int:
     text_encoder = AutoModelForCausalLM.from_pretrained(
         TEXT_ENCODER_DIR, torch_dtype=torch.bfloat16
     ).to(CLIP_DEVICE)
-    tokenizer = AutoTokenizer.from_pretrained(TEXT_ENCODER_DIR)
+    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_DIR)
     print(f"  text_encoder.device={next(text_encoder.parameters()).device}")
 
     print(f"\nLoading vae from {VAE_DIR} -> {VAE_DEVICE}")
