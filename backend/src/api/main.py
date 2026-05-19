@@ -179,6 +179,17 @@ async def lifespan(app: FastAPI):
     model_mgr = ModelManager(registry=registry, allocator=allocator)
     app.state.model_manager = model_mgr
 
+    # PR-3: warm the component file index for loader-node dropdowns (PR-4).
+    # Fail-soft — a scan error must not block app startup.
+    try:
+        from src.services.component_scanner import get_component_index
+        app.state.component_index = get_component_index()
+        _ci_total = sum(len(v) for v in app.state.component_index.values())
+        logger.info("PR-3: component index warmed — %d files", _ci_total)
+    except Exception:  # noqa: BLE001 — index is non-critical at boot
+        logger.exception("PR-3: component index warm-up failed; serving empty index")
+        app.state.component_index = {role: [] for role in ("unet", "clip", "vae", "loras")}
+
     # Wire ModelManager into workflow executor
     from src.services.workflow_executor import set_model_manager
     set_model_manager(model_mgr)
@@ -606,6 +617,8 @@ def create_app() -> FastAPI:
     app.include_router(models_routes.router)
     app.include_router(loras_routes.router)
     app.include_router(image_files_routes.router)
+    from src.api.routes import components as components_routes
+    app.include_router(components_routes.router)
     app.include_router(audio.router)
     app.include_router(voices.router)
     app.include_router(openai_compat.router)

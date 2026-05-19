@@ -1,0 +1,22 @@
+# backend/configs/model_paths.yaml
+# role → glob-pattern dirs (relative to LOCAL_MODELS_PATH). Analogous to ComfyUI
+# extra_model_paths.yaml. component_scanner globs these to populate loader-node
+# file dropdowns (PR-4). Most patterns are flat globs; loras also has a
+# recursive (**) variant for nested LoRA collections.
+#
+# base_path is NOT in this file — it's read from settings.LOCAL_MODELS_PATH.
+
+roles:
+  unet:
+    - image/diffusion_models/*.safetensors
+    - image/diffusion_models/*.gguf
+    - image/diffusers/*/transformer/*.safetensors
+  clip:
+    - image/text_encoders/*.safetensors
+    - image/diffusers/*/text_encoder/*.safetensors
+  vae:
+    - image/vae/*.safetensors
+    - image/diffusers/*/vae/*.safetensors
+  loras:
+    - image/loras/*.safetensors
+    - image/loras/**/*.safetensors
