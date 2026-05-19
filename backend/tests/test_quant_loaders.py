@@ -1,0 +1,121 @@
+"""QuantLoaderRegistry dispatch + per-format loader correctness.
+
+For each quant format we use a small synthetic safetensors fixture rather than the
+real ~18GB Flux2 files — the dequant logic only needs a handful of tensors to
+exercise the code path. Real-file end-to-end is covered later by PR-2 smoke.
+"""
+from __future__ import annotations
+
+# conftest.py stubs `torch` with MagicMock for GPU-less test runs (see the
+# `for mod_name in [...]: sys.modules[mod_name] = MagicMock()` block). This
+# file needs the REAL torch + safetensors to round-trip actual tensors, so
+# restore the genuine modules before importing them. Safe because real torch
+# is installed in .venv and we hide CUDA via CUDA_VISIBLE_DEVICES="".
+import sys as _sys
+for _n in list(_sys.modules.keys()):
+    if _n == "torch" or _n.startswith("torch."):
+        del _sys.modules[_n]
+
+from pathlib import Path
+
+import pytest
+import torch
+from safetensors.torch import save_file
+
+from src.services.inference.component_spec import ComponentSpec
+from src.services.inference.quant_loaders import QuantLoaderRegistry, QUANT_LOADERS, UnsupportedQuantError
+
+
+def _make_plain_safetensors(tmp_path: Path, name: str) -> Path:
+    """Synthetic plain bf16 safetensors with 3 small tensors."""
+    sd = {
+        "block.0.weight": torch.randn(8, 8, dtype=torch.bfloat16),
+        "block.0.bias":   torch.zeros(8, dtype=torch.bfloat16),
+        "block.1.weight": torch.randn(8, 4, dtype=torch.bfloat16),
+    }
+    path = tmp_path / f"{name}.safetensors"
+    save_file(sd, str(path))
+    return path
+
+
+def test_registry_register_and_dispatch():
+    reg = QuantLoaderRegistry()
+    seen = []
+
+    @reg.register(match=lambda spec: "marker_a" in spec.file)
+    def loader_a(spec):
+        seen.append("a")
+        return "result_a"
+
+    @reg.register(match=lambda spec: "marker_b" in spec.file)
+    def loader_b(spec):
+        seen.append("b")
+        return "result_b"
+
+    spec_a = ComponentSpec(kind="vae", file="/p/marker_a.safetensors", device="cpu", dtype="bfloat16")
+    assert reg.dispatch(spec_a) == "result_a"
+    assert seen == ["a"]
+
+    spec_b = ComponentSpec(kind="vae", file="/p/marker_b.safetensors", device="cpu", dtype="bfloat16")
+    assert reg.dispatch(spec_b) == "result_b"
+
+
+def test_registry_first_match_wins():
+    """Registration order = match priority. Specific must register before generic."""
+    reg = QuantLoaderRegistry()
+
+    @reg.register(match=lambda spec: "fp8" in spec.file)
+    def specific(spec):
+        return "specific"
+
+    @reg.register(match=lambda spec: spec.file.endswith(".safetensors"))
+    def generic(spec):
+        return "generic"
+
+    spec_fp8 = ComponentSpec(kind="unet", file="/p/foo-fp8.safetensors", device="cpu", dtype="bfloat16")
+    assert reg.dispatch(spec_fp8) == "specific"
+
+    spec_plain = ComponentSpec(kind="unet", file="/p/foo.safetensors", device="cpu", dtype="bfloat16")
+    assert reg.dispatch(spec_plain) == "generic"
+
+
+def test_registry_no_match_raises():
+    reg = QuantLoaderRegistry()
+
+    @reg.register(match=lambda spec: False)
+    def never(spec):
+        return None
+
+    spec = ComponentSpec(kind="vae", file="/p/x.gguf", device="cpu", dtype="bfloat16")
+    with pytest.raises(UnsupportedQuantError, match="no quant loader matches"):
+        reg.dispatch(spec)
+
+
+def test_plain_safetensors_loader_loads_tensors(tmp_path):
+    """The plain safetensors loader returns a state_dict-like mapping with original dtype."""
+    sf = _make_plain_safetensors(tmp_path, "plain_bf16")
+    spec = ComponentSpec(kind="vae", file=str(sf), device="cpu", dtype="bfloat16")
+
+    result = QUANT_LOADERS.dispatch(spec)
+
+    # Plain loader returns dict[str, Tensor] (caller wraps into module)
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {"block.0.weight", "block.0.bias", "block.1.weight"}
+    assert result["block.0.weight"].dtype == torch.bfloat16
+    assert result["block.0.weight"].shape == (8, 8)
+
+
+def test_plain_safetensors_loader_honors_device(tmp_path):
+    sf = _make_plain_safetensors(tmp_path, "plain_for_cpu")
+    spec = ComponentSpec(kind="vae", file=str(sf), device="cpu", dtype="bfloat16")
+    result = QUANT_LOADERS.dispatch(spec)
+    assert result["block.0.weight"].device.type == "cpu"
+
+
+def test_plain_safetensors_loader_gguf_not_supported(tmp_path):
+    """GGUF is V2 PR-7 — V1 dispatches to UnsupportedQuantError."""
+    gguf = tmp_path / "fake.gguf"
+    gguf.write_bytes(b"GGUF\x00" * 16)
+    spec = ComponentSpec(kind="unet", file=str(gguf), device="cpu", dtype="bfloat16")
+    with pytest.raises(UnsupportedQuantError, match="GGUF .* V2"):
+        QUANT_LOADERS.dispatch(spec)
