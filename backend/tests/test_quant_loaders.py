@@ -119,3 +119,25 @@ def test_plain_safetensors_loader_gguf_not_supported(tmp_path):
     spec = ComponentSpec(kind="unet", file=str(gguf), device="cpu", dtype="bfloat16")
     with pytest.raises(UnsupportedQuantError, match="GGUF .* V2"):
         QUANT_LOADERS.dispatch(spec)
+
+
+def test_dtype_str_to_torch_raises_on_unknown():
+    """Silent bfloat16 fallback would miscast user weights — must raise instead."""
+    from src.services.inference.quant_loaders import _dtype_str_to_torch
+    with pytest.raises(UnsupportedQuantError, match="unknown target dtype"):
+        _dtype_str_to_torch("bf16")  # typo (correct is "bfloat16")
+    with pytest.raises(UnsupportedQuantError, match="unknown target dtype"):
+        _dtype_str_to_torch("fp4")   # future format not yet registered
+
+
+def test_load_safetensors_plain_raises_on_unknown_dtype(tmp_path):
+    """The plain loader propagates the dtype error via _dtype_str_to_torch."""
+    from safetensors.torch import save_file
+    sd = {"w": torch.zeros(2, 2, dtype=torch.bfloat16)}
+    p = tmp_path / "bad_dtype.safetensors"
+    save_file(sd, str(p))
+    # ComponentSpec.dtype is just a str — validator only checks device — so "bf16"
+    # (typo for "bfloat16") passes pydantic and the failure surfaces inside the loader.
+    spec_bad = ComponentSpec(kind="vae", file=str(p), device="cpu", dtype="bf16")
+    with pytest.raises(UnsupportedQuantError, match="unknown target dtype"):
+        QUANT_LOADERS.dispatch(spec_bad)

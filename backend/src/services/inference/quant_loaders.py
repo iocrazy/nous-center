@@ -12,7 +12,7 @@ GGUF is rejected eagerly with UnsupportedQuantError; V2 PR-7 will add it.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 import torch
 from safetensors.torch import load_file
@@ -20,6 +20,10 @@ from safetensors.torch import load_file
 from src.services.inference.component_spec import ComponentSpec
 
 logger = logging.getLogger(__name__)
+
+
+# Loaders all return the same shape: caller wraps into a torch.nn.Module.
+StateDict = dict[str, torch.Tensor]
 
 
 class UnsupportedQuantError(RuntimeError):
@@ -39,7 +43,7 @@ class QuantLoaderRegistry:
             return fn
         return deco
 
-    def dispatch(self, spec: ComponentSpec) -> Any:
+    def dispatch(self, spec: ComponentSpec) -> StateDict:
         for matcher, fn in self._loaders:
             if matcher(spec):
                 logger.debug("quant_loaders: dispatching %s to %s", spec.file, fn.__name__)
@@ -52,30 +56,46 @@ QUANT_LOADERS = QuantLoaderRegistry()
 
 # Reject GGUF eagerly — V2 PR-7 work, not in scope for PR-1.
 @QUANT_LOADERS.register(match=lambda spec: spec.file.lower().endswith(".gguf"))
-def reject_gguf(spec: ComponentSpec) -> Any:
+def reject_gguf(spec: ComponentSpec) -> NoReturn:
     raise UnsupportedQuantError(
         f"GGUF quantization is V2 PR-7 follow-up; cannot load {spec.file!r} in PR-1"
     )
 
 
+_DTYPE_MAP: dict[str, torch.dtype] = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+    "fp8_e4m3": torch.float8_e4m3fn,
+}
+
+
 def _dtype_str_to_torch(dtype_str: str) -> torch.dtype:
-    return {
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-        "fp8_e4m3": torch.float8_e4m3fn,  # torch 2.10 native
-    }.get(dtype_str, torch.bfloat16)
+    """Map ComponentSpec.dtype string → torch.dtype.
+
+    Raises UnsupportedQuantError on unknown dtype rather than silently falling
+    back to bfloat16 (which would miscast user-loaded weights). PR-3+ adding
+    a new format must register here.
+    """
+    try:
+        return _DTYPE_MAP[dtype_str]
+    except KeyError:
+        raise UnsupportedQuantError(
+            f"unknown target dtype {dtype_str!r}; expected one of {sorted(_DTYPE_MAP)}"
+        )
 
 
 # Plain bf16/fp16 safetensors — uniform state_dict loader. Caller (PR-2's
 # DiffusersImageBackend or test) decides whether to wrap into a module.
 @QUANT_LOADERS.register(match=lambda spec: spec.file.endswith(".safetensors"))
-def load_safetensors_plain(spec: ComponentSpec) -> dict[str, torch.Tensor]:
+def load_safetensors_plain(spec: ComponentSpec) -> StateDict:
     """Plain bf16/fp16 safetensors → state_dict, target dtype applied.
 
-    Note: this is the FALLBACK matcher in the registry. Specific formats (fp8mixed,
-    mxfp8mixed, nvfp4mixed) registered LATER in this module will match first via
-    filename substring; this loader only runs for safetensors without those markers.
+    Note: this is the FALLBACK matcher. It MUST stay last in this module —
+    PR-3+ fp8mixed / mxfp8mixed / nvfp4mixed loaders register ABOVE this function
+    so their filename-substring matchers run first (`_loaders` is iterated in
+    registration order; first match wins). Loads to CPU regardless of
+    `spec.device` — caller is responsible for the subsequent `.to(device)`.
     """
     target = _dtype_str_to_torch(spec.dtype)
-    sd = load_file(spec.file, device="cpu")  # always load to CPU first; .to(device) is caller's job
+    sd = load_file(spec.file, device="cpu")
     return {k: v.to(target) for k, v in sd.items()}
