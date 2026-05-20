@@ -43,14 +43,7 @@ def _install_real_torch():
         for name in list(sys.modules.keys()):
             if name == "torch" or name.startswith("torch."):
                 del sys.modules[name]
-        try:
-            import torch  # noqa: F401  — populates sys.modules with real torch
-        except ModuleNotFoundError:
-            # CI installs deps without the `image` extra → no real torch.
-            # Restore the stub for the rest of the session and skip this file's
-            # tests (plain skip in a fixture skips every test that requests it).
-            sys.modules["torch"] = existing
-            pytest.skip("real torch not installed (CI without image extra)")
+        import torch  # noqa: F401  — populates sys.modules with real torch
     yield
 
 
