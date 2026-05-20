@@ -155,11 +155,12 @@ def _build_request(node: P.RunNode):
     from src.services.inference.base import AudioRequest, ImageRequest
 
     if node.node_type == "image":
-        # 转发 ImageRequest 全部字段 —— executor 已把 node.data 合并进 inputs,
+        # 转发 ImageRequest 全部字段 —— executor 已把 node.data 合并进 inputs，
         # steps/width/height/cfg_scale/seed/loras 都在这里能拿到。缺省走 pydantic
         # Field default(steps=25 / 1024x1024 / cfg_scale=7.0)。
-        loras_raw = node.inputs.get("loras") or []
-        return ImageRequest(
+        raw_seed = node.inputs.get("seed")
+        seed = int(raw_seed) if raw_seed not in (None, "") else None
+        base = dict(
             request_id=f"task-{node.task_id}",
             prompt=str(node.inputs.get("prompt", "")),
             negative_prompt=str(node.inputs.get("negative_prompt", "")),
@@ -167,9 +168,23 @@ def _build_request(node: P.RunNode):
             width=int(node.inputs.get("width") or 1024),
             height=int(node.inputs.get("height") or 1024),
             cfg_scale=float(node.inputs.get("cfg_scale") or 7.0),
-            seed=int(node.inputs["seed"]) if node.inputs.get("seed") not in (None, "") else None,
-            loras=loras_raw if isinstance(loras_raw, list) else [],
+            seed=seed,
         )
+        # 新格式：三组件描述符齐全 → 走 components 路径（spec §5.4）。
+        if all(k in node.inputs for k in ("unet", "clip", "vae")):
+            from src.services.inference.component_spec import ComponentSpec
+            return ImageRequest(
+                **base,
+                components={
+                    "unet": ComponentSpec(**node.inputs["unet"]),
+                    "clip": ComponentSpec(**node.inputs["clip"]),
+                    "vae":  ComponentSpec(**node.inputs["vae"]),
+                },
+                pipeline_class=str(node.inputs.get("pipeline_class") or "Flux2KleinPipeline"),
+            )
+        # 老路径：无 components（workflow_executor 已 inline 展开过；走不到也安全）。
+        loras_raw = node.inputs.get("loras") or []
+        return ImageRequest(**base, loras=loras_raw if isinstance(loras_raw, list) else [])
     if node.node_type == "tts":
         return AudioRequest(
             request_id=f"task-{node.task_id}",
