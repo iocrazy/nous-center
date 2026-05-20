@@ -34,6 +34,19 @@ os.environ["NOUS_DISABLE_FRONTEND_MOUNT"] = "1"
 import tempfile as _tempfile
 os.environ.setdefault("NOUS_IMAGE_OUTPUTS", _tempfile.mkdtemp(prefix="nous-test-img-"))
 
+# CI sets DATABASE_URL="sqlite+aiosqlite:///:memory:", but in-memory sqlite is
+# per-connection: the app's session factory and the lifespan startup open
+# separate connections, each getting a fresh empty DB, so any route/lifespan
+# that touches the DB hits "no such table". Swap to a shared temp FILE sqlite
+# (one DB visible across all connections) and create the schema once below.
+# Only fires on the :memory: case (CI); local runs (postgres via .env) are
+# left completely untouched.
+_ci_memory_db = os.environ.get("DATABASE_URL", "").endswith(":memory:")
+if _ci_memory_db:
+    os.environ["DATABASE_URL"] = (
+        "sqlite+aiosqlite:///" + _tempfile.mkdtemp(prefix="nous-ci-db-") + "/test.db"
+    )
+
 import sys
 from unittest.mock import MagicMock
 
@@ -72,6 +85,22 @@ import src.models.context_cache  # noqa: F401 — register model
 import src.models.response_session  # noqa: F401 — register model
 import src.models.memory  # noqa: F401 — register model
 import src.models.api_gateway  # noqa: F401 — register model
+
+# Create the schema once on the shared temp-file test DB (the CI :memory: swap
+# above). All models are imported by now, so Base.metadata is complete. Runs at
+# import time — no event loop running yet — so asyncio.run is safe.
+if _ci_memory_db:
+    import asyncio as _asyncio
+
+    from src.models.database import create_engine as _create_engine
+
+    async def _init_ci_test_schema():
+        _engine = _create_engine()
+        async with _engine.begin() as _conn:
+            await _conn.run_sync(Base.metadata.create_all)
+        await _engine.dispose()
+
+    _asyncio.run(_init_ci_test_schema())
 
 
 def _mock_model_manager():
