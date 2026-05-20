@@ -9,7 +9,7 @@ import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
 import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import { useLoras } from '../../api/loras'
-import { useComponents, type ComponentRole } from '../../api/components'
+import { useComponents, useComponentState, componentStateKey, type ComponentRole } from '../../api/components'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
 
 function LoraSelectWidget({
@@ -237,6 +237,29 @@ export function ComponentSelectWidget({
         </option>
       ))}
     </NodeSelect>
+  )
+}
+
+const _STATE_VIS: Record<string, { label: string; color: string }> = {
+  loaded:  { label: '已加载', color: 'var(--ok)' },
+  loading: { label: '加载中', color: 'var(--warn)' },
+  failed:  { label: '失败',   color: 'var(--accent)' },
+  cold:    { label: '未加载', color: 'var(--muted)' },
+}
+
+export function ComponentStatusHeader({ data }: { data: Record<string, unknown> }) {
+  const key = componentStateKey({
+    file: data.file as string | undefined,
+    device: (data.device as string) || 'auto',
+    dtype: (data.dtype as string) || 'bfloat16',
+  })
+  const { state } = useComponentState(key)
+  const vis = _STATE_VIS[state] ?? _STATE_VIS.cold
+  return (
+    <div className="flex items-center gap-1.5" style={{ fontSize: 9, color: 'var(--muted)', padding: '2px 10px 4px' }}>
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: vis.color, flexShrink: 0 }} />
+      <span style={{ color: vis.color }}>{vis.label}</span>
+    </div>
   )
 }
 
@@ -527,6 +550,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
       inputs={portDef.inputs}
       outputs={portDef.outputs}
     >
+      {declDef.componentRole && <ComponentStatusHeader data={data as Record<string, unknown>} />}
       {declDef.widgets.map((w) => (
         <NodeWidgetRow key={w.name} label={w.label} stretch={w.widget === 'textarea'}>
           <WidgetRenderer
