@@ -25,7 +25,7 @@ class _FakeMM:
     def __init__(self):
         self.calls = []
 
-    async def get_or_load_image_adapter(self, components, pipeline_class):
+    async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None):
         self.calls.append((tuple(sorted(components)), pipeline_class))
         return _FakeAdapter()
 
@@ -72,7 +72,7 @@ async def test_components_path_adapter_error_fails_gracefully():
     """A bare exception from get_or_load_image_adapter must become NodeResult
     failed, NOT crash _node_executor (which would hang the workflow)."""
     class _BoomMM:
-        async def get_or_load_image_adapter(self, components, pipeline_class):
+        async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None):
             raise RuntimeError("scheduler dir not found")
         async def get_or_load(self, key):
             raise AssertionError("legacy path not expected")
@@ -96,3 +96,48 @@ async def test_components_path_adapter_error_fails_gracefully():
     results = [m for m in ch.sent if isinstance(m, P.NodeResult)]
     assert results and results[-1].status == "failed"
     assert "scheduler dir not found" in results[-1].error
+
+
+@pytest.mark.asyncio
+async def test_preload_components_emits_events_via_pipe():
+    from src.runner.runner_process import _handle_preload_components
+
+    class _MM:
+        async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None):
+            await on_event("/m/u.safe|cuda:1|bfloat16|", "loading", None)
+            await on_event("/m/u.safe|cuda:1|bfloat16|", "loaded", None)
+            return object()
+
+    state = _RunnerState("r", "image", [0, 1, 2], _MM())
+    ch = _Collect()
+    msg = P.PreloadComponents(
+        task_id=3,
+        components={
+            "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+            "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
+            "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
+        },
+        pipeline_class="Flux2KleinPipeline")
+    await _handle_preload_components(state, ch, msg)
+    evs = [m for m in ch.sent if isinstance(m, P.ComponentEvent)]
+    assert ("loading" in [e.state for e in evs]) and ("loaded" in [e.state for e in evs])
+
+
+@pytest.mark.asyncio
+async def test_preload_components_emits_failed_on_error():
+    from src.runner.runner_process import _handle_preload_components
+
+    class _MM:
+        async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None):
+            await on_event("/m/u.safe|cuda:1|bfloat16|", "failed", "boom")
+            raise RuntimeError("boom")
+
+    state = _RunnerState("r", "image", [0, 1, 2], _MM())
+    ch = _Collect()
+    msg = P.PreloadComponents(task_id=4, components={
+        "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+        "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
+        "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
+    })
+    await _handle_preload_components(state, ch, msg)  # must NOT raise
+    assert any(e.state == "failed" for e in ch.sent if isinstance(e, P.ComponentEvent))
