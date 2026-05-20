@@ -85,3 +85,9 @@ def to_component_key(spec: ComponentSpec) -> ComponentKey:
     """
     lora_set = frozenset((lora.name, float(lora.strength)) for lora in spec.loras)
     return (spec.file, spec.device, spec.dtype, lora_set)
+
+
+# Resolve ImageRequest's forward ref to ComponentSpec now that both classes
+# exist (base.py only TYPE_CHECKING-imports this module to avoid a cycle).
+from src.services.inference.base import ImageRequest as _ImageRequest  # noqa: E402
+_ImageRequest.model_rebuild()
