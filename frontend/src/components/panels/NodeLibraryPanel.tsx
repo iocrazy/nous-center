@@ -67,6 +67,17 @@ const BUILTIN_CATEGORIES: NodeCategory[] = [
     ],
   },
   {
+    name: 'image_loading',
+    label: '组件加载',
+    color: 'rgba(244,114,182,0.9)',
+    nodes: [
+      { type: 'image_unet_load', dotColor: 'rgba(244,114,182,0.9)' },
+      { type: 'image_clip_load', dotColor: 'rgba(234,179,8,0.9)' },
+      { type: 'image_vae_load', dotColor: 'rgba(239,68,68,0.85)' },
+      { type: 'image_lora_apply', dotColor: 'rgba(168,85,247,0.85)' },
+    ],
+  },
+  {
     name: 'output',
     label: '输出',
     color: 'var(--info)',

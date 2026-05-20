@@ -1,6 +1,6 @@
 import { NODE_DEFS, type PortDef, type NodeType } from './workflow'
 
-export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'checkbox' | 'agent_select' | 'model_select' | 'lora_stack' | 'lora_select'
+export type WidgetType = 'input' | 'textarea' | 'select' | 'slider' | 'checkbox' | 'agent_select' | 'model_select' | 'lora_stack' | 'lora_select' | 'component_select'
 
 export interface WidgetDef {
   name: string
@@ -14,6 +14,7 @@ export interface WidgetDef {
   rows?: number
   default?: unknown
   filter?: string
+  role?: 'unet' | 'clip' | 'vae' | 'loras'
 }
 
 export interface DeclarativeNodeDef {
@@ -23,6 +24,7 @@ export interface DeclarativeNodeDef {
   badge: string
   badgeColor: string
   widgets: WidgetDef[]
+  componentRole?: 'unet' | 'clip' | 'vae'
 }
 
 export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
@@ -114,6 +116,64 @@ export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
       { name: 'cfg_scale', label: 'CFG', widget: 'slider', min: 0, max: 20, step: 0.5, precision: 1, default: 7.0 },
       { name: 'seed', label: '种子', widget: 'input' },
       { name: 'loras', label: 'LoRA', widget: 'lora_stack' },
+    ],
+  },
+  image_unet_load: {
+    type: 'image_unet_load', label: 'UNET 加载', category: 'image_loading',
+    badge: 'UNET', badgeColor: 'rgba(244,114,182,0.9)', componentRole: 'unet',
+    widgets: [
+      { name: 'file', label: '文件', widget: 'component_select', role: 'unet' },
+      { name: 'device', label: '设备', widget: 'select', options: [
+        { value: 'auto', label: 'auto' }, { value: 'cuda:0', label: 'cuda:0' },
+        { value: 'cuda:1', label: 'cuda:1' }, { value: 'cuda:2', label: 'cuda:2' }, { value: 'cpu', label: 'cpu' },
+      ], default: 'auto' },
+      { name: 'dtype', label: '精度', widget: 'select', options: [
+        { value: 'bfloat16', label: 'bfloat16' }, { value: 'float16', label: 'float16' }, { value: 'fp8_e4m3', label: 'fp8_e4m3' },
+      ], default: 'bfloat16' },
+      { name: 'adapter_arch', label: '架构', widget: 'select', options: [
+        { value: 'flux2', label: 'flux2' }, { value: 'flux1', label: 'flux1' },
+      ], default: 'flux2' },
+    ],
+  },
+  image_clip_load: {
+    type: 'image_clip_load', label: 'CLIP 加载', category: 'image_loading',
+    badge: 'CLIP', badgeColor: 'rgba(234,179,8,0.9)', componentRole: 'clip',
+    widgets: [
+      { name: 'file', label: '文件', widget: 'component_select', role: 'clip' },
+      { name: 'device', label: '设备', widget: 'select', options: [
+        { value: 'auto', label: 'auto' }, { value: 'cuda:0', label: 'cuda:0' },
+        { value: 'cuda:1', label: 'cuda:1' }, { value: 'cuda:2', label: 'cuda:2' }, { value: 'cpu', label: 'cpu' },
+      ], default: 'auto' },
+      { name: 'dtype', label: '精度', widget: 'select', options: [
+        { value: 'bfloat16', label: 'bfloat16' }, { value: 'fp8_e4m3', label: 'fp8_e4m3' },
+      ], default: 'bfloat16' },
+      { name: 'clip_arch', label: '架构', widget: 'select', options: [
+        { value: 'flux2', label: 'flux2' }, { value: 'flux1', label: 'flux1' },
+        { value: 'sdxl', label: 'sdxl' }, { value: 'qwen', label: 'qwen' },
+      ], default: 'flux2' },
+    ],
+  },
+  image_vae_load: {
+    type: 'image_vae_load', label: 'VAE 加载', category: 'image_loading',
+    badge: 'VAE', badgeColor: 'rgba(239,68,68,0.85)', componentRole: 'vae',
+    widgets: [
+      { name: 'file', label: '文件', widget: 'component_select', role: 'vae' },
+      { name: 'device', label: '设备', widget: 'select', options: [
+        { value: 'auto', label: 'auto' }, { value: 'cuda:0', label: 'cuda:0' },
+        { value: 'cuda:1', label: 'cuda:1' }, { value: 'cuda:2', label: 'cuda:2' }, { value: 'cpu', label: 'cpu' },
+      ], default: 'auto' },
+      { name: 'dtype', label: '精度', widget: 'select', options: [
+        { value: 'bfloat16', label: 'bfloat16' }, { value: 'float16', label: 'float16' },
+      ], default: 'bfloat16' },
+    ],
+  },
+  image_lora_apply: {
+    type: 'image_lora_apply', label: 'LoRA 应用', category: 'image_loading',
+    badge: 'LoRA', badgeColor: 'rgba(168,85,247,0.85)',
+    widgets: [
+      { name: 'lora_path', label: 'LoRA', widget: 'component_select', role: 'loras' },
+      { name: 'strength', label: '强度', widget: 'slider', min: -2, max: 2, step: 0.05, precision: 2, default: 1.0 },
+      { name: 'bypass', label: '旁路', widget: 'checkbox', default: false },
     ],
   },
 }

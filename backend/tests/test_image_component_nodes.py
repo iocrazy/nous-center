@@ -81,6 +81,17 @@ async def test_lora_apply_missing_upstream_raises():
             {"lora_file": "x", "lora_path": "/p/x"}, {})
 
 
+@pytest.mark.asyncio
+async def test_lora_apply_accepts_lora_path_only():
+    base = {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []}
+    out = await get_node_class("image_lora_apply")().invoke(
+        {"lora_path": "/m/loras/style-xl.safetensors", "strength": 0.7}, {"unet": base})
+    lo = out["unet"]["loras"][0]
+    assert lo["path"] == "/m/loras/style-xl.safetensors"
+    assert lo["name"] == "style-xl.safetensors"
+    assert lo["strength"] == 0.7
+
+
 def test_loader_nodes_are_inline():
     from src.services.node_routing import node_exec_class
     for t in ("image_unet_load", "image_clip_load", "image_vae_load", "image_lora_apply"):
