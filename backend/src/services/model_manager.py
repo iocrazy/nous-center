@@ -675,16 +675,33 @@ class ModelManager:
             return loaded
 
     async def _load_component_impl(self, spec):
-        """The actual component load. PR-1: dispatches to quant_loaders for the
-        state_dict. Wrapping state_dict into an actual diffusers module is PR-2's
-        ImageSampler responsibility. Tests monkeypatch this method directly.
+        """Load a component's GPU-resident module bundle (PR-4 refactor).
 
-        Returns: dict with {_state_dict, spec, loaded_at}.
+        Returns: {"module": nn.Module(.to(device)),
+                  "tokenizer": tokenizer | None,  # clip only
+                  "spec": spec, "device": spec.device, "loaded_at": float}.
+
+        The actual torch/diffusers work lives in `_load_component_module` so
+        pure-logic tests can monkeypatch that seam without importing torch.
+        NOTE: spec is the *base* identity here (caller strips LoRAs before
+        calling — LoRAs are applied at adapter assembly, spec §5.5 / PR-4 L1).
         """
-        from src.services.inference.quant_loaders import QUANT_LOADERS
+        bundle = await asyncio.to_thread(self._load_component_module, spec)
+        return {
+            "module": bundle["module"],
+            "tokenizer": bundle.get("tokenizer"),
+            "spec": spec,
+            "device": spec.device,
+            "loaded_at": time.monotonic(),
+        }
 
-        state_dict = QUANT_LOADERS.dispatch(spec)
-        return {"_state_dict": state_dict, "spec": spec, "loaded_at": time.monotonic()}
+    def _load_component_module(self, spec) -> dict:
+        """Real GPU load (runs in a worker thread). Delegates to
+        image_diffusers.load_component_module (built in PR-4 Task 6) which
+        encapsulates from_pretrained(parent_dir) + quant_loaders fallback.
+        Tests monkeypatch this method, so the import below is not executed there."""
+        from src.services.inference.image_diffusers import load_component_module
+        return load_component_module(spec)
 
     async def unload_component(self, spec_or_key) -> None:
         """Drop the cache entry. PR-1: caller is responsible for any GPU memory release.
