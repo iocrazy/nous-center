@@ -65,6 +65,11 @@ class ModelManager:
         self._components: dict[ComponentKey, LoadedComponent] = {}
         self._component_locks: dict[ComponentKey, asyncio.Lock] = {}
         self._component_failures: dict[ComponentKey, str] = {}
+        # PR-4: assembled image adapter cache (key = pipeline_class + tuple of the
+        # 3 components' FULL component keys, incl unet lora_set). Coexists with
+        # _models/_components.
+        self._image_adapters: dict = {}
+        self._image_adapter_locks: dict = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -711,3 +716,62 @@ class ModelManager:
         async with self._component_lock_for(key):
             self._components.pop(key, None)
             self._component_failures.pop(key, None)
+
+    # --- PR-4: assembled image adapter (component-level L1) ------------------
+
+    _VRAM_EST_MB = {"unet": 18000, "clip": 6000, "vae": 1000}
+
+    def _resolve_component_device(self, spec):
+        """Resolve device='auto' → 'cuda:N' via allocator. Returns a NEW spec
+        (model_copy keeps validators) so the original descriptor is untouched."""
+        if spec.device != "auto":
+            return spec
+        idx = self._allocator.get_best_gpu(self._VRAM_EST_MB.get(spec.kind, 8000))
+        resolved = f"cuda:{idx}" if idx >= 0 else "cpu"
+        return spec.model_copy(update={"device": resolved})
+
+    @staticmethod
+    def _base_spec(spec):
+        """Strip LoRAs → base module identity (LoRAs applied at assembly)."""
+        return spec.model_copy(update={"loras": []}) if spec.loras else spec
+
+    def _image_adapter_lock_for(self, key) -> asyncio.Lock:
+        return self._image_adapter_locks.setdefault(key, asyncio.Lock())
+
+    async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline"):
+        """PR-4 entry for the runner component path. Resolves auto devices,
+        loads/reuses base modules via the component L1 cache, assembles (or
+        reuses) a DiffusersImageBackend keyed by the full 3-component combo.
+
+        OOM resilience: on first-load CUDA OOM, evict legacy LRU then retry once.
+        """
+        from src.services.inference.component_spec import to_component_key
+        from src.services.inference.image_diffusers import DiffusersImageBackend
+
+        resolved = {k: self._resolve_component_device(s) for k, s in components.items()}
+        combo_key = (pipeline_class,) + tuple(
+            to_component_key(resolved[k]) for k in ("unet", "clip", "vae"))
+
+        async with self._image_adapter_lock_for(combo_key):
+            cached = self._image_adapters.get(combo_key)
+            if cached is not None:
+                return cached
+
+            for attempt in range(2):
+                try:
+                    base = {k: self._base_spec(resolved[k]) for k in ("unet", "clip", "vae")}
+                    t = await self.get_or_load_component(base["unet"])
+                    c = await self.get_or_load_component(base["clip"])
+                    v = await self.get_or_load_component(base["vae"])
+                    modules = {"transformer": t["module"], "text_encoder": c["module"],
+                               "tokenizer": c["tokenizer"], "vae": v["module"]}
+                    adapter = DiffusersImageBackend.from_loaded_components(
+                        modules, resolved, pipeline_class)
+                    self._image_adapters[combo_key] = adapter
+                    return adapter
+                except Exception as e:  # noqa: BLE001
+                    if self._is_oom(e) and attempt == 0:
+                        evicted = await self.evict_lru()
+                        logger.warning("get_or_load_image_adapter OOM, evicted %r, retry", evicted)
+                        continue
+                    raise
