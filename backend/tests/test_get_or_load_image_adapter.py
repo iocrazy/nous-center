@@ -89,3 +89,35 @@ async def test_auto_device_resolved(mm, monkeypatch):
     await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline")
     assert "auto" not in seen
     assert "cuda:2" in seen
+
+
+@pytest.mark.asyncio
+async def test_image_adapter_emits_component_events(stubbed):
+    from src.services.inference.component_spec import component_state_key
+    mm, module_loads, assemble_calls = stubbed
+    events = []
+
+    async def _on_event(key, state, error):
+        events.append((key, state, error))
+
+    comps = _comps()
+    await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline", on_event=_on_event)
+
+    keys = {component_state_key(mm._resolve_component_device(comps[k])) for k in ("unet", "clip", "vae")}
+    loaded = {k for (k, s, _e) in events if s == "loaded"}
+    loading = {k for (k, s, _e) in events if s == "loading"}
+    assert keys <= loaded
+    assert keys <= loading
+
+
+@pytest.mark.asyncio
+async def test_image_adapter_emits_failed_on_load_error(mm, monkeypatch):
+    def _boom(spec):
+        raise RuntimeError("synthetic load fail")
+    monkeypatch.setattr(mm, "_load_component_module", _boom)
+    events = []
+    async def _on_event(key, state, error):
+        events.append((key, state, error))
+    with pytest.raises(RuntimeError):
+        await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline", on_event=_on_event)
+    assert any(s == "failed" for (_k, s, _e) in events)

@@ -738,15 +738,25 @@ class ModelManager:
     def _image_adapter_lock_for(self, key) -> asyncio.Lock:
         return self._image_adapter_locks.setdefault(key, asyncio.Lock())
 
-    async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline"):
+    async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline", on_event=None):
         """PR-4 entry for the runner component path. Resolves auto devices,
         loads/reuses base modules via the component L1 cache, assembles (or
         reuses) a DiffusersImageBackend keyed by the full 3-component combo.
 
         OOM resilience: on first-load CUDA OOM, evict legacy LRU then retry once.
+
+        PR-5a: on_event(key, state, error) — 可选异步回调，每个组件触发：
+          - "loading": 开始加载 base 模块之前
+          - "loaded":  加载成功后（combo cache HIT 时三个组件都触发）
+          - "failed":  加载抛异常时（随后 re-raise）
+        on_event=None 时行为与 PR-4 完全一致（_emit 是 no-op）。
         """
-        from src.services.inference.component_spec import to_component_key
+        from src.services.inference.component_spec import to_component_key, component_state_key
         from src.services.inference.image_diffusers import DiffusersImageBackend
+
+        async def _emit(spec, state, error=None):
+            if on_event is not None:
+                await on_event(component_state_key(spec), state, error)
 
         resolved = {k: self._resolve_component_device(s) for k, s in components.items()}
         combo_key = (pipeline_class,) + tuple(
@@ -755,16 +765,29 @@ class ModelManager:
         async with self._image_adapter_lock_for(combo_key):
             cached = self._image_adapters.get(combo_key)
             if cached is not None:
+                # combo cache HIT — 三个组件均已就绪，通知 loaded
+                for k in ("unet", "clip", "vae"):
+                    await _emit(resolved[k], "loaded")
                 return cached
 
             for attempt in range(2):
                 try:
                     base = {k: self._base_spec(resolved[k]) for k in ("unet", "clip", "vae")}
-                    t = await self.get_or_load_component(base["unet"])
-                    c = await self.get_or_load_component(base["clip"])
-                    v = await self.get_or_load_component(base["vae"])
-                    modules = {"transformer": t["module"], "text_encoder": c["module"],
-                               "tokenizer": c["tokenizer"], "vae": v["module"]}
+                    loaded_modules = {}
+                    for k in ("unet", "clip", "vae"):
+                        await _emit(resolved[k], "loading")
+                        try:
+                            loaded_modules[k] = await self.get_or_load_component(base[k])
+                        except Exception as e:  # noqa: BLE001
+                            await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
+                            raise
+                        await _emit(resolved[k], "loaded")
+                    modules = {
+                        "transformer": loaded_modules["unet"]["module"],
+                        "text_encoder": loaded_modules["clip"]["module"],
+                        "tokenizer": loaded_modules["clip"]["tokenizer"],
+                        "vae": loaded_modules["vae"]["module"],
+                    }
                     adapter = DiffusersImageBackend.from_loaded_components(
                         modules, resolved, pipeline_class)
                     self._image_adapters[combo_key] = adapter
