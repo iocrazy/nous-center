@@ -19,7 +19,13 @@ for _n in list(_sys.modules.keys()):
 from pathlib import Path
 
 import pytest
-import torch
+
+# CI installs deps via `uv sync --frozen` WITHOUT the `image` extra, so real
+# torch/safetensors aren't present (conftest stubs torch with MagicMock). This
+# module round-trips REAL tensors (stub deleted above), so skip the whole module
+# when real torch isn't installed. Runs fully in the local .venv.
+torch = pytest.importorskip("torch")
+pytest.importorskip("safetensors")
 from safetensors.torch import save_file
 
 from src.services.inference.component_spec import ComponentSpec
