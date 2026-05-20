@@ -55,6 +55,8 @@ class _RunnerState:
         # pipe-reader 队列里就收到 Abort」两种节点边界 cancel 时序（spec §4.4）。
         self.pending_aborts: set[int] = set()
         self.shutdown = asyncio.Event()
+        from src.services.inference.image_l2_cache import ImageOutputCache
+        self.image_l2 = ImageOutputCache()
 
 
 def _merge_config_into_spec(state: _RunnerState, model_key: str, config: dict) -> None:
@@ -245,6 +247,31 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             state.cancel_flags.pop(node.task_id, None)
             continue
 
+        # PR-6: L2 output cache —— 确定性 image 节点二跑命中则跳过 load+infer。
+        l2_key = None
+        if node.node_type == "image" and getattr(node, "is_deterministic", False):
+            from src.services.inference.image_l2_cache import image_l2_key, serve_image_l2
+            l2_key = image_l2_key(node, req)
+            entry = state.image_l2.get(l2_key)
+            if entry is not None:
+                ttl = int(node.inputs.get("url_ttl_seconds") or 3600)
+                hit = serve_image_l2(entry, ttl)
+                if hit is not None:
+                    await ch.send_message(P.NodeResult(
+                        task_id=node.task_id, node_id=node.node_id, status="completed",
+                        outputs={
+                            "meta": hit["meta"], "media_type": hit["media_type"],
+                            "image_url": hit["image_url"], "image_uuid": hit["image_uuid"],
+                            "image_expires": hit["image_expires"],
+                            "width": hit["width"], "height": hit["height"], "cached": True,
+                        },
+                        error=None,
+                        duration_ms=int((time.monotonic() - started) * 1000)))
+                    state.cancel_flags.pop(node.task_id, None)
+                    continue
+                # PNG reaped → drop stale entry, fall through to recompute
+                state.image_l2._d.pop(l2_key, None)
+
         # adapter 获取:components 路径走 get_or_load_image_adapter(组件级 L1 +
         # combo 缓存);否则老 model_key 路径(get_or_load,含 OOM evict)。
         try:
@@ -364,6 +391,11 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
                 "width": meta.get("width"),
                 "height": meta.get("height"),
             })
+            if l2_key is not None:
+                state.image_l2.put(l2_key, {
+                    "image_uuid": record["uuid"], "date": record["date"], "ext": ext,
+                    "meta": result.metadata, "width": meta.get("width"), "height": meta.get("height"),
+                })
         await ch.send_message(P.NodeResult(
             task_id=node.task_id, node_id=node.node_id, status="completed",
             outputs=outputs,
