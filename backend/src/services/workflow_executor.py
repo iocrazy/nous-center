@@ -11,7 +11,7 @@ from src.services.llm_service import call_llm  # noqa: F401 — re-exported for 
 from src.services.model_manager import ModelManager
 
 # Trigger @register side effects for all builtin nodes
-from src.services.nodes import audio, image, llm, logic, text_io  # noqa: F401
+from src.services.nodes import audio, image, image_components, llm, logic, text_io  # noqa: F401
 
 EVENT_TYPES: tuple[str, ...] = (
     # Existing events
@@ -226,6 +226,24 @@ class WorkflowExecutor:
         # 不带本步,runner 端 ImageRequest 拿不到 steps/width,会用 Field default
         # 25/1024,但 loras / cfg_scale / seed 全丢。
         merged_inputs = {**{k: v for k, v in data.items() if not k.startswith("_")}, **inputs}
+        # spec §7.4: 老格式 image_generate(只有 model_key、无 unet/clip/vae 边)→
+        # 后端 inline 展开成三 ComponentSpec(device=auto),之后与新格式同路径。
+        if (
+            node["type"] == "image_generate"
+            and model_key
+            and not all(k in merged_inputs for k in ("unet", "clip", "vae"))
+        ):
+            from src.services.inference.component_expand import expand_legacy_image_spec
+            if _model_manager is None:
+                raise ExecutionError("老格式 image_generate 展开需要 ModelManager(_model_manager 未注入)")
+            spec_obj = _model_manager._registry.get(model_key)
+            if spec_obj is None:
+                raise ExecutionError(f"老格式 image_generate 展开失败:model_key {model_key!r} 无 ModelSpec")
+            comps = expand_legacy_image_spec(spec_obj, loras=merged_inputs.get("loras"))
+            for kind in ("unet", "clip", "vae"):
+                merged_inputs[kind] = comps[kind].model_dump()
+        # spec §3.3: seed 非空 ⇒ 确定性,runner / L2 cache 据此决定可缓存。
+        is_deterministic = merged_inputs.get("seed") not in (None, "")
 
         spec = P.RunNode(
             task_id=task_id,
@@ -233,6 +251,7 @@ class WorkflowExecutor:
             node_type=group_id,
             model_key=model_key,
             inputs=merged_inputs,
+            is_deterministic=is_deterministic,
         )
         result = await client.run_node(spec, workflow_name=self._workflow_name)
         # 真 RunnerClient 返回 P.NodeResult dataclass;Lane S FakeRunnerClient

@@ -14,7 +14,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from enum import Enum
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+if TYPE_CHECKING:
+    from src.services.inference.component_spec import ComponentSpec
 
 from pydantic import BaseModel, Field
 
@@ -75,6 +78,11 @@ class LoRASpec(BaseModel):
 
     name: str
     strength: float = Field(1.0, ge=-2, le=2)
+    # PR-4: component path carries the absolute LoRA file path so the runner
+    # can load it without a name→path registry lookup (from_components sets
+    # _lora_paths={}). Legacy yaml path leaves this None and resolves via
+    # _lora_paths[name] as before.
+    path: str | None = None
 
 
 class ImageRequest(InferenceRequest):
@@ -87,6 +95,11 @@ class ImageRequest(InferenceRequest):
     seed: int | None = None
     cfg_scale: float = Field(7.0, ge=0, le=30)
     loras: list[LoRASpec] = Field(default_factory=list)
+    # PR-4: component path. When set, the runner routes through
+    # ModelManager.get_or_load_image_adapter instead of model_key. None ⇒
+    # legacy model_key path (back-compat).
+    components: dict[str, "ComponentSpec"] | None = None
+    pipeline_class: str = "Flux2KleinPipeline"
 
 
 class AudioRequest(InferenceRequest):
