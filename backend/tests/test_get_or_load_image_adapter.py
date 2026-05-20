@@ -63,7 +63,7 @@ async def test_same_combo_cache_hit(stubbed):
 
 
 @pytest.mark.asyncio
-async def test_lora_change_reuses_clip_vae_reloads_unet(stubbed):
+async def test_lora_change_reuses_all_base_modules(stubbed):
     mm, module_loads, assemble_calls = stubbed
     await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline")
     await mm.get_or_load_image_adapter(

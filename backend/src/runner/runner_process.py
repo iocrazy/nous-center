@@ -198,8 +198,6 @@ def _build_request(node: P.RunNode):
 
 async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
     """从队列取 RunNode，跑 adapter，发 progress / result。"""
-    from src.errors import ModelLoadError, ModelNotFoundError
-
     while not state.shutdown.is_set():
         try:
             node = await asyncio.wait_for(state.run_queue.get(), timeout=0.5)
@@ -229,7 +227,7 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
                     components, getattr(req, "pipeline_class", "Flux2KleinPipeline"))
             else:
                 adapter = await state.mm.get_or_load(node.model_key) if node.model_key else None
-        except (ModelLoadError, ModelNotFoundError) as e:
+        except Exception as e:  # noqa: BLE001
             await ch.send_message(P.NodeResult(
                 task_id=node.task_id, node_id=node.node_id, status="failed",
                 outputs=None, error=f"{type(e).__name__}: {e}",

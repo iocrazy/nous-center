@@ -772,6 +772,8 @@ class ModelManager:
                 except Exception as e:  # noqa: BLE001
                     if self._is_oom(e) and attempt == 0:
                         evicted = await self.evict_lru()
-                        logger.warning("get_or_load_image_adapter OOM, evicted %r, retry", evicted)
+                        logger.warning(
+                            "get_or_load_image_adapter OOM; evicted=%r; %s",
+                            evicted, "retrying" if evicted else "nothing to evict, retry likely fails")
                         continue
                     raise

@@ -65,3 +65,34 @@ async def test_components_path_uses_image_adapter():
     results = [m for m in ch.sent if isinstance(m, P.NodeResult)]
     assert results and results[-1].status == "completed"
     assert mm.calls == [(("clip", "unet", "vae"), "Flux2KleinPipeline")]
+
+
+@pytest.mark.asyncio
+async def test_components_path_adapter_error_fails_gracefully():
+    """A bare exception from get_or_load_image_adapter must become NodeResult
+    failed, NOT crash _node_executor (which would hang the workflow)."""
+    class _BoomMM:
+        async def get_or_load_image_adapter(self, components, pipeline_class):
+            raise RuntimeError("scheduler dir not found")
+        async def get_or_load(self, key):
+            raise AssertionError("legacy path not expected")
+
+    state = _RunnerState("r", "image", [0, 1, 2], _BoomMM())
+    ch = _Collect()
+    node = P.RunNode(
+        task_id=9, node_id="g", node_type="image", model_key=None,
+        inputs={
+            "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+            "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
+            "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
+            "prompt": "x", "seed": 1, "width": 64, "height": 64, "steps": 1,
+        })
+    state.cancel_flags[9] = threading.Event()
+    state.run_queue.put_nowait(node)
+    task = asyncio.create_task(_node_executor(state, ch))
+    await asyncio.sleep(0.2)
+    state.shutdown.set()
+    await asyncio.wait_for(task, timeout=2)
+    results = [m for m in ch.sent if isinstance(m, P.NodeResult)]
+    assert results and results[-1].status == "failed"
+    assert "scheduler dir not found" in results[-1].error

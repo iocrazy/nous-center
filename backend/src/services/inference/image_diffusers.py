@@ -685,12 +685,13 @@ class DiffusersImageBackend(InferenceAdapter):
                 [s.name for s in loras],
                 adapter_weights=[s.strength for s in loras],
             )
-        elif self._loaded_loras:
-            # No LoRAs requested AND we have previously-loaded ones to clear.
-            # Fresh-state pipelines (never had a LoRA) can't take set_adapters([])
-            # — diffusers raises KeyError because _component_adapter_weights
-            # is empty. Only call clear when there's actually something to clear.
-            self._pipe.set_adapters([])
+        else:
+            # 没请求 LoRA：关掉(可能是共享 base transformer 上别的 adapter 留下的)
+            # active LoRA。fresh pipe 没注册过任何 adapter 时 set_adapters([]) 会
+            # KeyError,所以先查 active。
+            active = self._pipe.get_active_adapters() if hasattr(self._pipe, "get_active_adapters") else []
+            if active:
+                self._pipe.set_adapters([])
 
         if was_offloaded and self._offload_strategy == "single_card_offload":
             self._pipe.enable_model_cpu_offload(gpu_id=self._gpu_index())
@@ -701,10 +702,10 @@ class DiffusersImageBackend(InferenceAdapter):
         """Dispatch to ImageSampler (component path) or legacy Pipeline.__call__."""
         if self._sampler is not None:
             # base transformer 可能被多个 (不同 LoRA 组合) adapter 共享 —— 复用前
-            # 重申明本组合的 active adapter set(同 runner 串行,无并发竞态)。
+            # 总是重申明本组合的 active adapter set(空集 = 关掉别的 adapter 留下的
+            # LoRA;同 runner 串行,无并发竞态)。
             unet_loras = self._components["unet"].loras if self._components else []
-            if unet_loras:
-                self._apply_loras(unet_loras)
+            self._apply_loras(unet_loras)
             if cancel_flag is not None:
                 self._sampler.cancel_flag = cancel_flag
             return await self._sampler.sample(req)
