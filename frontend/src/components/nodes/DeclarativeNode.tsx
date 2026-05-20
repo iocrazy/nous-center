@@ -405,6 +405,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   const [imageStage, setImageStage] = useState<{
     phase: 'text_encode' | 'denoise' | 'vae_decode' | 'done'
     elapsedSec: number
+    cached?: boolean
   } | null>(null)
   const imageStageTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const imageStartAtRef = useRef<number | null>(null)
@@ -487,7 +488,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
             : start
               ? (performance.now() - start) / 1000
               : 0
-          setImageStage({ phase: 'done', elapsedSec: realElapsed })
+          setImageStage({ phase: 'done', elapsedSec: realElapsed, cached: !!data.cached })
           imageStartAtRef.current = null
         }
         const usage = data.usage
@@ -610,7 +611,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
             {imageStage.phase === 'text_encode' && 'Text encode...'}
             {imageStage.phase === 'denoise' && `Denoise (~${Math.max(1, Math.round(Number(data.steps ?? 25)))} steps)...`}
             {imageStage.phase === 'vae_decode' && 'VAE decode...'}
-            {imageStage.phase === 'done' && `完成 · ${Math.round(imageStage.elapsedSec * 10) / 10}s`}
+            {imageStage.phase === 'done' && `完成 · ${Math.round(imageStage.elapsedSec * 10) / 10}s${imageStage.cached ? ' (cached)' : ''}`}
           </span>
         </div>
       )}

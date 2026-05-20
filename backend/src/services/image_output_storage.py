@@ -109,7 +109,19 @@ def write_image(png_bytes: bytes, *, ext: str = "png", ttl_seconds: int = 3600) 
         "url": url,
         "ext": ext,
         "expires": expires,
+        "date": today,
     }
+
+
+def sign_existing_image(date: str, uuid_str: str, ext: str, ttl_seconds: int = 3600) -> tuple[str | None, int | None]:
+    """Re-sign a fresh URL for an already-on-disk image (L2 cache hit, spec §3.3).
+    HMAC is microseconds, so a long-lived cache entry always serves a URL valid
+    for the next ttl window. Returns (None, None) when no signing secret."""
+    if _signing_key() is None:
+        return None, None
+    expires = int(time.time()) + max(60, int(ttl_seconds))
+    token = _sign(uuid_str, expires)
+    return f"/files/images/{date}/{uuid_str}.{ext}?token={token}&expires={expires}", expires
 
 
 def resolve_path(date: str, uuid_str: str, ext: str) -> Path:

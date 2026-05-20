@@ -169,6 +169,8 @@ class WorkflowExecutor:
                         complete_event["usage"] = output["usage"]
                     if "duration_ms" in output:
                         complete_event["duration_ms"] = output["duration_ms"]
+                    if output.get("cached"):
+                        complete_event["cached"] = True
                 await self._on_progress(complete_event)
 
         return {"outputs": self._outputs}
