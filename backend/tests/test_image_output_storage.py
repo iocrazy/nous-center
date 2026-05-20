@@ -380,3 +380,31 @@ def test_reap_orphans_floor_60s(storage_tmp):
     summary = reap_orphans(older_than_seconds=0)  # operator passed 0
     assert summary["deleted"] == 0
     assert fresh.exists()
+
+
+def test_write_image_returns_date(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUS_IMAGE_OUTPUTS", str(tmp_path))
+    import datetime as _dt
+    from src.services import image_output_storage as ios
+    rec = ios.write_image(b"\x89PNG\r\n", ext="png", ttl_seconds=3600)
+    assert rec["date"] == _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+
+
+def test_sign_existing_image_roundtrips_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUS_IMAGE_OUTPUTS", str(tmp_path))
+    from src.config import get_settings
+    monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "sek")
+    from src.services import image_output_storage as ios
+    url, expires = ios.sign_existing_image("2026-05-20", "abc123", "png", ttl_seconds=3600)
+    assert url is not None and "/files/images/2026-05-20/abc123.png?token=" in url
+    tok = url.split("token=", 1)[1].split("&", 1)[0]
+    assert ios.verify_token("abc123", expires, tok)
+
+
+def test_sign_existing_image_no_secret_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUS_IMAGE_OUTPUTS", str(tmp_path))
+    from src.config import get_settings
+    monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "")
+    from src.services import image_output_storage as ios
+    url, expires = ios.sign_existing_image("2026-05-20", "abc", "png")
+    assert url is None and expires is None
