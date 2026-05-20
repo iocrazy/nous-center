@@ -30,6 +30,19 @@ logger = logging.getLogger(__name__)
 _ws_connections: dict[str, list[WebSocket]] = {}
 
 
+def _make_component_event_handler(registry, ws):
+    """Build the sync callback RunnerClient.on_component_event uses: update the
+    backend mirror + fan out a WS push. WS broadcast is async → scheduled."""
+    def _handler(evt) -> None:
+        registry.update(evt.component_key, evt.state, evt.error)
+        try:
+            asyncio.get_running_loop().create_task(
+                ws.broadcast_component_state(evt.component_key, evt.state, evt.error))
+        except RuntimeError:
+            pass  # no running loop — registry still updated
+    return _handler
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Create database tables on startup."""
@@ -285,6 +298,14 @@ async def lifespan(app: FastAPI):
     app.state.runner_supervisors = runner_supervisors
     app.state.runner_clients = runner_clients
     app.state.llm_runner = llm_runner
+
+    # PR-5a: component-state mirror fed by the image runner's ComponentEvents.
+    from src.services.component_state import ComponentStateRegistry
+    app.state.component_state_registry = ComponentStateRegistry()
+    _img_client = runner_clients.get("image")
+    if _img_client is not None:
+        _img_client.on_component_event = _make_component_event_handler(
+            app.state.component_state_registry, ws_manager)
 
     # Auto-detect running vLLM instances BEFORE resident auto-load
     # (so we reconnect to orphans instead of spawning duplicates)
