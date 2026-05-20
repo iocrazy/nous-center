@@ -330,7 +330,12 @@ def _load_hf_or_quant(spec, hf_class):
             from src.services.inference.quant_loaders import QUANT_LOADERS
             sd = QUANT_LOADERS.dispatch(spec)
             module = hf_class.from_config(parent_dir / "config.json")
-            module.load_state_dict(sd, strict=False)
+            missing, unexpected = module.load_state_dict(sd, strict=False)
+            if missing or unexpected:
+                logger.info(
+                    "_load_hf_or_quant(%s): quant fallback loaded with missing=%d unexpected=%d",
+                    hf_class.__name__, len(missing), len(unexpected),
+                )
             return module
         except Exception as quant_exc:
             raise RuntimeError(
