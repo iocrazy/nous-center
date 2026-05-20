@@ -48,6 +48,9 @@ class RunnerClient:
         # 单个待回 Pong 的 Future（ping 是串行的，watchdog 一次一个）
         self._pong_future: asyncio.Future | None = None
 
+        # PR-5a §5: ComponentEvent 回调 —— 主进程订阅组件加载状态迁移
+        self.on_component_event: Callable[[P.ComponentEvent], None] | None = None
+
         self._demux_task: asyncio.Task | None = None
 
         # Lane K follow-up: inflight dispatch 状态跟踪 —— 给 /api/v1/monitor/runners
@@ -145,6 +148,10 @@ class RunnerClient:
                 self._dispatches.pop(msg.task_id, None)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
+            elif isinstance(msg, P.ComponentEvent):
+                cb = self.on_component_event
+                if cb is not None:
+                    cb(msg)
             elif isinstance(msg, P.ModelEvent):
                 fut = self._model_futures.pop(msg.model_key, None)
                 if fut is not None and not fut.done():
@@ -203,6 +210,23 @@ class RunnerClient:
         self._model_futures[model_key] = fut
         await self._ch.send_message(P.LoadModel(model_key=model_key, config=config or {}))
         return await fut
+
+    async def preload_components(
+        self,
+        task_id: int,
+        components: dict,
+        pipeline_class: str = "Flux2KleinPipeline",
+    ) -> None:
+        """发 PreloadComponents —— fire-and-forget；状态走 ComponentEvent → on_component_event。"""
+        if not self._connected:
+            raise ConnectionError("runner disconnected")
+        await self._ch.send_message(
+            P.PreloadComponents(
+                task_id=task_id,
+                components=components,
+                pipeline_class=pipeline_class,
+            )
+        )
 
     async def unload_model(self, model_key: str) -> None:
         if not self._connected:

@@ -149,3 +149,15 @@ def test_component_key_unchanged_when_only_lora_order_differs():
     s2 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
                       loras=[LoRASpec(name="b", strength=0.4), LoRASpec(name="a", strength=0.8)])
     assert to_component_key(s1) == to_component_key(s2)
+
+
+def test_component_state_key_stable_and_lora_aware():
+    from src.services.inference.base import LoRASpec
+    from src.services.inference.component_spec import ComponentSpec, component_state_key
+
+    base = ComponentSpec(kind="unet", file="/m/u.safe", device="cuda:1", dtype="bfloat16", adapter_arch="flux2")
+    assert component_state_key(base) == "/m/u.safe|cuda:1|bfloat16|"
+    a = base.model_copy(update={"loras": [LoRASpec(name="x", strength=0.8), LoRASpec(name="y", strength=0.4)]})
+    b = base.model_copy(update={"loras": [LoRASpec(name="y", strength=0.4), LoRASpec(name="x", strength=0.8)]})
+    assert component_state_key(a) == component_state_key(b)
+    assert component_state_key(a) != component_state_key(base)

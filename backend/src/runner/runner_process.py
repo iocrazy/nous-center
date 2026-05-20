@@ -75,6 +75,31 @@ def _merge_config_into_spec(state: _RunnerState, model_key: str, config: dict) -
     )
 
 
+def _make_component_event_sender(ch: PipeChannel):
+    """返回 async on_event(component_key, state, error)，把 ComponentEvent 写入
+    pipe —— 传给 ModelManager.get_or_load_image_adapter，让组件状态变迁到达
+    backend（spec §6.1）。"""
+    async def _on_event(component_key: str, state: str, error: str | None = None) -> None:
+        await ch.send_message(P.ComponentEvent(component_key=component_key, state=state, error=error))
+    return _on_event
+
+
+async def _handle_preload_components(state: _RunnerState, ch: PipeChannel, msg: P.PreloadComponents) -> None:
+    """PreloadComponents → get_or_load_image_adapter（发 ComponentEvent）。不抛 ——
+    失败已通过 ComponentEvent(state=failed) 报告，runner 不能崩。"""
+    from src.services.inference.component_spec import ComponentSpec
+    try:
+        components = {k: ComponentSpec(**v) for k, v in msg.components.items()}
+    except Exception as e:  # noqa: BLE001 — bad descriptor
+        await ch.send_message(P.ComponentEvent(component_key="?", state="failed", error=f"bad spec: {e}"))
+        return
+    on_event = _make_component_event_sender(ch)
+    try:
+        await state.mm.get_or_load_image_adapter(components, msg.pipeline_class, on_event=on_event)
+    except Exception:  # noqa: BLE001 — 已通过 on_event 逐组件上报，不再二次抛
+        pass
+
+
 async def _handle_load_model(state: _RunnerState, ch: PipeChannel, msg: P.LoadModel) -> None:
     """LoadModel —— 走 ModelManager.get_or_load（含 OOM evict 重试），发 ModelEvent。"""
     from src.errors import ModelLoadError, ModelNotFoundError
@@ -132,6 +157,8 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
             else:
                 # Abort 先到 / RunNode 还没到 —— 记下，RunNode 到了再合并
                 state.pending_aborts.add(msg.task_id)
+        elif isinstance(msg, P.PreloadComponents):
+            await _handle_preload_components(state, ch, msg)
         elif isinstance(msg, P.LoadModel):
             await _handle_load_model(state, ch, msg)
         elif isinstance(msg, P.UnloadModel):
@@ -224,7 +251,8 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             components = getattr(req, "components", None)
             if components:
                 adapter = await state.mm.get_or_load_image_adapter(
-                    components, getattr(req, "pipeline_class", "Flux2KleinPipeline"))
+                    components, getattr(req, "pipeline_class", "Flux2KleinPipeline"),
+                    on_event=_make_component_event_sender(ch))
             else:
                 adapter = await state.mm.get_or_load(node.model_key) if node.model_key else None
         except Exception as e:  # noqa: BLE001
