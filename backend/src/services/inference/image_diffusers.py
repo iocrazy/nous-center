@@ -36,6 +36,7 @@ from src.services.inference.base import (
 )
 from src.services.inference.cancel_flag import CancelFlag
 from src.services.inference.exceptions import NodeCancelled, NodeTimeout
+from src.services.inference.model_arch_adapter import MODEL_ARCH_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +294,79 @@ def vae_decode(pipe: Any, latents: Any) -> Any:
 
     image = pipe.vae.decode(latents, return_dict=False)[0]
     return pipe.image_processor.postprocess(image, output_type="pil")[0]
+
+
+# --- component module loaders (PR-4) ---------------------------------------
+#
+# 这些原来是 load_from_components 里的嵌套闭包(_torch_dtype_from / _load_module)。
+# PR-4 把它们提到模块级:Task 5 的 ModelManager._load_component_module 直接
+# import load_component_module 来填 L1 缓存,load_from_components 也复用它们 ——
+# base 模块加载和组装拼装彻底解耦。
+
+
+def _torch_dtype_from(dtype_str: str):
+    import torch
+    return {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp8_e4m3": torch.float8_e4m3fn,
+    }.get(dtype_str, torch.bfloat16)
+
+
+def _load_hf_or_quant(spec, hf_class):
+    """from_pretrained(parent_dir) first; quant_loaders fallback for single-file.
+
+    Only catches OSError/ValueError from from_pretrained — those indicate
+    "this isn't a diffusers-layout dir" (missing config.json, malformed HF
+    metadata). Other exceptions (OOM, CUDA errors) propagate so the real
+    failure mode stays visible.
+    """
+    from pathlib import Path
+    parent_dir = Path(spec.file).parent
+    try:
+        return hf_class.from_pretrained(parent_dir, torch_dtype=_torch_dtype_from(spec.dtype))
+    except (OSError, ValueError) as primary:
+        try:
+            from src.services.inference.quant_loaders import QUANT_LOADERS
+            sd = QUANT_LOADERS.dispatch(spec)
+            module = hf_class.from_config(parent_dir / "config.json")
+            module.load_state_dict(sd, strict=False)
+            return module
+        except Exception as quant_exc:
+            raise RuntimeError(
+                f"_load_hf_or_quant({spec.file}): from_pretrained failed "
+                f"({type(primary).__name__}: {primary}); quant fallback also failed "
+                f"({type(quant_exc).__name__}: {quant_exc})"
+            ) from quant_exc
+
+
+def load_component_module(spec) -> dict:
+    """Load ONE component's GPU module(s) for spec (base identity — LoRAs applied
+    later at assembly). Returns {"module": .to(device), "tokenizer": tok|None}.
+
+    HF-layout dirs: spec.file points at a .safetensors INSIDE the component dir
+    (component_scanner emits abs_path to a real file), so Path(spec.file).parent
+    is the HF component dir. tokenizer for clip lives at <root>/tokenizer where
+    <root> = Path(clip.file).parent.parent (spec §4.6 layout)."""
+    from pathlib import Path
+    from diffusers import AutoencoderKLFlux2, Flux2Transformer2DModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    if spec.kind == "unet":
+        mod = _load_hf_or_quant(spec, Flux2Transformer2DModel).to(spec.device)
+        return {"module": mod, "tokenizer": None}
+    if spec.kind == "clip":
+        mod = _load_hf_or_quant(spec, AutoModelForCausalLM).to(spec.device)
+        tok_dir = Path(spec.file).parent.parent / "tokenizer"
+        if not tok_dir.is_dir():
+            raise FileNotFoundError(
+                f"tokenizer dir not found at {tok_dir} — clip component expects HF layout "
+                f"<root>/{{text_encoder,tokenizer}}/")
+        return {"module": mod, "tokenizer": AutoTokenizer.from_pretrained(tok_dir)}
+    if spec.kind == "vae":
+        mod = _load_hf_or_quant(spec, AutoencoderKLFlux2).to(spec.device)
+        return {"module": mod, "tokenizer": None}
+    raise ValueError(f"load_component_module: unknown kind {spec.kind!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -574,10 +648,10 @@ class DiffusersImageBackend(InferenceAdapter):
             for spec in loras:
                 if spec.name in self._loaded_loras:
                     continue
-                lora_path = self._lora_paths.get(spec.name)
+                lora_path = getattr(spec, "path", None) or self._lora_paths.get(spec.name)
                 if not lora_path:
                     raise ValueError(
-                        f"LoRA {spec.name!r} not in registered lora_paths "
+                        f"LoRA {spec.name!r} has no path and is not in registered lora_paths "
                         f"(have: {sorted(self._lora_paths)})"
                     )
                 self._pipe.load_lora_weights(lora_path, adapter_name=spec.name)
@@ -621,7 +695,11 @@ class DiffusersImageBackend(InferenceAdapter):
     ) -> InferenceResult:
         """Dispatch to ImageSampler (component path) or legacy Pipeline.__call__."""
         if self._sampler is not None:
-            # Wire the externally-provided cancel_flag into the sampler
+            # base transformer 可能被多个 (不同 LoRA 组合) adapter 共享 —— 复用前
+            # 重申明本组合的 active adapter set(同 runner 串行,无并发竞态)。
+            unet_loras = self._components["unet"].loras if self._components else []
+            if unet_loras:
+                self._apply_loras(unet_loras)
             if cancel_flag is not None:
                 self._sampler.cancel_flag = cancel_flag
             return await self._sampler.sample(req)
@@ -765,125 +843,97 @@ class DiffusersImageBackend(InferenceAdapter):
         instance._sampler = None  # ImageSampler — built in load_from_components
         return instance
 
-    async def load_from_components(self) -> None:
-        """Construct Pipeline (cross-device assembly) + ImageSampler.
-
-        Pipeline assembly is verified to work cross-device by Task 0 risk gate;
-        only Pipeline.__call__ crashes, which we sidestep by routing infer()
-        through ImageSampler.
-        """
-        from pathlib import Path
-
-        import torch
-
-        from diffusers import (
-            AutoencoderKLFlux2,
-            Flux2KleinPipeline,
-            Flux2Transformer2DModel,
-            FlowMatchEulerDiscreteScheduler,
-        )
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
+    @classmethod
+    def from_loaded_components(
+        cls,
+        modules: dict,                    # {"transformer","text_encoder","tokenizer","vae"}
+        components: dict[str, "ComponentSpec"],
+        pipeline_class: str = "Flux2KleinPipeline",
+    ) -> "DiffusersImageBackend":
+        """Build an adapter from PRE-LOADED GPU modules (PR-4 L1 path). Unlike
+        from_components (which loads inside load_from_components), this reuses
+        cached modules from ModelManager and only assembles pipe + applies LoRAs
+        + builds the sampler. LoRAs use spec.path (descriptor-carried abs path)."""
+        required = {"unet", "clip", "vae"}
+        missing = required - set(components.keys())
+        if missing:
+            raise ValueError(f"from_loaded_components: missing component kinds {sorted(missing)}")
+        from src.services.inference.base import InferenceAdapter
         from src.services.inference.image_sampler import ImageSampler
-        from src.services.inference.model_arch_adapter import MODEL_ARCH_REGISTRY
 
-        unet_spec = self._components["unet"]
-        clip_spec = self._components["clip"]
-        vae_spec = self._components["vae"]
+        self = cls.__new__(cls)
+        InferenceAdapter.__init__(self, paths={"_from_components": "true"}, device="multi")
+        self._components = components
+        self._pipeline_class = pipeline_class
+        self._offload_strategy = "no_offload"
+        self._lora_paths = {}
+        self._torch_dtype = components["unet"].dtype
+        self._loaded_loras = set()
 
-        def _torch_dtype_from(dtype_str: str):
-            import torch
-            return {
-                "bfloat16": torch.bfloat16,
-                "float16": torch.float16,
-                "fp8_e4m3": torch.float8_e4m3fn,
-            }.get(dtype_str, torch.bfloat16)
+        self._pipe = self._assemble_pipe(modules)
+        if components["unet"].loras:
+            self._apply_loras(components["unet"].loras)
 
-        def _load_module(spec, hf_class):
-            """Try diffusers HF layout first (from_pretrained on parent dir);
-            fall back to quant_loaders registry for quantized single-file.
+        arch_adapter = MODEL_ARCH_REGISTRY.get(pipeline_class)
+        if arch_adapter is None:
+            raise RuntimeError(
+                f"No ModelArchAdapter registered for {pipeline_class!r}. Known: {sorted(MODEL_ARCH_REGISTRY)}")
+        self._sampler = ImageSampler(pipe=self._pipe, arch_adapter=arch_adapter)
+        return self
 
-            Only catches OSError/ValueError from from_pretrained — those indicate
-            "this isn't a diffusers-layout dir" (missing config.json, malformed
-            HF metadata). Other exceptions (OOM, CUDA errors) propagate so the
-            real failure mode is visible.
-            """
-            parent_dir = Path(spec.file).parent
-            try:
-                return hf_class.from_pretrained(parent_dir, torch_dtype=_torch_dtype_from(spec.dtype))
-            except (OSError, ValueError) as primary:
-                try:
-                    from src.services.inference.quant_loaders import QUANT_LOADERS
-                    sd = QUANT_LOADERS.dispatch(spec)
-                    module = hf_class.from_config(parent_dir / "config.json")
-                    missing, unexpected = module.load_state_dict(sd, strict=False)
-                    if missing or unexpected:
-                        logger.info(
-                            "_load_module(%s): quant fallback loaded with missing=%d unexpected=%d",
-                            type(hf_class).__name__, len(missing), len(unexpected),
-                        )
-                    return module
-                except Exception as quant_exc:
-                    raise RuntimeError(
-                        f"_load_module({spec.file}): from_pretrained failed ({type(primary).__name__}: {primary}); "
-                        f"quant_loaders fallback also failed ({type(quant_exc).__name__}: {quant_exc})"
-                    ) from quant_exc
+    def _assemble_pipe(self, modules: dict):
+        """Wire pre-loaded modules into a Flux2KleinPipeline. Scheduler is the
+        only thing read from disk here (cheap); modules come from the L1 cache.
+        scheduler_dir = <root>/scheduler where <root> = Path(unet.file).parent.parent."""
+        from pathlib import Path
+        from diffusers import Flux2KleinPipeline, FlowMatchEulerDiscreteScheduler
 
-        # Cleanup tracker — modules already moved to GPU at the point of failure
-        loaded_on_gpu: list = []
+        unet_file = self._components["unet"].file
+        scheduler_dir = Path(unet_file).parent.parent / "scheduler"
+        if not scheduler_dir.is_dir():
+            raise FileNotFoundError(
+                f"scheduler dir not found at {scheduler_dir} — unet component expects HF layout "
+                f"<root>/{{transformer,scheduler}}/")
+        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(scheduler_dir)
+        return Flux2KleinPipeline(
+            transformer=modules["transformer"],
+            text_encoder=modules["text_encoder"],
+            tokenizer=modules["tokenizer"],
+            vae=modules["vae"],
+            scheduler=scheduler,
+        )
+
+    async def load_from_components(self) -> None:
+        """Self-loading path (from_components + load()). Loads base modules then
+        delegates to the shared assembly. ModelManager.get_or_load_image_adapter
+        uses the cached path instead (Task 7); this remains for direct/test use
+        and back-compat with PR-2 callers."""
+        import torch
+        unet, clip, vae = self._components["unet"], self._components["clip"], self._components["vae"]
+        loaded_on_gpu = []
         try:
-            transformer = _load_module(unet_spec, Flux2Transformer2DModel).to(unet_spec.device)
-            loaded_on_gpu.append(transformer)
-            text_encoder = _load_module(clip_spec, AutoModelForCausalLM).to(clip_spec.device)
-            loaded_on_gpu.append(text_encoder)
-            vae = _load_module(vae_spec, AutoencoderKLFlux2).to(vae_spec.device)
-            loaded_on_gpu.append(vae)
-
-            # Tokenizer / scheduler from HF layout (sibling dirs)
-            tokenizer_dir = Path(clip_spec.file).parent.parent / "tokenizer"
-            if not tokenizer_dir.is_dir():
-                raise FileNotFoundError(
-                    f"tokenizer dir not found at {tokenizer_dir} — "
-                    f"component path expects HF layout <model_root>/{{transformer,text_encoder,vae,tokenizer,scheduler}}/"
-                )
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
-
-            scheduler_dir = Path(unet_spec.file).parent.parent / "scheduler"
-            if not scheduler_dir.is_dir():
-                raise FileNotFoundError(
-                    f"scheduler dir not found at {scheduler_dir} — "
-                    f"component path expects HF layout <model_root>/{{transformer,text_encoder,vae,tokenizer,scheduler}}/"
-                )
-            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(scheduler_dir)
-
-            # Construct the pipe BEFORE applying LoRAs — _apply_loras reads
-            # self._pipe.peft_config and calls self._pipe.load_lora_weights /
-            # set_adapters, so the pipe must be wired up first.
-            self._pipe = Flux2KleinPipeline(
-                transformer=transformer,
-                text_encoder=text_encoder,
-                tokenizer=tokenizer,
-                vae=vae,
-                scheduler=scheduler,
-            )
-
-            if unet_spec.loras:
-                self._apply_loras(unet_spec.loras)  # existing helper in this file
-
-            # Construct sampler — held alongside _pipe, used by infer()
+            t = load_component_module(unet)
+            loaded_on_gpu.append(t["module"])
+            c = load_component_module(clip)
+            loaded_on_gpu.append(c["module"])
+            v = load_component_module(vae)
+            loaded_on_gpu.append(v["module"])
+            modules = {"transformer": t["module"], "text_encoder": c["module"],
+                       "tokenizer": c["tokenizer"], "vae": v["module"]}
+            self._pipe = self._assemble_pipe(modules)
+            if unet.loras:
+                self._apply_loras(unet.loras)
+            from src.services.inference.image_sampler import ImageSampler
             arch_adapter = MODEL_ARCH_REGISTRY.get(self._pipeline_class)
             if arch_adapter is None:
                 raise RuntimeError(
-                    f"No ModelArchAdapter registered for {self._pipeline_class!r}. "
-                    f"Known: {sorted(MODEL_ARCH_REGISTRY)}"
-                )
+                    f"No ModelArchAdapter registered for {self._pipeline_class!r}. Known: {sorted(MODEL_ARCH_REGISTRY)}")
             self._sampler = ImageSampler(pipe=self._pipe, arch_adapter=arch_adapter)
         except Exception:
-            # Free GPU memory from partially loaded modules
             for mod in loaded_on_gpu:
                 try:
                     mod.to("cpu")
-                except Exception:  # noqa: BLE001 — cleanup best-effort
+                except Exception:  # noqa: BLE001
                     pass
             try:
                 torch.cuda.empty_cache()
