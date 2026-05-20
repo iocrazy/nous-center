@@ -209,9 +209,26 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         cancel_flag = state.cancel_flags.get(node.task_id) or threading.Event()
         started = time.monotonic()
 
-        # ModelManager.get_or_load —— per-model lock + OOM evict + load failure 检查
+        # 先 build typed request —— components 路径据此分流 adapter 获取方式。
         try:
-            adapter = await state.mm.get_or_load(node.model_key) if node.model_key else None
+            req = _build_request(node)
+        except ValueError as e:
+            await ch.send_message(P.NodeResult(
+                task_id=node.task_id, node_id=node.node_id, status="failed",
+                outputs=None, error=str(e),
+                duration_ms=int((time.monotonic() - started) * 1000)))
+            state.cancel_flags.pop(node.task_id, None)
+            continue
+
+        # adapter 获取:components 路径走 get_or_load_image_adapter(组件级 L1 +
+        # combo 缓存);否则老 model_key 路径(get_or_load,含 OOM evict)。
+        try:
+            components = getattr(req, "components", None)
+            if components:
+                adapter = await state.mm.get_or_load_image_adapter(
+                    components, getattr(req, "pipeline_class", "Flux2KleinPipeline"))
+            else:
+                adapter = await state.mm.get_or_load(node.model_key) if node.model_key else None
         except (ModelLoadError, ModelNotFoundError) as e:
             await ch.send_message(P.NodeResult(
                 task_id=node.task_id, node_id=node.node_id, status="failed",
@@ -224,7 +241,7 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         if adapter is None:
             await ch.send_message(P.NodeResult(
                 task_id=node.task_id, node_id=node.node_id, status="failed",
-                outputs=None, error=f"node {node.node_id!r} has no model_key",
+                outputs=None, error=f"node {node.node_id!r} has no model_key / components",
                 duration_ms=int((time.monotonic() - started) * 1000),
             ))
             state.cancel_flags.pop(node.task_id, None)
@@ -245,7 +262,6 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             progress_tasks.append(t)
 
         try:
-            req = _build_request(node)
             if node.node_type == "tts":
                 # spec §4.4：TTS = boundary-cancel only。TTSEngine.infer(req)
                 # 签名只收 req —— 不传 progress_callback / cancel_flag。节点边界
