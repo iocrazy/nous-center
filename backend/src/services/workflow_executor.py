@@ -226,6 +226,8 @@ class WorkflowExecutor:
         # 不带本步,runner 端 ImageRequest 拿不到 steps/width,会用 Field default
         # 25/1024,但 loras / cfg_scale / seed 全丢。
         merged_inputs = {**{k: v for k, v in data.items() if not k.startswith("_")}, **inputs}
+        # spec §3.3: seed 非空 ⇒ 确定性,runner / L2 cache 据此决定可缓存。
+        is_deterministic = merged_inputs.get("seed") not in (None, "")
 
         spec = P.RunNode(
             task_id=task_id,
@@ -233,6 +235,7 @@ class WorkflowExecutor:
             node_type=group_id,
             model_key=model_key,
             inputs=merged_inputs,
+            is_deterministic=is_deterministic,
         )
         result = await client.run_node(spec, workflow_name=self._workflow_name)
         # 真 RunnerClient 返回 P.NodeResult dataclass;Lane S FakeRunnerClient
