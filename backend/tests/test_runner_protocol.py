@@ -33,6 +33,16 @@ ALL_MESSAGES = [
     P.NodeProgress(task_id=101, node_id="sampler", progress=0.4, detail="step 12/30"),
     P.ModelEvent(event="loaded", model_key="flux2-dev", error=None),
     P.Pong(runner_id="runner-i", loaded_models=["flux2-dev"]),
+    P.PreloadComponents(
+        task_id=7,
+        components={
+            "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+            "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
+            "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
+        },
+        pipeline_class="Flux2KleinPipeline",
+    ),
+    P.ComponentEvent(component_key="/m/u.safe|cuda:1|bfloat16|", state="loaded", error=None),
 ]
 
 

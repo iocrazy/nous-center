@@ -60,6 +60,17 @@ class Ping:
     kind: Literal["ping"] = "ping"
 
 
+@dataclass(frozen=True)
+class PreloadComponents:
+    """主进程 → image runner:批量预热一组 unet+clip+vae(spec §6.2)。
+    components = {"unet": <spec dict>, "clip": <spec dict>, "vae": <spec dict>}。
+    runner 走 get_or_load_image_adapter,过程中发 ComponentEvent。"""
+    task_id: int
+    components: dict[str, Any]
+    pipeline_class: str = "Flux2KleinPipeline"
+    kind: Literal["preload_components"] = "preload_components"
+
+
 # ------------------------------------------------------------------
 # image/TTS runner -> 主进程
 # ------------------------------------------------------------------
@@ -110,6 +121,16 @@ class Pong:
     kind: Literal["pong"] = "pong"
 
 
+@dataclass(frozen=True)
+class ComponentEvent:
+    """image runner → 主进程:单个组件加载状态迁移(spec §6.1 四态)。
+    component_key = component_state_key(spec)(file|device|dtype|lora_sig)。"""
+    component_key: str
+    state: Literal["loading", "loaded", "failed", "cold"]
+    error: str | None = None
+    kind: Literal["component_event"] = "component_event"
+
+
 # kind 字面量 -> dataclass 类的路由表
 _KIND_TO_CLASS: dict[str, type] = {
     "load_model": LoadModel,
@@ -117,17 +138,19 @@ _KIND_TO_CLASS: dict[str, type] = {
     "run_node": RunNode,
     "abort": Abort,
     "ping": Ping,
+    "preload_components": PreloadComponents,
     "ready": Ready,
     "node_result": NodeResult,
     "node_progress": NodeProgress,
     "model_event": ModelEvent,
     "pong": Pong,
+    "component_event": ComponentEvent,
 }
 
 # 类型注解仅供调用方做 isinstance / match —— 任意消息的联合类型
 Message = (
-    LoadModel | UnloadModel | RunNode | Abort | Ping
-    | Ready | NodeResult | NodeProgress | ModelEvent | Pong
+    LoadModel | UnloadModel | RunNode | Abort | Ping | PreloadComponents
+    | Ready | NodeResult | NodeProgress | ModelEvent | Pong | ComponentEvent
 )
 
 
