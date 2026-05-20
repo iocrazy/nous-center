@@ -4,6 +4,10 @@ from __future__ import annotations
 import pytest
 
 from src.runner import protocol as P
+from src.services import workflow_executor as we
+from src.services.gpu_allocator import GPUAllocator
+from src.services.inference.registry import ModelRegistry, ModelSpec
+from src.services.model_manager import ModelManager
 from src.services.workflow_executor import WorkflowExecutor
 
 
@@ -17,6 +21,29 @@ class _CapturingClient:
                             outputs={"image_url": "u"}, error=None, duration_ms=1)
 
 
+class _Reg(ModelRegistry):
+    def __init__(self, spec):
+        self._config_path = ""
+        self._specs = {spec.id: spec}
+
+
+@pytest.fixture
+def mm_layout(tmp_path, monkeypatch):
+    """创建最小磁盘布局并注入 _model_manager,供老格式 image_generate 展开使用。"""
+    root = tmp_path / "Flux2-klein-9B"
+    for sub in ("transformer", "text_encoder", "vae"):
+        (root / sub).mkdir(parents=True)
+        (root / sub / "model.safetensors").write_bytes(b"x")
+    from src.config import get_settings
+    monkeypatch.setattr(get_settings(), "LOCAL_MODELS_PATH", str(tmp_path))
+    spec = ModelSpec(id="flux2-klein-9b", model_type="image",
+                     adapter_class="src.services.inference.image_diffusers.DiffusersImageBackend",
+                     paths={"main": "Flux2-klein-9B"}, vram_mb=24000,
+                     params={"accepts_lora_archs": ["flux2"]})
+    mm = ModelManager(registry=_Reg(spec), allocator=GPUAllocator())
+    monkeypatch.setattr(we, "_model_manager", mm)
+
+
 def _exec(node_data):
     wf = {"nodes": [{"id": "g", "type": "image_generate", "data": node_data}], "edges": []}
     client = _CapturingClient()
@@ -25,21 +52,21 @@ def _exec(node_data):
 
 
 @pytest.mark.asyncio
-async def test_seed_sets_deterministic():
+async def test_seed_sets_deterministic(mm_layout):
     ex, client = _exec({"model_key": "flux2-klein-9b", "prompt": "x", "seed": 42})
     await ex._dispatch_node(ex._node_map["g"], {"prompt": "x", "seed": 42})
     assert client.spec.is_deterministic is True
 
 
 @pytest.mark.asyncio
-async def test_no_seed_not_deterministic():
+async def test_no_seed_not_deterministic(mm_layout):
     ex, client = _exec({"model_key": "flux2-klein-9b", "prompt": "x"})
     await ex._dispatch_node(ex._node_map["g"], {"prompt": "x"})
     assert client.spec.is_deterministic is False
 
 
 @pytest.mark.asyncio
-async def test_empty_seed_not_deterministic():
+async def test_empty_seed_not_deterministic(mm_layout):
     ex, client = _exec({"model_key": "flux2-klein-9b", "prompt": "x", "seed": ""})
     await ex._dispatch_node(ex._node_map["g"], {"prompt": "x", "seed": ""})
     assert client.spec.is_deterministic is False
