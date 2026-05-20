@@ -64,9 +64,15 @@ class ImageLoraApplyNode:
             raise ExecutionError("image_lora_apply 需要上游 unet 描述符输入(连 image_unet_load 或上一个 image_lora_apply)")
         if data.get("bypass"):
             return {"unet": upstream}
+        import os
+        lora_path = data.get("lora_path")
+        lora_name = data.get("lora_file") or (os.path.basename(lora_path) if lora_path else None)
+        if not lora_name:
+            from src.services.workflow_executor import ExecutionError
+            raise ExecutionError("image_lora_apply 需要 lora_path 或 lora_file")
         appended = {
-            "name": data["lora_file"],
-            "path": data.get("lora_path"),
+            "name": lora_name,
+            "path": lora_path,
             "strength": float(data.get("strength", 1.0)),
         }
         return {"unet": {**upstream, "loras": [*upstream.get("loras", []), appended]}}
