@@ -12,15 +12,33 @@ from __future__ import annotations
 # restore the genuine modules before importing them. Safe because real torch
 # is installed in .venv and we hide CUDA via CUDA_VISIBLE_DEVICES="".
 import sys as _sys
-for _n in list(_sys.modules.keys()):
-    if _n == "torch" or _n.startswith("torch."):
-        del _sys.modules[_n]
+
+# Save the stub objects before evicting them, so we can put them back if real
+# torch isn't installed. CI runs `uv sync --frozen` WITHOUT the `image` extra →
+# no real torch; if we delete conftest's MagicMock stub and don't restore it,
+# every test module collected/run afterwards sees `import torch` fail (a
+# session-wide cascade). Restore + skip keeps CI's other modules intact.
+_saved_torch_stub = {
+    _n: _sys.modules[_n]
+    for _n in list(_sys.modules)
+    if _n == "torch" or _n.startswith("torch.")
+}
+for _n in _saved_torch_stub:
+    del _sys.modules[_n]
 
 from pathlib import Path
 
 import pytest
-import torch
-from safetensors.torch import save_file
+
+try:
+    import torch
+    from safetensors.torch import save_file
+except ModuleNotFoundError:
+    _sys.modules.update(_saved_torch_stub)
+    pytest.skip(
+        "real torch not installed (CI without image extra)",
+        allow_module_level=True,
+    )
 
 from src.services.inference.component_spec import ComponentSpec
 from src.services.inference.quant_loaders import QuantLoaderRegistry, QUANT_LOADERS, UnsupportedQuantError

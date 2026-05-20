@@ -35,16 +35,27 @@ from src.services.inference.image_sampler import ImageSampler, SamplerCancelled
 from src.services.inference.model_arch_adapter import FluxKleinArchAdapter
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _install_real_torch():
-    """Restore real torch if conftest stubbed it. No-op if already real."""
-    existing = sys.modules.get("torch")
-    if isinstance(existing, MagicMock):
-        for name in list(sys.modules.keys()):
-            if name == "torch" or name.startswith("torch."):
-                del sys.modules[name]
-        import torch  # noqa: F401  — populates sys.modules with real torch
-    yield
+# Real torch is required by this module's tensor-shape assertions. conftest
+# installs a MagicMock stub; load real torch (evicting the stub) if available,
+# else restore the stub and skip the whole module at collection. CI runs
+# `uv sync --frozen` WITHOUT the `image` extra → no real torch; deleting the
+# stub without restoring would cascade into every later test module.
+_saved_torch_stub = {
+    name: sys.modules[name]
+    for name in list(sys.modules)
+    if name == "torch" or name.startswith("torch.")
+}
+if isinstance(_saved_torch_stub.get("torch"), MagicMock):
+    for name in _saved_torch_stub:
+        del sys.modules[name]
+    try:
+        import torch  # noqa: F401  — real torch now populates sys.modules
+    except ModuleNotFoundError:
+        sys.modules.update(_saved_torch_stub)
+        pytest.skip(
+            "real torch not installed (CI without image extra)",
+            allow_module_level=True,
+        )
 
 
 def _t():
