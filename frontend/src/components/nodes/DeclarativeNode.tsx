@@ -9,6 +9,7 @@ import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
 import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import { useLoras } from '../../api/loras'
+import { useComponents, type ComponentRole } from '../../api/components'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
 
 function LoraSelectWidget({
@@ -221,6 +222,24 @@ function ModelSelectWidget({
   )
 }
 
+export function ComponentSelectWidget({
+  value,
+  onChange,
+  role,
+}: { value: string; onChange: (v: string) => void; role: ComponentRole }) {
+  const { data: components } = useComponents(role)
+  return (
+    <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">选择 {role}...</option>
+      {(components ?? []).map((c) => (
+        <option key={c.abs_path} value={c.abs_path}>
+          {c.filename}{c.quant_type && c.quant_type !== 'bf16' ? ` · ${c.quant_type}` : ''}
+        </option>
+      ))}
+    </NodeSelect>
+  )
+}
+
 function resolveValue(value: unknown, widget: WidgetDef): unknown {
   if (value !== undefined && value !== null) return value
   return widget.default
@@ -321,6 +340,14 @@ function WidgetRenderer({
         <LoraSelectWidget
           value={String(resolved ?? '')}
           onChange={(v) => onChange(v)}
+        />
+      )
+    case 'component_select':
+      return (
+        <ComponentSelectWidget
+          value={String(resolved ?? '')}
+          onChange={(v) => onChange(v)}
+          role={(widget.role ?? 'unet') as ComponentRole}
         />
       )
     default:
