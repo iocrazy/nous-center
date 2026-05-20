@@ -87,6 +87,16 @@ def to_component_key(spec: ComponentSpec) -> ComponentKey:
     return (spec.file, spec.device, spec.dtype, lora_set)
 
 
+def component_state_key(spec: ComponentSpec) -> str:
+    """Stable wire/UI string key for one component's load state. Derived from
+    to_component_key so it matches the L1 cache identity: file|device|dtype|loras.
+    LoRAs are sorted (order-independent) as 'name@strength' joined by '+'. The
+    frontend (PR-5b) computes the identical string from the loader-node descriptor."""
+    file, device, dtype, lora_set = to_component_key(spec)
+    lora_sig = "+".join(sorted(f"{name}@{strength}" for name, strength in lora_set))
+    return f"{file}|{device}|{dtype}|{lora_sig}"
+
+
 # Resolve ImageRequest's forward ref to ComponentSpec now that both classes
 # exist (base.py only TYPE_CHECKING-imports this module to avoid a cycle).
 from src.services.inference.base import ImageRequest as _ImageRequest  # noqa: E402
