@@ -67,13 +67,9 @@ def test_granular_multi_encoder_gated():
         _build_request(_node(inp))
 
 
-def test_legacy_flat_components_still_work():
-    """PR-4 删 image_generate 前,旧 flat unet/clip/vae 路径不破(各自 device 不强制单卡)。"""
-    flat = {
-        "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
-        "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
-        "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
-        "prompt": "x",
-    }
-    req = _build_request(_node(flat))
-    assert req.components["clip"].device == "cuda:0"
+def test_non_granular_image_falls_back_to_model_key_path():
+    """非细粒度图 inputs(无 latent/vae)→ model_key 单模型 ImageRequest(无 components);
+    runner 据 node.model_key 走 get_or_load。Family B flat unet/clip/vae 组件分支已删。"""
+    req = _build_request(_node({"prompt": "x", "steps": 7}))
+    assert req.components is None
+    assert req.prompt == "x" and req.steps == 7

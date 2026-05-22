@@ -41,6 +41,25 @@ class _Collect(PipeChannel):
         self.sent.append(m)
 
 
+def _granular_inputs(prompt, *, seed, w, h, steps):
+    """细粒度图终端 flux2_vae_decode 的嵌套 inputs(latent + vae);_build_request
+    摊平成 components{unet,clip,vae} 走 get_or_load_image_adapter。"""
+    return {
+        "latent": {
+            "_type": "flux2_latent",
+            "model": {"_type": "flux2_model",
+                      "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1",
+                               "dtype": "bfloat16", "adapter_arch": "flux2"}, "loras": []},
+            "conditioning": {"_type": "flux2_conditioning",
+                             "clip": {"_type": "flux2_clip", "type": "flux2",
+                                      "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "bfloat16"}]},
+                             "text": prompt, "negative": ""},
+            "width": w, "height": h, "steps": steps, "cfg_scale": 4.0, "seed": seed,
+        },
+        "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": "/m/v.safe", "dtype": "bfloat16"}},
+    }
+
+
 @pytest.mark.asyncio
 async def test_components_path_uses_image_adapter():
     mm = _FakeMM()
@@ -48,12 +67,7 @@ async def test_components_path_uses_image_adapter():
     ch = _Collect()
     node = P.RunNode(
         task_id=5, node_id="g", node_type="image", model_key=None,
-        inputs={
-            "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
-            "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
-            "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
-            "prompt": "a cat", "seed": 42, "width": 256, "height": 256, "steps": 4,
-        })
+        inputs=_granular_inputs("a cat", seed=42, w=256, h=256, steps=4))
     state.cancel_flags[5] = threading.Event()
     state.run_queue.put_nowait(node)
 
@@ -81,12 +95,7 @@ async def test_components_path_adapter_error_fails_gracefully():
     ch = _Collect()
     node = P.RunNode(
         task_id=9, node_id="g", node_type="image", model_key=None,
-        inputs={
-            "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
-            "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
-            "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
-            "prompt": "x", "seed": 1, "width": 64, "height": 64, "steps": 1,
-        })
+        inputs=_granular_inputs("x", seed=1, w=64, h=64, steps=1))
     state.cancel_flags[9] = threading.Event()
     state.run_queue.put_nowait(node)
     task = asyncio.create_task(_node_executor(state, ch))

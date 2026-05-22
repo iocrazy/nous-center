@@ -17,13 +17,14 @@ def _admin_headers() -> dict[str, str]:
 
 @pytest.fixture
 async def image_workflow(db_session):
-    """text_input → image_generate → image_output (the canonical image DAG)."""
+    """细粒度图 image DAG —— 收敛后终端是 flux2_vae_decode(image_generate 已删)。
+    publish 的 category 检测 + exposed_outputs 校验 key 在 flux2_vae_decode 上。"""
     wf = Workflow(
         name="img-flow",
         nodes=[
             {"id": "in_1", "type": "text_input", "data": {"text": "a cat"}},
-            {"id": "img_1", "type": "image_generate",
-             "data": {"model_key": "flux2-klein-9b", "width": 512, "height": 512}},
+            {"id": "img_1", "type": "flux2_vae_decode",
+             "data": {"width": 512, "height": 512}},
             {"id": "out_1", "type": "image_output", "data": {}},
         ],
         edges=[
@@ -209,7 +210,7 @@ def test_detect_category_from_snapshot():
         "schema": "comfy/api-1",
         "nodes": {
             "a": {"class_type": "text_input", "inputs": {}},
-            "b": {"class_type": "image_generate", "inputs": {}},
+            "b": {"class_type": "flux2_vae_decode", "inputs": {}},
         },
     }
     text_snap = {

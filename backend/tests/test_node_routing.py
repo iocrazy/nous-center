@@ -9,11 +9,6 @@ def test_llm_node_is_inline():
     assert node_exec_class("llm") == "inline"
 
 
-def test_image_generate_is_dispatch():
-    """image_generate 是 GPU 节点 —— dispatch 到 runner 串行队列。"""
-    assert node_exec_class("image_generate") == "dispatch"
-
-
 def test_tts_engine_is_dispatch():
     assert node_exec_class("tts_engine") == "dispatch"
 
@@ -34,7 +29,7 @@ def test_unknown_node_defaults_inline():
 
 def test_dispatch_set_is_explicit():
     """DISPATCH_NODE_TYPES 是显式白名单，新增 GPU 节点必须在此登记。"""
-    assert DISPATCH_NODE_TYPES == {"image_generate", "tts_engine", "flux2_vae_decode"}
+    assert DISPATCH_NODE_TYPES == {"tts_engine", "flux2_vae_decode"}
 
 
 def test_flux2_vae_decode_is_dispatch():

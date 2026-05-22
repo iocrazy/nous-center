@@ -1,13 +1,13 @@
-"""PR-4: 带 seed 的 image 节点 dispatch 时 is_deterministic=True (spec §3.3)。"""
+"""带 seed 的 image dispatch 节点 is_deterministic=True (spec §3.3)。
+
+收敛后用细粒度图终端 flux2_vae_decode 当 dispatch 节点(image_generate 已删)。
+is_deterministic 在 _dispatch_node 据 merged_inputs.seed 计算,与节点类型无关。
+"""
 from __future__ import annotations
 
 import pytest
 
 from src.runner import protocol as P
-from src.services import workflow_executor as we
-from src.services.gpu_allocator import GPUAllocator
-from src.services.inference.registry import ModelRegistry, ModelSpec
-from src.services.model_manager import ModelManager
 from src.services.workflow_executor import WorkflowExecutor
 
 
@@ -21,52 +21,29 @@ class _CapturingClient:
                             outputs={"image_url": "u"}, error=None, duration_ms=1)
 
 
-class _Reg(ModelRegistry):
-    def __init__(self, spec):
-        self._config_path = ""
-        self._specs = {spec.id: spec}
-
-
-@pytest.fixture
-def mm_layout(tmp_path, monkeypatch):
-    """创建最小磁盘布局并注入 _model_manager,供老格式 image_generate 展开使用。"""
-    root = tmp_path / "Flux2-klein-9B"
-    for sub in ("transformer", "text_encoder", "vae"):
-        (root / sub).mkdir(parents=True)
-        (root / sub / "model.safetensors").write_bytes(b"x")
-    from src.config import get_settings
-    monkeypatch.setattr(get_settings(), "LOCAL_MODELS_PATH", str(tmp_path))
-    spec = ModelSpec(id="flux2-klein-9b", model_type="image",
-                     adapter_class="src.services.inference.image_diffusers.DiffusersImageBackend",
-                     paths={"main": "Flux2-klein-9B"}, vram_mb=24000,
-                     params={"accepts_lora_archs": ["flux2"]})
-    mm = ModelManager(registry=_Reg(spec), allocator=GPUAllocator())
-    monkeypatch.setattr(we, "_model_manager", mm)
-
-
 def _exec(node_data):
-    wf = {"nodes": [{"id": "g", "type": "image_generate", "data": node_data}], "edges": []}
+    wf = {"nodes": [{"id": "g", "type": "flux2_vae_decode", "data": node_data}], "edges": []}
     client = _CapturingClient()
     ex = WorkflowExecutor(wf, runner_clients={"image": client}, task_id=7)
     return ex, client
 
 
 @pytest.mark.asyncio
-async def test_seed_sets_deterministic(mm_layout):
-    ex, client = _exec({"model_key": "flux2-klein-9b", "prompt": "x", "seed": 42})
-    await ex._dispatch_node(ex._node_map["g"], {"prompt": "x", "seed": 42})
+async def test_seed_sets_deterministic():
+    ex, client = _exec({"seed": 42})
+    await ex._dispatch_node(ex._node_map["g"], {"seed": 42})
     assert client.spec.is_deterministic is True
 
 
 @pytest.mark.asyncio
-async def test_no_seed_not_deterministic(mm_layout):
-    ex, client = _exec({"model_key": "flux2-klein-9b", "prompt": "x"})
-    await ex._dispatch_node(ex._node_map["g"], {"prompt": "x"})
+async def test_no_seed_not_deterministic():
+    ex, client = _exec({})
+    await ex._dispatch_node(ex._node_map["g"], {})
     assert client.spec.is_deterministic is False
 
 
 @pytest.mark.asyncio
-async def test_empty_seed_not_deterministic(mm_layout):
-    ex, client = _exec({"model_key": "flux2-klein-9b", "prompt": "x", "seed": ""})
-    await ex._dispatch_node(ex._node_map["g"], {"prompt": "x", "seed": ""})
+async def test_empty_seed_not_deterministic():
+    ex, client = _exec({"seed": ""})
+    await ex._dispatch_node(ex._node_map["g"], {"seed": ""})
     assert client.spec.is_deterministic is False

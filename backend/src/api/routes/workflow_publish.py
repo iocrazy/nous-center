@@ -59,7 +59,7 @@ _IMAGE_OUTPUT_FIELDS = {
     "duration_ms",
 }
 
-_IMAGE_NODE_TYPES = {"image_generate", "flux2_vae_decode"}
+_IMAGE_NODE_TYPES = {"flux2_vae_decode"}
 
 
 def _snapshot_hash(snapshot: dict) -> str:

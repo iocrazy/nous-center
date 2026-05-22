@@ -1,6 +1,6 @@
 # Image Component Multi-GPU Loader (ComfyUI-style)
 
-**Status**: Draft (rev 2 — Task 0 risk gate triggered §5.2 fallback,B 路线变主路径)
+**Status**: ⚠️ SUPERSEDED(2026-05-22)—— 本 spec 的 Family B 路线(`image_generate` 全家桶 + `image_*_load`)已被 `2026-05-21-image-granular-convergence-design.md`(rev 2)收敛取代并删除(PR-1..4)。**后端 infra 全部保留复用**(ComponentSpec / get_or_load_image_adapter / ImageSampler / 组件 L1 / L2 / 四态);改为单一细粒度图(flux2-components)驱动,整模型单卡 + 工作流选卡(放弃逐组件跨卡)。原 Status: Draft (rev 2 — Task 0 risk gate triggered §5.2 fallback,B 路线变主路径)
 **Author**: heygo
 **Date**: 2026-05-19
 **Supersedes**: 部分(`DiffusersImageBackend` 整套装一张卡的策略)

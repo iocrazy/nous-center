@@ -20,7 +20,7 @@ def test_tts_engine_node_is_dispatch_node():
     except ImportError:
         pytest.skip("Lane S node_routing not available - see 写法 B")
     assert node_exec_class("tts_engine") == "dispatch"
-    assert node_exec_class("image_generate") == "dispatch"
+    assert node_exec_class("flux2_vae_decode") == "dispatch"  # 细粒度图 image dispatch 终端
     # llm 节点是 inline（主进程直连 vLLM HTTP），不是 dispatch
     assert node_exec_class("llm") == "inline"
 

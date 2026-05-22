@@ -11,7 +11,7 @@ from src.services.llm_service import call_llm  # noqa: F401 — re-exported for 
 from src.services.model_manager import ModelManager
 
 # Trigger @register side effects for all builtin nodes
-from src.services.nodes import audio, image, image_components, llm, logic, text_io  # noqa: F401
+from src.services.nodes import audio, image, llm, logic, text_io  # noqa: F401
 
 EVENT_TYPES: tuple[str, ...] = (
     # Existing events
@@ -38,7 +38,6 @@ _on_progress_ref = None
 # hardware.yaml 的 role 名一致(image/tts/llm)。新增 GPU 节点必须在此登记。
 # 与 src.services.node_routing.DISPATCH_NODE_TYPES 配对维护。
 _NODE_TYPE_TO_GROUP_ID: dict[str, str] = {
-    "image_generate": "image",
     "flux2_vae_decode": "image",  # 细粒度图 dispatch 终端(spec 2026-05-21 rev 2)
     "tts_engine": "tts",
 }
@@ -215,7 +214,7 @@ class WorkflowExecutor:
         data = node.get("data", {})
         model_key = data.get("model_key") or data.get("engine") or data.get("model")
         # protocol §3.3:RunNode.node_type 是 role("image" / "tts"),不是
-        # workflow 画布的 type("image_generate" / "tts_engine") —— runner_process
+        # workflow 画布的 type("flux2_vae_decode" / "tts_engine") —— runner_process
         # ._build_request 按 role 分流构造 ImageRequest / AudioRequest。
         # _NODE_TYPE_TO_GROUP_ID 顶部维护的映射本就把 workflow type → role,这里复用。
         group_id = _NODE_TYPE_TO_GROUP_ID.get(node["type"])
@@ -229,22 +228,6 @@ class WorkflowExecutor:
         # 不带本步,runner 端 ImageRequest 拿不到 steps/width,会用 Field default
         # 25/1024,但 loras / cfg_scale / seed 全丢。
         merged_inputs = {**{k: v for k, v in data.items() if not k.startswith("_")}, **inputs}
-        # spec §7.4: 老格式 image_generate(只有 model_key、无 unet/clip/vae 边)→
-        # 后端 inline 展开成三 ComponentSpec(device=auto),之后与新格式同路径。
-        if (
-            node["type"] == "image_generate"
-            and model_key
-            and not all(k in merged_inputs for k in ("unet", "clip", "vae"))
-        ):
-            from src.services.inference.component_expand import expand_legacy_image_spec
-            if _model_manager is None:
-                raise ExecutionError("老格式 image_generate 展开需要 ModelManager(_model_manager 未注入)")
-            spec_obj = _model_manager._registry.get(model_key)
-            if spec_obj is None:
-                raise ExecutionError(f"老格式 image_generate 展开失败:model_key {model_key!r} 无 ModelSpec")
-            comps = expand_legacy_image_spec(spec_obj, loras=merged_inputs.get("loras"))
-            for kind in ("unet", "clip", "vae"):
-                merged_inputs[kind] = comps[kind].model_dump()
         # spec §3.3: seed 非空 ⇒ 确定性,runner / L2 cache 据此决定可缓存。
         is_deterministic = merged_inputs.get("seed") not in (None, "")
 
@@ -271,8 +254,8 @@ class WorkflowExecutor:
     def _pick_runner_client(self, node: dict):
         """按 node_type → role → group_id 在 runner_clients dict 里挑 RunnerClient。
 
-        当前 dispatch 节点白名单很短(image_generate / tts_engine)、role 与
-        group_id 一一对应；映射写在这里:image_generate→"image" / tts_engine→"tts"。
+        当前 dispatch 节点白名单很短(flux2_vae_decode / tts_engine)、role 与
+        group_id 一一对应；映射写在这里:flux2_vae_decode→"image" / tts_engine→"tts"。
         新增 dispatch 节点要在此登记。runner_clients 命中失败 → fallback
         到单数 runner_client (向后兼容)。
         """
