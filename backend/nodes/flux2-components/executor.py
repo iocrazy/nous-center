@@ -20,40 +20,40 @@ Load CLIP 本 PR 单编码器(file + weight_dtype);多编码器 UI(clip_stack)+ 
 """
 from __future__ import annotations
 
-from typing import Any
-
 _DEFAULT_MODEL_KEY = "flux2-klein-9b-true-v2-fp8mixed"
 _DEFAULT_DTYPE = "default"
 _AUTO = "auto"
 
 
-# --- Load Checkpoint(暂留 model_key 旧形态,Task 6 改 resolver)---------------
-
-
-def _bundle_model(model_key: str) -> dict[str, Any]:
-    return {"_type": "flux2_model", "model_id": model_key, "loras": []}
-
-
-def _bundle_clip(model_key: str) -> dict[str, Any]:
-    return {"_type": "flux2_clip", "model_id": model_key}
-
-
-def _bundle_vae(model_key: str) -> dict[str, Any]:
-    return {"_type": "flux2_vae", "model_id": model_key}
-
-
-def _read_model_key(data: dict) -> str:
-    return data.get("model_key") or _DEFAULT_MODEL_KEY
+# --- Load Checkpoint(便捷单卡入口:model_key → 三组件文件,三件同 device)-----
 
 
 async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
-    """单 spec 三件 emit(ComfyUI CheckpointLoaderSimple 类比)。PR-1 Task 6 会
-    改成 model_key→三组件文件 resolver(三件同 device);本 PR 暂留旧形态。"""
-    key = _read_model_key(data)
+    """单合并 spec 三件 emit(ComfyUI CheckpointLoaderSimple 类比)。复用
+    expand_legacy_image_spec 把 model_key 的 ModelSpec 解析成 unet/clip/vae 三文件;
+    device/weight_dtype 来自节点控件,三件**同卡**(便捷单卡入口,不跨卡分组件 —— 跨
+    组件分卡用三个独立 loader)。"""
+    from src.services import workflow_executor as we
+    from src.services.inference.component_expand import expand_legacy_image_spec
+
+    if we._model_manager is None:
+        raise RuntimeError("Load Checkpoint 需要 ModelManager(_model_manager 未注入)")
+    model_key = data.get("model_key") or _DEFAULT_MODEL_KEY
+    spec_obj = we._model_manager._registry.get(model_key)
+    if spec_obj is None:
+        raise RuntimeError(f"Load Checkpoint: model_key {model_key!r} 无 ModelSpec")
+
+    comps = expand_legacy_image_spec(spec_obj)  # 路径解析(device=auto/dtype=bfloat16)
+    device = data.get("device") or _AUTO
+    dtype = data.get("weight_dtype") or _DEFAULT_DTYPE
+    u, c, v = comps["unet"], comps["clip"], comps["vae"]
     return {
-        "model": _bundle_model(key),
-        "clip": _bundle_clip(key),
-        "vae": _bundle_vae(key),
+        "model": {"_type": "flux2_model", "spec": {
+            "kind": "unet", "file": u.file, "device": device, "dtype": dtype,
+            "adapter_arch": u.adapter_arch or "flux2"}, "loras": []},
+        "clip": {"_type": "flux2_clip", "type": c.clip_arch or "flux2",
+                 "encoders": [{"kind": "clip", "file": c.file, "dtype": dtype}]},
+        "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": v.file, "dtype": dtype}},
     }
 
 

@@ -163,16 +163,7 @@ async def test_load_lora_rejects_non_model_input():
         await executors["flux2_load_lora"]({"lora_name": "x"}, {"model": {"_type": "voxcpm2"}})
 
 
-# --- Load Checkpoint 暂留 model_key 旧形态(Task 6 改 resolver)---------------
-
-
-@pytest.mark.asyncio
-async def test_load_checkpoint_emits_triplet_legacy():
-    executors = _load_executors()
-    out = await executors["flux2_load_checkpoint"]({"model_key": "flux2-klein-9b"}, {})
-    assert out["model"]["_type"] == "flux2_model"
-    assert out["clip"]["_type"] == "flux2_clip"
-    assert out["vae"]["_type"] == "flux2_vae"
+# Load Checkpoint resolver(model_key→三描述符)由 test_flux2_checkpoint_resolve.py 覆盖。
 
 
 def test_runtime_package_scanner_picks_up_node_yaml():
