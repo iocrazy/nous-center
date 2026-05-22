@@ -1,31 +1,33 @@
-"""Flux2 / Diffusers component-node executors (V1' Lane C / P3.2).
+"""Flux2 / Diffusers component-node executors — 细粒度图收敛后(spec 2026-05-21 rev 2)。
 
-Five Loader nodes that produce typed bundle dicts:
+收敛后的执行模型:细粒度图是线性链(Load* → Encode → KSampler → VAE Decode)。
+Load* / Encode / KSampler 是 **inline 描述符产出节点**(主进程 event loop,不碰
+GPU),只产/累积**嵌套 plain dict 描述符**(无张量)。末端 ``flux2_vae_decode``
+是 **dispatch 节点**(不在本 EXECUTORS),由 workflow_executor 派发到 image runner;
+runner ``_build_request`` 把嵌套 latent 摊平成 ImageRequest,
+``get_or_load_image_adapter`` 把整模型装到工作流所选的**单张卡**,
+``ImageSampler.sample()`` 一把跑完 encode→denoise→decode。
 
-    Load Checkpoint   ─→ MODEL + CLIP + VAE
-    Load Diffusion    ─→ MODEL
-    Load CLIP         ─→ CLIP
-    Load VAE          ─→ VAE
-    Load LoRA(MODEL)  ─→ MODEL (with LoRA appended)
+描述符形态:
+    model        {_type:flux2_model, spec:{kind:unet,file,device,dtype,adapter_arch}, loras:[]}
+    clip         {_type:flux2_clip, type:<arch>, encoders:[{kind:clip,file,dtype}, ...]}
+    vae          {_type:flux2_vae, spec:{kind:vae,file,dtype}}
+    conditioning {_type:flux2_conditioning, clip:<clip>, text, negative}
+    latent       {_type:flux2_latent, model:<model>, conditioning:<cond>, width,height,steps,cfg_scale,seed}
 
-The "Load" nodes are intentionally cheap — they only stash a yaml model_id +
-a bundle kind marker. Real adapter materialization happens inside the
-downstream sampling nodes (PR-C3: EncodePrompt / KSampler / VAEDecode) via
-``model_manager.get_loaded_adapter(model_id)``. This matches nous-center's
-load-on-demand + TTL eviction model rather than ComfyUI's load-and-pin.
-
-Future PR-C4 will upgrade the model_key widget to a scanner-driven dropdown
-so newly-added yaml specs (or auto-detected dirs) appear without an
-options-list edit here.
+Load CLIP 本 PR 单编码器(file + weight_dtype);多编码器 UI(clip_stack)+ gated
+执行 = PR-3。Load Checkpoint 暂留 model_key 旧形态(PR-1 Task 6 改 resolver)。
 """
 from __future__ import annotations
 
-import asyncio
-import io
 from typing import Any
 
-
 _DEFAULT_MODEL_KEY = "flux2-klein-9b-true-v2-fp8mixed"
+_DEFAULT_DTYPE = "default"
+_AUTO = "auto"
+
+
+# --- Load Checkpoint(暂留 model_key 旧形态,Task 6 改 resolver)---------------
 
 
 def _bundle_model(model_key: str) -> dict[str, Any]:
@@ -45,9 +47,8 @@ def _read_model_key(data: dict) -> str:
 
 
 async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
-    """Single-spec triplet emit. ComfyUI's CheckpointLoaderSimple analog —
-    one spec yields MODEL + CLIP + VAE so a casual workflow doesn't have
-    to wire three Loaders just to get going."""
+    """单 spec 三件 emit(ComfyUI CheckpointLoaderSimple 类比)。PR-1 Task 6 会
+    改成 model_key→三组件文件 resolver(三件同 device);本 PR 暂留旧形态。"""
     key = _read_model_key(data)
     return {
         "model": _bundle_model(key),
@@ -56,202 +57,90 @@ async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
     }
 
 
+# --- 细粒度 loader / 中间节点 → 嵌套描述符(inline, 无 GPU)-------------------
+
+
+def _spec_unet(data: dict) -> dict:
+    return {
+        "kind": "unet",
+        "file": data["file"],
+        "device": data.get("device") or _AUTO,
+        "dtype": data.get("weight_dtype") or _DEFAULT_DTYPE,
+        "adapter_arch": data.get("adapter_arch") or "flux2",
+    }
+
+
 async def exec_load_diffusion_model(data: dict, inputs: dict) -> dict:
-    """Just the MODEL — meant to pair with separate LoadCLIP + LoadVAE in
-    swap-component workflows."""
-    return {"model": _bundle_model(_read_model_key(data))}
+    """MODEL —— transformer 组件描述符 + device(整张图跑哪张卡)。"""
+    return {"model": {"_type": "flux2_model", "spec": _spec_unet(data), "loras": []}}
 
 
 async def exec_load_clip(data: dict, inputs: dict) -> dict:
-    return {"clip": _bundle_clip(_read_model_key(data))}
+    """CLIP —— 单编码器(file + weight_dtype)。多编码器(clip_stack)= PR-3。
+    无 device:跟随上游 transformer 的卡(整模型单卡)。"""
+    enc = {"kind": "clip", "file": data["file"], "dtype": data.get("weight_dtype") or _DEFAULT_DTYPE}
+    return {"clip": {"_type": "flux2_clip", "type": data.get("type") or "flux2", "encoders": [enc]}}
 
 
 async def exec_load_vae(data: dict, inputs: dict) -> dict:
-    return {"vae": _bundle_vae(_read_model_key(data))}
+    """VAE —— 组件描述符。无 device:跟随 transformer 卡。"""
+    spec = {"kind": "vae", "file": data["file"], "dtype": data.get("weight_dtype") or _DEFAULT_DTYPE}
+    return {"vae": {"_type": "flux2_vae", "spec": spec}}
 
 
 async def exec_load_lora(data: dict, inputs: dict) -> dict:
-    """Append a LoRA spec onto the upstream MODEL bundle and emit a new
-    MODEL. Chaining multiple LoadLoRA nodes accumulates the stack — same
-    semantics as the integrated image_generate.loras list.
-
-    `lora_name` is the LoRA scanner's display name (matched against
-    DiffusersImageBackend._lora_paths). An empty name is a no-op that
-    passes the bundle through unchanged, which matches ComfyUI's "disabled
-    LoRA loader" behavior and lets users park an unconfigured node on the
-    canvas without breaking the run.
-    """
+    """串联:上游 MODEL → append 一条 LoRA(带 abs path)→ 新 MODEL。空 lora_name
+    透传(ComfyUI 禁用 loader 语义)。LoRA 跟随上游 transformer 卡。"""
     upstream = inputs.get("model")
     if not isinstance(upstream, dict) or upstream.get("_type") != "flux2_model":
-        raise RuntimeError(
-            "Load LoRA 节点的 MODEL 输入未连接,或上游不是 flux2_model 类型"
-        )
-
+        raise RuntimeError("Load LoRA 的 MODEL 输入未连接,或上游不是 flux2_model")
     name = (data.get("lora_name") or "").strip()
-    strength = float(data.get("strength", 1.0))
-
     out = dict(upstream)
     out["loras"] = list(upstream.get("loras") or [])
     if name:
-        out["loras"].append({"name": name, "strength": strength})
+        out["loras"].append({
+            "name": name,
+            "path": data.get("lora_path") or None,
+            "strength": float(data.get("strength", 1.0)),
+        })
     return {"model": out}
 
 
-# --- Sampling nodes (V1' Lane C / P3.3) ------------------------------------
-# EncodePrompt / KSampler / VAEDecode are the consumers of the Loader bundles.
-# These nodes are where Lane C's sampling helpers from PR #82
-# (encode_prompt / sample / vae_decode) finally touch the GPU.
-
-
-def _require(bundle: Any, expected_type: str, port_label: str) -> dict:
-    if not isinstance(bundle, dict) or bundle.get("_type") != expected_type:
-        raise RuntimeError(
-            f"{port_label} 端口未连接,或上游不是 {expected_type} 类型"
-        )
-    return bundle
-
-
-async def _acquire_adapter(model_id: str) -> Any:
-    from src.services import workflow_executor as we
-    if we._model_manager is None:
-        raise RuntimeError("ModelManager 未初始化")
-    return await we._model_manager.get_loaded_adapter(model_id)
-
-
 async def exec_encode_prompt(data: dict, inputs: dict) -> dict:
-    """CLIP + text → CONDITIONING.
-
-    Reuses the adapter that owns the CLIP bundle's model_id, since in
-    nous-center the text encoder + tokenizer always travel with the
-    diffusers pipeline (a CLIP bundle here is conceptually 'the
-    text_encoder slice of model_id's pipeline')."""
-    from src.services.inference.image_diffusers import encode_prompt
-
-    clip = _require(inputs.get("clip"), "flux2_clip", "CLIP")
+    """CLIP + text → CONDITIONING 描述符。不在主进程 encode —— 真编码在 runner
+    的 ImageSampler 内(末端 VAE Decode 派发触发)。"""
+    clip = inputs.get("clip")
+    if not isinstance(clip, dict) or clip.get("_type") != "flux2_clip":
+        raise RuntimeError("Encode Prompt 的 CLIP 端口未连接,或上游不是 flux2_clip")
     text = inputs.get("text") or data.get("text") or ""
-    if not text:
-        raise RuntimeError("EncodePrompt 节点缺少 text 输入")
-    negative = data.get("negative_prompt", "") or ""
-
-    adapter = await _acquire_adapter(clip["model_id"])
-    cond = await asyncio.to_thread(
-        encode_prompt, adapter.pipe, text,
-        negative_prompt=negative or None,
-    )
-    return {
-        "conditioning": {
-            "_type": "flux2_conditioning",
-            "model_id": clip["model_id"],
-            "prompt_embeds": cond["prompt_embeds"],
-            "text_ids": cond["text_ids"],
-        }
-    }
+    return {"conditioning": {
+        "_type": "flux2_conditioning", "clip": clip,
+        "text": text, "negative": data.get("negative_prompt", "") or "",
+    }}
 
 
 async def exec_ksampler(data: dict, inputs: dict) -> dict:
-    """MODEL + CONDITIONING → LATENT.
-
-    Applies the MODEL bundle's accumulated .loras stack (built up by
-    LoadLoRA chains) via `adapter.set_active_loras` right before sampling,
-    so the offload/lora-load ordering invariants stay in one place.
-    """
-    from src.services.inference.base import LoRASpec
-    from src.services.inference.image_diffusers import sample
-
-    model = _require(inputs.get("model"), "flux2_model", "MODEL")
-    cond = _require(inputs.get("conditioning"), "flux2_conditioning", "CONDITIONING")
-
-    if model["model_id"] != cond["model_id"]:
-        # Cross-model conditioning is a category error — embeds shape +
-        # tokenizer vocab won't match. Stop early with a useful message.
-        raise RuntimeError(
-            f"KSampler MODEL ({model['model_id']!r}) 与 CONDITIONING "
-            f"({cond['model_id']!r}) model_id 不一致"
-        )
-
-    width = int(data.get("width", 1024))
-    height = int(data.get("height", 1024))
-    steps = int(data.get("steps", 25))
-    cfg = float(data.get("cfg_scale", 4.0))
-    seed = data.get("seed")
-
-    adapter = await _acquire_adapter(model["model_id"])
-
-    loras = [
-        LoRASpec(name=spec["name"], strength=float(spec.get("strength", 1.0)))
-        for spec in (model.get("loras") or [])
-        if spec.get("name")
-    ]
-    # set_active_loras is sync (touches pipe / peft); keep it on the loop
-    # since LoRA apply is fast (<100ms) and avoiding to_thread keeps the
-    # offload-disable+enable cycle's "I'm holding the pipe" semantics
-    # observable in a single coroutine context.
-    adapter.set_active_loras(loras)
-
-    import torch
-    generator = None
-    if seed is not None:
-        generator = torch.Generator(device=adapter.device).manual_seed(int(seed))
-
-    latents = await asyncio.to_thread(
-        sample,
-        adapter.pipe,
-        {"prompt_embeds": cond["prompt_embeds"]},
-        width=width,
-        height=height,
-        num_inference_steps=steps,
-        guidance_scale=cfg,
-        generator=generator,
-    )
-    return {
-        "latent": {
-            "_type": "flux2_latent",
-            "model_id": model["model_id"],
-            "tensor": latents,
-        }
-    }
+    """MODEL + CONDITIONING → LATENT 描述符(采样参数 + 嵌套上游计划)。不在主进程
+    sample —— 真采样在 runner 的 ImageSampler 内。"""
+    model = inputs.get("model")
+    if not isinstance(model, dict) or model.get("_type") != "flux2_model":
+        raise RuntimeError("KSampler 的 MODEL 端口未连接,或上游不是 flux2_model")
+    cond = inputs.get("conditioning")
+    if not isinstance(cond, dict) or cond.get("_type") != "flux2_conditioning":
+        raise RuntimeError("KSampler 的 CONDITIONING 端口未连接,或上游不是 flux2_conditioning")
+    raw_seed = data.get("seed")
+    seed = int(raw_seed) if raw_seed not in (None, "") else None
+    return {"latent": {
+        "_type": "flux2_latent", "model": model, "conditioning": cond,
+        "width": int(data.get("width", 1024)), "height": int(data.get("height", 1024)),
+        "steps": int(data.get("steps", 25)), "cfg_scale": float(data.get("cfg_scale", 4.0)),
+        "seed": seed,
+    }}
 
 
-async def exec_vae_decode(data: dict, inputs: dict) -> dict:
-    """VAE + LATENT → IMAGE (signed URL).
-
-    Output schema mirrors image_generate so existing ImageOutputNode
-    consumers see a familiar shape — image_url is the signed URL,
-    media_type stays "image/png", width/height carry image dims.
-    """
-    from src.services.image_output_storage import write_image
-    from src.services.inference.image_diffusers import vae_decode
-
-    vae = _require(inputs.get("vae"), "flux2_vae", "VAE")
-    latent = _require(inputs.get("latent"), "flux2_latent", "LATENT")
-    if vae["model_id"] != latent["model_id"]:
-        raise RuntimeError(
-            f"VAEDecode VAE ({vae['model_id']!r}) 与 LATENT "
-            f"({latent['model_id']!r}) model_id 不一致"
-        )
-
-    adapter = await _acquire_adapter(vae["model_id"])
-    image = await asyncio.to_thread(vae_decode, adapter.pipe, latent["tensor"])
-
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    ttl = int(data.get("url_ttl_seconds", 3600))
-    record = write_image(buf.getvalue(), ext="png", ttl_seconds=ttl)
-    if record["url"] is None:
-        raise RuntimeError(
-            "VAEDecode 需要 ADMIN_SESSION_SECRET 才能签名输出 URL — "
-            "请在 backend/.env 配置后重启 backend"
-        )
-    return {
-        "image_url": record["url"],
-        "media_type": "image/png",
-        "width": image.width,
-        "height": image.height,
-        "image_uuid": record["uuid"],
-        "image_expires": record["expires"],
-    }
-
-
+# flux2_vae_decode 不在此 —— 它走 dispatch(node_routing.DISPATCH_NODE_TYPES),
+# 由 workflow_executor 派发到 image runner;runner _build_request 摊平嵌套 latent
+# 成 ImageRequest,get_or_load_image_adapter + ImageSampler 在所选卡整模型执行。
 EXECUTORS = {
     "flux2_load_checkpoint": exec_load_checkpoint,
     "flux2_load_diffusion_model": exec_load_diffusion_model,
@@ -260,5 +149,4 @@ EXECUTORS = {
     "flux2_load_lora": exec_load_lora,
     "flux2_encode_prompt": exec_encode_prompt,
     "flux2_ksampler": exec_ksampler,
-    "flux2_vae_decode": exec_vae_decode,
 }
