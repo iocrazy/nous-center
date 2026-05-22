@@ -103,7 +103,12 @@ async def test_image_adapter_emits_component_events(stubbed):
     comps = _comps()
     await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline", on_event=_on_event)
 
-    keys = {component_state_key(mm._resolve_component_device(comps[k])) for k in ("unet", "clip", "vae")}
+    # 整模型单卡:clip/vae 被统一到 unet 的卡 → 事件 key 用 unet 的 device。
+    unet_dev = mm._resolve_component_device(comps["unet"]).device
+    keys = {
+        component_state_key(comps[k].model_copy(update={"device": unet_dev}))
+        for k in ("unet", "clip", "vae")
+    }
     loaded = {k for (k, s, _e) in events if s == "loaded"}
     loading = {k for (k, s, _e) in events if s == "loading"}
     assert keys <= loaded
