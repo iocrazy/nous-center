@@ -59,11 +59,11 @@ def test_granular_blank_seed_is_none():
     assert req.seed is None
 
 
-def test_granular_multi_encoder_not_yet():
+def test_granular_multi_encoder_gated():
     inp = _granular_inputs()
     inp["latent"]["conditioning"]["clip"]["encoders"].append(
         {"kind": "clip", "file": "/m/c2.safe", "dtype": "default"})
-    with pytest.raises(ValueError, match="多编码器|PR-3|encoder"):
+    with pytest.raises(ValueError, match="执行未就绪|多编码器架构"):
         _build_request(_node(inp))
 
 
