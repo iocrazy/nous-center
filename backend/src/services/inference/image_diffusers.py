@@ -318,6 +318,26 @@ def _torch_dtype_from(dtype_str: str):
     }.get(dtype_str, torch.bfloat16)
 
 
+def _maybe_convert_comfy_flux2_lora(state_dict: dict):
+    """ComfyUI/BFL 格式 Flux2 LoRA(`diffusion_model.` 前缀 + `lora_down/up` 后缀)→
+    diffusers `transformer.*` 格式;否则返回 None(走原 load_lora_weights 路径)。
+
+    绕过 diffusers Flux2LoraLoaderMixin.lora_state_dict 的 dispatch bug:它先查
+    `is_kohya = any(".lora_down.weight" in k)` → 把 ComfyUI/BFL LoRA(同时有
+    diffusion_model. 前缀)误路由到 `_convert_kohya_flux2`(认 lora_unet_ 前缀)→ 零匹配。
+    正确转换器是 `_convert_non_diffusers_flux2_lora_to_diffusers`(qkv 三拆 / mlp /
+    modulation / img_in 全映射,实测 242→306 键)。
+    """
+    if not any(k.startswith("diffusion_model.") for k in state_dict):
+        return None
+    if not any(".lora_down.weight" in k or ".lora_up.weight" in k for k in state_dict):
+        return None
+    from diffusers.loaders.lora_conversion_utils import (
+        _convert_non_diffusers_flux2_lora_to_diffusers,
+    )
+    return _convert_non_diffusers_flux2_lora_to_diffusers(dict(state_dict))
+
+
 def _load_hf_or_quant(spec, hf_class):
     """from_pretrained(parent_dir) first; quant_loaders fallback for single-file.
 
@@ -666,7 +686,18 @@ class DiffusersImageBackend(InferenceAdapter):
                         f"LoRA {spec.name!r} has no path and is not in registered lora_paths "
                         f"(have: {sorted(self._lora_paths)})"
                     )
-                self._pipe.load_lora_weights(lora_path, adapter_name=spec.name)
+                # ComfyUI/BFL 格式 Flux2 LoRA 预转换(绕 diffusers is_kohya 误判,
+                # 见 _maybe_convert_comfy_flux2_lora)。命中则喂转换后的 diffusers-格式
+                # state_dict;否则原路径(已是 diffusers 格式 / kohya lora_unet_ / ERNIE 等)。
+                converted = None
+                if (isinstance(lora_path, str) and lora_path.endswith(".safetensors")
+                        and type(self._pipe).__name__.startswith("Flux2")):
+                    from safetensors.torch import load_file
+                    converted = _maybe_convert_comfy_flux2_lora(load_file(lora_path))
+                if converted is not None:
+                    self._pipe.load_lora_weights(converted, adapter_name=spec.name)
+                else:
+                    self._pipe.load_lora_weights(lora_path, adapter_name=spec.name)
                 # diffusers' load_lora_weights silently no-ops when the
                 # LoRA's tensor names don't match the pipeline architecture
                 # (e.g. an SDXL/SD1.5 LoRA on a Flux2/ERNIE pipeline). The
