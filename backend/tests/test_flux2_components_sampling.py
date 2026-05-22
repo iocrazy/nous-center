@@ -1,12 +1,16 @@
-"""V1' Lane C / P3.3 — EncodePrompt + KSampler + VAEDecode component-node
-executors. Exercised with mocked adapter + helpers so the test stays
-fast and CPU-only."""
+"""PR-1 收敛 — Encode Prompt / KSampler 产嵌套描述符(inline, 无 GPU)。
+
+收敛后(spec 2026-05-21 rev 2):Encode/KSampler 不再在主进程 encode/sample,
+只累积计划描述符;真正的 encode→denoise→decode 在 image runner 的
+ImageSampler.sample() 一把跑完(末端 flux2_vae_decode dispatch 触发)。
+flux2_vae_decode 不再是 inline 执行器(走 dispatch),其行为由
+test_runner_build_request_granular.py 覆盖。
+"""
 from __future__ import annotations
 
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,7 +18,7 @@ import pytest
 PKG_DIR = Path(__file__).parents[1] / "nodes" / "flux2-components"
 
 
-def _load_executors():
+def _load_mod():
     if str(PKG_DIR) not in sys.path:
         sys.path.insert(0, str(PKG_DIR))
     spec = importlib.util.spec_from_file_location(
@@ -25,168 +29,70 @@ def _load_executors():
     return mod
 
 
-@pytest.fixture
-def stub_we(monkeypatch):
-    """Patch workflow_executor._model_manager + the three helpers so the
-    sampling nodes are exercised in isolation."""
-    from src.services import workflow_executor as we
-    from src.services.inference import image_diffusers as image_mod
-
-    adapter = MagicMock()
-    adapter.pipe = MagicMock(name="pipe")
-    adapter.device = "cuda:0"
-    adapter.set_active_loras = MagicMock()
-
-    mgr = MagicMock()
-    mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
-    monkeypatch.setattr(we, "_model_manager", mgr)
-
-    monkeypatch.setattr(
-        image_mod, "encode_prompt",
-        MagicMock(return_value={"prompt_embeds": "EMBEDS", "text_ids": "TEXT_IDS"}),
-    )
-    monkeypatch.setattr(image_mod, "sample", MagicMock(return_value="LATENT_TENSOR"))
-
-    pil_image = MagicMock()
-    pil_image.width = 1024
-    pil_image.height = 1024
-    pil_image.save = MagicMock(side_effect=lambda buf, format="PNG": buf.write(b"PNG"))
-    monkeypatch.setattr(image_mod, "vae_decode", MagicMock(return_value=pil_image))
-
-    from src.services import image_output_storage
-    monkeypatch.setattr(
-        image_output_storage, "write_image",
-        MagicMock(return_value={"url": "/files/images/abc.png?token=xyz",
-                                "uuid": "abc",
-                                "expires": 9999999999}),
-    )
-    return {"adapter": adapter, "mgr": mgr}
+_CLIP = {"_type": "flux2_clip", "type": "flux2",
+         "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "default"}]}
+_MODEL = {"_type": "flux2_model",
+          "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
+          "loras": []}
 
 
 @pytest.mark.asyncio
-async def test_encode_prompt_acquires_adapter_and_emits_conditioning(stub_we):
-    mod = _load_executors()
+async def test_encode_prompt_emits_descriptor_no_tensor():
+    mod = _load_mod()
     out = await mod.exec_encode_prompt(
-        {"text": "a cat"},
-        {"clip": {"_type": "flux2_clip", "model_id": "flux2-klein-9b"}},
-    )
-    stub_we["mgr"].get_loaded_adapter.assert_awaited_once_with("flux2-klein-9b")
-    assert out["conditioning"]["_type"] == "flux2_conditioning"
-    assert out["conditioning"]["model_id"] == "flux2-klein-9b"
-    assert out["conditioning"]["prompt_embeds"] == "EMBEDS"
+        {"text": "a cat", "negative_prompt": ""}, {"clip": _CLIP, "text": "a cat"})
+    assert out["conditioning"] == {
+        "_type": "flux2_conditioning", "clip": _CLIP, "text": "a cat", "negative": ""}
+    assert "prompt_embeds" not in out["conditioning"]  # 不在主进程 encode
 
 
 @pytest.mark.asyncio
-async def test_encode_prompt_rejects_non_clip_input(stub_we):
-    mod = _load_executors()
-    with pytest.raises(RuntimeError, match="CLIP 端口未连接"):
+async def test_encode_prompt_rejects_non_clip():
+    mod = _load_mod()
+    with pytest.raises(RuntimeError, match="CLIP"):
         await mod.exec_encode_prompt({"text": "x"}, {"clip": {"_type": "flux2_model"}})
 
 
 @pytest.mark.asyncio
-async def test_encode_prompt_requires_text(stub_we):
-    mod = _load_executors()
-    with pytest.raises(RuntimeError, match="缺少 text"):
-        await mod.exec_encode_prompt(
-            {},
-            {"clip": {"_type": "flux2_clip", "model_id": "x"}},
-        )
-
-
-@pytest.mark.asyncio
-async def test_ksampler_applies_loras_and_returns_latent(stub_we, monkeypatch):
-    # torch.Generator chain is hit when seed is set — patch torch so the
-    # test stays CPU-only.
-    import torch
-    gen = MagicMock()
-    gen.manual_seed = MagicMock(return_value=gen)
-    monkeypatch.setattr(torch, "Generator", MagicMock(return_value=gen))
-
-    mod = _load_executors()
+async def test_ksampler_emits_descriptor_no_tensor():
+    mod = _load_mod()
     out = await mod.exec_ksampler(
         {"width": 768, "height": 768, "steps": 20, "cfg_scale": 4.5, "seed": 42},
-        {
-            "model": {"_type": "flux2_model", "model_id": "flux2-klein-9b",
-                      "loras": [{"name": "lo", "strength": 0.7}]},
-            "conditioning": {"_type": "flux2_conditioning", "model_id": "flux2-klein-9b",
-                             "prompt_embeds": "E", "text_ids": "T"},
-        },
-    )
-    adapter = stub_we["adapter"]
-    # LoRAs flowed through
-    adapter.set_active_loras.assert_called_once()
-    spec_arg = adapter.set_active_loras.call_args.args[0]
-    assert spec_arg[0].name == "lo" and spec_arg[0].strength == 0.7
-
-    assert out["latent"]["_type"] == "flux2_latent"
-    assert out["latent"]["tensor"] == "LATENT_TENSOR"
-    assert out["latent"]["model_id"] == "flux2-klein-9b"
+        {"model": _MODEL,
+         "conditioning": {"_type": "flux2_conditioning", "clip": _CLIP, "text": "a cat", "negative": ""}})
+    lat = out["latent"]
+    assert lat["_type"] == "flux2_latent"
+    assert lat["model"] is _MODEL
+    assert lat["conditioning"]["_type"] == "flux2_conditioning"
+    assert (lat["width"], lat["height"], lat["steps"], lat["cfg_scale"], lat["seed"]) == (768, 768, 20, 4.5, 42)
+    assert "tensor" not in lat
 
 
 @pytest.mark.asyncio
-async def test_ksampler_rejects_cross_model_conditioning(stub_we):
-    mod = _load_executors()
-    with pytest.raises(RuntimeError, match="model_id 不一致"):
-        await mod.exec_ksampler(
-            {},
-            {
-                "model": {"_type": "flux2_model", "model_id": "flux2-klein-9b", "loras": []},
-                "conditioning": {"_type": "flux2_conditioning", "model_id": "ernie-image",
-                                 "prompt_embeds": "E"},
-            },
-        )
+async def test_ksampler_seed_blank_is_none():
+    mod = _load_mod()
+    out = await mod.exec_ksampler(
+        {"width": 512, "height": 512, "steps": 1, "cfg_scale": 1.0, "seed": ""},
+        {"model": _MODEL,
+         "conditioning": {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""}})
+    assert out["latent"]["seed"] is None
 
 
 @pytest.mark.asyncio
-async def test_ksampler_drops_blank_lora_entries(stub_we, monkeypatch):
-    import torch
-    monkeypatch.setattr(torch, "Generator", MagicMock())
-    mod = _load_executors()
-    await mod.exec_ksampler(
-        {"width": 512, "height": 512, "steps": 1, "cfg_scale": 1.0},
-        {
-            "model": {"_type": "flux2_model", "model_id": "m", "loras": [
-                {"name": "", "strength": 1.0},   # blank — should be dropped
-                {"name": "real", "strength": 0.5},
-            ]},
-            "conditioning": {"_type": "flux2_conditioning", "model_id": "m",
-                             "prompt_embeds": "E"},
-        },
-    )
-    specs = stub_we["adapter"].set_active_loras.call_args.args[0]
-    assert [s.name for s in specs] == ["real"]
+async def test_ksampler_rejects_non_model():
+    mod = _load_mod()
+    with pytest.raises(RuntimeError, match="MODEL"):
+        await mod.exec_ksampler({}, {"conditioning": {"_type": "flux2_conditioning"}})
 
 
 @pytest.mark.asyncio
-async def test_vae_decode_writes_image_and_returns_signed_url(stub_we):
-    mod = _load_executors()
-    out = await mod.exec_vae_decode(
-        {"url_ttl_seconds": "1800"},
-        {
-            "vae": {"_type": "flux2_vae", "model_id": "m"},
-            "latent": {"_type": "flux2_latent", "model_id": "m", "tensor": "T"},
-        },
-    )
-    assert out["image_url"].startswith("/files/images/")
-    assert out["media_type"] == "image/png"
-    assert out["width"] == 1024 and out["height"] == 1024
-    assert out["image_uuid"] == "abc"
+async def test_ksampler_rejects_non_conditioning():
+    mod = _load_mod()
+    with pytest.raises(RuntimeError, match="CONDITIONING"):
+        await mod.exec_ksampler({}, {"model": _MODEL})
 
 
-@pytest.mark.asyncio
-async def test_vae_decode_rejects_cross_model_pair(stub_we):
-    mod = _load_executors()
-    with pytest.raises(RuntimeError, match="model_id 不一致"):
-        await mod.exec_vae_decode(
-            {},
-            {
-                "vae": {"_type": "flux2_vae", "model_id": "m1"},
-                "latent": {"_type": "flux2_latent", "model_id": "m2", "tensor": "T"},
-            },
-        )
-
-
-def test_yaml_declares_eight_total_nodes_after_p3_3():
+def test_yaml_declares_eight_total_nodes():
     import yaml
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
     assert set(cfg["nodes"]) == {
@@ -196,10 +102,8 @@ def test_yaml_declares_eight_total_nodes_after_p3_3():
     }
 
 
-def test_executors_dict_includes_all_eight():
-    mod = _load_executors()
-    assert set(mod.EXECUTORS) == {
-        "flux2_load_checkpoint", "flux2_load_diffusion_model",
-        "flux2_load_clip", "flux2_load_vae", "flux2_load_lora",
-        "flux2_encode_prompt", "flux2_ksampler", "flux2_vae_decode",
-    }
+def test_vae_decode_not_in_inline_executors():
+    """flux2_vae_decode 收敛后走 dispatch,不在 inline EXECUTORS。"""
+    mod = _load_mod()
+    assert "flux2_vae_decode" not in mod.EXECUTORS
+    assert {"flux2_encode_prompt", "flux2_ksampler"} <= set(mod.EXECUTORS)

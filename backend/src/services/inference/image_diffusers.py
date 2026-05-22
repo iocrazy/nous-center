@@ -305,6 +305,11 @@ def vae_decode(pipe: Any, latents: Any) -> Any:
 
 
 def _torch_dtype_from(dtype_str: str):
+    """Map a weight_dtype string → torch dtype. "default" → None so callers
+    omit torch_dtype on from_pretrained and load at the file's native precision
+    (对齐 ComfyUI 的 weight_dtype=default)。"""
+    if dtype_str == "default":
+        return None
     import torch
     return {
         "bfloat16": torch.bfloat16,
@@ -323,8 +328,10 @@ def _load_hf_or_quant(spec, hf_class):
     """
     from pathlib import Path
     parent_dir = Path(spec.file).parent
+    td = _torch_dtype_from(spec.dtype)
+    kwargs = {} if td is None else {"torch_dtype": td}  # default → 文件原生精度
     try:
-        return hf_class.from_pretrained(parent_dir, torch_dtype=_torch_dtype_from(spec.dtype))
+        return hf_class.from_pretrained(parent_dir, **kwargs)
     except (OSError, ValueError) as primary:
         try:
             from src.services.inference.quant_loaders import QUANT_LOADERS

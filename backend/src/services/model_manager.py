@@ -735,6 +735,43 @@ class ModelManager:
         """Strip LoRAs → base module identity (LoRAs applied at assembly)."""
         return spec.model_copy(update={"loras": []}) if spec.loras else spec
 
+    @staticmethod
+    def _free_vram_mb(device: str) -> int | None:
+        """目标卡空闲显存(MB)。'cpu'/'auto'/无 GPU/查询失败 → None(跳过保护)。
+        用 nvidia-smi(避免 import torch);best-effort,失败不阻塞。"""
+        if not device.startswith("cuda:"):
+            return None
+        try:
+            idx = int(device.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return None
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["nvidia-smi", f"--id={idx}",
+                 "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode != 0:
+                return None
+            return int(out.stdout.strip().splitlines()[0])
+        except Exception:  # noqa: BLE001 — best-effort,任何失败都跳过保护
+            return None
+
+    @staticmethod
+    def _estimate_image_vram_mb(resolved: dict) -> int | None:
+        """粗估整模型显存需求(MB)= 三组件文件 bytes 之和 * 余量系数。任一文件不存在
+        (纯逻辑测试用 stub 路径)→ None(无法估,跳过保护)。"""
+        import os
+        total = 0
+        for k in ("unet", "clip", "vae"):
+            try:
+                total += os.path.getsize(resolved[k].file)
+            except OSError:
+                return None
+        # 1.3x 余量(激活/中间张量);bytes → MB
+        return int(total / (1024 * 1024) * 1.3)
+
     def _image_adapter_lock_for(self, key) -> asyncio.Lock:
         return self._image_adapter_locks.setdefault(key, asyncio.Lock())
 
@@ -759,6 +796,23 @@ class ModelManager:
                 await on_event(component_state_key(spec), state, error)
 
         resolved = {k: self._resolve_component_device(s) for k, s in components.items()}
+        # 整模型单卡不变式(spec 2026-05-21 rev 2):device=auto 会让三组件各自 resolve
+        # 到不同卡 —— 以 unet 解析出的卡为准,强制 clip/vae 落同一张卡。combo_key 也据
+        # 此稳定。细粒度图 _build_request 已预统一(显式 device);此处兜住 auto。
+        target = resolved["unet"].device
+        for k in ("clip", "vae"):
+            if resolved[k].device != target:
+                resolved[k] = resolved[k].model_copy(update={"device": target})
+        # LLM 卡保护:目标卡空闲显存不足(常驻 LLM 占着)→ 装载前清晰报错,不静默 OOM。
+        # 无 GPU / 文件不存在(纯逻辑测试)时 free/need 为 None → 跳过,不阻塞。
+        free_mb = self._free_vram_mb(target)
+        need_mb = self._estimate_image_vram_mb(resolved)
+        if free_mb is not None and need_mb is not None and free_mb < need_mb:
+            raise RuntimeError(
+                f"{target} 空闲显存不足({free_mb}MB < 约需 {need_mb}MB)—— "
+                f"该卡可能被常驻 LLM 占用。换张卡(device)、用更低精度(fp8),"
+                f"或先释放该卡。"
+            )
         combo_key = (pipeline_class,) + tuple(
             to_component_key(resolved[k]) for k in ("unet", "clip", "vae"))
 

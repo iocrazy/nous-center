@@ -1,11 +1,14 @@
-"""V1' Lane C / P3.2 — 5 Loader component-node executors.
+"""PR-1 收敛 — flux2 loader 节点产嵌套描述符(inline, 无 GPU)。
 
-These tests exercise the executors directly without going through the
-WorkflowExecutor; they're cheap (no model load) because Loader nodes only
-stash a yaml model_id + bundle kind marker.
+收敛后(spec 2026-05-21 rev 2):Load Diffusion/CLIP/VAE 各选 file + weight_dtype
+(Load Diffusion 另加 device),产 ComponentSpec 形态的嵌套描述符。Load Checkpoint
+暂留 model_key 旧形态(PR-1 Task 6 改成 resolver);Load LoRA 串联并带 path。
+执行器不再在主进程碰 GPU。
 """
 from __future__ import annotations
 
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,8 +21,6 @@ PKG_DIR = Path(__file__).parents[1] / "nodes" / "flux2-components"
 def _load_executors():
     """Import the package's executor module via the same mechanism the
     runtime package scanner uses, so we exercise the actual loaded code."""
-    import importlib.util
-    import sys
     if str(PKG_DIR) not in sys.path:
         sys.path.insert(0, str(PKG_DIR))
     spec = importlib.util.spec_from_file_location(
@@ -31,9 +32,6 @@ def _load_executors():
 
 
 def test_yaml_declares_loader_nodes():
-    """The five loaders this file is about. P3.3 added three more sampling
-    nodes (encode_prompt / ksampler / vae_decode) which are covered by
-    test_flux2_components_sampling.py."""
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
     nodes = cfg["nodes"]
     loader_nodes = {
@@ -46,119 +44,129 @@ def test_yaml_declares_loader_nodes():
     assert loader_nodes <= set(nodes)
 
 
-def test_yaml_node_widgets_use_scanner_driven_model_select():
-    """V1' Lane C P4.2: model_key widgets are `model_select, filter: image`
-    so the dropdown is populated dynamically from /api/v1/engines?type=image
-    by the existing ModelSelectWidget in DeclarativeNode.tsx. Newly-added
-    yaml specs (or auto-detected dirs) surface in the dropdown without an
-    options-list edit here."""
+def test_load_diffusion_widgets_have_file_dtype_device():
+    """收敛后 Load Diffusion Model 有 file(component_select) + weight_dtype + device
+    + adapter_arch,对齐 ComfyUI UNETLoaderMultiGPU。"""
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
-    for node_id in ("flux2_load_checkpoint", "flux2_load_diffusion_model",
-                    "flux2_load_clip", "flux2_load_vae"):
-        widgets = cfg["nodes"][node_id]["widgets"]
-        mk = next((w for w in widgets if w["name"] == "model_key"), None)
-        assert mk is not None, node_id
-        assert mk["widget"] == "model_select", node_id
-        assert mk["filter"] == "image", node_id
-        # Default fallback to wikeeyang so a freshly-dropped node is usable
-        assert mk["default"] == "flux2-klein-9b-true-v2-fp8mixed", node_id
+    node = cfg["nodes"]["flux2_load_diffusion_model"]
+    assert node.get("componentRole") == "unet"
+    by_name = {w["name"]: w for w in node["widgets"]}
+    assert by_name["file"]["widget"] == "component_select"
+    assert by_name["file"]["role"] == "unet"
+    assert "weight_dtype" in by_name
+    assert "default" in [o if isinstance(o, str) else o for o in by_name["weight_dtype"]["options"]]
+    assert by_name["device"]["widget"] == "select"
 
 
-def test_executors_dict_has_five_entries_matching_yaml():
+def test_load_clip_vae_widgets_have_file_dtype():
+    cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
+    clip = cfg["nodes"]["flux2_load_clip"]
+    vae = cfg["nodes"]["flux2_load_vae"]
+    assert clip.get("componentRole") == "clip"
+    assert vae.get("componentRole") == "vae"
+    clip_w = {w["name"]: w for w in clip["widgets"]}
+    vae_w = {w["name"]: w for w in vae["widgets"]}
+    assert clip_w["file"]["widget"] == "component_select" and clip_w["file"]["role"] == "clip"
+    assert "weight_dtype" in clip_w
+    assert vae_w["file"]["widget"] == "component_select" and vae_w["file"]["role"] == "vae"
+    assert "weight_dtype" in vae_w
+
+
+def test_executors_dict_is_yaml_nodes_minus_dispatch():
+    """flux2_vae_decode 收敛后走 dispatch(runner 执行),不在 inline EXECUTORS。"""
     executors = _load_executors()
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
-    assert set(executors) == set(cfg["nodes"])
+    assert set(executors) == set(cfg["nodes"]) - {"flux2_vae_decode"}
+
+
+# --- Load Diffusion / CLIP / VAE → 嵌套描述符 ---------------------------------
 
 
 @pytest.mark.asyncio
-async def test_load_checkpoint_emits_model_clip_vae_triplet():
+async def test_load_diffusion_descriptor():
     executors = _load_executors()
-    out = await executors["flux2_load_checkpoint"]({"model_key": "flux2-klein-9b"}, {})
-    assert out["model"] == {"_type": "flux2_model", "model_id": "flux2-klein-9b", "loras": []}
-    assert out["clip"] == {"_type": "flux2_clip", "model_id": "flux2-klein-9b"}
-    assert out["vae"] == {"_type": "flux2_vae", "model_id": "flux2-klein-9b"}
+    out = await executors["flux2_load_diffusion_model"](
+        {"file": "/m/u.safe", "device": "cuda:1", "weight_dtype": "fp8_e4m3", "adapter_arch": "flux2"}, {})
+    assert out["model"] == {
+        "_type": "flux2_model",
+        "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1",
+                 "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
+        "loras": [],
+    }
 
 
 @pytest.mark.asyncio
-async def test_load_checkpoint_defaults_to_wikeeyang_when_model_key_missing():
-    """Drag a Loader onto the canvas with no config → still gets the most
-    commonly used model rather than crashing."""
+async def test_load_diffusion_defaults():
     executors = _load_executors()
-    out = await executors["flux2_load_checkpoint"]({}, {})
-    assert out["model"]["model_id"] == "flux2-klein-9b-true-v2-fp8mixed"
+    out = await executors["flux2_load_diffusion_model"]({"file": "/m/u.safe"}, {})
+    s = out["model"]["spec"]
+    assert s["device"] == "auto" and s["dtype"] == "default" and s["adapter_arch"] == "flux2"
+    assert out["model"]["loras"] == []
 
 
 @pytest.mark.asyncio
-async def test_load_diffusion_model_only_emits_model():
+async def test_load_clip_single_encoder():
     executors = _load_executors()
-    out = await executors["flux2_load_diffusion_model"]({"model_key": "ernie-image"}, {})
-    assert set(out) == {"model"}
-    assert out["model"]["_type"] == "flux2_model"
+    out = await executors["flux2_load_clip"]({"file": "/m/c.safe", "weight_dtype": "default"}, {})
+    assert out["clip"] == {
+        "_type": "flux2_clip", "type": "flux2",
+        "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "default"}],
+    }
 
 
 @pytest.mark.asyncio
-async def test_load_clip_only_emits_clip():
+async def test_load_vae_descriptor():
     executors = _load_executors()
-    out = await executors["flux2_load_clip"]({"model_key": "ernie-image"}, {})
-    assert set(out) == {"clip"}
+    out = await executors["flux2_load_vae"]({"file": "/m/v.safe", "weight_dtype": "bfloat16"}, {})
+    assert out["vae"] == {"_type": "flux2_vae", "spec": {"kind": "vae", "file": "/m/v.safe", "dtype": "bfloat16"}}
+
+
+# --- Load LoRA 串联(带 path)-------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_load_vae_only_emits_vae():
+async def test_load_lora_appends_with_path():
     executors = _load_executors()
-    out = await executors["flux2_load_vae"]({"model_key": "ernie-image"}, {})
-    assert set(out) == {"vae"}
-
-
-@pytest.mark.asyncio
-async def test_load_lora_appends_to_upstream_model_stack():
-    executors = _load_executors()
-    upstream_model = {"_type": "flux2_model", "model_id": "flux2-klein-9b", "loras": []}
+    base = {"_type": "flux2_model",
+            "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
+            "loras": []}
     out = await executors["flux2_load_lora"](
-        {"lora_name": "more_details", "strength": 0.6},
-        {"model": upstream_model},
-    )
-    assert out["model"]["loras"] == [{"name": "more_details", "strength": 0.6}]
-    assert out["model"]["model_id"] == "flux2-klein-9b"
-    # original upstream must not be mutated
-    assert upstream_model["loras"] == []
+        {"lora_name": "more_details", "lora_path": "/m/loras/more.safe", "strength": 0.6},
+        {"model": base})
+    assert out["model"]["loras"] == [{"name": "more_details", "path": "/m/loras/more.safe", "strength": 0.6}]
+    assert base["loras"] == []  # 上游不被改
 
 
 @pytest.mark.asyncio
-async def test_load_lora_chain_accumulates_multiple_loras():
+async def test_load_lora_chain_accumulates():
     executors = _load_executors()
-    base = {"_type": "flux2_model", "model_id": "flux2-klein-9b", "loras": [
-        {"name": "a", "strength": 1.0},
-    ]}
-    out = await executors["flux2_load_lora"](
-        {"lora_name": "b", "strength": 0.5},
-        {"model": base},
-    )
-    assert [lora["name"] for lora in out["model"]["loras"]] == ["a", "b"]
+    base = {"_type": "flux2_model", "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1",
+            "dtype": "fp8_e4m3", "adapter_arch": "flux2"}, "loras": []}
+    s1 = await executors["flux2_load_lora"]({"lora_name": "a", "lora_path": "/m/a.safe", "strength": 0.8}, {"model": base})
+    s2 = await executors["flux2_load_lora"]({"lora_name": "b", "lora_path": "/m/b.safe", "strength": 0.4}, {"model": s1["model"]})
+    assert [lora["name"] for lora in s2["model"]["loras"]] == ["a", "b"]
 
 
 @pytest.mark.asyncio
-async def test_load_lora_empty_name_passes_through_unchanged():
-    """Blank lora_name = "disabled" loader; matches ComfyUI semantics."""
+async def test_load_lora_empty_name_passes_through():
     executors = _load_executors()
-    base = {"_type": "flux2_model", "model_id": "flux2-klein-9b", "loras": []}
+    base = {"_type": "flux2_model", "spec": {"kind": "unet", "file": "/m/u.safe", "device": "auto",
+            "dtype": "default", "adapter_arch": "flux2"}, "loras": []}
     out = await executors["flux2_load_lora"]({"lora_name": "", "strength": 1.0}, {"model": base})
     assert out["model"]["loras"] == []
 
 
 @pytest.mark.asyncio
 async def test_load_lora_rejects_non_model_input():
-    """Wired the wrong port into the MODEL slot → fail fast with a clear msg
-    instead of producing a malformed bundle the sampler chokes on later."""
     executors = _load_executors()
-    with pytest.raises(RuntimeError, match="未连接.*flux2_model"):
+    with pytest.raises(RuntimeError, match="flux2_model"):
         await executors["flux2_load_lora"]({"lora_name": "x"}, {"model": {"_type": "voxcpm2"}})
 
 
-def test_runtime_package_scanner_picks_up_node_yaml(monkeypatch, tmp_path):
-    """Sanity: nodes.scan_packages() honors backend/nodes/flux2-components/."""
-    # Use the real package dir layout — scan_packages walks _PACKAGE_DIR
-    # which is fixed to backend/nodes/. We just confirm our package shows up.
+# Load Checkpoint resolver(model_key→三描述符)由 test_flux2_checkpoint_resolve.py 覆盖。
+
+
+def test_runtime_package_scanner_picks_up_node_yaml():
     from nodes import scan_packages, get_all_definitions, get_all_executors
     scan_packages()
     defs = get_all_definitions()
@@ -167,3 +175,6 @@ def test_runtime_package_scanner_picks_up_node_yaml(monkeypatch, tmp_path):
                       "flux2_load_clip", "flux2_load_vae", "flux2_load_lora"):
         assert node_type in defs, f"node.yaml not loaded: {node_type}"
         assert node_type in execs, f"executor not registered: {node_type}"
+    # vae_decode 仍在 definitions(画布有这节点)但不在 inline executors(走 dispatch)
+    assert "flux2_vae_decode" in defs
+    assert "flux2_vae_decode" not in execs

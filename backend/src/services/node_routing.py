@@ -15,7 +15,10 @@ from typing import Literal
 ExecClass = Literal["inline", "dispatch"]
 
 # GPU 节点白名单 —— 这些节点 dispatch 到对应 runner 的串行队列执行。
-DISPATCH_NODE_TYPES: frozenset[str] = frozenset({"image_generate", "tts_engine"})
+# flux2_vae_decode 是细粒度图的 dispatch 终端:整条 Load*→Encode→KSampler 链
+# inline 累积描述符,末端 VAE Decode 把嵌套 latent 派发到 image runner,整模型在
+# 所选卡执行(spec 2026-05-21 rev 2)。image_generate 在 PR-4 删除。
+DISPATCH_NODE_TYPES: frozenset[str] = frozenset({"image_generate", "tts_engine", "flux2_vae_decode"})
 
 
 def node_exec_class(node_type: str) -> ExecClass:

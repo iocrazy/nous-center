@@ -39,6 +39,7 @@ _on_progress_ref = None
 # 与 src.services.node_routing.DISPATCH_NODE_TYPES 配对维护。
 _NODE_TYPE_TO_GROUP_ID: dict[str, str] = {
     "image_generate": "image",
+    "flux2_vae_decode": "image",  # 细粒度图 dispatch 终端(spec 2026-05-21 rev 2)
     "tts_engine": "tts",
 }
 
