@@ -41,6 +41,20 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 - ETag is computed on the serialized body bytes, not the dict — keeps it stable
   across non-deterministic dict/set iteration order.
 
+## 图像引擎 (image engine)
+
+- 迁移中:`NOUS_IMAGE_ENGINE=modular|legacy`(默认 `legacy`)。`legacy` = 自写
+  `ImageSampler`(`image_diffusers.py`);`modular` = `ModularImageBackend`
+  (`image_modular.py`,Modular Diffusers)。spec
+  `docs/superpowers/specs/2026-05-22-image-engine-modular-diffusers-design.md`。
+- **Modular Diffusers 是 experimental**;`diffusers` 在 `pyproject.toml` **钉死 commit**。
+  改 `image_modular.py` / `image_sampler.py` **或升 diffusers 前,必须跑**
+  `tests/manual/smoke_image_ab.py`(真模型/GPU,非 CI)并确认 SSIM ≥ 0.97 + 出图正确,
+  再 bump commit。CI 跑不了真模型(conftest mock torch + 无 GPU),引擎正确性只靠这个
+  standalone smoke。
+- `diffusers.modular*` 的 import **只允许在 `image_modular.py`**(`_import_modular()`
+  一处)——experimental API 变更时 blast radius 限一文件。
+
 ## Memory
 
 User's persistent memory lives in `~/.claude/projects/.../memory/MEMORY.md`. Index
