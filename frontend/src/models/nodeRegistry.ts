@@ -6,7 +6,8 @@ export interface WidgetDef {
   name: string
   label: string
   widget: WidgetType
-  options?: { value: string; label: string }[]
+  // 兼容两种写法:对象 [{value,label}] 或纯字符串 ['a','b'](plugin node.yaml 常用后者)
+  options?: (string | { value: string; label: string })[]
   min?: number
   max?: number
   step?: number

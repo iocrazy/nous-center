@@ -374,16 +374,23 @@ function WidgetRenderer({
           style={widget.rows ? { height: widget.rows * 16 } : undefined}
         />
       )
-    case 'select':
+    case 'select': {
+      // options 兼容字符串列表(node.yaml 常写 [default, bfloat16])与对象列表
+      // ([{value,label}])。字符串→{value:s,label:s};否则 opt.value/label 为 undefined
+      // 会渲染空白选项(细粒度图 loader 的 精度/显卡/架构 曾全空)。
+      const opts = (widget.options ?? []).map((o) =>
+        typeof o === 'string' ? { value: o, label: o } : o,
+      )
       return (
         <NodeSelect value={String(resolved ?? '')} onChange={(e) => onChange(e.target.value)}>
-          {widget.options?.map((opt) => (
+          {opts.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
             </option>
           ))}
         </NodeSelect>
       )
+    }
     case 'slider':
       return (
         <NodeNumberDrag
