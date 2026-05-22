@@ -238,11 +238,13 @@ function FieldRenderer({
           onChange={(e) => onChange(e.target.value)}
           style={inputStyle}
         >
-          {widget.options?.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
+          {(widget.options ?? [])
+            .map((o) => (typeof o === 'string' ? { value: o, label: o } : o))
+            .map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
         </select>
       )
     case 'slider':
