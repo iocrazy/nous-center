@@ -175,7 +175,11 @@ class ImageSampler:
                     max_sequence_length=512,
                 )
                 # Cross-device transfer: embeds + ids → transformer.device.
-                prompt_embeds = prompt_embeds.to(transformer_device)
+                # 同时把 embeds 转成 transformer 的计算 dtype —— text_encoder 可能按
+                # 原生精度(weight_dtype=default → 常为 float32)或与 transformer 不同
+                # 的精度加载(组件级混精度,如 transformer fp8 + clip bf16)。不转则
+                # context_embedder 在 denoise 第 0 步报 "mat1 and mat2 dtype mismatch"。
+                prompt_embeds = prompt_embeds.to(device=transformer_device, dtype=self.pipe.transformer.dtype)
                 text_ids = text_ids.to(transformer_device)
         except SamplerCancelled:
             raise  # don't wrap cancels
