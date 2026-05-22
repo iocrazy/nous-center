@@ -1,6 +1,6 @@
 # Image 引擎层迁移 — 自写 ImageSampler → Modular Diffusers
 
-**Status**: Draft (rev 1,spike 验证中)
+**Status**: Reviewed (plan-eng-review 2026-05-22,6 决议 + 3 自查风险已折入;待实施 PR-1)
 **Author**: heygo
 **Date**: 2026-05-22
 **Supersedes**: `2026-05-19-image-component-multi-gpu-design.md` 的**引擎实现**(§5.6 自写 `ImageSampler`、§5.2 `DiffusersImageBackend` 组件装配、§5.5 `get_or_load_image_adapter`)。**保留**:组件扫描(§4.6)、quant_loaders(§5.3,作量化桥接)、收敛后的细粒度图编辑器/runner/API(`2026-05-21-image-granular-convergence-design.md` rev 2 的前端 + runner 派发 + 计费/服务发布)。
@@ -89,7 +89,7 @@ pipe.update_components(transformer=tr.to(dev))         # ③ 喂进 ModularPipel
 
 - **三步缺一不可**:① 反量化(解 fp8 打包)② 转键(comfy double_blocks→diffusers transformer_blocks)③ update_components。漏掉 ② 就是 spike v2 的噪声图。
 - **单文件只是权重**;架构 config + clip/vae/scheduler/tokenizer 来自 HF repo。component_scanner 已能枚举单文件 + 探测 quant_type。
-- 本次反量化到 bf16(Pro 6000 不缺显存,先证「文件可用」);真 fp8 省显存 future。
+- ⚠️ **本次桥接只让 comfy fp8mixed 文件「能加载出图」,不省显存**:它把 fp8 **反量化成 bf16** → 又变回 ~18GB+ 全尺寸 → **放 3090 仍 OOM**。「fp8 塞小卡省显存」需保 fp8 权重 + fp8 compute,是**另一回事(future)**。本次落 Pro 6000,目的是「让你这些 comfy 量化文件在新引擎下可用」,不是「3090 装下大模型」——别混淆。
 - **顺带修现有栈**:`_load_hf_or_quant` 的 quant fallback 也加 ② 转键(否则 comfy 单文件静默出垃圾)。
 - **GGUF**:`reject` 改「未就绪」提示;实际加载 future(GGUF dequant + 同一转换器)。
 
@@ -106,8 +106,33 @@ pipe.update_components(transformer=tr.to(dev))         # ③ 喂进 ModularPipel
 - **Modular Diffusers experimental(0.38.0.dev0,会破坏性变更)**:最大风险。缓解 —— 钉死 diffusers 版本;引擎层封装在 `image_modular.py` 一处,API 变只改一处;PR-1 并存灰度,验证够稳再 PR-4 删旧。
 - **沉没成本**:删的是 2026-05-19 的 6-PR 引擎(ImageSampler 等);本会话刚做的收敛编辑器/runner/LoRA **全保留**。换来:删大量自维护采样/装配代码、更快、新模型官方 blocks 直接拿。
 - **量化/GGUF 不免费**(spike 纠正):fp8 系列复用 quant_loaders 桥接;GGUF 单独。
+- **自查未决风险(outside voice 因 codex 配置坏 + subagent 过载未跑成,以下为自查)**:
+  - **P0 fp8 不省显存**:本次桥接反量化到 bf16,3090 仍 OOM —— 见 §4 ⚠️。别让用户以为「fp8 = 能塞 3090」。
+  - **P1 ModularPipeline 的 LoRA API 未验证**:本会话 ComfyUI-LoRA 修复在 `DiffusionPipeline.load_lora_weights` 上;ModularPipeline 是否同 API 未知 → **PR-3 先验**(若不同,PR-3 范围变大)。
+  - **P1 ComponentsManager × ModelManager 长活 runner 共存**:runner 长进程连续服务不同模型/量化/LoRA;ModularPipeline 示例是「脚本跑一次」。跨请求模型换入换出 / 显存双记账 / eviction 冲突 → **PR-1 验**(连续多请求切换不同模型不泄漏/不 OOM)。
+
+## 7.5 Review 决议(plan-eng-review,2026-05-22)
+
+- **D1 范围**:完整迁移(PR-1..4),最终删 ImageSampler。不做分阶段保留旧引擎。
+- **D2 调用结构**:**不**新建 ImageEngine 抽象,也不散落直调。**复用现有 image adapter 类**(`DiffusersImageBackend`),把内脏从 `ImageSampler` 换成 `ModularPipeline`;`diffusers.modular*` 的 import **只允许出现在这一个 adapter 类文件里**(靠模块结构拿隔离,与 TTS/LLM adapter 结构统一,不加新层)。
+- **D3 四态事件**:换引擎后**保留**四态 UI。runner 显式驱动 `load_components`/量化桥接加载,在每个组件加载步**外包一层 `ComponentEvent` 发射**(loading/loaded/failed),复用现有 ComponentEvent 协议 + 前端。
+- **D4 量化转键依赖**:`convert_flux2_transformer_checkpoint_to_diffusers` 是 diffusers 内部函数(`loaders.single_file_utils`),脆。**包一个带 guard 的共享 helper**(如 `quant_loaders.dequant_and_convert`):try-import 内部函数,失败报清晰错(指向 diffusers 版本)。新引擎 + 现有栈 fp8 修复**都调这个 helper**(DRY)。
+- **D5 引擎测试防线**(图像引擎 CI 零覆盖 + experimental API 静默风险):① **钉死 diffusers 版本**(精确版本,不漂);② 一个**必跑 standalone 真模型 smoke**(出图 + SSIM vs 旧引擎),写进 CLAUDE.md 作为「改图像引擎 / 升 diffusers 前必跑」门;③ CI 加**轻量 wiring 测**(断言 adapter 用对参数调 ModularPipeline,不需 GPU,抓接线回归)。
+- **D6 性能核实**:PR-1 做**受控 A/B**(同模型/seed/步数/分辨率,量两引擎纯采样循环 + 总耗时),查清 6.4s vs 27s 的来源(真优化 / 口径不一 / ImageSampler 可去开销)再下结论;不直接拿 4× 当卖点。
 
 ## 7. Test Plan
 - 每 PR:单测(桥接/装配 stub)+ **真模型 standalone smoke**(SSIM vs 自写 ImageSampler、comfy fp8mixed 出图、LoRA 生效),沿用 dev_env_gotchas standalone 测法。
 - PR-4 删旧引擎后:后端全套 + 前端 tsc/vitest/build + grep 无 ImageSampler 残留。
 - 遵守 feedback_verify_real_model:每个核心假设(Modular 出图正确、fp8 桥接、LoRA)真模型验。
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_open→resolved | 6 决议 (D1-D6) + 3 自查风险 (1 P0, 2 P1) 已折入 spec |
+| Outside Voice | codex/subagent | Independent challenge | 1 | unavailable | codex config.toml 坏 (tui.alternate_screen) + Claude subagent 两次 529;以自查代替 |
+
+- **决议**:D1 全迁移 / D2 复用 adapter 换内脏(diffusers.modular 限一文件)/ D3 四态事件桥接发射 / D4 dequant+convert 共享 guard helper / D5 钉版本+必跑 smoke 门+CI wiring 测 / D6 PR-1 受控 A/B 核实 6.4s。
+- **自查风险**:P0 fp8 桥接反量化到 bf16 不省显存(3090 仍 OOM,§4 ⚠️ 已注明);P1 ModularPipeline LoRA API 未验(PR-3 先验);P1 ComponentsManager×ModelManager 长活 runner 共存(PR-1 验)。
+- **UNRESOLVED**: 0(D2 用户最终选「复用 adapter 换内脏」覆盖了早先的 B 直调)。
+- **VERDICT**: ENG REVIEW 通过(范围 A 全迁移),3 风险已显式入册,待 PR-1 实施(并在 PR-1 验 P1×2 + D6 性能)。
