@@ -30,7 +30,7 @@ function wrap(ui: React.ReactElement) {
 
 describe('select widget 字符串 options', () => {
   it('字符串列表 options 渲染出可选项(非空白)', () => {
-    wrap(<DeclarativeNode id="n" type="t_stropts" data={{}} selected={false} {...({} as never)} />)
+    wrap(<DeclarativeNode id="n" type="t_stropts" data={{}} selected={false} {...({} as any)} />)
     for (const v of ['default', 'bfloat16', 'fp8_e4m3']) {
       const opt = screen.getByRole('option', { name: v }) as HTMLOptionElement
       expect(opt.value).toBe(v)
