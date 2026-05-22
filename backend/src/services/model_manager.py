@@ -843,12 +843,14 @@ class ModelManager:
                 f"该卡可能被常驻 LLM 占用。换张卡(device)、用更低精度(fp8),"
                 f"或先释放该卡。"
             )
-        combo_key = (pipeline_class,) + tuple(
+        # engine 进 combo_key:legacy/modular 缓存隔离,避免运行时切引擎拿到错类型 adapter。
+        engine = _select_image_engine()
+        combo_key = (engine, pipeline_class) + tuple(
             to_component_key(resolved[k]) for k in ("unet", "clip", "vae"))
 
         # PR-1 灰度:NOUS_IMAGE_ENGINE=modular → ModularImageBackend(与 legacy 并存)。
         # 默认 legacy 走下面原 DiffusersImageBackend 路径,行为不变。
-        if _select_image_engine() == "modular":
+        if engine == "modular":
             return await self._get_or_load_modular_adapter(
                 resolved, combo_key, pipeline_class, target, _emit)
 
