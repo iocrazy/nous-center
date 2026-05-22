@@ -202,8 +202,10 @@ def _build_request(node: P.RunNode):
                 raise ValueError(
                     f"多编码器 CLIP({len(encoders)} 条 encoder)执行 PR-3 才支持;"
                     f"当前单编码器(flux2/qwen)")
-            clip_spec = dict(encoders[0]); clip_spec["device"] = device
-            vae_spec = dict(vae_d["spec"]); vae_spec["device"] = device
+            clip_spec = dict(encoders[0])
+            clip_spec["device"] = device
+            vae_spec = dict(vae_d["spec"])
+            vae_spec["device"] = device
             lseed = latent.get("seed")
             return ImageRequest(
                 request_id=f"task-{node.task_id}",
