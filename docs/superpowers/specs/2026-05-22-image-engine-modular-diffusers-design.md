@@ -9,13 +9,17 @@
 
 用 **HuggingFace Modular Diffusers**(`ModularPipeline` + `ComponentsManager` + 官方 blocks)**替换我们 2026-05-19 自写的图像引擎**(ImageSampler 采样循环 + 组件装配 + 跨设备 .to()),并**同时解决「comfyui 量化模型(fp8mixed 等)怎么用」**(用户要求)。编辑器/runner/计费等上层不动。
 
-**为什么现在**:我们当初自写 ImageSampler,是因为旧 diffusers 的 monolithic `Pipeline.__call__` 硬假设同 device、做不了分阶段(Task 0 实测)。Modular Diffusers(diffusers 0.38.0.dev0)现在官方解决了**而且更多**:flux2/ernie 官方 blocks、拆 stage 跑、`ComponentsManager` 动态 offload、per-component dtype/量化。这是 diffusers 原生升级,**与「继续自建 diffusers 框架、不转 ComfyUI」的方向一致**。
+**为什么现在**:我们当初自写 ImageSampler,是因为旧 diffusers 的 monolithic `Pipeline.__call__` 硬假设同 device、做不了分阶段(Task 0 实测)。Modular Diffusers(diffusers 0.38.0.dev0)现在官方解决了:flux2/ernie 官方 blocks、拆 stage 跑、`ComponentsManager` 动态 offload、per-component dtype/量化。这是 diffusers 原生升级,**与「继续自建 diffusers 框架、不转 ComfyUI」的方向一致**。
+
+> ⚠️ **价值修正(D6 受控 A/B 后,2026-05-22)**:Modular **不更快**(同 dtype 同输入,两引擎 6.5s/SSIM=1.0)。本迁移的收益是**纯维护**(删手写采样循环)+ **未来官方 blocks**(新模型/量化/offload 现成),**不含性能**。早先「更快」论据作废。是否值得为「维护 + future」赌 experimental API + 删工作引擎,见 §8 重权衡。
+> **副发现**:legacy 跑 `default` 精度 27s vs bf16 6.5s(**慢 4×**)—— 用户默认 `default`!这是现有引擎可独立修的真问题(默认 bf16 或显式提示),与迁移无关。
 
 ## 1. Spike 实测结论(2026-05-22,落 cuda:1 Pro 6000)
 
 | 验证 | 结果 |
 |---|---|
-| `ModularPipeline.from_pretrained(HF-layout Flux2-klein)` + bf16 出图 | ✅ 输出**正确**(与自写 ImageSampler 同 seed 几乎同图),**推理 6.4s vs 自写 27s**(≈4×,待深究但至少不退化) |
+| `ModularPipeline.from_pretrained(HF-layout Flux2-klein)` + bf16 出图 | ✅ 输出**正确** |
+| **受控 A/B(D6,2026-05-22)同 dtype 同输入** | ⚠️ **两引擎完全等价**:legacy 与 modular 均 **infer 6.5s**、**SSIM=1.0000**。早先「6.4s vs 27s」是 **bf16-modular vs default-legacy 口径不一**,27s 来自 `default` 精度(原生/fp32 慢),**非引擎差异**。**Modular 不更快。** |
 | diffusers `from_single_file` 直接吃 comfy `fp8mixed` 单文件 | ❌ `chunk expects ≥1-dim tensor`(不认 comfy_quant 打包) |
 | diffusers `from_single_file` 直接吃 `Q5_K.gguf` | ❌ `OSError: Unable to load weights`(不吃这个 GGUF) |
 | **桥接**:quant_loaders 反量化 fp8mixed → `from_config` + `load_state_dict` **(无转键)** → 出图 | ❌ spike v2:`missing=233 unexpected=201`,**键不匹配出噪声图**(comfy `double_blocks` vs diffusers `transformer_blocks`) |
