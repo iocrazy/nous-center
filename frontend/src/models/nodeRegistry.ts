@@ -250,6 +250,7 @@ interface PluginNodeDef {
   inputs?: PortDef[]
   outputs?: PortDef[]
   widgets?: WidgetDef[]
+  componentRole?: 'unet' | 'clip' | 'vae'
   _package?: string
 }
 
@@ -271,7 +272,8 @@ export async function loadPluginDefinitions(): Promise<void> {
       // Skip if already hardcoded
       if (DECLARATIVE_NODES[nodeType]) continue
 
-      // Register as declarative node
+      // Register as declarative node. componentRole 触发四态加载头
+      // (DeclarativeNode.tsx);widget role 经 cast 已保留(component_select 用)。
       DECLARATIVE_NODES[nodeType] = {
         type: nodeType,
         label: def.label,
@@ -279,6 +281,7 @@ export async function loadPluginDefinitions(): Promise<void> {
         badge: def.badge,
         badgeColor: def.badgeColor,
         widgets: (def.widgets ?? []) as WidgetDef[],
+        componentRole: def.componentRole,
       }
 
       // Register port definitions in NODE_DEFS
