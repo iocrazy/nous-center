@@ -209,79 +209,10 @@ async def test_image_route_404_when_signed_but_file_missing(
     assert resp.status_code == 404
 
 
-# ----- node integration: URL flows through envelope -----
-
-
-def _install_fake_image_helpers(monkeypatch):
-    """V1' Lane D P5 — image_generate composes encode_prompt + sample +
-    vae_decode now. Stub all three so the node hits the real write_image
-    path with a real-looking PIL image."""
-    from unittest.mock import AsyncMock, MagicMock
-    from src.services import workflow_executor as we
-    from src.services.inference import image_diffusers as image_mod
-
-    pil_image = MagicMock()
-    pil_image.save = MagicMock(
-        side_effect=lambda buf, format="PNG": buf.write(b"\x89PNG_REAL"),
-    )
-
-    monkeypatch.setattr(image_mod, "encode_prompt",
-                        lambda *a, **kw: {"prompt_embeds": "E", "text_ids": "T"})
-    monkeypatch.setattr(image_mod, "sample", lambda *a, **kw: "LATENTS")
-    monkeypatch.setattr(image_mod, "vae_decode", lambda *a, **kw: pil_image)
-
-    adapter = MagicMock()
-    adapter.is_loaded = True
-    adapter.device = "cuda:0"
-    adapter.pipe = MagicMock()
-    adapter.set_active_loras = MagicMock()
-
-    mgr = MagicMock()
-    mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
-    monkeypatch.setattr(we, "_model_manager", mgr)
-
-    import torch
-    gen = MagicMock()
-    gen.manual_seed = MagicMock(return_value=gen)
-    monkeypatch.setattr(torch, "Generator", MagicMock(return_value=gen))
-
-
-@pytest.mark.asyncio
-async def test_image_generate_emits_url_when_secret_configured(
-    storage_tmp, with_signing_secret, monkeypatch,
-):
-    from src.services.nodes.image import ImageGenerateNode
-
-    _install_fake_image_helpers(monkeypatch)
-
-    out = await ImageGenerateNode().invoke(
-        data={"model_key": "flux2-klein-9b"},
-        inputs={"prompt": "a cat in space"},
-    )
-    assert out["image_url"] is not None
-    assert out["image_url"].startswith("/files/images/")
-    assert out["image_uuid"]
-    # In secret mode, base64 inline is omitted
-    assert "image" not in out
-
-
-@pytest.mark.asyncio
-async def test_image_generate_raises_when_no_signing_secret(storage_tmp, monkeypatch):
-    """Dev-mode base64 fallback was removed in p2-polish-3. With no
-    ADMIN_SESSION_SECRET write_image returns url=None and the node raises
-    ExecutionError pointing the operator at the missing config."""
-    from src.config import get_settings
-    from src.services import workflow_executor as we
-    from src.services.nodes.image import ImageGenerateNode
-
-    monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "")
-    _install_fake_image_helpers(monkeypatch)
-
-    with pytest.raises(we.ExecutionError, match="ADMIN_SESSION_SECRET"):
-        await ImageGenerateNode().invoke(
-            data={"model_key": "flux2-klein-9b"},
-            inputs={"prompt": "hi"},
-        )
+# 注:write_image 的 secret→签名 URL / 无 secret→url=None 不变式由上面
+# test_write_image_no_secret_yields_null_url + test_write_image_with_secret_signs_url
+# 直接覆盖。收敛后 image_generate 节点已删(图像走细粒度图 + runner write_image),
+# 原 ImageGenerateNode 集成测试移除(不变式无覆盖损失)。
 
 
 def test_outputs_root_respects_env_override(monkeypatch, tmp_path):

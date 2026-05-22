@@ -23,18 +23,18 @@ async def test_fake_runner_client_records_calls():
     """stub self-check：run_node 记录调用、按 node_id 返回配置结果。"""
     from src.runner import protocol as P
     rc = FakeRunnerClient(results={"n1": {"image_url": "x.png"}})
-    spec = P.RunNode(task_id=1, node_id="n1", node_type="image_generate",
+    spec = P.RunNode(task_id=1, node_id="n1", node_type="flux2_vae_decode",
                      model_key=None, inputs={"prompt": "cat"})
     out = await rc.run_node(spec, workflow_name="t1")
     assert out == {"image_url": "x.png"}
-    assert rc.calls == [("n1", "image_generate", {"prompt": "cat"}, "t1")]
+    assert rc.calls == [("n1", "flux2_vae_decode", {"prompt": "cat"}, "t1")]
 
 
 @pytest.mark.asyncio
 async def test_fake_runner_client_fail_nodes():
     from src.runner import protocol as P
     rc = FakeRunnerClient(fail_nodes={"bad"})
-    spec = P.RunNode(task_id=2, node_id="bad", node_type="image_generate",
+    spec = P.RunNode(task_id=2, node_id="bad", node_type="flux2_vae_decode",
                      model_key=None, inputs={})
     with pytest.raises(RuntimeError, match="node bad failed"):
         await rc.run_node(spec)
@@ -53,9 +53,9 @@ async def test_inline_node_does_not_touch_runner_client():
 
 @pytest.mark.asyncio
 async def test_dispatch_node_routes_to_runner_client():
-    """image_generate 节点 → RunnerClient.run_node，结果进 outputs。"""
+    """flux2_vae_decode 节点 → RunnerClient.run_node，结果进 outputs。"""
     rc = FakeRunnerClient(results={"img": {"image_url": "out.png"}})
-    wf = _wf([{"id": "img", "type": "image_generate", "data": {"prompt": "cat"}}])
+    wf = _wf([{"id": "img", "type": "flux2_vae_decode", "data": {"prompt": "cat"}}])
     ex = WorkflowExecutor(wf, runner_client=rc)
     result = await ex.execute()
     assert rc.calls[0][0] == "img"
@@ -64,12 +64,12 @@ async def test_dispatch_node_routes_to_runner_client():
 
 @pytest.mark.asyncio
 async def test_mixed_workflow_inline_then_dispatch():
-    """text_input(inline) → image_generate(dispatch)：上游 inline 输出进下游 dispatch 的 inputs。"""
+    """text_input(inline) → flux2_vae_decode(dispatch)：上游 inline 输出进下游 dispatch 的 inputs。"""
     rc = FakeRunnerClient(results={"img": {"image_url": "out.png"}})
     wf = _wf(
         nodes=[
             {"id": "t", "type": "text_input", "data": {"text": "a cat"}},
-            {"id": "img", "type": "image_generate", "data": {}},
+            {"id": "img", "type": "flux2_vae_decode", "data": {}},
         ],
         edges=[{"source": "t", "target": "img",
                 "sourceHandle": "text", "targetHandle": "prompt"}],
@@ -84,7 +84,7 @@ async def test_mixed_workflow_inline_then_dispatch():
 @pytest.mark.asyncio
 async def test_dispatch_node_without_runner_client_raises():
     """runner_client=None 但 workflow 含 dispatch 节点 → ExecutionError（不静默 inline 跑 GPU 节点）。"""
-    wf = _wf([{"id": "img", "type": "image_generate", "data": {}}])
+    wf = _wf([{"id": "img", "type": "flux2_vae_decode", "data": {}}])
     ex = WorkflowExecutor(wf, runner_client=None)
     with pytest.raises(ExecutionError, match="runner"):
         await ex.execute()
@@ -95,7 +95,7 @@ async def test_dispatch_node_failure_wrapped():
     """runner 抛错 → ExecutionError，node_error progress 事件发出。"""
     events, on_progress = _collector()
     rc = FakeRunnerClient(fail_nodes={"img"})
-    wf = _wf([{"id": "img", "type": "image_generate", "data": {}}])
+    wf = _wf([{"id": "img", "type": "flux2_vae_decode", "data": {}}])
     ex = WorkflowExecutor(wf, runner_client=rc, on_progress=on_progress)
     with pytest.raises(ExecutionError):
         await ex.execute()
@@ -107,7 +107,7 @@ async def test_progress_events_unchanged_for_dispatch():
     """dispatch 节点同样发 node_start / node_complete progress 事件。"""
     events, on_progress = _collector()
     rc = FakeRunnerClient(results={"img": {"image_url": "x"}})
-    wf = _wf([{"id": "img", "type": "image_generate", "data": {}}])
+    wf = _wf([{"id": "img", "type": "flux2_vae_decode", "data": {}}])
     ex = WorkflowExecutor(wf, runner_client=rc, on_progress=on_progress)
     await ex.execute()
     types = [e["type"] for e in events]

@@ -226,12 +226,14 @@ def _build_request(node: P.RunNode):
                 pipeline_class="Flux2KleinPipeline",
             )
 
-        # 转发 ImageRequest 全部字段 —— executor 已把 node.data 合并进 inputs，
-        # steps/width/height/cfg_scale/seed/loras 都在这里能拿到。缺省走 pydantic
-        # Field default(steps=25 / 1024x1024 / cfg_scale=7.0)。
+        # 非细粒度图:model_key 单模型路径 —— runner _node_executor 用 node.model_key
+        # 走 get_or_load(model_key) 拿整 adapter 再 infer(无 components)。收敛后 Family B
+        # 的 flat unet/clip/vae 组件分支(image_generate)已删;此 model_key 路径是通用
+        # 单模型 fallback(by-key 整模型加载)。
         raw_seed = node.inputs.get("seed")
         seed = int(raw_seed) if raw_seed not in (None, "") else None
-        base = dict(
+        loras_raw = node.inputs.get("loras") or []
+        return ImageRequest(
             request_id=f"task-{node.task_id}",
             prompt=str(node.inputs.get("prompt", "")),
             negative_prompt=str(node.inputs.get("negative_prompt", "")),
@@ -240,21 +242,8 @@ def _build_request(node: P.RunNode):
             height=int(node.inputs.get("height") or 1024),
             cfg_scale=float(node.inputs.get("cfg_scale") or 7.0),
             seed=seed,
+            loras=loras_raw if isinstance(loras_raw, list) else [],
         )
-        # 新格式：三组件描述符齐全 → 走 components 路径（spec §5.4）。
-        if all(k in node.inputs for k in ("unet", "clip", "vae")):
-            return ImageRequest(
-                **base,
-                components={
-                    "unet": ComponentSpec(**node.inputs["unet"]),
-                    "clip": ComponentSpec(**node.inputs["clip"]),
-                    "vae":  ComponentSpec(**node.inputs["vae"]),
-                },
-                pipeline_class=str(node.inputs.get("pipeline_class") or "Flux2KleinPipeline"),
-            )
-        # 老路径：无 components（workflow_executor 已 inline 展开过；走不到也安全）。
-        loras_raw = node.inputs.get("loras") or []
-        return ImageRequest(**base, loras=loras_raw if isinstance(loras_raw, list) else [])
     if node.node_type == "tts":
         return AudioRequest(
             request_id=f"task-{node.task_id}",

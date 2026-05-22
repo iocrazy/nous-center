@@ -17,7 +17,7 @@ class _Client:
 async def test_node_complete_includes_cached():
     events = []
     async def on_prog(e): events.append(e)
-    wf = {"nodes": [{"id": "g", "type": "image_generate", "data": {"model_key": "m", "seed": 1, "unet": {}, "clip": {}, "vae": {}}}], "edges": []}
+    wf = {"nodes": [{"id": "g", "type": "flux2_vae_decode", "data": {"seed": 1}}], "edges": []}
     ex = WorkflowExecutor(wf, on_progress=on_prog, runner_clients={"image": _Client()}, task_id=5)
     await ex.execute()
     complete = [e for e in events if e.get("type") == "node_complete" and e["node_id"] == "g"]
