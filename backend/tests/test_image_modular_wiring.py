@@ -34,7 +34,9 @@ def _fake_modular(monkeypatch):
 @pytest.mark.asyncio
 async def test_modular_backend_maps_request_to_pipe(monkeypatch):
     modular_cls, cm_cls, pipe = _fake_modular(monkeypatch)
-    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cuda:1", dtype="bfloat16")
+    # device="cpu":wiring 测不碰真 CUDA(全套里 torch 可能是真的,CI 无 GPU →
+    # torch.Generator(device="cuda") 会 AcceleratorError)。CPU generator 真假 torch 都行。
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", dtype="bfloat16")
 
     res = await be.infer(
         ImageRequest(request_id="t1", prompt="a fox", steps=7, width=512, height=512, seed=42)
@@ -51,7 +53,7 @@ async def test_modular_backend_maps_request_to_pipe(monkeypatch):
     assert modular_cls.from_pretrained.call_args.args[0] == "/m/flux2"
     assert "components_manager" in modular_cls.from_pretrained.call_args.kwargs
     pipe.load_components.assert_called_once()
-    pipe.to.assert_called_once_with("cuda:1")
+    pipe.to.assert_called_once_with("cpu")
 
     # 参数映射:ImageRequest → pipe(...)
     kw = pipe.call_args.kwargs
@@ -65,7 +67,7 @@ async def test_modular_backend_maps_request_to_pipe(monkeypatch):
 async def test_modular_backend_reuses_pipe_across_infers(monkeypatch):
     """同一 backend 多次 infer 复用已建 pipe(不重复 from_pretrained)。"""
     modular_cls, _cm, pipe = _fake_modular(monkeypatch)
-    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cuda:0")
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
 
     await be.infer(ImageRequest(request_id="a", prompt="x", steps=2, width=64, height=64))
     await be.infer(ImageRequest(request_id="b", prompt="y", steps=2, width=64, height=64))
