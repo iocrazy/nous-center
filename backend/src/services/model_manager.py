@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +16,31 @@ from src.services.inference.registry import ModelRegistry, ModelSpec
 from src.services.gpu_allocator import GPUAllocator
 
 logger = logging.getLogger(__name__)
+
+
+def _select_image_engine() -> str:
+    """图像引擎选择(PR-1 灰度):env NOUS_IMAGE_ENGINE=modular|legacy,默认 legacy。
+
+    legacy = 自写 ImageSampler(DiffusersImageBackend);modular = ModularImageBackend
+    (Modular Diffusers)。spec 2026-05-22-image-engine-modular-diffusers,迁移期并存。
+    """
+    return os.getenv("NOUS_IMAGE_ENGINE", "legacy").strip().lower()
+
+
+def _modular_repo_from_components(resolved: dict) -> str:
+    """从细粒度图组件推 HF-layout repo(含 model_index.json 的目录)。
+
+    PR-1 modular 只支持 HF-layout(ModularPipeline.from_pretrained 要 repo)。从 unet
+    组件文件向上找 model_index.json。comfy 单文件量化(无 repo)走 PR-2 量化桥接。
+    """
+    f = Path(resolved["unet"].file)
+    for cand in (f.parent, f.parent.parent, f.parent.parent.parent):
+        if (cand / "model_index.json").exists():
+            return str(cand)
+    raise ValueError(
+        "modular 引擎(PR-1)只支持 HF-layout(需 model_index.json);"
+        f"comfy 单文件量化({f.name})走 PR-2 量化桥接"
+    )
 
 # Re-export so existing `from src.services.model_manager import
 # ModelLoadError, ModelNotFoundError` keeps working (these moved to
@@ -70,6 +97,9 @@ class ModelManager:
         # _models/_components.
         self._image_adapters: dict = {}
         self._image_adapter_locks: dict = {}
+        # PR-1 modular 引擎:runner 持一个 ComponentsManager 单例(跨请求共享/缓存)。
+        # lazy 建(_import 在 image_modular,避免顶层 import diffusers/torch)。
+        self._modular_cm = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -816,6 +846,12 @@ class ModelManager:
         combo_key = (pipeline_class,) + tuple(
             to_component_key(resolved[k]) for k in ("unet", "clip", "vae"))
 
+        # PR-1 灰度:NOUS_IMAGE_ENGINE=modular → ModularImageBackend(与 legacy 并存)。
+        # 默认 legacy 走下面原 DiffusersImageBackend 路径,行为不变。
+        if _select_image_engine() == "modular":
+            return await self._get_or_load_modular_adapter(
+                resolved, combo_key, pipeline_class, target, _emit)
+
         async with self._image_adapter_lock_for(combo_key):
             cached = self._image_adapters.get(combo_key)
             if cached is not None:
@@ -854,3 +890,43 @@ class ModelManager:
                             evicted, "retrying" if evicted else "nothing to evict, retry likely fails")
                         continue
                     raise
+
+    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit):
+        """PR-1 modular 引擎:建/复用 ModularImageBackend(HF-layout)。
+
+        与 legacy 共用 `_image_adapters` combo 缓存 + 四态事件(coarse:加载前 loading、
+        建好 loaded;细粒度 ComponentsManager 事件留后续)。comfy 单文件量化 → PR-2。
+        重 load 经 `asyncio.to_thread` 不阻塞 runner 事件循环。
+        """
+        from src.services.inference.image_modular import ModularImageBackend, _import_modular
+
+        async with self._image_adapter_lock_for(combo_key):
+            cached = self._image_adapters.get(combo_key)
+            if cached is not None:
+                for k in ("unet", "clip", "vae"):
+                    await _emit(resolved[k], "loaded")
+                return cached
+
+            repo = _modular_repo_from_components(resolved)
+            for k in ("unet", "clip", "vae"):
+                await _emit(resolved[k], "loading")
+            try:
+                if self._modular_cm is None:
+                    _, components_manager_cls = _import_modular()
+                    self._modular_cm = components_manager_cls()
+                adapter = ModularImageBackend(
+                    repo=repo,
+                    device=target,
+                    dtype=resolved["unet"].dtype,
+                    components_manager=self._modular_cm,
+                )
+                await adapter.load(target)
+                await asyncio.to_thread(adapter._ensure_pipe)  # 预热(blocking load 进线程)
+            except Exception as e:  # noqa: BLE001
+                for k in ("unet", "clip", "vae"):
+                    await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
+                raise
+            for k in ("unet", "clip", "vae"):
+                await _emit(resolved[k], "loaded")
+            self._image_adapters[combo_key] = adapter
+            return adapter
