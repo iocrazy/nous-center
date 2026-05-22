@@ -45,13 +45,13 @@ nodes:
     category: image
     badge: Loader
     badgeColor: "var(--accent)"
-    componentRole: clip
+    # 动态多 CLIP:clip_stack 每行自带状态点(多文件,节点级单 file 四态头不适配)。
     inputs: []
     outputs:
       - { id: clip, type: CLIP, label: CLIP }
     widgets:
-      - { name: file,         label: "文件", widget: component_select, role: clip }
-      - { name: weight_dtype, label: "精度", widget: select, options: [default, bfloat16, fp8_e4m3], default: default }
+      - { name: clips, label: "CLIP", widget: clip_stack }
+      - { name: type,  label: "架构", widget: select, options: [flux2, flux1, sdxl, sd3, qwen], default: flux2 }
 
   flux2_load_vae:
     label: "Load VAE"
