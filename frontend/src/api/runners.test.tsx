@@ -26,7 +26,7 @@ describe('useRunners', () => {
         // image: 存活 + 正在跑(current_task 非空) → busy
         { group_id: 'image', gpus: [0], running: true, restart_count: 0, pid: 12345,
           current_task: { task_id: 7001, workflow_name: 'flux2-人物立绘', node_id: 'n1',
-                          node_type: 'image_generate', started_at: 0, progress: 0.6, detail: 'step 18/30' } },
+                          node_type: 'flux2_vae_decode', started_at: 0, progress: 0.6, detail: 'step 18/30' } },
         // tts: 不存活 + restart_count>0 → restarting
         { group_id: 'tts', gpus: [2], running: false, restart_count: 2, pid: null,
           current_task: null },

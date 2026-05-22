@@ -1,4 +1,6 @@
-export type PortType = 'text' | 'audio' | 'image' | 'message' | 'data' | 'any' | 'unet' | 'clip' | 'vae'
+// 收敛后(spec 2026-05-21):Family B 的小写 unet/clip/vae 端口已删;细粒度图
+// (flux2-components)用大写 MODEL/CLIP/VAE/CONDITIONING/LATENT(经 plugin defs 走字符串)。
+export type PortType = 'text' | 'audio' | 'image' | 'message' | 'data' | 'any'
 
 /** Node type identifier. Built-in types are listed below; plugin packages can add more at runtime. */
 export type NodeType = string
@@ -20,12 +22,7 @@ export type BuiltinNodeType =
   | 'agent'
   | 'if_else'
   | 'python_exec'
-  | 'image_generate'
   | 'image_output'
-  | 'image_unet_load'
-  | 'image_clip_load'
-  | 'image_vae_load'
-  | 'image_lora_apply'
 
 export interface PortDef {
   id: string
@@ -153,37 +150,6 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     label: 'Python 执行',
     inputs: [{ id: 'text', type: 'text', label: '输入' }],
     outputs: [{ id: 'text', type: 'text', label: '输出' }],
-  },
-  image_generate: {
-    type: 'image_generate', label: '图像生成',
-    inputs: [
-      { id: 'unet', type: 'unet', label: 'UNET' },
-      { id: 'clip', type: 'clip', label: 'CLIP' },
-      { id: 'vae', type: 'vae', label: 'VAE' },
-      { id: 'prompt', type: 'text', label: '提示' },
-      { id: 'negative_prompt', type: 'text', label: '负面' },
-    ],
-    outputs: [{ id: 'image', type: 'image', label: '图像' }],
-  },
-  image_unet_load: {
-    type: 'image_unet_load', label: 'UNET 加载',
-    inputs: [],
-    outputs: [{ id: 'unet', type: 'unet', label: 'UNET' }],
-  },
-  image_clip_load: {
-    type: 'image_clip_load', label: 'CLIP 加载',
-    inputs: [],
-    outputs: [{ id: 'clip', type: 'clip', label: 'CLIP' }],
-  },
-  image_vae_load: {
-    type: 'image_vae_load', label: 'VAE 加载',
-    inputs: [],
-    outputs: [{ id: 'vae', type: 'vae', label: 'VAE' }],
-  },
-  image_lora_apply: {
-    type: 'image_lora_apply', label: 'LoRA 应用',
-    inputs: [{ id: 'unet', type: 'unet', label: 'UNET' }],
-    outputs: [{ id: 'unet', type: 'unet', label: 'UNET' }],
   },
   image_output: {
     type: 'image_output',

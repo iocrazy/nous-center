@@ -536,7 +536,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         // denoise (~stepsBudget) → vae_decode (~0.5s). Per-step time
         // estimate is conservative for cpu_offload single-card; V1 swaps
         // for real infer_stream events.
-        if (nodeType === 'image_generate') {
+        if (nodeType === 'flux2_vae_decode') {
           // Cancel any timers from a previous run on this node.
           for (const t of imageStageTimersRef.current) clearTimeout(t)
           imageStageTimersRef.current = []
@@ -564,7 +564,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         }
         // Image-only: stop the simulated stage timers and pin "done" with
         // the actual elapsed from backend duration_ms (or measured locally).
-        if (nodeType === 'image_generate') {
+        if (nodeType === 'flux2_vae_decode') {
           for (const t of imageStageTimersRef.current) clearTimeout(t)
           imageStageTimersRef.current = []
           const start = imageStartAtRef.current
