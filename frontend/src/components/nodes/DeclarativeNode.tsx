@@ -263,6 +263,82 @@ export function ComponentStatusHeader({ data }: { data: Record<string, unknown> 
   )
 }
 
+type ClipEntry = { file: string; weight_dtype: string }
+const _CLIP_DTYPES = ['default', 'bfloat16', 'fp8_e4m3']
+
+function ClipStateDot({ file, dtype }: { file: string; dtype: string }) {
+  const key = componentStateKey({ file: file || undefined, device: 'auto', dtype: dtype || 'bfloat16' })
+  const { state } = useComponentState(key)
+  const vis = _STATE_VIS[state] ?? _STATE_VIS.cold
+  return <span title={vis.label} style={{ width: 6, height: 6, borderRadius: 3, background: vis.color, flexShrink: 0 }} />
+}
+
+/** PR-3 动态多 CLIP:可增删的 CLIP 编码器列表(每条 file + 精度 + 状态点)。
+ * 多编码器执行 gated(runner 拦),但增删 UI + bundle 现在就有。 */
+export function ClipStackWidget({
+  value,
+  onChange,
+}: {
+  value: ClipEntry[]
+  onChange: (v: ClipEntry[]) => void
+}) {
+  const items = Array.isArray(value) ? value : []
+  const add = () => onChange([...items, { file: '', weight_dtype: 'default' }])
+  const remove = (idx: number) => onChange(items.filter((_, i) => i !== idx))
+  const setFile = (idx: number, file: string) => {
+    const next = items.slice(); next[idx] = { ...next[idx], file }; onChange(next)
+  }
+  const setDtype = (idx: number, weight_dtype: string) => {
+    const next = items.slice(); next[idx] = { ...next[idx], weight_dtype }; onChange(next)
+  }
+  const btnStyle: React.CSSProperties = {
+    background: 'var(--bg-hover)', border: '1px solid var(--border)', borderRadius: 3,
+    padding: '2px 4px', cursor: 'pointer', color: 'var(--muted)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+      {items.map((row, idx) => (
+        <div key={idx} style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+          <ClipStateDot file={row.file} dtype={row.weight_dtype} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <ComponentSelectWidget value={row.file} onChange={(v) => setFile(idx, v)} role="clip" />
+          </div>
+          <div style={{ width: 78 }}>
+            <NodeSelect value={row.weight_dtype || 'default'} onChange={(e) => setDtype(idx, e.target.value)}>
+              {_CLIP_DTYPES.map((d) => <option key={d} value={d}>{d}</option>)}
+            </NodeSelect>
+          </div>
+          <button
+            className="nodrag" type="button"
+            aria-label={`删除 CLIP ${idx + 1}`}
+            onClick={() => remove(idx)}
+            style={{ ...btnStyle, color: 'var(--err)' }}
+          >
+            <X size={10} />
+          </button>
+        </div>
+      ))}
+      <button
+        className="nodrag" type="button" onClick={add}
+        style={{ ...btnStyle, padding: '4px 6px', fontSize: 10, gap: 4 }}
+      >
+        <Plus size={10} />
+        添加 CLIP
+      </button>
+    </div>
+  )
+}
+
+/** clip_stack 取值 + 旧格式兜底:PR-1/PR-2 期存的单 `file` → 包成一条。 */
+function clipStackValue(resolved: unknown, nodeData?: Record<string, unknown>): ClipEntry[] {
+  if (Array.isArray(resolved) && resolved.length > 0) return resolved as ClipEntry[]
+  if (nodeData?.file) {
+    return [{ file: String(nodeData.file), weight_dtype: String(nodeData.weight_dtype ?? 'default') }]
+  }
+  return Array.isArray(resolved) ? (resolved as ClipEntry[]) : []
+}
+
 function resolveValue(value: unknown, widget: WidgetDef): unknown {
   if (value !== undefined && value !== null) return value
   return widget.default
@@ -272,10 +348,12 @@ function WidgetRenderer({
   widget,
   value,
   onChange,
+  nodeData,
 }: {
   widget: WidgetDef
   value: unknown
   onChange: (v: unknown) => void
+  nodeData?: Record<string, unknown>
 }) {
   const resolved = resolveValue(value, widget)
 
@@ -371,6 +449,13 @@ function WidgetRenderer({
           value={String(resolved ?? '')}
           onChange={(v) => onChange(v)}
           role={(widget.role ?? 'unet') as ComponentRole}
+        />
+      )
+    case 'clip_stack':
+      return (
+        <ClipStackWidget
+          value={clipStackValue(resolved, nodeData)}
+          onChange={(v) => onChange(v)}
         />
       )
     default:
@@ -558,6 +643,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
             widget={w}
             value={data[w.name] as unknown}
             onChange={(v) => updateNode(id, { [w.name]: v })}
+            nodeData={data as Record<string, unknown>}
           />
         </NodeWidgetRow>
       ))}
