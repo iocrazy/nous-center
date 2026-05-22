@@ -76,10 +76,17 @@ async def exec_load_diffusion_model(data: dict, inputs: dict) -> dict:
 
 
 async def exec_load_clip(data: dict, inputs: dict) -> dict:
-    """CLIP —— 单编码器(file + weight_dtype)。多编码器(clip_stack)= PR-3。
-    无 device:跟随上游 transformer 的卡(整模型单卡)。"""
-    enc = {"kind": "clip", "file": data["file"], "dtype": data.get("weight_dtype") or _DEFAULT_DTYPE}
-    return {"clip": {"_type": "flux2_clip", "type": data.get("type") or "flux2", "encoders": [enc]}}
+    """CLIP —— 动态多编码器(clip_stack:每条 file + weight_dtype)+ type(架构)。
+    无 device:跟随上游 transformer 的卡(整模型单卡)。多编码器执行 gated(runner
+    _build_request 拦,见 spec §4.3)。兜底旧单 file 格式(PR-1/PR-2 期存的 workflow)。"""
+    clips = data.get("clips")
+    if not clips and data.get("file"):  # back-compat:PR-1/PR-2 单 file
+        clips = [{"file": data["file"], "weight_dtype": data.get("weight_dtype")}]
+    encoders = [
+        {"kind": "clip", "file": c["file"], "dtype": c.get("weight_dtype") or _DEFAULT_DTYPE}
+        for c in (clips or []) if c.get("file")
+    ]
+    return {"clip": {"_type": "flux2_clip", "type": data.get("type") or "flux2", "encoders": encoders}}
 
 
 async def exec_load_vae(data: dict, inputs: dict) -> dict:

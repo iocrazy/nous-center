@@ -199,9 +199,11 @@ def _build_request(node: P.RunNode):
             device = unet_spec["device"]
             encoders = cond_d["clip"]["encoders"]
             if len(encoders) != 1:
+                clip_type = cond_d["clip"].get("type", "?")
                 raise ValueError(
-                    f"多编码器 CLIP({len(encoders)} 条 encoder)执行 PR-3 才支持;"
-                    f"当前单编码器(flux2/qwen)")
+                    f"多编码器架构 '{clip_type}'({len(encoders)} 个 encoder)执行未就绪 —— "
+                    f"需对应多编码器模型 backend(见 spec 2026-05-21 §9);"
+                    f"当前可用 flux2/qwen 单编码器")
             clip_spec = dict(encoders[0])
             clip_spec["device"] = device
             vae_spec = dict(vae_d["spec"])

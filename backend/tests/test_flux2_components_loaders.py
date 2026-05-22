@@ -58,18 +58,25 @@ def test_load_diffusion_widgets_have_file_dtype_device():
     assert by_name["device"]["widget"] == "select"
 
 
-def test_load_clip_vae_widgets_have_file_dtype():
+def test_load_vae_widgets_have_file_dtype():
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
-    clip = cfg["nodes"]["flux2_load_clip"]
     vae = cfg["nodes"]["flux2_load_vae"]
-    assert clip.get("componentRole") == "clip"
     assert vae.get("componentRole") == "vae"
-    clip_w = {w["name"]: w for w in clip["widgets"]}
     vae_w = {w["name"]: w for w in vae["widgets"]}
-    assert clip_w["file"]["widget"] == "component_select" and clip_w["file"]["role"] == "clip"
-    assert "weight_dtype" in clip_w
     assert vae_w["file"]["widget"] == "component_select" and vae_w["file"]["role"] == "vae"
     assert "weight_dtype" in vae_w
+
+
+def test_load_clip_widgets_clip_stack_and_type():
+    """PR-3 动态多 CLIP:Load CLIP 用 clip_stack(增删条目)+ type(架构),
+    不再是单 file(节点级 componentRole 移除,改 clip_stack 每行状态点)。"""
+    cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
+    clip = cfg["nodes"]["flux2_load_clip"]
+    assert "componentRole" not in clip
+    clip_w = {w["name"]: w for w in clip["widgets"]}
+    assert clip_w["clips"]["widget"] == "clip_stack"
+    assert clip_w["type"]["widget"] == "select"
+    assert "flux2" in clip_w["type"]["options"] and "flux1" in clip_w["type"]["options"]
 
 
 def test_executors_dict_is_yaml_nodes_minus_dispatch():
@@ -105,13 +112,34 @@ async def test_load_diffusion_defaults():
 
 
 @pytest.mark.asyncio
-async def test_load_clip_single_encoder():
+async def test_load_clip_single_via_clips():
     executors = _load_executors()
-    out = await executors["flux2_load_clip"]({"file": "/m/c.safe", "weight_dtype": "default"}, {})
+    out = await executors["flux2_load_clip"]({"clips": [{"file": "/m/c.safe", "weight_dtype": "default"}]}, {})
     assert out["clip"] == {
         "_type": "flux2_clip", "type": "flux2",
         "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "default"}],
     }
+
+
+@pytest.mark.asyncio
+async def test_load_clip_multi_encoder():
+    executors = _load_executors()
+    out = await executors["flux2_load_clip"]({"type": "flux1", "clips": [
+        {"file": "/m/clipL.safe", "weight_dtype": "bfloat16"},
+        {"file": "/m/t5.safe", "weight_dtype": "fp8_e4m3"},
+    ]}, {})
+    assert out["clip"] == {"_type": "flux2_clip", "type": "flux1", "encoders": [
+        {"kind": "clip", "file": "/m/clipL.safe", "dtype": "bfloat16"},
+        {"kind": "clip", "file": "/m/t5.safe", "dtype": "fp8_e4m3"},
+    ]}
+
+
+@pytest.mark.asyncio
+async def test_load_clip_legacy_single_file_fallback():
+    """PR-1/PR-2 期存的单 file 格式仍可解析(back-compat)。"""
+    executors = _load_executors()
+    out = await executors["flux2_load_clip"]({"file": "/m/c.safe", "weight_dtype": "bfloat16"}, {})
+    assert out["clip"]["encoders"] == [{"kind": "clip", "file": "/m/c.safe", "dtype": "bfloat16"}]
 
 
 @pytest.mark.asyncio
