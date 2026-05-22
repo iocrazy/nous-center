@@ -184,6 +184,44 @@ def _build_request(node: P.RunNode):
     from src.services.inference.base import AudioRequest, ImageRequest
 
     if node.node_type == "image":
+        from src.services.inference.component_spec import ComponentSpec
+
+        # 细粒度图 dispatch 终端(flux2_vae_decode):inputs 带嵌套 latent + vae。
+        # 摊平成 ImageRequest;整模型单卡 —— clip/vae 的 device 强制 = unet 的 device
+        # (Load Diffusion Model 上选的卡;clip/vae 跟随)。spec 2026-05-21 rev 2。
+        latent = node.inputs.get("latent")
+        vae_d = node.inputs.get("vae")
+        if (isinstance(latent, dict) and latent.get("_type") == "flux2_latent"
+                and isinstance(vae_d, dict) and vae_d.get("_type") == "flux2_vae"):
+            model_d = latent["model"]
+            cond_d = latent["conditioning"]
+            unet_spec = dict(model_d["spec"])
+            device = unet_spec["device"]
+            encoders = cond_d["clip"]["encoders"]
+            if len(encoders) != 1:
+                raise ValueError(
+                    f"多编码器 CLIP({len(encoders)} 条 encoder)执行 PR-3 才支持;"
+                    f"当前单编码器(flux2/qwen)")
+            clip_spec = dict(encoders[0]); clip_spec["device"] = device
+            vae_spec = dict(vae_d["spec"]); vae_spec["device"] = device
+            lseed = latent.get("seed")
+            return ImageRequest(
+                request_id=f"task-{node.task_id}",
+                prompt=str(cond_d.get("text", "")),
+                negative_prompt=str(cond_d.get("negative", "")),
+                width=int(latent.get("width") or 1024),
+                height=int(latent.get("height") or 1024),
+                steps=int(latent.get("steps") or 25),
+                cfg_scale=float(latent.get("cfg_scale") or 4.0),
+                seed=int(lseed) if lseed not in (None, "") else None,
+                components={
+                    "unet": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
+                    "clip": ComponentSpec(**clip_spec),
+                    "vae": ComponentSpec(**vae_spec),
+                },
+                pipeline_class="Flux2KleinPipeline",
+            )
+
         # 转发 ImageRequest 全部字段 —— executor 已把 node.data 合并进 inputs，
         # steps/width/height/cfg_scale/seed/loras 都在这里能拿到。缺省走 pydantic
         # Field default(steps=25 / 1024x1024 / cfg_scale=7.0)。
@@ -201,7 +239,6 @@ def _build_request(node: P.RunNode):
         )
         # 新格式：三组件描述符齐全 → 走 components 路径（spec §5.4）。
         if all(k in node.inputs for k in ("unet", "clip", "vae")):
-            from src.services.inference.component_spec import ComponentSpec
             return ImageRequest(
                 **base,
                 components={
