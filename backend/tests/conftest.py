@@ -67,7 +67,6 @@ pytest_plugins = [
 for mod_name in [
     "torch", "torch.nn", "torch.nn.functional", "torch.cuda",
     "torchaudio", "torchaudio.transforms",
-    "safetensors", "safetensors.torch",
     "modelscope", "cosyvoice",
 ]:
     if mod_name not in sys.modules:
