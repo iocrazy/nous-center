@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Callable, NoReturn
 
 import torch
-from safetensors.torch import load_file
 
 from src.services.inference.component_spec import ComponentSpec
 
@@ -25,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 # Loaders all return the same shape: caller wraps into a torch.nn.Module.
 StateDict = dict[str, torch.Tensor]
+
+
+def _load_file(path: str) -> StateDict:
+    """Lazy safetensors load —— 模块被 import 不该强依赖 safetensors(在 image extra,
+    CI backend job 不装);只有真加载量化文件时才需。让 quant_loaders 在 CI 可被 import。"""
+    from safetensors.torch import load_file as _lf  # noqa: PLC0415
+
+    return _lf(path, device="cpu")
 
 
 class UnsupportedQuantError(RuntimeError):
@@ -160,7 +167,7 @@ def load_nvfp4mixed(spec: ComponentSpec) -> StateDict:
       4. Reshape to original shape, cast to target dtype
     """
     target = _dtype_str_to_torch(spec.dtype)
-    raw = load_file(spec.file, device="cpu")
+    raw = _load_file(spec.file)
     BLOCK_SIZE = 16
 
     clean: dict[str, torch.Tensor] = {}
@@ -231,7 +238,7 @@ def load_mxfp8mixed(spec: ComponentSpec) -> StateDict:
       4. Cast to target dtype, drop metadata keys
     """
     target = _dtype_str_to_torch(spec.dtype)
-    raw = load_file(spec.file, device="cpu")
+    raw = _load_file(spec.file)
     BLOCK_SIZE = 32
 
     clean: dict[str, torch.Tensor] = {}
@@ -287,7 +294,7 @@ def load_fp8mixed(spec: ComponentSpec) -> StateDict:
     Flux2-Klein-9B-True-v2-fp8mixed.safetensors
     """
     target = _dtype_str_to_torch(spec.dtype)
-    raw = load_file(spec.file, device="cpu")
+    raw = _load_file(spec.file)
 
     clean: dict[str, torch.Tensor] = {}
     fp8_count = 0
@@ -333,5 +340,5 @@ def load_safetensors_plain(spec: ComponentSpec) -> StateDict:
     `spec.device` — caller is responsible for the subsequent `.to(device)`.
     """
     target = _dtype_str_to_torch(spec.dtype)
-    sd = load_file(spec.file, device="cpu")
+    sd = _load_file(spec.file)
     return {k: v.to(target) for k, v in sd.items()}
