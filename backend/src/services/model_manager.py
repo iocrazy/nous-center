@@ -30,16 +30,21 @@ def _select_image_engine() -> str:
 def _modular_repo_from_components(resolved: dict) -> str:
     """从细粒度图组件推 HF-layout repo(含 model_index.json 的目录)。
 
-    PR-1 modular 只支持 HF-layout(ModularPipeline.from_pretrained 要 repo)。从 unet
-    组件文件向上找 model_index.json。comfy 单文件量化(无 repo)走 PR-2 量化桥接。
+    ModularPipeline.from_pretrained 要 repo(提供 config/scheduler + clip/vae)。依次从
+    unet/clip/vae 组件文件向上找 model_index.json —— **unet 是 comfy 量化单文件(无 repo)时,
+    从 clip/vae(指向 HF text_encoder/vae)推 repo**(PR-2:transformer 由桥接 override)。
     """
-    f = Path(resolved["unet"].file)
-    for cand in (f.parent, f.parent.parent, f.parent.parent.parent):
-        if (cand / "model_index.json").exists():
-            return str(cand)
+    for comp_key in ("unet", "clip", "vae"):
+        spec = resolved.get(comp_key)
+        if spec is None:
+            continue
+        f = Path(spec.file)
+        for cand in (f.parent, f.parent.parent, f.parent.parent.parent):
+            if (cand / "model_index.json").exists():
+                return str(cand)
     raise ValueError(
-        "modular 引擎(PR-1)只支持 HF-layout(需 model_index.json);"
-        f"comfy 单文件量化({f.name})走 PR-2 量化桥接"
+        "modular 引擎需 HF-layout repo(model_index.json);unet/clip/vae 组件文件均不在 "
+        "HF repo 下 —— comfy 全单文件(无 HF clip/vae)暂不支持"
     )
 
 # Re-export so existing `from src.services.model_manager import
