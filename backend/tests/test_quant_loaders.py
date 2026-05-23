@@ -41,6 +41,12 @@ if isinstance(_sys.modules.get("torch"), _MagicMock):
             "real torch not installed (CI without image extra)",
             allow_module_level=True,
         )
+    # 关键(PR-4 后必需):若 quant_loaders 已在 mock-torch 期被 import(它顶层 import torch),
+    # 会绑定 stale torch → dtype 对象与本测试的真 torch 不相等(float8 != bfloat16)。evict 它
+    # + 其 torch 依赖模块,让下面 import 重新绑真 torch。
+    for _n in list(_sys.modules):
+        if _n.startswith("src.services.inference.quant_loaders"):
+            del _sys.modules[_n]
 
 import torch
 from safetensors.torch import save_file
