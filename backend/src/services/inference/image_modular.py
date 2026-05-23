@@ -102,6 +102,7 @@ class ModularImageBackend(InferenceAdapter):
         self._cm = components_manager
         self._transformer_override = transformer_override  # comfy 量化桥接(PR-2)
         self._pipe: Any = None
+        self._loaded_loras: set[str] = set()  # PR-3
 
     async def load(self, device: str) -> None:
         """对齐 ABC;实际 pipeline 构建在首次 infer 时 lazy(_ensure_pipe)。"""
@@ -122,12 +123,47 @@ class ModularImageBackend(InferenceAdapter):
         self._model = pipe  # is_loaded → True
         return pipe
 
+    def _apply_loras(self, loras: list) -> None:
+        """LoRA(含 ComfyUI 格式)接 Flux2Klein modular pipe(经 Flux2LoraLoaderMixin,
+        与 DiffusionPipeline 同 API)。复用 #125 `_maybe_convert_comfy_flux2_lora`(绕 is_kohya
+        误判)。PR-3:无 cpu_offload(.to(device)),省 legacy 的 offload dance。"""
+        pipe = self._pipe
+        if not loras:
+            active = pipe.get_active_adapters() if hasattr(pipe, "get_active_adapters") else []
+            if active:
+                pipe.set_adapters([])
+            return
+        from src.services.inference.image_diffusers import _maybe_convert_comfy_flux2_lora  # noqa: PLC0415
+
+        for spec in loras:
+            if spec.name in self._loaded_loras:
+                continue
+            lora_path = getattr(spec, "path", None)
+            if not lora_path:
+                raise ValueError(f"LoRA {spec.name!r} 无 path")
+            converted = None
+            if (isinstance(lora_path, str) and lora_path.endswith(".safetensors")
+                    and type(pipe).__name__.startswith("Flux2")):
+                from safetensors.torch import load_file  # noqa: PLC0415
+                converted = _maybe_convert_comfy_flux2_lora(load_file(lora_path))
+            if converted is not None:
+                pipe.load_lora_weights(converted, adapter_name=spec.name)
+            else:
+                pipe.load_lora_weights(lora_path, adapter_name=spec.name)
+            active = pipe.get_active_adapters() or []
+            if spec.name not in active and spec.name not in (getattr(pipe, "peft_config", {}) or {}):
+                raise ValueError(
+                    f"LoRA {spec.name!r} 零匹配(键不符 {type(pipe).__name__})—— 用对架构的 LoRA")
+            self._loaded_loras.add(spec.name)
+        pipe.set_adapters([s.name for s in loras], adapter_weights=[s.strength for s in loras])
+
     async def infer(self, req: InferenceRequest) -> InferenceResult:
         if not isinstance(req, ImageRequest):
             raise TypeError(f"ModularImageBackend 只接受 ImageRequest,收到 {type(req).__name__}")
         import torch  # noqa: PLC0415
 
         pipe = self._ensure_pipe()
+        self._apply_loras(list(getattr(req, "loras", None) or []))
         gen = torch.Generator(device=self.device)
         if req.seed is not None:
             gen = gen.manual_seed(req.seed)

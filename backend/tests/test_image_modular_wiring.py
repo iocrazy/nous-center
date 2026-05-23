@@ -99,6 +99,35 @@ async def test_no_override_skips_update_components(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_apply_loras_loads_and_sets_adapters(monkeypatch):
+    """PR-3:req.loras → pipe.load_lora_weights + set_adapters(Flux2Klein 经同 LoRA mixin)。
+    fake pipe(type 非 Flux2)→ 跳过 comfy 转换分支(CI 不碰 safetensors/diffusers);
+    comfy 转换由 #125 + PR-3 真模型 smoke 验。"""
+    from src.services.inference.base import LoRASpec
+
+    _m, _cm, pipe = _fake_modular(monkeypatch)
+    pipe.get_active_adapters.return_value = ["turbo"]  # 零匹配检查通过
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+
+    await be.infer(ImageRequest(
+        request_id="L", prompt="x", steps=4, width=64, height=64,
+        loras=[LoRASpec(name="turbo", path="/m/turbo.safetensors", strength=0.8)]))
+
+    pipe.load_lora_weights.assert_called_once()
+    assert pipe.load_lora_weights.call_args.kwargs.get("adapter_name") == "turbo"
+    pipe.set_adapters.assert_called_once_with(["turbo"], adapter_weights=[0.8])
+
+
+@pytest.mark.asyncio
+async def test_no_loras_does_not_load(monkeypatch):
+    _m, _cm, pipe = _fake_modular(monkeypatch)
+    pipe.get_active_adapters.return_value = []
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    await be.infer(ImageRequest(request_id="n", prompt="x", steps=2, width=64, height=64))
+    pipe.load_lora_weights.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_modular_backend_rejects_non_image_request(monkeypatch):
     _fake_modular(monkeypatch)
     from src.services.inference.base import AudioRequest
