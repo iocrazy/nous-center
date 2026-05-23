@@ -11,9 +11,10 @@ from src.services.inference.component_spec import ComponentSpec
 from src.services.model_manager import _modular_repo_from_components, _select_image_engine
 
 
-def test_engine_default_is_legacy(monkeypatch):
+def test_engine_default_is_modular(monkeypatch):
+    # PR-4:默认引擎切到 modular(legacy 已删)
     monkeypatch.delenv("NOUS_IMAGE_ENGINE", raising=False)
-    assert _select_image_engine() == "legacy"
+    assert _select_image_engine() == "modular"
 
 
 def test_engine_modular_from_env(monkeypatch):

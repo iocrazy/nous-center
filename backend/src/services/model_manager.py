@@ -19,12 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 def _select_image_engine() -> str:
-    """图像引擎选择(PR-1 灰度):env NOUS_IMAGE_ENGINE=modular|legacy,默认 legacy。
+    """图像引擎选择:env NOUS_IMAGE_ENGINE=modular|legacy,**PR-4 起默认 modular**。
 
-    legacy = 自写 ImageSampler(DiffusersImageBackend);modular = ModularImageBackend
-    (Modular Diffusers)。spec 2026-05-22-image-engine-modular-diffusers,迁移期并存。
+    modular = ModularImageBackend(Modular Diffusers,迁移后的唯一引擎)。PR-4 删了自写
+    legacy(ImageSampler/DiffusersImageBackend);设 NOUS_IMAGE_ENGINE=legacy 不再有对应实现
+    → 走 modular(get_or_load_image_adapter 不再分支)。selector 暂留兼容,后续可去。
     """
-    return os.getenv("NOUS_IMAGE_ENGINE", "legacy").strip().lower()
+    return os.getenv("NOUS_IMAGE_ENGINE", "modular").strip().lower()
 
 
 def _modular_repo_from_components(resolved: dict) -> str:
