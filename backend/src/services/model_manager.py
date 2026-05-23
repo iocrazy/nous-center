@@ -47,6 +47,14 @@ def _modular_repo_from_components(resolved: dict) -> str:
         "HF repo 下 —— comfy 全单文件(无 HF clip/vae)暂不支持"
     )
 
+
+def _is_comfy_single_file_unet(unet_spec) -> bool:
+    """unet 是 repo 外的 comfy 量化单文件(需桥接 override)而非 HF-layout transformer。
+
+    HF-layout transformer 目录有 config.json;comfy 单文件(diffusion_models/flux/)没有。
+    """
+    return not (Path(unet_spec.file).parent / "config.json").exists()
+
 # Re-export so existing `from src.services.model_manager import
 # ModelLoadError, ModelNotFoundError` keeps working (these moved to
 # src.errors so they share the NousError envelope path).
@@ -921,11 +929,18 @@ class ModelManager:
                 if self._modular_cm is None:
                     _, components_manager_cls = _import_modular()
                     self._modular_cm = components_manager_cls()
+                # comfy 量化单文件 unet → 桥接 override(dequant+转键+from_config);HF-layout 则 None
+                override = None
+                if _is_comfy_single_file_unet(resolved["unet"]):
+                    from src.services.inference.image_modular import build_bridged_transformer
+                    override = await asyncio.to_thread(
+                        build_bridged_transformer, resolved["unet"], repo, target)
                 adapter = ModularImageBackend(
                     repo=repo,
                     device=target,
                     dtype=resolved["unet"].dtype,
                     components_manager=self._modular_cm,
+                    transformer_override=override,
                 )
                 await adapter.load(target)
                 await asyncio.to_thread(adapter._ensure_pipe)  # 预热(blocking load 进线程)
