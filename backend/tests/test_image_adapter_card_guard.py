@@ -39,14 +39,14 @@ async def test_insufficient_vram_raises_clear_error(mm, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
-    # 无 GPU / 查询失败 → free=None → 跳过保护(不阻塞)。装配 stub 让流程走通。
+    # 无 GPU / 查询失败 → free=None → 跳过保护(不阻塞)。modular 装配 stub 让流程走通。
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
     monkeypatch.setattr(mm, "_estimate_image_vram_mb", lambda resolved: 99999)
-    monkeypatch.setattr(mm, "_load_component_module",
-                        lambda spec: {"module": object(), "tokenizer": None})
-    monkeypatch.setattr(
-        "src.services.inference.image_diffusers.DiffusersImageBackend.from_loaded_components",
-        staticmethod(lambda modules, components, pc: object()))
+
+    async def _fake_modular(resolved, combo_key, pc, target, emit):
+        return object()
+
+    monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
     adapter = await mm.get_or_load_image_adapter(_comps("cuda:1"), "Flux2KleinPipeline")
     assert adapter is not None
 
@@ -54,13 +54,13 @@ async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
 @pytest.mark.asyncio
 async def test_single_card_unifies_clip_vae_to_unet_device(mm, monkeypatch):
     # 三组件传入不同卡(unet cuda:1, clip cuda:0, vae cuda:2)→ 统一到 unet 的 cuda:1
-    seen = []
+    seen = {}
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
-    monkeypatch.setattr(mm, "_load_component_module",
-                        lambda spec: (seen.append((spec.kind, spec.device)),
-                                      {"module": object(), "tokenizer": None})[1])
-    monkeypatch.setattr(
-        "src.services.inference.image_diffusers.DiffusersImageBackend.from_loaded_components",
-        staticmethod(lambda modules, components, pc: object()))
+
+    async def _fake_modular(resolved, combo_key, pc, target, emit):
+        seen["resolved"] = resolved
+        return object()
+
+    monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
     await mm.get_or_load_image_adapter(_comps("cuda:1"), "Flux2KleinPipeline")
-    assert {dev for _kind, dev in seen} == {"cuda:1"}  # 三件同卡
+    assert {s.device for s in seen["resolved"].values()} == {"cuda:1"}  # 三件同卡

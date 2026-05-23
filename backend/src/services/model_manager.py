@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -16,15 +15,6 @@ from src.services.inference.registry import ModelRegistry, ModelSpec
 from src.services.gpu_allocator import GPUAllocator
 
 logger = logging.getLogger(__name__)
-
-
-def _select_image_engine() -> str:
-    """图像引擎选择(PR-1 灰度):env NOUS_IMAGE_ENGINE=modular|legacy,默认 legacy。
-
-    legacy = 自写 ImageSampler(DiffusersImageBackend);modular = ModularImageBackend
-    (Modular Diffusers)。spec 2026-05-22-image-engine-modular-diffusers,迁移期并存。
-    """
-    return os.getenv("NOUS_IMAGE_ENGINE", "legacy").strip().lower()
 
 
 def _modular_repo_from_components(resolved: dict) -> str:
@@ -102,12 +92,8 @@ class ModelManager:
         # Forward-ref the ComponentKey type as a tuple alias so the module-top
         # import stays clean (component_spec doesn't import ModelManager).
         from src.services.inference.component_spec import ComponentKey  # noqa: F401
-        self._components: dict[ComponentKey, LoadedComponent] = {}
-        self._component_locks: dict[ComponentKey, asyncio.Lock] = {}
-        self._component_failures: dict[ComponentKey, str] = {}
-        # PR-4: assembled image adapter cache (key = pipeline_class + tuple of the
-        # 3 components' FULL component keys, incl unet lora_set). Coexists with
-        # _models/_components.
+        # 图像 adapter 缓存(key = pipeline_class + 3 组件 key)。PR-4 删了 legacy 组件
+        # L1 缓存(_components 等);modular 引擎自管组件(ComponentsManager)。
         self._image_adapters: dict = {}
         self._image_adapter_locks: dict = {}
         # PR-1 modular 引擎:runner 持一个 ComponentsManager 单例(跨请求共享/缓存)。
@@ -682,85 +668,11 @@ class ModelManager:
     # Per spec §5.5 these coexist with the legacy load_model/is_loaded/unload_model.
     # PR-2's ImageSampler will exercise these directly without going through yaml.
 
-    def _component_lock_for(self, key) -> asyncio.Lock:
-        return self._component_locks.setdefault(key, asyncio.Lock())
-
-    def is_component_loaded(self, spec_or_key) -> str:
-        """Returns 'loaded' | 'loading' | 'cold' | 'failed'.
-
-        `spec_or_key` accepts ComponentSpec or ComponentKey for caller convenience.
-        """
-        from src.services.inference.component_spec import ComponentSpec, to_component_key
-        key = to_component_key(spec_or_key) if isinstance(spec_or_key, ComponentSpec) else spec_or_key
-        if key in self._components:
-            return "loaded"
-        lock = self._component_locks.get(key)
-        if lock is not None and lock.locked():
-            return "loading"
-        if key in self._component_failures:
-            return "failed"
-        return "cold"
-
-    async def get_or_load_component(self, spec):
-        """Idempotent component load. Returns the loaded module/state_dict.
-
-        Concurrency: per-key lock so two concurrent callers for same component
-        won't double-load. Distinct components load in parallel (no global lock).
-        """
-        from src.services.inference.component_spec import to_component_key
-        key = to_component_key(spec)
-        async with self._component_lock_for(key):
-            cached = self._components.get(key)
-            if cached is not None:
-                return cached
-            try:
-                loaded = await self._load_component_impl(spec)
-            except Exception as e:  # noqa: BLE001 — record + re-raise
-                self._component_failures[key] = f"{type(e).__name__}: {e}"
-                raise
-            self._components[key] = loaded
-            self._component_failures.pop(key, None)
-            return loaded
-
-    async def _load_component_impl(self, spec):
-        """Load a component's GPU-resident module bundle (PR-4 refactor).
-
-        Returns: {"module": nn.Module(.to(device)),
-                  "tokenizer": tokenizer | None,  # clip only
-                  "spec": spec, "device": spec.device, "loaded_at": float}.
-
-        The actual torch/diffusers work lives in `_load_component_module` so
-        pure-logic tests can monkeypatch that seam without importing torch.
-        NOTE: spec is the *base* identity here (caller strips LoRAs before
-        calling — LoRAs are applied at adapter assembly, spec §5.5 / PR-4 L1).
-        """
-        bundle = await asyncio.to_thread(self._load_component_module, spec)
-        return {
-            "module": bundle["module"],
-            "tokenizer": bundle.get("tokenizer"),
-            "spec": spec,
-            "device": spec.device,
-            "loaded_at": time.monotonic(),
-        }
-
-    def _load_component_module(self, spec) -> dict:
-        """Real GPU load (runs in a worker thread). Delegates to
-        image_diffusers.load_component_module (built in PR-4 Task 6) which
-        encapsulates from_pretrained(parent_dir) + quant_loaders fallback.
-        Tests monkeypatch this method, so the import below is not executed there."""
-        from src.services.inference.image_diffusers import load_component_module
-        return load_component_module(spec)
-
-    async def unload_component(self, spec_or_key) -> None:
-        """Drop the cache entry. PR-1: caller is responsible for any GPU memory release.
-        Future PRs (LRU eviction) will call torch.cuda.empty_cache after pop."""
-        from src.services.inference.component_spec import ComponentSpec, to_component_key
-        key = to_component_key(spec_or_key) if isinstance(spec_or_key, ComponentSpec) else spec_or_key
-        async with self._component_lock_for(key):
-            self._components.pop(key, None)
-            self._component_failures.pop(key, None)
-
-    # --- PR-4: assembled image adapter (component-level L1) ------------------
+    # PR-4 收官:legacy 组件 L1 缓存(_component_lock_for / is_component_loaded /
+    # get_or_load_component / _load_component_impl / _load_component_module /
+    # unload_component / _base_spec)已删 —— 仅服务自写 DiffusersImageBackend 引擎,
+    # 已随 image_diffusers/image_sampler 删除。modular 引擎走 ComponentsManager +
+    # build_bridged_transformer(image_modular),不用此缓存。
 
     _VRAM_EST_MB = {"unet": 18000, "clip": 6000, "vae": 1000}
 
@@ -772,11 +684,6 @@ class ModelManager:
         idx = self._allocator.get_best_gpu(self._VRAM_EST_MB.get(spec.kind, 8000))
         resolved = f"cuda:{idx}" if idx >= 0 else "cpu"
         return spec.model_copy(update={"device": resolved})
-
-    @staticmethod
-    def _base_spec(spec):
-        """Strip LoRAs → base module identity (LoRAs applied at assembly)."""
-        return spec.model_copy(update={"loras": []}) if spec.loras else spec
 
     @staticmethod
     def _free_vram_mb(device: str) -> int | None:
@@ -832,7 +739,6 @@ class ModelManager:
         on_event=None 时行为与 PR-4 完全一致（_emit 是 no-op）。
         """
         from src.services.inference.component_spec import to_component_key, component_state_key
-        from src.services.inference.image_diffusers import DiffusersImageBackend
 
         async def _emit(spec, state, error=None):
             if on_event is not None:
@@ -840,8 +746,7 @@ class ModelManager:
 
         resolved = {k: self._resolve_component_device(s) for k, s in components.items()}
         # 整模型单卡不变式(spec 2026-05-21 rev 2):device=auto 会让三组件各自 resolve
-        # 到不同卡 —— 以 unet 解析出的卡为准,强制 clip/vae 落同一张卡。combo_key 也据
-        # 此稳定。细粒度图 _build_request 已预统一(显式 device);此处兜住 auto。
+        # 到不同卡 —— 以 unet 解析出的卡为准,强制 clip/vae 落同一张卡。
         target = resolved["unet"].device
         for k in ("clip", "vae"):
             if resolved[k].device != target:
@@ -856,55 +761,11 @@ class ModelManager:
                 f"该卡可能被常驻 LLM 占用。换张卡(device)、用更低精度(fp8),"
                 f"或先释放该卡。"
             )
-        # engine 进 combo_key:legacy/modular 缓存隔离,避免运行时切引擎拿到错类型 adapter。
-        engine = _select_image_engine()
-        combo_key = (engine, pipeline_class) + tuple(
+        combo_key = (pipeline_class,) + tuple(
             to_component_key(resolved[k]) for k in ("unet", "clip", "vae"))
-
-        # PR-1 灰度:NOUS_IMAGE_ENGINE=modular → ModularImageBackend(与 legacy 并存)。
-        # 默认 legacy 走下面原 DiffusersImageBackend 路径,行为不变。
-        if engine == "modular":
-            return await self._get_or_load_modular_adapter(
-                resolved, combo_key, pipeline_class, target, _emit)
-
-        async with self._image_adapter_lock_for(combo_key):
-            cached = self._image_adapters.get(combo_key)
-            if cached is not None:
-                # combo cache HIT — 三个组件均已就绪，通知 loaded
-                for k in ("unet", "clip", "vae"):
-                    await _emit(resolved[k], "loaded")
-                return cached
-
-            for attempt in range(2):
-                try:
-                    base = {k: self._base_spec(resolved[k]) for k in ("unet", "clip", "vae")}
-                    loaded_modules = {}
-                    for k in ("unet", "clip", "vae"):
-                        await _emit(resolved[k], "loading")
-                        try:
-                            loaded_modules[k] = await self.get_or_load_component(base[k])
-                        except Exception as e:  # noqa: BLE001
-                            await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
-                            raise
-                        await _emit(resolved[k], "loaded")
-                    modules = {
-                        "transformer": loaded_modules["unet"]["module"],
-                        "text_encoder": loaded_modules["clip"]["module"],
-                        "tokenizer": loaded_modules["clip"]["tokenizer"],
-                        "vae": loaded_modules["vae"]["module"],
-                    }
-                    adapter = DiffusersImageBackend.from_loaded_components(
-                        modules, resolved, pipeline_class)
-                    self._image_adapters[combo_key] = adapter
-                    return adapter
-                except Exception as e:  # noqa: BLE001
-                    if self._is_oom(e) and attempt == 0:
-                        evicted = await self.evict_lru()
-                        logger.warning(
-                            "get_or_load_image_adapter OOM; evicted=%r; %s",
-                            evicted, "retrying" if evicted else "nothing to evict, retry likely fails")
-                        continue
-                    raise
+        # PR-4 收官:唯一引擎 = Modular Diffusers(自写 ImageSampler/DiffusersImageBackend 已删)。
+        return await self._get_or_load_modular_adapter(
+            resolved, combo_key, pipeline_class, target, _emit)
 
     async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit):
         """PR-1 modular 引擎:建/复用 ModularImageBackend(HF-layout)。

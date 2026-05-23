@@ -1,26 +1,14 @@
-"""PR-1 T2:图像引擎选择器 + HF-layout repo 推导(纯逻辑,CI 可跑无 GPU)。
+"""HF-layout repo 推导(纯逻辑,CI 可跑无 GPU)。
 
-集成路由(get_or_load_image_adapter → ModularImageBackend)由真模型 smoke 验
-(plan Task 4/5);此处只测两个纯 helper。
+PR-4 收官:legacy 引擎删除,`_select_image_engine` 选择器随之去掉(image 恒 modular)。
+集成路由由真模型 smoke 验。
 """
 from __future__ import annotations
 
 import pytest
 
 from src.services.inference.component_spec import ComponentSpec
-from src.services.model_manager import _modular_repo_from_components, _select_image_engine
-
-
-def test_engine_default_is_legacy(monkeypatch):
-    monkeypatch.delenv("NOUS_IMAGE_ENGINE", raising=False)
-    assert _select_image_engine() == "legacy"
-
-
-def test_engine_modular_from_env(monkeypatch):
-    monkeypatch.setenv("NOUS_IMAGE_ENGINE", "Modular")  # 大小写/空格容错
-    assert _select_image_engine() == "modular"
-    monkeypatch.setenv("NOUS_IMAGE_ENGINE", "  legacy ")
-    assert _select_image_engine() == "legacy"
+from src.services.model_manager import _modular_repo_from_components
 
 
 def test_repo_derives_from_hf_layout(tmp_path):

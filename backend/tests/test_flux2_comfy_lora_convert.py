@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from src.services.inference.image_diffusers import _maybe_convert_comfy_flux2_lora
+from src.services.inference.image_modular import _maybe_convert_comfy_flux2_lora
 
 # 实际转换会 import diffusers.loaders.lora_conversion_utils(需真 torch);conftest
 # 把 torch 换成 MagicMock(dev_env_gotchas #4)→ 转换用例在 pytest 下 skip,真转换

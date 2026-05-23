@@ -42,6 +42,22 @@ def _import_flux2_transformer() -> Any:
     return Flux2Transformer2DModel
 
 
+def _maybe_convert_comfy_flux2_lora(state_dict: dict):
+    """ComfyUI/BFL 格式 Flux2 LoRA(`diffusion_model.` 前缀 + `lora_down/up`)→ diffusers
+    `transformer.*` 格式;否则 None(走原 load_lora_weights)。绕 Flux2LoraLoaderMixin 的
+    is_kohya 误判(把 ComfyUI LoRA 误路由到 lora_unet_ 转换器→零匹配)。#125 实测 242→306 键。
+    PR-4 从 image_diffusers 搬来(legacy 删除后存活;diffusers import 仍只在本文件)。
+    """
+    if not any(k.startswith("diffusion_model.") for k in state_dict):
+        return None
+    if not any(".lora_down.weight" in k or ".lora_up.weight" in k for k in state_dict):
+        return None
+    from diffusers.loaders.lora_conversion_utils import (  # noqa: PLC0415
+        _convert_non_diffusers_flux2_lora_to_diffusers,
+    )
+    return _convert_non_diffusers_flux2_lora_to_diffusers(dict(state_dict))
+
+
 def build_bridged_transformer(unet_spec: Any, repo: str, device: str) -> Any:
     """comfy 量化单文件 → diffusers transformer module(PR-2 桥接)。
 
@@ -133,8 +149,6 @@ class ModularImageBackend(InferenceAdapter):
             if active:
                 pipe.set_adapters([])
             return
-        from src.services.inference.image_diffusers import _maybe_convert_comfy_flux2_lora  # noqa: PLC0415
-
         for spec in loras:
             if spec.name in self._loaded_loras:
                 continue
