@@ -55,6 +55,33 @@ class QuantLoaderRegistry:
 QUANT_LOADERS = QuantLoaderRegistry()
 
 
+def dequant_and_convert(spec: ComponentSpec) -> StateDict:
+    """comfy 量化单文件 Flux2 transformer → diffusers-key state_dict(D4 共享桥接)。
+
+    两步缺一不可(spike v2/v3 实证):
+      ① `QUANT_LOADERS.dispatch(spec)` 反量化(解 comfy fp8/mxfp8/nvfp4 打包)
+      ② diffusers `convert_flux2_transformer_checkpoint_to_diffusers` 转键
+         (comfy `double_blocks.*` → diffusers `transformer_blocks.*`)
+    漏掉 ② → load_state_dict 静默丢键(missing=233)→ 噪声图。
+
+    新 modular 引擎 + legacy `_load_hf_or_quant` 都调本 helper。转换器是 diffusers
+    **内部函数**(loaders.single_file_utils)→ guard import,失败报清晰错误。
+    仅适用 Flux2 transformer(caller 保证 kind=unet/adapter_arch=flux2)。
+    """
+    sd = QUANT_LOADERS.dispatch(spec)
+    try:
+        from diffusers.loaders.single_file_utils import (
+            convert_flux2_transformer_checkpoint_to_diffusers,
+        )
+    except ImportError as e:  # diffusers 版本/commit 不符
+        raise ValueError(
+            "diffusers 缺 convert_flux2_transformer_checkpoint_to_diffusers"
+            "(loaders.single_file_utils)—— diffusers 版本与 pyproject 钉的 commit 不符,"
+            "无法转 comfy 量化键。检查 diffusers 安装。"
+        ) from e
+    return convert_flux2_transformer_checkpoint_to_diffusers(dict(sd))
+
+
 # Reject GGUF eagerly — V2 PR-7 work, not in scope for PR-1.
 @QUANT_LOADERS.register(match=lambda spec: spec.file.lower().endswith(".gguf"))
 def reject_gguf(spec: ComponentSpec) -> NoReturn:
