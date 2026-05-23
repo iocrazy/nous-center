@@ -25,13 +25,15 @@
 - [ ] **Step 4 跑通**
 - [ ] **Step 5 ruff + commit** `feat(image): dequant_and_convert 共享 helper(反量化+转键,D4 guard)`
 
-## Task 2:现有栈 fp8 bug 顺带修(_load_hf_or_quant 缺转键)
+## Task 2:~~现有栈 fp8 修~~ —— **跳过**(实现时定)
 
-**Files**:`backend/src/services/inference/image_diffusers.py` + 测试
-
-- [ ] **Step 1 失败测试**:`_load_hf_or_quant` 对 comfy 单文件 quant spec → 用 `dequant_and_convert`(而非裸 dispatch+load)→ 键匹配(missing=0)。当前是 dispatch+load_state_dict(strict=False) 静默丢键。
-- [ ] **Step 3 实现**:quant fallback 改调 `dequant_and_convert`。
-- [ ] **Step 5 commit** `fix(image): _load_hf_or_quant comfy 单文件加转键(否则静默出垃圾)`(对 legacy + modular 都受益)
+调查发现(image_diffusers.py:388):granular legacy unet 走 `_load_hf_or_quant`(无转键)
+→ comfy fp8 unet 确实静默出垃圾。**但** `_load_hf_or_quant` 是 unet/clip/vae **通用** fallback,
+clip/vae 不是 flux2-transformer 键格式,**不能**套 flux2 转换器(会坏 clip/vae)。完整修 legacy
+还要从 HF repo 取 config(comfy 单文件 parent 无 config.json)—— 这是**即将 PR-4 删的引擎上的
+丢弃工作**。**决定跳过**:comfy fp8 由 **modular 路径(Task 4)正确处理**(从 HF repo 取 config +
+dequant_and_convert 桥接)。legacy comfy-fp8 保持「pre-existing 破/未支持」,PR-4 删 legacy 后消失。
+follow-up:若 PR-4 前要防 legacy 静默出垃圾,可在 unet 路径加「missing 过大 → 报错指向 modular」guard。
 
 ## Task 3:HF repo 推导(unet 单文件 fallback 到 clip/vae)
 

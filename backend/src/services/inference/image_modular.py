@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import time
+from pathlib import Path
 from typing import Any, ClassVar
 
 from src.services.inference.base import (
@@ -32,6 +33,36 @@ def _import_modular() -> tuple[Any, Any]:
     from diffusers import ComponentsManager, ModularPipeline  # noqa: PLC0415
 
     return ModularPipeline, ComponentsManager
+
+
+def _import_flux2_transformer() -> Any:
+    """Lazy import Flux2Transformer2DModel(D2:diffusers import 只在本文件)。"""
+    from diffusers import Flux2Transformer2DModel  # noqa: PLC0415
+
+    return Flux2Transformer2DModel
+
+
+def build_bridged_transformer(unet_spec: Any, repo: str, device: str) -> Any:
+    """comfy 量化单文件 → diffusers transformer module(PR-2 桥接)。
+
+    dequant_and_convert(quant_loaders 反量化 + diffusers 转键)→ from_config(HF repo 的
+    transformer config)→ load_state_dict → 落 device。喂 `ModularImageBackend(transformer_override=)`。
+    """
+    from src.services.inference.quant_loaders import dequant_and_convert  # noqa: PLC0415
+
+    transformer_cls = _import_flux2_transformer()
+    sd = dequant_and_convert(unet_spec)
+    cfg = transformer_cls.load_config(str(Path(repo) / "transformer"))
+    module = transformer_cls.from_config(cfg).to(_torch_dtype(unet_spec.dtype))
+    missing, unexpected = module.load_state_dict(sd, strict=False)
+    if missing or unexpected:
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "build_bridged_transformer: missing=%d unexpected=%d(键不全,查转换器/config)",
+            len(missing), len(unexpected),
+        )
+    return module.to(device)
 
 
 def _torch_dtype(dtype_str: str) -> Any:
@@ -62,12 +93,14 @@ class ModularImageBackend(InferenceAdapter):
         *,
         dtype: str = "bfloat16",
         components_manager: Any = None,
+        transformer_override: Any = None,
         **params: Any,
     ):
         super().__init__(paths={"main": repo}, device=device, **params)
         self.repo = repo
         self.dtype = dtype
         self._cm = components_manager
+        self._transformer_override = transformer_override  # comfy 量化桥接(PR-2)
         self._pipe: Any = None
 
     async def load(self, device: str) -> None:
@@ -81,6 +114,9 @@ class ModularImageBackend(InferenceAdapter):
         cm = self._cm or components_manager_cls()
         pipe = modular_pipeline_cls.from_pretrained(self.repo, components_manager=cm)
         pipe.load_components(torch_dtype=_torch_dtype(self.dtype))
+        if self._transformer_override is not None:
+            # comfy 量化 transformer 替换 HF repo 的(PR-2 桥接)。HF transformer 加载后被换出。
+            pipe.update_components(transformer=self._transformer_override)
         pipe.to(self.device)
         self._pipe = pipe
         self._model = pipe  # is_loaded → True

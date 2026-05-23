@@ -34,6 +34,24 @@ def test_repo_derives_from_hf_layout(tmp_path):
     assert _modular_repo_from_components(resolved) == str(repo)
 
 
+def test_repo_derives_from_clip_when_unet_is_comfy_single_file(tmp_path):
+    # PR-2:unet = comfy 量化单文件(无 repo),clip/vae 指向 HF repo → 从 clip 推 repo
+    repo = tmp_path / "Flux2-klein-9B"
+    (repo / "text_encoder").mkdir(parents=True)
+    (repo / "model_index.json").write_text("{}")
+    comfy_unet = tmp_path / "diffusion_models" / "flux"
+    comfy_unet.mkdir(parents=True)
+    unet_f = comfy_unet / "Flux2-Klein-9B-True-v2-fp8mixed.safetensors"
+    unet_f.write_text("x")
+    clip_f = repo / "text_encoder" / "model.safetensors"
+    clip_f.write_text("x")
+    resolved = {
+        "unet": ComponentSpec(kind="unet", file=str(unet_f), device="cuda:1", dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file=str(clip_f), device="cuda:1", dtype="bfloat16"),
+    }
+    assert _modular_repo_from_components(resolved) == str(repo)
+
+
 def test_repo_rejects_comfy_single_file(tmp_path):
     # comfy 单文件:diffusion_models/flux/<file>,无 model_index.json → PR-2 桥接
     d = tmp_path / "diffusion_models" / "flux"

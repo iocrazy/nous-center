@@ -94,7 +94,7 @@ pipe.update_components(transformer=tr.to(dev))         # ③ 喂进 ModularPipel
 - **三步缺一不可**:① 反量化(解 fp8 打包)② 转键(comfy double_blocks→diffusers transformer_blocks)③ update_components。漏掉 ② 就是 spike v2 的噪声图。
 - **单文件只是权重**;架构 config + clip/vae/scheduler/tokenizer 来自 HF repo。component_scanner 已能枚举单文件 + 探测 quant_type。
 - ⚠️ **本次桥接只让 comfy fp8mixed 文件「能加载出图」,不省显存**:它把 fp8 **反量化成 bf16** → 又变回 ~18GB+ 全尺寸 → **放 3090 仍 OOM**。「fp8 塞小卡省显存」需保 fp8 权重 + fp8 compute,是**另一回事(future)**。本次落 Pro 6000,目的是「让你这些 comfy 量化文件在新引擎下可用」,不是「3090 装下大模型」——别混淆。
-- **顺带修现有栈**:`_load_hf_or_quant` 的 quant fallback 也加 ② 转键(否则 comfy 单文件静默出垃圾)。
+- **legacy 不修(PR-2 实现时定)**:granular legacy unet 走 `_load_hf_or_quant`(无转键)→ comfy fp8 确实静默出垃圾;但该 fallback 是 unet/clip/vae 通用(clip/vae 不能套 flux2 转换器),且完整修还要从 HF repo 取 config —— 是即将 PR-4 删的引擎上的丢弃工作。**comfy fp8 由 modular 路径处理**,legacy 保持 pre-existing 未支持。
 - **GGUF**:`reject` 改「未就绪」提示;实际加载 future(GGUF dequant + 同一转换器)。
 
 ## 5. PR 拆分

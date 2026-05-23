@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Callable, NoReturn
 
 import torch
-from safetensors.torch import load_file
 
 from src.services.inference.component_spec import ComponentSpec
 
@@ -25,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 # Loaders all return the same shape: caller wraps into a torch.nn.Module.
 StateDict = dict[str, torch.Tensor]
+
+
+def _load_file(path: str) -> StateDict:
+    """Lazy safetensors load —— 模块被 import 不该强依赖 safetensors(在 image extra,
+    CI backend job 不装);只有真加载量化文件时才需。让 quant_loaders 在 CI 可被 import。"""
+    from safetensors.torch import load_file as _lf  # noqa: PLC0415
+
+    return _lf(path, device="cpu")
 
 
 class UnsupportedQuantError(RuntimeError):
@@ -53,6 +60,33 @@ class QuantLoaderRegistry:
 
 
 QUANT_LOADERS = QuantLoaderRegistry()
+
+
+def dequant_and_convert(spec: ComponentSpec) -> StateDict:
+    """comfy 量化单文件 Flux2 transformer → diffusers-key state_dict(D4 共享桥接)。
+
+    两步缺一不可(spike v2/v3 实证):
+      ① `QUANT_LOADERS.dispatch(spec)` 反量化(解 comfy fp8/mxfp8/nvfp4 打包)
+      ② diffusers `convert_flux2_transformer_checkpoint_to_diffusers` 转键
+         (comfy `double_blocks.*` → diffusers `transformer_blocks.*`)
+    漏掉 ② → load_state_dict 静默丢键(missing=233)→ 噪声图。
+
+    新 modular 引擎 + legacy `_load_hf_or_quant` 都调本 helper。转换器是 diffusers
+    **内部函数**(loaders.single_file_utils)→ guard import,失败报清晰错误。
+    仅适用 Flux2 transformer(caller 保证 kind=unet/adapter_arch=flux2)。
+    """
+    sd = QUANT_LOADERS.dispatch(spec)
+    try:
+        from diffusers.loaders.single_file_utils import (
+            convert_flux2_transformer_checkpoint_to_diffusers,
+        )
+    except ImportError as e:  # diffusers 版本/commit 不符
+        raise ValueError(
+            "diffusers 缺 convert_flux2_transformer_checkpoint_to_diffusers"
+            "(loaders.single_file_utils)—— diffusers 版本与 pyproject 钉的 commit 不符,"
+            "无法转 comfy 量化键。检查 diffusers 安装。"
+        ) from e
+    return convert_flux2_transformer_checkpoint_to_diffusers(dict(sd))
 
 
 # Reject GGUF eagerly — V2 PR-7 work, not in scope for PR-1.
@@ -133,7 +167,7 @@ def load_nvfp4mixed(spec: ComponentSpec) -> StateDict:
       4. Reshape to original shape, cast to target dtype
     """
     target = _dtype_str_to_torch(spec.dtype)
-    raw = load_file(spec.file, device="cpu")
+    raw = _load_file(spec.file)
     BLOCK_SIZE = 16
 
     clean: dict[str, torch.Tensor] = {}
@@ -204,7 +238,7 @@ def load_mxfp8mixed(spec: ComponentSpec) -> StateDict:
       4. Cast to target dtype, drop metadata keys
     """
     target = _dtype_str_to_torch(spec.dtype)
-    raw = load_file(spec.file, device="cpu")
+    raw = _load_file(spec.file)
     BLOCK_SIZE = 32
 
     clean: dict[str, torch.Tensor] = {}
@@ -260,7 +294,7 @@ def load_fp8mixed(spec: ComponentSpec) -> StateDict:
     Flux2-Klein-9B-True-v2-fp8mixed.safetensors
     """
     target = _dtype_str_to_torch(spec.dtype)
-    raw = load_file(spec.file, device="cpu")
+    raw = _load_file(spec.file)
 
     clean: dict[str, torch.Tensor] = {}
     fp8_count = 0
@@ -306,5 +340,5 @@ def load_safetensors_plain(spec: ComponentSpec) -> StateDict:
     `spec.device` — caller is responsible for the subsequent `.to(device)`.
     """
     target = _dtype_str_to_torch(spec.dtype)
-    sd = load_file(spec.file, device="cpu")
+    sd = _load_file(spec.file)
     return {k: v.to(target) for k, v in sd.items()}

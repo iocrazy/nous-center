@@ -77,6 +77,28 @@ async def test_modular_backend_reuses_pipe_across_infers(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_transformer_override_calls_update_components(monkeypatch):
+    """PR-2:comfy 量化桥接 → transformer_override 经 update_components 替换 HF transformer。"""
+    modular_cls, _cm, pipe = _fake_modular(monkeypatch)
+    override = MagicMock(name="bridged_transformer")
+    be = image_modular.ModularImageBackend(
+        repo="/m/flux2", device="cpu", transformer_override=override)
+
+    await be.infer(ImageRequest(request_id="q", prompt="x", steps=3, width=64, height=64))
+
+    pipe.update_components.assert_called_once_with(transformer=override)
+
+
+@pytest.mark.asyncio
+async def test_no_override_skips_update_components(monkeypatch):
+    """HF-layout(无 override)不调 update_components(transformer=)。"""
+    _m, _cm, pipe = _fake_modular(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    await be.infer(ImageRequest(request_id="h", prompt="x", steps=3, width=64, height=64))
+    pipe.update_components.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_modular_backend_rejects_non_image_request(monkeypatch):
     _fake_modular(monkeypatch)
     from src.services.inference.base import AudioRequest

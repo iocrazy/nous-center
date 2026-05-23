@@ -30,17 +30,30 @@ def _select_image_engine() -> str:
 def _modular_repo_from_components(resolved: dict) -> str:
     """从细粒度图组件推 HF-layout repo(含 model_index.json 的目录)。
 
-    PR-1 modular 只支持 HF-layout(ModularPipeline.from_pretrained 要 repo)。从 unet
-    组件文件向上找 model_index.json。comfy 单文件量化(无 repo)走 PR-2 量化桥接。
+    ModularPipeline.from_pretrained 要 repo(提供 config/scheduler + clip/vae)。依次从
+    unet/clip/vae 组件文件向上找 model_index.json —— **unet 是 comfy 量化单文件(无 repo)时,
+    从 clip/vae(指向 HF text_encoder/vae)推 repo**(PR-2:transformer 由桥接 override)。
     """
-    f = Path(resolved["unet"].file)
-    for cand in (f.parent, f.parent.parent, f.parent.parent.parent):
-        if (cand / "model_index.json").exists():
-            return str(cand)
+    for comp_key in ("unet", "clip", "vae"):
+        spec = resolved.get(comp_key)
+        if spec is None:
+            continue
+        f = Path(spec.file)
+        for cand in (f.parent, f.parent.parent, f.parent.parent.parent):
+            if (cand / "model_index.json").exists():
+                return str(cand)
     raise ValueError(
-        "modular 引擎(PR-1)只支持 HF-layout(需 model_index.json);"
-        f"comfy 单文件量化({f.name})走 PR-2 量化桥接"
+        "modular 引擎需 HF-layout repo(model_index.json);unet/clip/vae 组件文件均不在 "
+        "HF repo 下 —— comfy 全单文件(无 HF clip/vae)暂不支持"
     )
+
+
+def _is_comfy_single_file_unet(unet_spec) -> bool:
+    """unet 是 repo 外的 comfy 量化单文件(需桥接 override)而非 HF-layout transformer。
+
+    HF-layout transformer 目录有 config.json;comfy 单文件(diffusion_models/flux/)没有。
+    """
+    return not (Path(unet_spec.file).parent / "config.json").exists()
 
 # Re-export so existing `from src.services.model_manager import
 # ModelLoadError, ModelNotFoundError` keeps working (these moved to
@@ -916,11 +929,18 @@ class ModelManager:
                 if self._modular_cm is None:
                     _, components_manager_cls = _import_modular()
                     self._modular_cm = components_manager_cls()
+                # comfy 量化单文件 unet → 桥接 override(dequant+转键+from_config);HF-layout 则 None
+                override = None
+                if _is_comfy_single_file_unet(resolved["unet"]):
+                    from src.services.inference.image_modular import build_bridged_transformer
+                    override = await asyncio.to_thread(
+                        build_bridged_transformer, resolved["unet"], repo, target)
                 adapter = ModularImageBackend(
                     repo=repo,
                     device=target,
                     dtype=resolved["unet"].dtype,
                     components_manager=self._modular_cm,
+                    transformer_override=override,
                 )
                 await adapter.load(target)
                 await asyncio.to_thread(adapter._ensure_pipe)  # 预热(blocking load 进线程)
