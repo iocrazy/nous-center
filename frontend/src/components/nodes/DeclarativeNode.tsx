@@ -283,7 +283,7 @@ export function ClipStackWidget({
   onChange: (v: ClipEntry[]) => void
 }) {
   const items = Array.isArray(value) ? value : []
-  const add = () => onChange([...items, { file: '', weight_dtype: 'default' }])
+  const add = () => onChange([...items, { file: '', weight_dtype: 'bfloat16' }])
   const remove = (idx: number) => onChange(items.filter((_, i) => i !== idx))
   const setFile = (idx: number, file: string) => {
     const next = items.slice(); next[idx] = { ...next[idx], file }; onChange(next)
@@ -305,7 +305,7 @@ export function ClipStackWidget({
             <ComponentSelectWidget value={row.file} onChange={(v) => setFile(idx, v)} role="clip" />
           </div>
           <div style={{ width: 78 }}>
-            <NodeSelect value={row.weight_dtype || 'default'} onChange={(e) => setDtype(idx, e.target.value)}>
+            <NodeSelect value={row.weight_dtype || 'bfloat16'} onChange={(e) => setDtype(idx, e.target.value)}>
               {_CLIP_DTYPES.map((d) => <option key={d} value={d}>{d}</option>)}
             </NodeSelect>
           </div>
@@ -334,7 +334,7 @@ export function ClipStackWidget({
 function clipStackValue(resolved: unknown, nodeData?: Record<string, unknown>): ClipEntry[] {
   if (Array.isArray(resolved) && resolved.length > 0) return resolved as ClipEntry[]
   if (nodeData?.file) {
-    return [{ file: String(nodeData.file), weight_dtype: String(nodeData.weight_dtype ?? 'default') }]
+    return [{ file: String(nodeData.file), weight_dtype: String(nodeData.weight_dtype ?? 'bfloat16') }]
   }
   return Array.isArray(resolved) ? (resolved as ClipEntry[]) : []
 }

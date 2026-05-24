@@ -107,7 +107,8 @@ async def test_load_diffusion_defaults():
     executors = _load_executors()
     out = await executors["flux2_load_diffusion_model"]({"file": "/m/u.safe"}, {})
     s = out["model"]["spec"]
-    assert s["device"] == "auto" and s["dtype"] == "default" and s["adapter_arch"] == "flux2"
+    # 默认 dtype = bfloat16(非 "default"→fp32,4× 慢);device 仍 auto。
+    assert s["device"] == "auto" and s["dtype"] == "bfloat16" and s["adapter_arch"] == "flux2"
     assert out["model"]["loras"] == []
 
 
