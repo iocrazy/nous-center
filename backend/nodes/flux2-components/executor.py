@@ -21,7 +21,9 @@ Load CLIP 本 PR 单编码器(file + weight_dtype);多编码器 UI(clip_stack)+ 
 from __future__ import annotations
 
 _DEFAULT_MODEL_KEY = "flux2-klein-9b-true-v2-fp8mixed"
-_DEFAULT_DTYPE = "default"
+# bfloat16 默认(非 "default"):"default"→不给 torch_dtype→diffusers 加载成 fp32
+# (4× 慢 + 2× 显存)。"default" 选项保留作高级原生精度。实测 default 27s vs bf16 6.5s。
+_DEFAULT_DTYPE = "bfloat16"
 _AUTO = "auto"
 
 
