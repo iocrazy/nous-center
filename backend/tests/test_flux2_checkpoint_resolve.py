@@ -59,7 +59,7 @@ async def test_checkpoint_defaults(stub_mm):
     EX = _load_executors()
     out = await EX["flux2_load_checkpoint"]({}, {})
     assert out["model"]["spec"]["device"] == "auto"
-    assert out["model"]["spec"]["dtype"] == "default"
+    assert out["model"]["spec"]["dtype"] == "bfloat16"  # 默认 bf16(非 fp32-default)
 
 
 @pytest.mark.asyncio
