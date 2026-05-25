@@ -53,9 +53,33 @@
 - offload 也验过能跑(group-offload,16GB 峰值,出正确图,但 53s ~8× 慢)—— **按用户决定砍掉。**
 
 **结论**:紧凑加载省显存可行;难点 = 让量化/降精度的组件在 modular pipe 里正确出图(noise/latents
-的 dtype 必须独立于组件 storage dtype)。**走 quantization_config 加载路径**(torchao/GGUF 量化
-linear 自报 compute dtype = bf16)很可能天然绕开这个 bug(不像 raw layerwise-casting 让 model.dtype
-变 fp8)—— PR-1 spike 要先验这点。
+的 dtype 必须独立于组件 storage dtype)。
+
+## PR-1 Task 1.0 spike 已验(torchao fp8 路径,`tests/manual/spike_quant_compact.py`)
+
+**方案 A = diffusers/torchao `Float8WeightOnlyConfig` 验证通过(真模型 3090)**:
+- `quantize_(transformer, Float8WeightOnlyConfig())` + 同样量化 text_encoder → **出正确狐狸图**;
+- 量化后 `model.dtype` 仍报 **bf16**(量化权重包在 tensor subclass 里,对外报 compute dtype)
+  → **天然绕开 PR-0 的 noise-dtype bug**(prepare_latents 用 bf16);
+- 进 24GB 3090:resident 17.2GB / **推理峰值 23.3GB(贴边但 fit)**,1024² 活化大;
+- transformer 单量化:17GB→8.7GB(微验证);
+- **代价:推理 28.8s** —— ⚠️ **不是 torch 版本问题,是 3090 Ampere sm_86 无 fp8 tensor core**
+  (torchao dynamic-activation fp8 直接 assert `需 CUDA>=8.9`)。fp8 在 3090 **只省显存不加速**,
+  28.8s = 3090 跑 9B DiT @1024² 的原生速度(torch 2.10/2.11 字节一致,见
+  [[2026-05-25-inference-stack-bump-torch211-design]] 的 spike)。fp8 真加速只在 sm≥8.9 卡。
+- raw layerwise-casting(PR-0):model.dtype 变 fp8 → randn 崩,且 `pipe(dtype=)` 被忽略 → 弃。
+
+**关键语义**:torchao 量化的是 **bf16 HF repo**(at load),不是读 comfy fp8mixed 文件。即 fp8 =
+`weight_dtype` 选项(把加载的 bf16 模型量化)—— 与 ComfyUI UNETLoader 的 weight_dtype 机制一致。
+comfy 预量化文件(fp8mixed/nvfp4)是另一格式,紧凑加载需 comfy-aware ops(单独评估)。
+
+## PR-1 实现(已完成,本 PR)
+
+`weight_dtype` 选 fp8_e4m3 → `ModularImageBackend._ensure_pipe`:bf16 加载 → torchao
+`quantize_(transformer/text_encoder, Float8WeightOnlyConfig())`(model.dtype 仍 bf16,绕开 noise bug)
+→ pipe.to(device)。`_estimate_image_vram_mb` 对 fp8 把 transformer/clip 估算减半(fit-check 准)。
+torchao 进 image extra。**生产路径 smoke `smoke_fp8_compact.py` 验过**(3090 dtype=fp8_e4m3 出正确狐狸图,
+峰值 23.3GB,28.9s)。无 offload、无 memory_mode 枚举。
 
 ## 设计
 

@@ -98,6 +98,52 @@ async def test_no_override_skips_update_components(monkeypatch):
     pipe.update_components.assert_not_called()
 
 
+def test_wants_fp8_detects_fp8_dtypes():
+    assert image_modular._wants_fp8("fp8_e4m3")
+    assert image_modular._wants_fp8("fp8_e5m2")
+    assert image_modular._wants_fp8("fp8")
+    assert not image_modular._wants_fp8("bfloat16")
+    assert not image_modular._wants_fp8("float16")
+    assert not image_modular._wants_fp8("")
+    assert not image_modular._wants_fp8(None)
+
+
+@pytest.mark.asyncio
+async def test_fp8_dtype_triggers_weight_only_quant(monkeypatch):
+    """weight_dtype=fp8 + 无 override → _quantize_fp8_weight_only(pipe)(torchao 真量化由 smoke 验)。"""
+    _m, _cm, pipe = _fake_modular(monkeypatch)
+    spy = MagicMock(name="quantize_fp8")
+    monkeypatch.setattr(image_modular, "_quantize_fp8_weight_only", spy)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", dtype="fp8_e4m3")
+    await be.infer(ImageRequest(request_id="q8", prompt="x", steps=2, width=64, height=64))
+    spy.assert_called_once_with(pipe)
+    pipe.update_components.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bf16_dtype_no_fp8_quant(monkeypatch):
+    _m, _cm, pipe = _fake_modular(monkeypatch)
+    spy = MagicMock(name="quantize_fp8")
+    monkeypatch.setattr(image_modular, "_quantize_fp8_weight_only", spy)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", dtype="bfloat16")
+    await be.infer(ImageRequest(request_id="b16", prompt="x", steps=2, width=64, height=64))
+    spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_override_takes_precedence_over_fp8_quant(monkeypatch):
+    """comfy 桥接 override + fp8 → 走 update_components(桥接),不再 torchao 量化(elif)。"""
+    _m, _cm, pipe = _fake_modular(monkeypatch)
+    spy = MagicMock(name="quantize_fp8")
+    monkeypatch.setattr(image_modular, "_quantize_fp8_weight_only", spy)
+    override = MagicMock(name="bridged")
+    be = image_modular.ModularImageBackend(
+        repo="/m/flux2", device="cpu", dtype="fp8_e4m3", transformer_override=override)
+    await be.infer(ImageRequest(request_id="ov", prompt="x", steps=2, width=64, height=64))
+    pipe.update_components.assert_called_once_with(transformer=override)
+    spy.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_apply_loras_loads_and_sets_adapters(monkeypatch):
     """PR-3:req.loras → pipe.load_lora_weights + set_adapters(Flux2Klein 经同 LoRA mixin)。

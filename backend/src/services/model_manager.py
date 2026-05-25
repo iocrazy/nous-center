@@ -710,15 +710,23 @@ class ModelManager:
 
     @staticmethod
     def _estimate_image_vram_mb(resolved: dict) -> int | None:
-        """粗估整模型显存需求(MB)= 三组件文件 bytes 之和 * 余量系数。任一文件不存在
-        (纯逻辑测试用 stub 路径)→ None(无法估,跳过保护)。"""
+        """粗估整模型显存需求(MB)= 三组件 resident bytes 之和 * 余量系数。任一文件不存在
+        (纯逻辑测试用 stub 路径)→ None(无法估,跳过保护)。
+
+        fp8 weight-only(torchao):transformer + clip 权重 fp8 存储 ≈ bf16 文件的一半,
+        所以这两件按 file bytes * 0.5 估(否则按 bf16 文件字节会高估 → 误拦本可装下的 fp8)。
+        """
         import os
         total = 0
         for k in ("diffusion_models", "clip", "vae"):
             try:
-                total += os.path.getsize(resolved[k].file)
+                sz = os.path.getsize(resolved[k].file)
             except OSError:
                 return None
+            # fp8 量化只作用于 transformer/clip(vae 不量化)
+            if k in ("diffusion_models", "clip") and (resolved[k].dtype or "").lower().startswith("fp8"):
+                sz //= 2
+            total += sz
         # 1.3x 余量(激活/中间张量);bytes → MB
         return int(total / (1024 * 1024) * 1.3)
 

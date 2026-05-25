@@ -82,7 +82,9 @@ def build_bridged_transformer(unet_spec: Any, repo: str, device: str) -> Any:
 
 
 def _torch_dtype(dtype_str: str) -> Any:
-    """'bfloat16'/'float16'/'float32' → torch.dtype;'default' → None(原生精度)。"""
+    """'bfloat16'/'float16'/'float32' → torch.dtype;'default' → None(原生精度)。
+    fp8_* → bfloat16(**compute dtype**):fp8 经 torchao weight-only 量化实现(权重 fp8 存储 /
+    bf16 计算),组件先按 bf16 加载再量化,所以这里 fp8 映射到 bf16。"""
     import torch  # noqa: PLC0415
 
     return {
@@ -91,6 +93,28 @@ def _torch_dtype(dtype_str: str) -> Any:
         "float32": torch.float32,
         "default": None,
     }.get(dtype_str, torch.bfloat16)
+
+
+def _wants_fp8(dtype_str: str) -> bool:
+    """weight_dtype 是否要求 fp8(fp8_e4m3 / fp8_e5m2 / fp8)。"""
+    return (dtype_str or "").lower().startswith("fp8")
+
+
+def _quantize_fp8_weight_only(pipe: Any) -> None:
+    """torchao weight-only fp8:transformer + text_encoder 权重 fp8 存储(省 ~½ 显存),bf16 计算。
+
+    量化权重包在 tensor subclass 里,对外 `model.dtype` 仍报 bf16 → **不破坏 modular pipe 的
+    noise/latents dtype 推导**(spec 2026-05-25;raw layerwise-casting 会让 dtype 变 fp8 → randn 崩)。
+    注:Ampere(sm<8.9,如 3090)无 fp8 matmul 核 → fp8 **只省显存不加速**(正常,见 spec);
+    fp8 真加速要 sm≥8.9(Ada/Hopper/Blackwell)。
+    """
+    from torchao.quantization import Float8WeightOnlyConfig, quantize_  # noqa: PLC0415
+
+    cfg = Float8WeightOnlyConfig()
+    for name in ("transformer", "text_encoder"):
+        mod = getattr(pipe, name, None)
+        if mod is not None:
+            quantize_(mod, cfg)
 
 
 class ModularImageBackend(InferenceAdapter):
@@ -134,6 +158,10 @@ class ModularImageBackend(InferenceAdapter):
         if self._transformer_override is not None:
             # comfy 量化 transformer 替换 HF repo 的(PR-2 桥接)。HF transformer 加载后被换出。
             pipe.update_components(transformer=self._transformer_override)
+        elif _wants_fp8(self.dtype):
+            # fp8 weight-only(torchao):HF-layout transformer + text_encoder 权重 fp8 存储,
+            # 省 ~½ 显存,让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。
+            _quantize_fp8_weight_only(pipe)
         pipe.to(self.device)
         self._pipe = pipe
         self._model = pipe  # is_loaded → True
