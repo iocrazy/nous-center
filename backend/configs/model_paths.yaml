@@ -8,8 +8,10 @@
 
 roles:
   unet:
-    - image/diffusion_models/*.safetensors
-    - image/diffusion_models/*.gguf
+    # 递归 ** —— 覆盖根 + 子目录(如 diffusion_models/flux/*.safetensors 的单文件模型;
+    # 之前 *.safetensors 只扫根 → 子目录里的模型不进下拉)。
+    - image/diffusion_models/**/*.safetensors
+    - image/diffusion_models/**/*.gguf
     - image/diffusers/*/transformer/*.safetensors
   clip:
     - image/text_encoders/*.safetensors
