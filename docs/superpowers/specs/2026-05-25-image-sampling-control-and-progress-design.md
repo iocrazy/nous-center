@@ -29,8 +29,11 @@
 
 ## 关键适配:nous 是 diffusers,不移植 k-sampler
 
-- **采样器/调度器**:ComfyUI 的 k-sampler/scheduler **不能直接用**。nous 对应 = **选 diffusers scheduler**
-  (FlowMatchEulerDiscreteScheduler / DPMSolverMultistep / Euler / ...),运行时**换 pipe 的 scheduler 组件**。
+- **采样器/调度器**:ComfyUI 的 k-sampler/scheduler **不能直接用**(40+ k-diffusion 算法,自实现 + 对所有
+  模型适配)。nous 对应 = **选 diffusers scheduler**,运行时换 pipe 的 scheduler 组件。**但已查证:diffusers
+  51 个 scheduler 绝大多数是扩散模型的,Flux2 是 flow-matching → 只有 3 个兼容**:`FlowMatchEulerDiscrete`
+  (默认)/`FlowMatchHeunDiscrete`/`FlowMatchLCM`。**不追 ComfyUI 那 40 个**(不同引擎 + flow 模型采样器空间本就小;
+  ComfyUI 的 "euler" ≈ nous 的 FlowMatchEuler 默认)。
 - **cfg**:Flux2 modular pipe 有 `guidance_scale` InputParam(默认 4.0,distilled guidance)+ negative(true-CFG)。
   → infer 传 `guidance_scale=req.cfg_scale` + `negative_prompt=req.negative_prompt`。
 - **逐步进度**:modular Flux2 denoise loop 用 `self.progress_bar(total)` tqdm + 每步 `update()`,
