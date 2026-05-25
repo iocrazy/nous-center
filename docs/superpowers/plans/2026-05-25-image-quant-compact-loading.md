@@ -14,30 +14,23 @@
 
 ---
 
-## PR-1:fp8 真紧凑加载(先 spike 定方案)
+## PR-1:fp8 真紧凑加载 ——【依赖全栈 bump arc】
 
-### Task 1.0 — 加载方案 spike(真模型,gating)
+> **Task 1.0 spike 已完成**(结论见 spec):方案 = **torchao `Float8WeightOnlyConfig` 量化 bf16 模型
+> at load**(= ComfyUI weight_dtype 机制,用户拍板)。真模型验过:出正确图 + 进 24GB(峰值 23.3GB)+
+> model.dtype 仍报 bf16(绕开 noise bug)。**但 torch 2.10 缺 fp8 cpp 核 → 28.8s(~4.4× 慢)。**
+>
+> **依赖**:用户定「先全栈 bump(torch 2.11 + vllm 0.21)再落快 fp8」。本 PR **等
+> [[2026-05-25-inference-stack-bump-torch211-design]] arc 合并后**再做,届时 fp8 自带快核。
+> comfy 预量化 fp8mixed 文件保持现状(dequant,不紧凑);fp8 走 bf16 文件 + weight_dtype。
 
-**File**:`backend/tests/manual/spike_quant_compact.py`
+### Task 1.1 — 实现紧凑加载(stack bump 后)
 
-- [ ] 在 3090(cuda:2)上验**三条候选加载方案**哪条能"紧凑驻留 + 出正确图 + model.dtype 报 bf16
-  (绕开 noise bug)":
-  - (A) `TorchAoConfig` float8 量化 **bf16 HF repo** 的 transformer(+text_encoder)at load
-    (diffusers 原生,量化 linear 自报 compute dtype)。需 `torchao`。
-  - (B) 保留 comfy fp8mixed 文件的 fp8 权重 + comfy scale,自定义 dequant-on-the-fly linear
-    (不 dequant 到 bf16)。
-  - (C) layerwise-casting(PR-0 已知 noise bug,作对照基线)。
-- [ ] 记录每条:峰值显存、出图正确性(肉眼狐狸图)、推理延迟、是否撞 noise/latents dtype。
-- [ ] 结论 → 定 PR-1 实现路径(预期 A 最干净);若 comfy fp8mixed 文件无法干净紧凑加载,
-  记下取舍(可能 fp8 走 torchao-from-bf16,comfy 预量化文件单独处理/留 dequant)。
-- [ ] 若方案涉及新依赖(torchao),评估装进 `pyproject.toml` 的 `image` extra(CI 不装,真模型 only)。
+**Files**:`src/services/inference/image_modular.py` / `model_manager.py` / node.yaml(weight_dtype 加 fp8)
 
-### Task 1.1 — 实现紧凑加载
-
-**Files**:`src/services/inference/quant_loaders.py` / `image_modular.py` / `model_manager.py`
-
-- [ ] 按 1.0 定的方案改:量化/降精度 transformer 按紧凑尺寸驻留(不再无条件 dequant 到 bf16)。
-- [ ] 确保 modular pipe 出图正确(model.dtype 报 compute dtype;noise/latents 用 compute dtype)。
+- [ ] `weight_dtype` 选 fp8 → torchao `quantize_(transformer/text_encoder, Float8WeightOnlyConfig())`
+  在 `_ensure_pipe` 加载后量化(model.dtype 仍 bf16 → modular pipe 正常出图)。
+- [ ] torchao 进 `pyproject.toml` image extra。1024² 峰值贴边(23.3GB)→ 评估安全余量(分辨率/释放策略)。
 
 ### Task 1.2 — fit-check 估算校准
 
