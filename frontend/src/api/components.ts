@@ -12,7 +12,7 @@ export interface ComponentInfo {
   mtime: number
 }
 
-export type ComponentRole = 'diffusion_models' | 'clip' | 'vae' | 'loras'
+export type ComponentRole = 'diffusion_models' | 'clip' | 'vae' | 'loras' | 'checkpoint'
 export type ComponentLoadState = 'cold' | 'loading' | 'loaded' | 'failed'
 
 /** Same format as backend component_state_key: file|device|dtype|lora_sig.

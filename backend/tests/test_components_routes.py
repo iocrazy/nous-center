@@ -45,7 +45,7 @@ def test_get_components_no_role_returns_all(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "index" in data
-    assert set(data["index"].keys()) == {"diffusion_models", "clip", "vae", "loras"}
+    assert set(data["index"].keys()) == {"diffusion_models", "clip", "vae", "loras", "checkpoint"}
 
 
 def test_post_scan_refreshes_index(client, tmp_path):

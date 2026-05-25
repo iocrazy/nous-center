@@ -19,7 +19,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-ROLE_DIRS = ("diffusion_models", "clip", "vae", "loras")
+ROLE_DIRS = ("diffusion_models", "clip", "vae", "loras", "checkpoint")
 
 # HF-layout 分片:name-00001-of-00002.safetensors。同目录同 base 的分片是「一个模型拆成
 # 多文件」,折叠成一个条目(否则下拉把每片当一个可选模型,误导;选单片语义也错)。
@@ -107,12 +107,42 @@ def scan_components(role: str, *, force_refresh: bool = False) -> list[dict[str,
     return _cache.get(role, [])
 
 
+def _scan_checkpoints(base: Path) -> list[dict[str, Any]]:
+    """整模型(HF-layout)目录扫描:`image/diffusers/<model>/`(含 model_index.json)。
+
+    与单文件组件角色不同 —— entry 是**目录**(整模型),Load Checkpoint 据此一把出
+    MODEL+CLIP+VAE。对齐 ComfyUI DiffusersLoader(扫 diffusers/ 目录)。
+    """
+    entries: list[dict[str, Any]] = []
+    diffusers_root = base / "image" / "diffusers"
+    if not diffusers_root.is_dir():
+        return entries
+    for d in sorted(diffusers_root.iterdir()):
+        if not d.is_dir() or not (d / "model_index.json").is_file():
+            continue
+        try:
+            mtime = d.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        entries.append({
+            "filename": d.name,            # 模型目录名(下拉显示)
+            "abs_path": str(d.resolve()),  # 整模型目录(executor 据此解析三组件)
+            "size_mb": 0.0,
+            "quant_type": "checkpoint",
+            "mtime": mtime,
+        })
+    return entries
+
+
 def _scan_all() -> dict[str, list[dict[str, Any]]]:
     """Glob every role's patterns under base_path; build the full index."""
     base = _base_path()
     cfg = load_model_paths_config()
     index: dict[str, list[dict[str, Any]]] = {}
     for role, patterns in cfg.items():
+        if role == "checkpoint":
+            index[role] = _scan_checkpoints(base)  # 整模型目录扫描(非 glob)
+            continue
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         for pattern in patterns:
@@ -157,3 +187,30 @@ def invalidate_component_cache() -> None:
     """Drop the cache so the next scan re-globs."""
     global _cache
     _cache = None
+
+
+_CKPT_SUBDIRS = ("transformer", "text_encoder", "vae")
+
+
+def selfcheck_report(*, force_refresh: bool = True) -> dict[str, Any]:
+    """启动自检:每角色找到几个 + 整模型(checkpoint)子目录完整性。
+
+    返回 {"counts": {role: n}, "warnings": [str, ...]}。整模型缺
+    transformer/text_encoder/vae 任一(或子目录无 .safetensors)→ 一条 warning。
+    纯诊断,不抛错 —— 调用方(lifespan)只 log,不阻塞启动。
+    """
+    global _cache
+    if force_refresh:
+        _cache = _scan_all()  # 复用本次扫描,紧接着的 warm-up 直接命中缓存
+    index = get_component_index()
+    counts = {role: len(index.get(role, [])) for role in ROLE_DIRS}
+    warnings: list[str] = []
+    for ckpt in index.get("checkpoint", []):
+        repo = Path(ckpt["abs_path"])
+        missing = [
+            sub for sub in _CKPT_SUBDIRS
+            if not (repo / sub).is_dir() or not any((repo / sub).glob("*.safetensors"))
+        ]
+        if missing:
+            warnings.append(f"整模型 {ckpt['filename']} 缺 {'/'.join(missing)}(无 .safetensors)— Load Checkpoint 会报错")
+    return {"counts": counts, "warnings": warnings}
