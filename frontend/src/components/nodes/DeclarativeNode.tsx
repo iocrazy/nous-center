@@ -231,11 +231,18 @@ export function ComponentSelectWidget({
   return (
     <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">选择 {role}...</option>
-      {(components ?? []).map((c) => (
-        <option key={c.abs_path} value={c.abs_path}>
-          {c.filename}{c.quant_type && c.quant_type !== 'bf16' ? ` · ${c.quant_type}` : ''}
-        </option>
-      ))}
+      {(components ?? []).map((c) => {
+        // 同名不同目录的文件(如各模型的 diffusion_pytorch_model.safetensors)在下拉里
+        // 会看着一样 —— 附上末两级目录(模型目录/子目录)区分。
+        const parts = (c.abs_path || '').split('/').filter(Boolean)
+        const ctx = parts.slice(-3, -1).join('/')
+        const quant = c.quant_type && c.quant_type !== 'bf16' ? ` · ${c.quant_type}` : ''
+        return (
+          <option key={c.abs_path} value={c.abs_path}>
+            {c.filename}{quant}{ctx ? ` — ${ctx}` : ''}
+          </option>
+        )
+      })}
     </NodeSelect>
   )
 }

@@ -123,3 +123,36 @@ def test_load_model_paths_config_fail_soft_on_malformed(tmp_path, monkeypatch):
     from src.services.component_scanner import load_model_paths_config
     cfg = load_model_paths_config()
     assert cfg == {"unet": [], "clip": [], "vae": [], "loras": []}
+
+
+def test_collapse_shards_groups_multishard_to_one_entry():
+    """HF-layout 多分片(-0000N-of-000MM)折叠成一个模型条目;单文件原样。"""
+    from src.services.component_scanner import _collapse_shards
+    entries = [
+        {"filename": "diffusion_pytorch_model-00001-of-00002.safetensors",
+         "abs_path": "/m/Flux2/transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+         "size_mb": 9000.0, "quant_type": "bf16", "mtime": 1.0},
+        {"filename": "diffusion_pytorch_model-00002-of-00002.safetensors",
+         "abs_path": "/m/Flux2/transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+         "size_mb": 8000.0, "quant_type": "bf16", "mtime": 1.0},
+        {"filename": "flux2-vae.safetensors", "abs_path": "/m/vae/flux2-vae.safetensors",
+         "size_mb": 320.0, "quant_type": "bf16", "mtime": 1.0},
+    ]
+    out = _collapse_shards(entries)
+    names = sorted(e["filename"] for e in out)
+    assert names == ["diffusion_pytorch_model.safetensors", "flux2-vae.safetensors"]
+    sharded = next(e for e in out if e["filename"] == "diffusion_pytorch_model.safetensors")
+    assert sharded["shards"] == 2
+    assert sharded["size_mb"] == 17000.0  # 两片之和
+    assert sharded["abs_path"].endswith("-00001-of-00002.safetensors")  # 首片
+
+
+def test_collapse_shards_keeps_same_base_different_dirs_separate():
+    """同名分片在不同目录(如 Flux2 vs ERNIE 的 transformer)→ 各自一条,不混。"""
+    from src.services.component_scanner import _collapse_shards
+    mk = lambda d, n: {"filename": f"diffusion_pytorch_model-{n}-of-00002.safetensors",
+                       "abs_path": f"/m/{d}/transformer/diffusion_pytorch_model-{n}-of-00002.safetensors",
+                       "size_mb": 1.0, "quant_type": "bf16", "mtime": 1.0}
+    out = _collapse_shards([mk("Flux2", "00001"), mk("Flux2", "00002"), mk("ERNIE", "00001"), mk("ERNIE", "00002")])
+    assert len(out) == 2  # Flux2 一条 + ERNIE 一条
+    assert {Path(e["abs_path"]).parent.parent.name for e in out} == {"Flux2", "ERNIE"}
