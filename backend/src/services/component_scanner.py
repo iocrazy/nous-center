@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import glob as _glob
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,37 @@ import yaml
 logger = logging.getLogger(__name__)
 
 ROLE_DIRS = ("unet", "clip", "vae", "loras")
+
+# HF-layout 分片:name-00001-of-00002.safetensors。同目录同 base 的分片是「一个模型拆成
+# 多文件」,折叠成一个条目(否则下拉把每片当一个可选模型,误导;选单片语义也错)。
+_SHARD_RE = re.compile(r"^(?P<base>.+)-\d{5}-of-\d{5}\.safetensors$")
+
+
+def _collapse_shards(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同目录的多分片 → 一个条目(abs_path=首片,repo 推导兜回整模型;size=各片之和)。
+    单文件原样保留。"""
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    singles: list[dict[str, Any]] = []
+    for e in entries:
+        m = _SHARD_RE.match(e["filename"])
+        if not m:
+            singles.append(e)
+            continue
+        key = (str(Path(e["abs_path"]).parent), m.group("base"))
+        groups.setdefault(key, []).append(e)
+    collapsed: list[dict[str, Any]] = []
+    for (_d, base), shards in groups.items():
+        shards.sort(key=lambda e: e["abs_path"])
+        first = shards[0]
+        collapsed.append({
+            "filename": f"{base}.safetensors",  # 去 -0000N-of-000MM 后缀
+            "abs_path": first["abs_path"],       # 首片(loader 据此向上找 model_index)
+            "size_mb": round(sum(s["size_mb"] for s in shards), 1),
+            "quant_type": first["quant_type"],
+            "mtime": first["mtime"],
+            "shards": len(shards),
+        })
+    return singles + collapsed
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "configs" / "model_paths.yaml"
 
@@ -105,6 +137,7 @@ def _scan_all() -> dict[str, list[dict[str, Any]]]:
                     "quant_type": _detect_quant_type(p),
                     "mtime": mtime,
                 })
+        entries = _collapse_shards(entries)  # HF-layout 多分片 → 一个模型条目
         entries.sort(key=lambda e: e["filename"])
         index[role] = entries
     total = sum(len(v) for v in index.values())
