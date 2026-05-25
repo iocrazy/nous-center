@@ -1,6 +1,8 @@
 """PR-1 T5: 整模型单卡统一 + LLM 卡显存前置保护。"""
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from src.services.gpu_allocator import GPUAllocator
@@ -89,3 +91,35 @@ async def test_single_card_unifies_clip_vae_to_unet_device(mm, monkeypatch):
     monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
     await mm.get_or_load_image_adapter(_comps("cuda:1"), "Flux2KleinPipeline")
     assert {s.device for s in seen["resolved"].values()} == {"cuda:1"}  # 三件同卡
+
+
+# --- PR-2: 单文件装配辅助(架构参考整模型 + 单文件检测)---
+
+def test_reference_repo_for_arch_matches_class(tmp_path, monkeypatch):
+    from src.services import model_manager as mm_mod
+    base = tmp_path / "image" / "diffusers"
+    (base / "Flux2-klein-9B").mkdir(parents=True)
+    (base / "Flux2-klein-9B" / "model_index.json").write_text('{"_class_name": "Flux2KleinPipeline"}')
+    (base / "ERNIE-Image").mkdir(parents=True)
+    (base / "ERNIE-Image" / "model_index.json").write_text('{"_class_name": "ErnieImagePipeline"}')
+    settings = MagicMock()
+    settings.LOCAL_MODELS_PATH = str(tmp_path)
+    monkeypatch.setattr("src.config.get_settings", lambda: settings)
+    assert mm_mod._reference_repo_for_arch("flux2").endswith("Flux2-klein-9B")
+    assert mm_mod._reference_repo_for_arch("ernie").endswith("ERNIE-Image")
+    assert mm_mod._reference_repo_for_arch("nope") is None
+
+
+def test_is_standalone_single_file(tmp_path):
+    from src.services.model_manager import _is_standalone_single_file
+    sf = tmp_path / "diffusion_models" / "flux" / "x.safetensors"
+    sf.parent.mkdir(parents=True)
+    sf.write_text("x")
+    assert _is_standalone_single_file(
+        ComponentSpec(kind="diffusion_models", file=str(sf), device="cuda:0", dtype="bfloat16"))
+    hf = tmp_path / "diffusers" / "M" / "transformer" / "y.safetensors"
+    hf.parent.mkdir(parents=True)
+    hf.write_text("y")
+    (hf.parent / "config.json").write_text("{}")
+    assert not _is_standalone_single_file(
+        ComponentSpec(kind="diffusion_models", file=str(hf), device="cuda:0", dtype="bfloat16"))

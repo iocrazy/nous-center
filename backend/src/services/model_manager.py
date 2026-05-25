@@ -32,9 +32,16 @@ def _modular_repo_from_components(resolved: dict) -> str:
         for cand in (f.parent, f.parent.parent, f.parent.parent.parent):
             if (cand / "model_index.json").exists():
                 return str(cand)
+    # 全单文件无 HF repo → 用「架构参考整模型」(单文件装配 PR-2):借其 config/scheduler/tokenizer,
+    # 三组件由桥接 override(build_bridged_*)灌单文件权重。架构取 unet 的 adapter_arch。
+    unet = resolved.get("diffusion_models")
+    arch = getattr(unet, "adapter_arch", None) or "flux2"
+    ref = _reference_repo_for_arch(arch)
+    if ref:
+        return ref
     raise ValueError(
-        "modular 引擎需 HF-layout repo(model_index.json);unet/clip/vae 组件文件均不在 "
-        "HF repo 下 —— comfy 全单文件(无 HF clip/vae)暂不支持"
+        f"modular 引擎需 HF-layout repo;组件均为单文件且找不到架构 {arch!r} 的参考整模型"
+        f"(在 image/diffusers/ 放一个对应整模型作 config 参考)。"
     )
 
 
@@ -44,6 +51,41 @@ def _is_comfy_single_file_unet(unet_spec) -> bool:
     HF-layout transformer 目录有 config.json;comfy 单文件(diffusion_models/flux/)没有。
     """
     return not (Path(unet_spec.file).parent / "config.json").exists()
+
+
+def _is_standalone_single_file(spec) -> bool:
+    """任意组件:文件是 repo 外单文件(parent 无 config.json)→ 需桥接 override。
+    HF-layout 组件(diffusers/<m>/{transformer,text_encoder,vae}/)parent 有 config.json。"""
+    return not (Path(spec.file).parent / "config.json").exists()
+
+
+def _reference_repo_for_arch(arch: str) -> str | None:
+    """架构 → 参考整模型目录(单文件装配:借它的 config/scheduler/tokenizer + 各组件 config)。
+
+    扫 LOCAL_MODELS_PATH/image/diffusers/*/model_index.json,按 `_class_name` 含架构提示匹配
+    (flux2→'flux2'、ernie→'ernie')。用户库:flux2→Flux2-klein-9B、ernie→ERNIE-Image。
+    """
+    import json  # noqa: PLC0415
+    from src.config import get_settings  # noqa: PLC0415
+
+    base = Path(get_settings().LOCAL_MODELS_PATH) / "image" / "diffusers"
+    if not base.is_dir():
+        return None
+    hint = {"flux2": "flux2", "flux1": "flux", "ernie": "ernie"}.get(
+        (arch or "").lower(), (arch or "").lower())
+    if not hint:
+        return None
+    for d in sorted(base.iterdir()):
+        mi = d / "model_index.json"
+        if not mi.is_file():
+            continue
+        try:
+            cls = str(json.loads(mi.read_text()).get("_class_name", "")).lower()
+        except Exception:  # noqa: BLE001
+            continue
+        if hint in cls:
+            return str(d)
+    return None
 
 # Re-export so existing `from src.services.model_manager import
 # ModelLoadError, ModelNotFoundError` keeps working (these moved to
@@ -798,18 +840,31 @@ class ModelManager:
                 if self._modular_cm is None:
                     _, components_manager_cls = _import_modular()
                     self._modular_cm = components_manager_cls()
-                # comfy 量化单文件 unet → 桥接 override(dequant+转键+from_config);HF-layout 则 None
-                override = None
-                if _is_comfy_single_file_unet(resolved["diffusion_models"]):
-                    from src.services.inference.image_modular import build_bridged_transformer
-                    override = await asyncio.to_thread(
+                # 单文件桥接 override:repo 外的单文件组件各自桥接(dequant + from_config of repo);
+                # HF-layout 组件(diffusers/<m>/.../config.json)则 None,由 repo load_components 加载。
+                from src.services.inference.image_modular import (  # noqa: PLC0415
+                    build_bridged_text_encoder,
+                    build_bridged_transformer,
+                    build_bridged_vae,
+                )
+                t_ov = c_ov = v_ov = None
+                if _is_standalone_single_file(resolved["diffusion_models"]):
+                    t_ov = await asyncio.to_thread(
                         build_bridged_transformer, resolved["diffusion_models"], repo, target)
+                if _is_standalone_single_file(resolved["clip"]):
+                    c_ov = await asyncio.to_thread(
+                        build_bridged_text_encoder, resolved["clip"], repo, target)
+                if _is_standalone_single_file(resolved["vae"]):
+                    v_ov = await asyncio.to_thread(
+                        build_bridged_vae, resolved["vae"], repo, target)
                 adapter = ModularImageBackend(
                     repo=repo,
                     device=target,
                     dtype=resolved["diffusion_models"].dtype,
                     components_manager=self._modular_cm,
-                    transformer_override=override,
+                    transformer_override=t_ov,
+                    text_encoder_override=c_ov,
+                    vae_override=v_ov,
                 )
                 await adapter.load(target)
                 await asyncio.to_thread(adapter._ensure_pipe)  # 预热(blocking load 进线程)

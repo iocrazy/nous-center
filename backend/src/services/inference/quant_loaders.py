@@ -342,3 +342,71 @@ def load_safetensors_plain(spec: ComponentSpec) -> StateDict:
     target = _dtype_str_to_torch(spec.dtype)
     sd = _load_file(spec.file)
     return {k: v.to(target) for k, v in sd.items()}
+
+
+# E2M1(NVFP4 4-bit 浮点)码 → 幅值:code&7,bit3=符号。comfy/float.py 反推。
+_E2M1_MAG = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+_NVFP4_BLOCK = 16
+
+
+def has_comfy_per_tensor_quant(file_path: str) -> bool:
+    """文件是否含 `.comfy_quant`(逐张量混合量化标记)。仅读 header(safetensors keys)。"""
+    from safetensors import safe_open  # noqa: PLC0415
+
+    with safe_open(file_path, framework="pt") as f:
+        return any(k.endswith(".comfy_quant") for k in f.keys())
+
+
+def dequant_comfy_mixed(spec: ComponentSpec) -> StateDict:
+    """comfy 逐张量混合量化 → target dtype state_dict(标准键,**不转架构键**)。
+
+    `.comfy_quant`(JSON utf-8 bytes)逐张量标 format:
+      - float8_e4m3fn: weight(fp8) × weight_scale → target
+      - nvfp4: uint8 unpack(偶数元素=高 nibble/奇数=低)→ E2M1 解码 × block_scale(fp8 [out,in/16])
+               × global_scale(weight_scale_2 fp32 标量)→ target
+      - 无 comfy_quant 的权重: plain cast(fp32/fp16/bf16)或原样(int/bool 标记)
+    真模型验过(spike_single_file_assembly:Qwen3 fp8×141+nvfp4×85+plain×172 → 干净狐狸图)。
+    用于 comfy 单文件 text encoder / vae(键已是目标架构,无需 flux2 那种转键)。
+    """
+    import json  # noqa: PLC0415
+
+    target = _dtype_str_to_torch(spec.dtype)
+    raw = _load_file(spec.file)
+    e2m1 = torch.tensor(_E2M1_MAG, dtype=torch.float32)
+
+    def _fmt(base: str) -> str | None:
+        cq = raw.get(base + ".comfy_quant")
+        if cq is None:
+            return None
+        return json.loads(bytes(cq.tolist()).decode("utf-8")).get("format")
+
+    clean: StateDict = {}
+    n_fp8 = n_nvfp4 = n_plain = 0
+    for key, t in raw.items():
+        if key.endswith((".comfy_quant", ".weight_scale", ".weight_scale_2")):
+            continue  # companion/metadata — drop
+        base = key[: -len(".weight")] if key.endswith(".weight") else None
+        fmt = _fmt(base) if base else None
+        if fmt == "float8_e4m3fn":
+            scale = raw[base + ".weight_scale"].to(torch.float32)
+            clean[key] = (t.to(torch.float32) * scale).to(target)
+            n_fp8 += 1
+        elif fmt == "nvfp4":
+            bs = raw[base + ".weight_scale"].to(torch.float32)       # [out, in/16]
+            gs = raw[base + ".weight_scale_2"].to(torch.float32)     # fp32 标量
+            out = t.shape[0]
+            low = (t & 0x0F).to(torch.long)
+            high = ((t >> 4) & 0x0F).to(torch.long)
+            dec = lambda c: torch.where(c >= 8, -1.0, 1.0) * e2m1[c & 0x7]  # noqa: E731
+            # comfy 打包 packed=(even<<4)|odd → 偶数元素=高 nibble、奇数=低 nibble
+            vals = torch.stack([dec(high), dec(low)], dim=-1).reshape(out, -1)
+            blk = bs.repeat_interleave(_NVFP4_BLOCK, dim=1)          # [out, in]
+            clean[key] = (vals * blk * gs).to(target)
+            n_nvfp4 += 1
+        else:
+            clean[key] = (t.to(target)
+                          if t.dtype in (torch.float32, torch.float16, torch.bfloat16) else t)
+            n_plain += 1
+    logger.info("quant_loaders.comfy_mixed: fp8=%d nvfp4=%d plain=%d (%s)",
+                n_fp8, n_nvfp4, n_plain, Path(spec.file).name)
+    return clean
