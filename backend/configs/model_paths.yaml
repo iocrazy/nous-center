@@ -6,19 +6,24 @@
 #
 # base_path is NOT in this file — it's read from settings.LOCAL_MODELS_PATH.
 
+# 角色 → glob。所有单文件角色都用递归 ** 覆盖根 + 任意子目录(用户按系列/来源
+# 建子文件夹,如 diffusion_models/flux/)。文件夹名对齐 ComfyUI folder_paths:
+#   "unet" 角色 = ComfyUI 的 diffusion_models(新)+ unet(旧别名)两个文件夹;
+#   clip 角色 = text_encoders + clip;vae=vae;loras=loras;diffusers=HF 目录。
+# 注:nous 内部角色名仍叫 "unet"(遗留);ComfyUI 现称 diffusion_models(DiT/transformer)。
 roles:
   unet:
-    # 递归 ** —— 覆盖根 + 子目录(如 diffusion_models/flux/*.safetensors 的单文件模型;
-    # 之前 *.safetensors 只扫根 → 子目录里的模型不进下拉)。
     - image/diffusion_models/**/*.safetensors
     - image/diffusion_models/**/*.gguf
+    - image/unet/**/*.safetensors          # ComfyUI 旧文件夹别名
+    - image/unet/**/*.gguf
     - image/diffusers/*/transformer/*.safetensors
   clip:
-    - image/text_encoders/*.safetensors
+    - image/text_encoders/**/*.safetensors
+    - image/clip/**/*.safetensors          # ComfyUI clip 文件夹别名
     - image/diffusers/*/text_encoder/*.safetensors
   vae:
-    - image/vae/*.safetensors
+    - image/vae/**/*.safetensors
     - image/diffusers/*/vae/*.safetensors
   loras:
-    - image/loras/*.safetensors
     - image/loras/**/*.safetensors
