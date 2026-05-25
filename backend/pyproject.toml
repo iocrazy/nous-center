@@ -66,6 +66,9 @@ image = [
     # PR-2 SSIM regression test gate (tests/test_image_sampler_ssim.py) —
     # only loaded when NOUS_SSIM_TEST=1. scikit-image pulls scipy.
     "scikit-image>=0.24",
+    # fp8 weight-only 量化(torchao Float8WeightOnlyConfig)——大模型塞小卡(省 ~½ 显存)。
+    # 在 torch 2.10 即可(只省显存;Ampere 无 fp8 核不加速,见 spec 2026-05-25)。
+    "torchao>=0.17",
 ]
 
 [tool.uv]

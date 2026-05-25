@@ -51,6 +51,31 @@ async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
     assert adapter is not None
 
 
+def test_estimate_vram_fp8_halves_transformer_and_clip(mm, tmp_path):
+    """fp8 weight-only:transformer + clip 按 file bytes 的一半估(vae 不量化全计),
+    所以 fp8 估算 ≈ bf16 估算 - (transformer+clip)/2 的余量倍数。"""
+    t = tmp_path / "t.safe"
+    t.write_bytes(b"\0" * 8_000_000)   # 8MB transformer
+    c = tmp_path / "c.safe"
+    c.write_bytes(b"\0" * 4_000_000)   # 4MB clip
+    v = tmp_path / "v.safe"
+    v.write_bytes(b"\0" * 1_000_000)   # 1MB vae
+
+    def comps(dt):
+        return {
+            "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(t), device="cuda:1", dtype=dt, adapter_arch="flux2"),
+            "clip": ComponentSpec(kind="clip", file=str(c), device="cuda:1", dtype=dt),
+            "vae":  ComponentSpec(kind="vae",  file=str(v), device="cuda:1", dtype="bfloat16"),  # vae 永不 fp8
+        }
+
+    bf16 = mm._estimate_image_vram_mb(comps("bfloat16"))
+    fp8 = mm._estimate_image_vram_mb(comps("fp8_e4m3"))
+    # bf16: (8+4+1)MB*1.3 ; fp8: (4+2+1)MB*1.3 —— transformer/clip 减半
+    assert bf16 is not None and fp8 is not None
+    assert fp8 < bf16
+    assert fp8 == int((4_000_000 + 2_000_000 + 1_000_000) / (1024 * 1024) * 1.3)
+
+
 @pytest.mark.asyncio
 async def test_single_card_unifies_clip_vae_to_unet_device(mm, monkeypatch):
     # 三组件传入不同卡(unet cuda:1, clip cuda:0, vae cuda:2)→ 统一到 unet 的 cuda:1
