@@ -1,7 +1,7 @@
 # 推理全栈升级 torch 2.11 + vllm 0.21 — 设计
 
-> 状态:**PR-0 spike 进行中**(隔离 worktree `../nous-center-stackbump` / 分支 spike/stack-bump-torch211;
-> 装好 torch 2.11+cu130 / vllm 0.21 / diffusers 同 commit / torchao,GPU 已验)。
+> 状态:**PR-0 spike 完成,全栈在 torch 2.11/cu130 上验证可行**(见下「PR-0 spike 结果」)。
+> 待 PR-1 实际 bump 主 pyproject(用户拍板要 bump,理由=栈更新)。
 > 地基级改动,触及生产关键 LLM serving + 钉死的 diffusers —— 隔离分支 + spike 逐模态重验。
 > 依据 [[feedback-long-term-robustness]] [[feedback-verify-real-model]] [[user-hardware]]。
 
@@ -47,13 +47,32 @@
   - 图像:`smoke_image_ab.py` SSIM ≥ 0.97 + 出图正确(可能需同步 bump diffusers commit)。
   - fp8:`spike_quant_compact.py` 在 torch 2.11 重跑 → 推理显著快于 28.8s(确认 fp8 cpp 核生效)。
 
-## PR 拆分(plan 细化,spike 闸全绿后)
+## PR-0 spike 结果(已完成,2026-05-25,隔离 worktree `../nous-center-stackbump`)
 
-- **PR-0 spike**:隔离环境装 torch 2.11 + vllm 0.21(+ 可能新 diffusers commit),逐模态验(上面 4 闸)。
-  产出:确定的 pin 组合 + 各模态验证结论 + diffusers commit 是否要换 + SSIM 数。
-- **PR-1**:bump `pyproject.toml`(vllm 0.21 / torch 2.11 间接 / diffusers commit / torchaudio·torchvision),
-  改 `start_vllm.sh` + vllm adapter(若 0.21 有 CLI/API 变)+ uv.lock。CI 绿(CI 不跑真模型)。
-- **PR-2**:真模型回归套(LLM/TTS/图像 smoke + SSIM)记录到 docs;更新 CLAUDE.md「图像引擎」的 commit。
+装好:**torch 2.11.0+cu130 / vllm 0.21.0 / diffusers 同 commit c8eba433(无需换!)/ torchao 0.17**。
+
+| 闸 | 结果 | 备注 |
+|---|---|---|
+| 依赖解析 + 安装 | ✓ | 钉死 diffusers commit 与 torch 2.11 **无冲突**,不用换 commit |
+| GPU / cu130 驱动 | ✓ | 驱动 595.71.05 支持 CUDA 13;3 卡 matmul 正常 |
+| 图像(钉死 diffusers @ 2.11) | ✓ | `smoke_load_checkpoint_dir.py` 出正确狐狸图;**SSIM 0.9772 ≥ 0.97** vs torch 2.10 参考 |
+| LLM(vllm 0.21) | ✓ | gemma-4 AWQ offline generate 出 token;**需 `VLLM_USE_FLASHINFER_SAMPLER=0` + `VLLM_ATTENTION_BACKEND=TORCH_SDPA`** 绕开 flashinfer JIT(见下) |
+| TTS(5 引擎) | ✓ import | cosyvoice2/qwen3_tts/voxcpm2/moss_tts/indextts2 在 2.11 全 import OK(完整出音未跑,无 API 破坏) |
+| ~~fp8 快核~~ | ✗ **证伪** | 3090 Ampere sm_86 无 fp8 核;torch 2.11 与 2.10 同 28.8s。**bump 不为 fp8,为栈更新** |
+
+**flashinfer 的坑(部署要知道)**:vllm 0.21 默认用 flashinfer(快 attention/sampling),它对 cu13/sm_86
+没预编译核 → 运行时 nvcc JIT。JIT 要 cuRAND 头(`curand.h`),**最小 `cuda-nvcc-13-0` 不含**,要全套
+`cuda-toolkit-13-0`(~3-4GB)。否则用 `TORCH_SDPA` 兜底(能跑,慢)。spike 用了兜底。
+机器原本**无任何 CUDA toolkit**(torch 自带 runtime);CUDA 13 的 pip 工具链还是空 stub(NVIDIA 没发)→
+nvcc 只能系统装(已装 `cuda-nvcc-13-0` 到 `/usr/local/cuda-13.0`)。
+
+## PR 拆分(实际 bump)
+
+- **PR-1**:bump 主 `pyproject.toml`(`vllm>=0.21.0` → 拉 torch 2.11;diffusers commit **不变**;
+  torchao 进 image extra)+ 重生 `uv.lock`。CI 走 `uv sync --frozen`(不装 extras/torch)→ 不受影响,应绿。
+  **不动 start_vllm.sh 的模型**;文档化部署前置:**装 `cuda-toolkit-13-0`(flashinfer 性能)** + cu130 驱动 ≥595。
+- **PR-2**:部署/回归文档 —— vllm 0.21 serve 真模型(含 TP=2)+ TTS 真出音 + flashinfer 性能确认;
+  更新 CLAUDE.md。**注**:vllm 当前未部署([[project_deploy_deferred]]),PR-2 在实际部署 vllm 时做。
 
 ## 与 fp8 arc 的关系
 
