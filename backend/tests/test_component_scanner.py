@@ -62,6 +62,17 @@ def test_scan_components_globs_role_dirs(tmp_path, monkeypatch):
     assert {e["filename"] for e in loras} == {"style.safetensors"}
 
 
+def test_scan_components_finds_diffusion_models_subdir(tmp_path, monkeypatch):
+    """递归 ** —— diffusion_models 子目录(如 flux/)里的单文件模型也进 unet 下拉。"""
+    _make_file(tmp_path, "image/diffusion_models/flux/Flux2-bf16.safetensors")
+    _make_file(tmp_path, "image/diffusion_models/flux/Flux2-fp8mixed.safetensors")
+    _make_file(tmp_path, "image/diffusion_models/root-level.safetensors")  # 根仍要匹配
+    monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
+    from src.services.component_scanner import scan_components
+    names = {e["filename"] for e in scan_components("unet", force_refresh=True)}
+    assert {"Flux2-bf16.safetensors", "Flux2-fp8mixed.safetensors", "root-level.safetensors"} <= names
+
+
 def test_scan_components_entry_shape(tmp_path, monkeypatch):
     _make_file(tmp_path, "image/diffusion_models/x-bf16.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
