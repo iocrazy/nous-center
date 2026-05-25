@@ -14,15 +14,16 @@
 
 ---
 
-## PR-1:fp8 真紧凑加载 ——【依赖全栈 bump arc】
+## PR-1:fp8 真紧凑加载(weight-only,省显存)——【不依赖 bump,torch 2.10 即可】
 
 > **Task 1.0 spike 已完成**(结论见 spec):方案 = **torchao `Float8WeightOnlyConfig` 量化 bf16 模型
 > at load**(= ComfyUI weight_dtype 机制,用户拍板)。真模型验过:出正确图 + 进 24GB(峰值 23.3GB)+
-> model.dtype 仍报 bf16(绕开 noise bug)。**但 torch 2.10 缺 fp8 cpp 核 → 28.8s(~4.4× 慢)。**
+> model.dtype 仍报 bf16(绕开 noise bug)。
 >
-> **依赖**:用户定「先全栈 bump(torch 2.11 + vllm 0.21)再落快 fp8」。本 PR **等
-> [[2026-05-25-inference-stack-bump-torch211-design]] arc 合并后**再做,届时 fp8 自带快核。
-> comfy 预量化 fp8mixed 文件保持现状(dequant,不紧凑);fp8 走 bf16 文件 + weight_dtype。
+> **⚠️ 速度更正(spike 证伪 bump 前提)**:3090 是 Ampere sm_86,**无 fp8 tensor core**,fp8 只省显存
+> **不加速**;28.8s = 3090 跑 9B DiT @1024² 的原生速度(torch 2.10/2.11 字节一致)。所以 fp8 **与全栈
+> bump 解耦,在当前 torch 2.10 即可落地**(bump 只为栈更新,不影响 fp8)。dynamic-activation fp8 在
+> 3090 直接 assert 报错(sm<8.9)——只用 weight-only。comfy 预量化 fp8mixed 文件保持现状(dequant)。
 
 ### Task 1.1 — 实现紧凑加载(stack bump 后)
 

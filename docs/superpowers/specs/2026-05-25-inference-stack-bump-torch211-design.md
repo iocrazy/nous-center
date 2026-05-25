@@ -1,17 +1,22 @@
 # 推理全栈升级 torch 2.11 + vllm 0.21 — 设计
 
-> 状态:**草稿,待 review + push**。这是 [[2026-05-25-image-fit-small-card-design]] 里
-> 「快 fp8」的**前置 arc**(用户拍板:先全栈 bump,再落快 fp8)。
+> 状态:**PR-0 spike 进行中**(隔离 worktree `../nous-center-stackbump` / 分支 spike/stack-bump-torch211;
+> 装好 torch 2.11+cu130 / vllm 0.21 / diffusers 同 commit / torchao,GPU 已验)。
 > 地基级改动,触及生产关键 LLM serving + 钉死的 diffusers —— 隔离分支 + spike 逐模态重验。
 > 依据 [[feedback-long-term-robustness]] [[feedback-verify-real-model]] [[user-hardware]]。
 
-## 为什么
+## 为什么(rationale 修正:原"快 fp8 前置"已被 spike 证伪)
 
-- fp8 真省显存已验(torchao,Flux2 33GB→17GB 进 24GB 3090),但 torch 2.10 缺 fp8 cpp 核
-  → fp8 推理 28.8s(~4.4× 慢)。**torchao fp8 快核要 torch ≥ 2.11**。
-- torch 被 **LLM(vllm)/ TTS(5 引擎)/ 图像(diffusers)** 三摊共用,所以"bump torch"= 全栈。
-- **无硬冲突,是配套升级**:vllm 0.21.0 硬钉 `torch==2.11.0`(+ torchaudio 2.11 / torchvision 0.26)。
-  现状 `vllm>=0.19.1` + torch 2.10。所以 torch 2.11 ⇔ vllm 0.21,一起升。
+- **⚠️ 原假设证伪**:以为 torch 2.11 给 fp8 快核 → 快 fp8。spike 实测:
+  - 3090 是 **Ampere sm_86**,torchao dynamic-activation fp8 **硬报错**
+    `Float8 dynamic activation … only supported on CUDA>=8.9`(fp8 tensor core 要 sm≥8.9 = Ada/Hopper/Blackwell)。
+  - weight-only fp8 在 torch 2.11 跑出与 2.10 **字节一致的 28.8s**(dequant→bf16 matmul,torch 版本无关)。
+  - **结论:3090 上 fp8 永远只省显存、不会更快;bump 对"3090 快 fp8"零收益。** fp8 真加速只在
+    Pro6000(Blackwell)有意义,但那卡 96GB 不缺显存(吞吐目标,非"塞 3090")。
+- **本 bump 保留,理由改为"栈本身要更新"**(用户决定):vllm 0.21 / torch 2.11 的新特性与维护性。
+  **与 fp8 解耦** —— fp8 省显存版在 torch 2.10 即可落地(见 [[2026-05-25-image-fit-small-card-design]])。
+- **无硬冲突,配套升级**:vllm 0.21.0 硬钉 `torch==2.11.0`(+torchaudio 2.11/torchvision 0.26)。
+  torch 被 LLM(vllm)/ TTS(5 引擎)/ 图像(diffusers)三摊共用 → 全栈。
 
 ## 现状(锚点)
 
