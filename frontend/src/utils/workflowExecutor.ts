@@ -2,7 +2,6 @@ import type { Workflow, WorkflowNode, WorkflowEdge, NodeType } from '../models/w
 import { apiFetch } from '../api/client'
 import type { SynthesizeResponse } from '../api/tts'
 import { useExecutionStore } from '../stores/execution'
-import { useWorkspaceStore } from '../stores/workspace'
 
 export interface ExecutionResult {
   audioBase64: string
@@ -162,7 +161,7 @@ function hasPluginNodes(nodes: WorkflowNode[]): boolean {
  * Execute workflow on backend via API.
  * Used for workflows containing plugin nodes.
  */
-async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
+async function executeOnBackend(workflow: Workflow): Promise<{ task_id: string }> {
   // Mark all nodes pending so the UI has visible state before the first
   // node_start event lands.
   const exec = useExecutionStore.getState()
@@ -173,8 +172,13 @@ async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
   const channelId = `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const ws = await openProgressChannel(channelId)
 
+  // Lane S（异步契约）:/execute 入队即返回 202 { task_id };结果与进度经上面的
+  // progress WS(node_start/complete/error → execution store + window event)+ TaskPanel
+  // 异步到达,**不**在这里同步取 outputs。
+  // (旧代码 apiFetch<{outputs}> + unwrapOutputs 在 202 响应上必崩:result.outputs
+  //  为 undefined → result.outputs[image_output 节点 id="out"] → "reading 'out'"。)
   try {
-    const result = await apiFetch<{ outputs: Record<string, Record<string, unknown>> }>(
+    return await apiFetch<{ task_id: string }>(
       '/api/v1/workflows/execute',
       {
         method: 'POST',
@@ -186,9 +190,9 @@ async function executeOnBackend(workflow: Workflow): Promise<ExecutionResult> {
         }),
       }
     )
-    return unwrapOutputs(result, workflow)
-  } finally {
-    ws.close()
+  } catch (e) {
+    ws.close()  // 入队失败 → 关 WS;成功则 WS 留到 'complete' 自关(openProgressChannel)
+    throw e
   }
 }
 
@@ -219,6 +223,7 @@ function openProgressChannel(channelId: string): Promise<WebSocket> {
         } else if (d.type === 'complete') {
           exec.setProgress(100)
           exec.setCurrentNode(null, null)
+          ws.close()  // 异步执行结束 → 关进度 WS(executeOnBackend 已不在 finally 关它)
         }
       } catch { /* ignore parse errors */ }
     }
@@ -226,61 +231,10 @@ function openProgressChannel(channelId: string): Promise<WebSocket> {
 }
 
 
-function unwrapOutputs(
-  result: { outputs: Record<string, Record<string, unknown>> },
-  workflow: Workflow,
-): ExecutionResult {
-
-  // Find output node result — support both audio output and text output
-  const audioOutputNode = workflow.nodes.find((n) => n.type === 'output')
-  const textOutputNode = workflow.nodes.find((n) => n.type === 'text_output')
-
-  if (audioOutputNode) {
-    const outputData = result.outputs[audioOutputNode.id]
-    const audio = (outputData?.audio as string) ?? (outputData?.audioBase64 as string) ?? ''
-    if (audio) {
-      return {
-        audioBase64: audio,
-        sampleRate: (outputData?.sample_rate as number) ?? (outputData?.sampleRate as number) ?? 24000,
-        duration: 0,
-      }
-    }
-  }
-
-  if (textOutputNode) {
-    const outputData = result.outputs[textOutputNode.id]
-    const text = (outputData?.text as string) ?? ''
-    // Update the text_output node's data to display the result
-    const { updateNode } = useWorkspaceStore.getState()
-    updateNode(textOutputNode.id, { text })
-    return { audioBase64: '', sampleRate: 24000, duration: 0 }
-  }
-
-  // Image workflows terminate at image_output. Pipe the signed-URL envelope
-  // (image_url + media_type + width + height) back into the node so
-  // ImageOutputNode flips from "等待生成" → preview without an extra
-  // round-trip. Backend always emits a signed URL — base64 fallback was
-  // removed in p2-polish-3 because production always has a signing key.
-  const imageOutputNode = workflow.nodes.find((n) => n.type === 'image_output')
-  if (imageOutputNode) {
-    const outputData = result.outputs[imageOutputNode.id] || {}
-    const { updateNode } = useWorkspaceStore.getState()
-    updateNode(imageOutputNode.id, {
-      image_url: outputData.image_url ?? null,
-      media_type: outputData.media_type ?? 'image/png',
-      width: outputData.width ?? null,
-      height: outputData.height ?? null,
-      // Generation metadata for the caption row.
-      seed: outputData.seed ?? null,
-      steps: outputData.steps ?? null,
-      cfg_scale: outputData.cfg_scale ?? null,
-      duration_ms: outputData.duration_ms ?? null,
-    })
-    return { audioBase64: '', sampleRate: 24000, duration: 0 }
-  }
-
-  throw new Error('工作流执行完成但没有输出')
-}
+// (旧 unwrapOutputs 已删:Lane S 异步契约下 /execute 返回 202 {task_id},无同步 outputs;
+//  结果经 progress WS 的 node_complete 送达对应输出节点 —— text_output / image_output
+//  自己监听 'node-progress' 写回显示。同步 unwrapOutputs 在 202 响应上会崩
+//  "Cannot read properties of undefined (reading 'out')"。)
 
 async function recordTask(data: {
   workflow_name: string
@@ -300,7 +254,7 @@ async function recordTask(data: {
   }
 }
 
-export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResult> {
+export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResult | { task_id: string }> {
   const { nodes, edges } = workflow
 
   if (nodes.length === 0) throw new Error('工作流为空')

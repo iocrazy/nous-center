@@ -11,6 +11,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   const def = NODE_DEFS.image_output
   const tabs = useWorkspaceStore((s) => s.tabs)
   const activeTabId = useWorkspaceStore((s) => s.activeTabId)
+  const updateNode = useWorkspaceStore((s) => s.updateNode)
   const upstreamNodeId = useMemo(() => {
     const wf = tabs.find((t) => t.id === activeTabId)?.workflow
     const edge = wf?.edges.find((e) => e.target === id)
@@ -46,19 +47,38 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail
       const src = upstreamNodeId
-      if (!src) return
-      if (detail.type === 'node_start' && detail.node_id === src) {
+      if (detail.type === 'node_start' && src && detail.node_id === src) {
         setPhase('loading')
         setError('')
       }
-      if (detail.type === 'node_error' && detail.node_id === src) {
+      if (detail.type === 'node_error' && src && detail.node_id === src) {
         setPhase('error')
         setError(typeof detail.error === 'string' ? detail.error : '生成失败')
+      }
+      // Lane S 异步:图像结果经 node_complete 带回(后端 workflow_executor 把 image_url 等
+      // 塞进 node_complete)。上游 VAE Decode 或本输出节点带 image_url → 写回 + 显示预览。
+      if (
+        detail.type === 'node_complete' &&
+        detail.image_url &&
+        (detail.node_id === id || detail.node_id === src)
+      ) {
+        updateNode(id, {
+          image_url: detail.image_url,
+          media_type: detail.media_type ?? 'image/png',
+          width: detail.width ?? null,
+          height: detail.height ?? null,
+          seed: detail.seed ?? null,
+          steps: detail.steps ?? null,
+          cfg_scale: detail.cfg_scale ?? null,
+          duration_ms: detail.duration_ms ?? null,
+        })
+        setPhase('success')
+        setError('')
       }
     }
     window.addEventListener('node-progress', handler)
     return () => window.removeEventListener('node-progress', handler)
-  }, [upstreamNodeId])
+  }, [upstreamNodeId, id, updateNode])
 
   const onDownload = () => {
     if (!dataUrl) return
