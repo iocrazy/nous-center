@@ -30,11 +30,17 @@
 > `FlowMatchLCMScheduler`。套扩散 scheduler 公式不对会出垃圾。**不追 ComfyUI 那 40 个 k-diffusion 采样器**
 > (不同引擎 + flow 模型本就采样器空间小)。
 
-- [ ] scheduler 白名单 = flow-matching 3 个(FlowMatchEuler 默认 / Heun / LCM);按模型类型 gate(非 flow
-  模型未来另列)。
-- [ ] KSampler widget `scheduler`;descriptor 带 scheduler;runner _build_request 透传到 ImageRequest。
-- [ ] `_ensure_pipe` 后:若指定且 != 默认,`pipe.scheduler = SchedulerCls.from_config(pipe.scheduler.config)`。
-- [ ] 真模型验:换 scheduler 出图正确 + 风格差异。单元:scheduler 映射 + 透传。
+- [ ] **复刻 ComfyUI KSampler 的两个下拉**(用户要;结构对齐,选项是 diffusers 的):
+  - **`sampler_name`** = scheduler **类**:`FlowMatchEulerDiscrete`(默认)/ `FlowMatchHeunDiscrete`(/ `FlowMatchLCM`)。
+  - **`scheduler`** = sigma 调度 **config**:`normal`(默认)/ `karras` / `exponential` / `beta`
+    (映射到 FlowMatchEuler 的 `use_karras_sigmas`/`use_exponential_sigmas`/`use_beta_sigmas` 互斥开关;已查证 Flux2
+    scheduler config 支持这些 + dynamic_shifting/shift=3.0)。
+  - `denoise`:img2img 强度,nous 现 txt2img → 固定 1.0,留 img2img 时接。
+- [ ] node.yaml KSampler 加 `sampler_name` + `scheduler` 两下拉;descriptor 带这俩;runner `_build_request` 透传
+  到 ImageRequest(加字段 sampler_name/scheduler)。
+- [ ] `_ensure_pipe` 后:`cls = {FlowMatchEulerDiscrete/Heun/LCM}[sampler_name]`;
+  `pipe.scheduler = cls.from_config({**pipe.scheduler.config, use_karras_sigmas/exponential/beta: ...})`。
+- [ ] 真模型验:换 sampler/scheduler 出图正确 + 风格差异。单元:类映射 + sigma 开关 + 透传。
 
 ## PR-3:逐步进度(任务感知)
 
