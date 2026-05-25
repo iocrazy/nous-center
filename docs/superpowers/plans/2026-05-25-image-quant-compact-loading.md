@@ -14,7 +14,7 @@
 
 ---
 
-## PR-1:fp8 真紧凑加载(weight-only,省显存)——【不依赖 bump,torch 2.10 即可】
+## PR-1:fp8 真紧凑加载(weight-only,省显存)✅ MERGED #139(5e7e884)
 
 > **Task 1.0 spike 已完成**(结论见 spec):方案 = **torchao `Float8WeightOnlyConfig` 量化 bf16 模型
 > at load**(= ComfyUI weight_dtype 机制,用户拍板)。真模型验过:出正确图 + 进 24GB(峰值 23.3GB)+
@@ -25,17 +25,17 @@
 > bump 解耦,在当前 torch 2.10 即可落地**(bump 只为栈更新,不影响 fp8)。dynamic-activation fp8 在
 > 3090 直接 assert 报错(sm<8.9)——只用 weight-only。comfy 预量化 fp8mixed 文件保持现状(dequant)。
 
-### Task 1.1 — 实现紧凑加载(stack bump 后)
+### Task 1.1 — 实现紧凑加载 ✅
 
-**Files**:`src/services/inference/image_modular.py` / `model_manager.py` / node.yaml(weight_dtype 加 fp8)
+**Files**:`src/services/inference/image_modular.py` / `model_manager.py` / `pyproject.toml`
 
-- [ ] `weight_dtype` 选 fp8 → torchao `quantize_(transformer/text_encoder, Float8WeightOnlyConfig())`
-  在 `_ensure_pipe` 加载后量化(model.dtype 仍 bf16 → modular pipe 正常出图)。
-- [ ] torchao 进 `pyproject.toml` image extra。1024² 峰值贴边(23.3GB)→ 评估安全余量(分辨率/释放策略)。
+- [x] `weight_dtype` 选 fp8(fp8_e4m3,node.yaml 已有)→ `_ensure_pipe` bf16 加载后
+  `_quantize_fp8_weight_only`(torchao `Float8WeightOnlyConfig`,transformer+text_encoder);override 优先。
+- [x] torchao>=0.17 进 image extra。**1024² 峰值贴边 23.3GB —— 安全余量(分辨率/释放策略)留后续。**
 
-### Task 1.2 — fit-check 估算校准
+### Task 1.2 — fit-check 估算校准 ✅
 
-**Files**:`model_manager.py`(`_estimate_image_vram_mb`)
+**Files**:`model_manager.py`(`_estimate_image_vram_mb`)— fp8 时 transformer/clip 估算减半。
 
 - [ ] 估算反映**紧凑加载后**的真实占用(非文件字节;量化文件字节小但要按实际驻留估),
   装不下抛清晰错误(已有错误路径,校准数字 + 文案)。
