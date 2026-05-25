@@ -150,9 +150,12 @@ def test_collapse_shards_groups_multishard_to_one_entry():
 def test_collapse_shards_keeps_same_base_different_dirs_separate():
     """同名分片在不同目录(如 Flux2 vs ERNIE 的 transformer)→ 各自一条,不混。"""
     from src.services.component_scanner import _collapse_shards
-    mk = lambda d, n: {"filename": f"diffusion_pytorch_model-{n}-of-00002.safetensors",
-                       "abs_path": f"/m/{d}/transformer/diffusion_pytorch_model-{n}-of-00002.safetensors",
-                       "size_mb": 1.0, "quant_type": "bf16", "mtime": 1.0}
+
+    def mk(d, n):
+        return {"filename": f"diffusion_pytorch_model-{n}-of-00002.safetensors",
+                "abs_path": f"/m/{d}/transformer/diffusion_pytorch_model-{n}-of-00002.safetensors",
+                "size_mb": 1.0, "quant_type": "bf16", "mtime": 1.0}
+
     out = _collapse_shards([mk("Flux2", "00001"), mk("Flux2", "00002"), mk("ERNIE", "00001"), mk("ERNIE", "00002")])
     assert len(out) == 2  # Flux2 一条 + ERNIE 一条
     assert {Path(e["abs_path"]).parent.parent.name for e in out} == {"Flux2", "ERNIE"}
