@@ -171,6 +171,14 @@ class WorkflowExecutor:
                         complete_event["duration_ms"] = output["duration_ms"]
                     if output.get("cached"):
                         complete_event["cached"] = True
+                    # Lane S 异步:图像结果(image_url 等)随 node_complete 带回前端
+                    # ImageOutputNode 据此显示预览(旧同步 unwrapOutputs 已移除——它在
+                    # /execute 的 202 响应上必崩 "reading 'out'")。
+                    if output.get("image_url"):
+                        for _k in ("image_url", "media_type", "width", "height",
+                                   "seed", "steps", "cfg_scale"):
+                            if output.get(_k) is not None:
+                                complete_event[_k] = output[_k]
                 await self._on_progress(complete_event)
 
         return {"outputs": self._outputs}
