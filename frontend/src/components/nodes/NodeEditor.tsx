@@ -142,17 +142,24 @@ export default function NodeEditor() {
   nodesRef.current = nodes
 
   // Sync Zustand store changes back to React Flow, preserving resize dimensions
+  // AND selection state. rfNodes 从 store 重建时不带 `selected`,若不在这里保留,
+  // 任何 store 更新(如在右侧属性面板编辑字段触发的 updateNode)都会让 RF 丢掉选中
+  // → onSelectionChange([]) → 属性面板退回空态(面板"消失",无法持续编辑)。保留
+  // `selected`/`dragging` 让选中跨 store 更新稳定,面板可固定编辑。
   useEffect(() => {
     setNodes((prev) =>
       rfNodes.map((rfn) => {
         const existing = prev.find((p) => p.id === rfn.id)
         if (!existing) return rfn
         // Preserve React Flow's resize state (width/height/style set by NodeResizer)
+        // + 交互态(selected/dragging),否则属性面板编辑会清掉选中。
         return {
           ...rfn,
           ...(existing.width != null ? { width: existing.width } : {}),
           ...(existing.height != null ? { height: existing.height } : {}),
           ...(existing.style ? { style: existing.style } : {}),
+          selected: existing.selected,
+          ...(existing.dragging != null ? { dragging: existing.dragging } : {}),
         }
       }),
     )
