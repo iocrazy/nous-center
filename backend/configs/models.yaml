@@ -103,52 +103,8 @@ models:
   resident: false
   type: tts
   vram_mb: 8000
-- adapter: src.services.inference.image_diffusers.DiffusersImageBackend
-  files:
-    text_encoder: image/diffusers/Flux2-klein-9B/text_encoder
-    transformer: image/diffusers/Flux2-klein-9B/transformer
-    vae: image/diffusers/Flux2-klein-9B/vae
-  id: flux2-klein-9b
-  params:
-    accepts_lora_archs:
-    - flux2
-    - flux1
-    offload_strategy: single_card_offload
-  paths:
-    main: image/diffusers/Flux2-klein-9B
-  resident: false
-  type: image
-  vram_mb: 24000
-- adapter: src.services.inference.image_diffusers.DiffusersImageBackend
-  files:
-    text_encoder: image/diffusers/Flux2-klein-9B/text_encoder
-    transformer: image/diffusion_models/Flux2-Klein-9B-True-v2-fp8mixed.safetensors
-    vae: image/diffusers/Flux2-klein-9B/vae
-  id: flux2-klein-9b-true-v2-fp8mixed
-  params:
-    accepts_lora_archs:
-    - flux2
-    - flux1
-    offload_strategy: single_card_offload
-    quantized_dequant_to: bfloat16
-  paths:
-    main: image/diffusers/Flux2-klein-9B
-    quantized_transformer: image/diffusion_models/Flux2-Klein-9B-True-v2-fp8mixed.safetensors
-  resident: false
-  type: image
-  vram_mb: 18000
-- adapter: src.services.inference.image_diffusers.DiffusersImageBackend
-  files:
-    text_encoder: image/diffusers/ERNIE-Image/text_encoder
-    transformer: image/diffusers/ERNIE-Image/transformer
-    vae: image/diffusers/ERNIE-Image/vae
-  id: ernie-image
-  params:
-    accepts_lora_archs:
-    - ernie
-    offload_strategy: single_card_offload
-  paths:
-    main: image/diffusers/ERNIE-Image
-  resident: false
-  type: image
-  vram_mb: 24000
+# 图像模型不再登记在 registry —— 收敛后(2026-05-25)走组件路径:
+# Load Diffusion Model(diffusion_models/ 单文件)/ Load Checkpoint(diffusers/ 整模型目录)
+# → 组件扫描(component_scanner)→ ModularImageBackend(get_or_load_image_adapter)。
+# /models 仍会从磁盘自动发现 image/diffusers/* 目录。原 3 条 image 条目(指向已删的
+# image_diffusers.DiffusersImageBackend)已移除。

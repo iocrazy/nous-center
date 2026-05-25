@@ -5,9 +5,10 @@ entries enriched with load_status + metadata, /models returns the unfiltered
 scanner walk: yaml entries + any auto-detected dirs on disk, with their
 preset `files{}` block when declared.
 
-V1' Lane C component-node executors will read this to populate dropdowns
-(LoadCheckpoint picks from `type == 'image'`; the component-file dropdowns
-go through a separate scanner endpoint added in a later PR).
+收敛后(2026-05-25):图像 loader 节点的下拉**不再**读这里 —— Load Diffusion Model /
+Load Checkpoint / Load CLIP / Load VAE 都走组件扫描端点(`/api/v1/components?role=...`,
+见 component_scanner)。本端点保留作"磁盘上有哪些模型"的原始视图(含自动发现的
+diffusers 目录),image 模型已不在 models.yaml 登记。
 """
 from __future__ import annotations
 

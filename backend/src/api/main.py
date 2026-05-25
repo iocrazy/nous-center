@@ -192,16 +192,19 @@ async def lifespan(app: FastAPI):
     model_mgr = ModelManager(registry=registry, allocator=allocator)
     app.state.model_manager = model_mgr
 
-    # PR-3: warm the component file index for loader-node dropdowns (PR-4).
-    # Fail-soft — a scan error must not block app startup.
+    # 启动扫描 + 自检:暖组件下拉索引(loader 节点用)+ 每角色计数 + 整模型完整性。
+    # Fail-soft — 扫描/自检出错不阻塞启动,降级到空索引。
     try:
-        from src.services.component_scanner import get_component_index
+        from src.services.component_scanner import get_component_index, selfcheck_report
+        report = selfcheck_report(force_refresh=True)  # 扫一遍 + 填缓存
         app.state.component_index = get_component_index()
-        _ci_total = sum(len(v) for v in app.state.component_index.values())
-        logger.info("PR-3: component index warmed — %d files", _ci_total)
+        _roles = ", ".join(f"{r}={n}" for r, n in report["counts"].items())
+        logger.info("模型扫描自检:%s", _roles)
+        for _w in report["warnings"]:
+            logger.warning("模型扫描自检:%s", _w)
     except Exception:  # noqa: BLE001 — index is non-critical at boot
-        logger.exception("PR-3: component index warm-up failed; serving empty index")
-        app.state.component_index = {role: [] for role in ("diffusion_models", "clip", "vae", "loras")}
+        logger.exception("模型扫描自检失败;serving empty index")
+        app.state.component_index = {role: [] for role in ("diffusion_models", "clip", "vae", "loras", "checkpoint")}
 
     # Wire ModelManager into workflow executor
     from src.services.workflow_executor import set_model_manager

@@ -14,44 +14,42 @@
 
 ---
 
-## Task 1:组件角色只扫单文件夹(去 diffusers 子组件)
+## Task 1:组件角色只扫单文件夹(去 diffusers 子组件)✅
 
 **Files**:`backend/configs/model_paths.yaml` + `backend/tests/test_component_scanner.py`
 
-- [ ] model_paths.yaml:
-  - `diffusion_models`: 留 `image/diffusion_models/**/*.{safetensors,gguf}` + `image/unet/**/*.{safetensors,gguf}`;**删 `image/diffusers/*/transformer/*`**。
-  - `clip`: `image/text_encoders/**` + `image/clip/**`;**删 `image/diffusers/*/text_encoder/*`**。
-  - `vae`: `image/vae/**`;**删 `image/diffusers/*/vae/*`**。
-- [ ] 测试:断言组件角色不再含 diffusers/ 子组件(只单文件夹)。
+- [x] model_paths.yaml:diffusion_models=`diffusion_models/**`+`unet/**`;clip=`text_encoders/**`+`clip/**`;vae=`vae/**`;均删 `diffusers/*/{transformer,text_encoder,vae}`。
+- [x] 测试:`test_diffusers_subcomponents_excluded_from_component_roles`。
 
-## Task 2:新 "checkpoint" 角色 —— 扫 diffusers/ 整模型目录
+## Task 2:新 "checkpoint" 角色 —— 扫 diffusers/ 整模型目录 ✅
 
 **Files**:`backend/src/services/component_scanner.py` + 测试
 
-- [ ] `ROLE_DIRS` 加 `"checkpoint"`。新 `_scan_checkpoints()`:列 `image/diffusers/*/` **目录**(含 `model_index.json` 的=整 diffusers 模型),entry = {filename: 目录名, abs_path: 目录路径, kind: "checkpoint"}。
-- [ ] model_paths.yaml 加 `checkpoint:` 角色(标记 diffusers 根)或在 scanner 特判 diffusers 目录扫描。
-- [ ] 测试:diffusers/<model>/(有 model_index.json)被列;无 model_index 的不列。
+- [x] `ROLE_DIRS` 加 `"checkpoint"`;`_scan_checkpoints()` 列 `image/diffusers/*/`(含 model_index.json)目录,quant_type="checkpoint"。
+- [x] model_paths.yaml 加 `checkpoint: []`;`_scan_all` 特判 checkpoint → 目录扫描(非 glob)。
+- [x] 测试:`test_scan_checkpoints_lists_only_complete_diffusers_dirs`(有 model_index 才列)。
 
-## Task 3:Load Checkpoint 节点改 component_select(checkpoint)+ 目录→组件 resolver
+## Task 3:Load Checkpoint 节点改 component_select(checkpoint)+ 目录→组件 resolver ✅
 
 **Files**:`backend/nodes/flux2-components/node.yaml` + `executor.py` + 测试
 
-- [ ] node.yaml `flux2_load_checkpoint`:`model_key`(model_select)→ `file`(component_select, role: checkpoint)。
-- [ ] `exec_load_checkpoint`:输入 diffusers 目录路径 → 解析 `<dir>/transformer`(首片)、`<dir>/text_encoder`、`<dir>/vae` → 三组件描述符(同 device/dtype)。替代 registry.get(model_key)+expand_legacy_image_spec。
-- [ ] 测试:目录 → 三组件 spec(HF-layout 结构)。
+- [x] node.yaml:`file`(component_select, role: checkpoint)。
+- [x] `exec_load_checkpoint`:diffusers 目录 → `<dir>/{transformer,text_encoder,vae}` 首片 → 三描述符(同 device/dtype);_first_safetensors 助手。
+- [x] 测试:`test_flux2_checkpoint_resolve.py` 4 个(三组件 / 默认 bf16 / 缺 file / 缺子目录)。
 
-## Task 4:启动扫描 + 自检
+## Task 4:启动扫描 + 自检 ✅
 
-**Files**:`backend/src/api/main.py`(lifespan)
+**Files**:`backend/src/api/main.py`(lifespan)+ `component_scanner.selfcheck_report()`
 
-- [ ] 启动时 `component_scanner` 扫一遍 + 日志自检:每角色找到几个、diffusers 整模型缺子目录(transformer/text_encoder/vae)告警。不阻塞启动。
+- [x] `selfcheck_report()`:每角色计数 + 整模型缺 transformer/text_encoder/vae 告警(不抛)。lifespan 调用 + log,fail-soft 不阻塞。测试 2 个。
 
-## Task 5:清 stale 注册表 adapter(顺带)
+## Task 5:清 stale 注册表 adapter(顺带)✅
 
-- [ ] 注册表 image 模型的 `adapter: DiffusersImageBackend`(已删)→ 改 modular 或移除(确认 generate.py 等不依赖它出错)。Load Checkpoint 不再用注册表后,评估 image 注册表条目是否还需要。
+- [x] 用户定:**删除**。从 models.yaml 移除 3 条指向已删 `DiffusersImageBackend` 的 image 条目(图像走组件路径,registry 不再是来源)。测试改 `test_models_yaml_has_no_image_entries`;更新 models.py 路由 stale 文档。
+  理由:ModularImageBackend 构造签名与 `_instantiate_adapter` 不兼容,「改 adapter 字符串」并不能让 load_model 真跑通 —— 删除是唯一诚实/健壮选项。
 
-## Task 6:真模型验证 + PR
+## Task 6:真模型验证 + PR(进行中)
 
-- [ ] standalone smoke:Load Checkpoint 选 `diffusers/Flux2-klein-9B` 整模型 → 出图(走目录→组件→modular)。Load Diffusion Model 下拉只剩 diffusion_models/ 单文件。
-- [ ] 后端全套 + 前端 tsc/vitest/build;真机硬刷新:Load Diffusion Model 只 DiT 单文件、Load Checkpoint 列 diffusers/ 整模型。
-- [ ] PR → CI 全 pass → merge。
+- [x] standalone smoke `smoke_load_checkpoint_dir.py`:exec_load_checkpoint(目录)→ 摊平 → get_or_load_image_adapter → 出图(cuda:1)。
+- [x] 后端全套(968 passed/8 skipped,改完 1 个 route 角色断言)+ 前端 tsc/vitest(95)+ ruff src/tests。
+- [ ] vite build;PR → CI 全 pass → merge。

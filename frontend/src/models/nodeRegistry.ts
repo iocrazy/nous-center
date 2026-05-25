@@ -15,7 +15,7 @@ export interface WidgetDef {
   rows?: number
   default?: unknown
   filter?: string
-  role?: 'diffusion_models' | 'clip' | 'vae' | 'loras'
+  role?: 'diffusion_models' | 'clip' | 'vae' | 'loras' | 'checkpoint'
 }
 
 export interface DeclarativeNodeDef {

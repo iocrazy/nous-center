@@ -21,7 +21,7 @@ nodes:
       - { id: clip,  type: CLIP,  label: CLIP }
       - { id: vae,   type: VAE,   label: VAE }
     widgets:
-      - { name: model_key,    label: "模型", widget: model_select, filter: image, default: "flux2-klein-9b-true-v2-fp8mixed" }
+      - { name: file,         label: "整模型", widget: component_select, role: checkpoint }
       - { name: weight_dtype, label: "精度", widget: select, options: [default, bfloat16, float16, fp8_e4m3], default: bfloat16 }
       - { name: device,       label: "显卡", widget: select, options: [auto, "cuda:0", "cuda:1", "cuda:2"], default: auto }
 

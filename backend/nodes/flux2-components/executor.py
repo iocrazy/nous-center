@@ -30,32 +30,34 @@ _AUTO = "auto"
 # --- Load Checkpoint(便捷单卡入口:model_key → 三组件文件,三件同 device)-----
 
 
+def _first_safetensors(repo_dir, sub: str) -> str:
+    """HF-layout 整模型 <dir>/<sub>/ 首个 .safetensors(分片取首片,loader 向上找 index)。"""
+    from pathlib import Path  # noqa: PLC0415
+    hits = sorted(Path(repo_dir).joinpath(sub).glob("*.safetensors"))
+    if not hits:
+        raise RuntimeError(f"Load Checkpoint: 整模型目录缺 {sub}/(无 .safetensors): {repo_dir}")
+    return str(hits[0])
+
+
 async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
-    """单合并 spec 三件 emit(ComfyUI CheckpointLoaderSimple 类比)。复用
-    expand_legacy_image_spec 把 model_key 的 ModelSpec 解析成 unet/clip/vae 三文件;
-    device/weight_dtype 来自节点控件,三件**同卡**(便捷单卡入口,不跨卡分组件 —— 跨
-    组件分卡用三个独立 loader)。"""
-    from src.services import workflow_executor as we
-    from src.services.inference.component_expand import expand_legacy_image_spec
+    """整模型(HF-layout diffusers 目录)→ MODEL+CLIP+VAE 三组件(ComfyUI DiffusersLoader 类比)。
 
-    if we._model_manager is None:
-        raise RuntimeError("Load Checkpoint 需要 ModelManager(_model_manager 未注入)")
-    model_key = data.get("model_key") or _DEFAULT_MODEL_KEY
-    spec_obj = we._model_manager._registry.get(model_key)
-    if spec_obj is None:
-        raise RuntimeError(f"Load Checkpoint: model_key {model_key!r} 无 ModelSpec")
-
-    comps = expand_legacy_image_spec(spec_obj)  # 路径解析(device=auto/dtype=bfloat16)
+    data['file'] = `diffusers/<model>/` 目录(component_select role=checkpoint 选的整模型)。
+    解析 <dir>/{transformer,text_encoder,vae} 各首文件,三件同 device/dtype。
+    注:adapter_arch 暂固定 flux2(引擎当前只支持 Flux2;ERNIE 等多架构是 future)。
+    """
+    repo = data.get("file")
+    if not repo:
+        raise RuntimeError("Load Checkpoint: 未选整模型(file 空)—— 在 diffusers/ 放 HF-layout 模型")
     device = data.get("device") or _AUTO
     dtype = data.get("weight_dtype") or _DEFAULT_DTYPE
-    u, c, v = comps["diffusion_models"], comps["clip"], comps["vae"]
     return {
         "model": {"_type": "flux2_model", "spec": {
-            "kind": "diffusion_models", "file": u.file, "device": device, "dtype": dtype,
-            "adapter_arch": u.adapter_arch or "flux2"}, "loras": []},
-        "clip": {"_type": "flux2_clip", "type": c.clip_arch or "flux2",
-                 "encoders": [{"kind": "clip", "file": c.file, "dtype": dtype}]},
-        "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": v.file, "dtype": dtype}},
+            "kind": "diffusion_models", "file": _first_safetensors(repo, "transformer"),
+            "device": device, "dtype": dtype, "adapter_arch": "flux2"}, "loras": []},
+        "clip": {"_type": "flux2_clip", "type": "flux2",
+                 "encoders": [{"kind": "clip", "file": _first_safetensors(repo, "text_encoder"), "dtype": dtype}]},
+        "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": _first_safetensors(repo, "vae"), "dtype": dtype}},
     }
 
 
