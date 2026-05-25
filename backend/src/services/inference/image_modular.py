@@ -279,13 +279,15 @@ class ModularImageBackend(InferenceAdapter):
             gen = gen.manual_seed(req.seed)
 
         t = time.monotonic()
-        # 注:Flux2-klein 是 guidance-distilled,spike 未传 cfg;PR-1 基线沿用,
-        # cfg_scale 映射(guidance_scale)留 PR-3 随多 CLIP/参数面一起接。
+        # cfg → guidance_scale(Flux2 modular InputParam,默认 4.0;之前没传 → 用户 KSampler 的 cfg 被忽略)。
+        # Flux2-klein 是 guidance-distilled:guidance_scale 控蒸馏 guidance。negative 是 negative_prompt_embeds
+        # (Tensor + true_cfg),klein base 不接 negative_prompt 字符串 → 留 future(需单独编码 negative)。
         out = pipe(
             prompt=req.prompt,
             num_inference_steps=req.steps,
             width=req.width,
             height=req.height,
+            guidance_scale=float(req.cfg_scale),
             generator=gen,
         )
         latency_ms = int((time.monotonic() - t) * 1000)

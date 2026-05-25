@@ -60,6 +60,7 @@ async def test_modular_backend_maps_request_to_pipe(monkeypatch):
     assert kw["prompt"] == "a fox"
     assert kw["num_inference_steps"] == 7
     assert kw["width"] == 512 and kw["height"] == 512
+    assert kw["guidance_scale"] == 7.0  # PR-1:cfg_scale(默认 7.0)→ guidance_scale
     assert "generator" in kw
 
 
