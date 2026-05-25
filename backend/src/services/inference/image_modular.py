@@ -81,6 +81,64 @@ def build_bridged_transformer(unet_spec: Any, repo: str, device: str) -> Any:
     return module.to(device)
 
 
+def _materialize_meta_params(module: Any) -> None:
+    """加载后仍在 meta 设备的 param(未被 state_dict 覆盖,如 comfy 省掉的 tied lm_head)→
+    零初始化兜底(这些权重在图像文本编码里不用)。只动 meta,不碰已加载权重。"""
+    import torch  # noqa: PLC0415
+
+    for name, p in list(module.named_parameters()):
+        if not p.is_meta:
+            continue
+        parent = module.get_submodule(name.rsplit(".", 1)[0]) if "." in name else module
+        attr = name.rsplit(".", 1)[1]
+        setattr(parent, attr, torch.nn.Parameter(
+            torch.zeros(p.shape, dtype=torch.bfloat16), requires_grad=False))
+
+
+def build_bridged_text_encoder(clip_spec: Any, repo: str, device: str) -> Any:
+    """comfy 单文件 text encoder → 参考整模型 config 建模型 + comfy 逐张量反量化(标准键,无需转)。
+
+    repo `text_encoder/config.json` 建空模型(init_empty_weights)→ `dequant_comfy_mixed` 反量化单文件
+    (fp8/nvfp4/plain)→ load_state_dict(assign)→ tie_weights(lm_head)→ meta 兜底 → 落 device。
+    真模型验过(spike_single_file_assembly)。当前 Flux2=Qwen3;架构扩展见 spec。
+    """
+    import torch  # noqa: PLC0415
+    from accelerate import init_empty_weights  # noqa: PLC0415
+    from transformers import AutoConfig, AutoModelForCausalLM  # noqa: PLC0415
+
+    from src.services.inference.quant_loaders import dequant_comfy_mixed  # noqa: PLC0415
+
+    sd = dequant_comfy_mixed(clip_spec)
+    cfg = AutoConfig.from_pretrained(str(Path(repo) / "text_encoder"))
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(cfg)
+    missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
+    if unexpected:
+        import logging  # noqa: PLC0415
+        logging.getLogger(__name__).warning(
+            "build_bridged_text_encoder: unexpected=%d(键不符 config?)", len(unexpected))
+    model.tie_weights()
+    _materialize_meta_params(model)
+    return model.to(device, dtype=torch.bfloat16)
+
+
+def build_bridged_vae(vae_spec: Any, repo: str, device: str) -> Any:
+    """comfy 单文件 vae → 参考整模型 vae config 建 + 反量化单文件权重(plain/comfy 标准键)。"""
+    import torch  # noqa: PLC0415
+    from accelerate import init_empty_weights  # noqa: PLC0415
+    from diffusers import AutoencoderKLFlux2  # noqa: PLC0415
+
+    from src.services.inference.quant_loaders import dequant_comfy_mixed  # noqa: PLC0415
+
+    sd = dequant_comfy_mixed(vae_spec)
+    cfg = AutoencoderKLFlux2.load_config(str(Path(repo) / "vae"))
+    with init_empty_weights():
+        vae = AutoencoderKLFlux2.from_config(cfg)
+    vae.load_state_dict(sd, strict=False, assign=True)
+    _materialize_meta_params(vae)
+    return vae.to(device, dtype=torch.bfloat16)
+
+
 def _torch_dtype(dtype_str: str) -> Any:
     """'bfloat16'/'float16'/'float32' → torch.dtype;'default' → None(原生精度)。
     fp8_* → bfloat16(**compute dtype**):fp8 经 torchao weight-only 量化实现(权重 fp8 存储 /
@@ -134,13 +192,18 @@ class ModularImageBackend(InferenceAdapter):
         dtype: str = "bfloat16",
         components_manager: Any = None,
         transformer_override: Any = None,
+        text_encoder_override: Any = None,
+        vae_override: Any = None,
         **params: Any,
     ):
         super().__init__(paths={"main": repo}, device=device, **params)
         self.repo = repo
         self.dtype = dtype
         self._cm = components_manager
-        self._transformer_override = transformer_override  # comfy 量化桥接(PR-2)
+        # comfy 单文件桥接 override:transformer(量化/comfy)+ text_encoder/vae(单文件装配,PR-2)。
+        self._transformer_override = transformer_override
+        self._text_encoder_override = text_encoder_override
+        self._vae_override = vae_override
         self._pipe: Any = None
         self._loaded_loras: set[str] = set()  # PR-3
 
@@ -155,12 +218,17 @@ class ModularImageBackend(InferenceAdapter):
         cm = self._cm or components_manager_cls()
         pipe = modular_pipeline_cls.from_pretrained(self.repo, components_manager=cm)
         pipe.load_components(torch_dtype=_torch_dtype(self.dtype))
-        if self._transformer_override is not None:
-            # comfy 量化 transformer 替换 HF repo 的(PR-2 桥接)。HF transformer 加载后被换出。
-            pipe.update_components(transformer=self._transformer_override)
-        elif _wants_fp8(self.dtype):
-            # fp8 weight-only(torchao):HF-layout transformer + text_encoder 权重 fp8 存储,
-            # 省 ~½ 显存,让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。
+        # 单文件桥接 override:整模型加载后换出对应组件(transformer / text_encoder / vae)。
+        overrides = {k: v for k, v in (
+            ("transformer", self._transformer_override),
+            ("text_encoder", self._text_encoder_override),
+            ("vae", self._vae_override),
+        ) if v is not None}
+        if overrides:
+            pipe.update_components(**overrides)
+        if _wants_fp8(self.dtype):
+            # fp8 weight-only(torchao):transformer + text_encoder 权重 fp8 存储,省 ~½ 显存,
+            # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
             _quantize_fp8_weight_only(pipe)
         pipe.to(self.device)
         self._pipe = pipe

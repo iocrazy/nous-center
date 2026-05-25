@@ -36,6 +36,9 @@ def stubbed(monkeypatch):
     mm = ModelManager(registry=_EmptyRegistry(), allocator=GPUAllocator())
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)  # 跳过 VRAM 守卫
     monkeypatch.setattr(MM, "_modular_repo_from_components", lambda resolved: "/fake/repo")
+    # PR-2:adapter builder 用 _is_standalone_single_file 判每个组件是否需桥接;stub→False
+    # 让这些 wiring 测试走 HF-layout 路径(不对 fake 文件触发 build_bridged_*)。
+    monkeypatch.setattr(MM, "_is_standalone_single_file", lambda spec: False)
     monkeypatch.setattr(MM, "_is_comfy_single_file_unet", lambda spec: False)
     monkeypatch.setattr(IM, "_import_modular", lambda: (object(), lambda: object()))
 

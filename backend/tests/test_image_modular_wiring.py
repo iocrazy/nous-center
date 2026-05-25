@@ -131,8 +131,9 @@ async def test_bf16_dtype_no_fp8_quant(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_override_takes_precedence_over_fp8_quant(monkeypatch):
-    """comfy 桥接 override + fp8 → 走 update_components(桥接),不再 torchao 量化(elif)。"""
+async def test_override_and_fp8_both_apply(monkeypatch):
+    """PR-2:桥接 override + fp8 **都生效** —— update_components 换组件,且 torchao fp8 量化最终组件
+    (这样单文件/comfy 桥接 + fp8 也能省显存;不再 elif 互斥)。"""
     _m, _cm, pipe = _fake_modular(monkeypatch)
     spy = MagicMock(name="quantize_fp8")
     monkeypatch.setattr(image_modular, "_quantize_fp8_weight_only", spy)
@@ -141,7 +142,19 @@ async def test_override_takes_precedence_over_fp8_quant(monkeypatch):
         repo="/m/flux2", device="cpu", dtype="fp8_e4m3", transformer_override=override)
     await be.infer(ImageRequest(request_id="ov", prompt="x", steps=2, width=64, height=64))
     pipe.update_components.assert_called_once_with(transformer=override)
-    spy.assert_not_called()
+    spy.assert_called_once_with(pipe)
+
+
+@pytest.mark.asyncio
+async def test_all_three_single_file_overrides(monkeypatch):
+    """PR-2:单文件装配 → transformer/text_encoder/vae 三 override 一次 update_components。"""
+    _m, _cm, pipe = _fake_modular(monkeypatch)
+    t, c, v = MagicMock(name="t"), MagicMock(name="c"), MagicMock(name="v")
+    be = image_modular.ModularImageBackend(
+        repo="/m/flux2", device="cpu", transformer_override=t,
+        text_encoder_override=c, vae_override=v)
+    await be.infer(ImageRequest(request_id="sf", prompt="x", steps=2, width=64, height=64))
+    pipe.update_components.assert_called_once_with(transformer=t, text_encoder=c, vae=v)
 
 
 @pytest.mark.asyncio
