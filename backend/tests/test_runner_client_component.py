@@ -51,6 +51,6 @@ async def test_component_event_routed_to_callback():
 async def test_preload_components_sends_message():
     ch = _FakeChannel()
     client = _make_client(ch)
-    await client.preload_components(task_id=9, components={"unet": {}, "clip": {}, "vae": {}}, pipeline_class="Flux2KleinPipeline")
+    await client.preload_components(task_id=9, components={"diffusion_models": {}, "clip": {}, "vae": {}}, pipeline_class="Flux2KleinPipeline")
     sent = [m for m in ch.sent if isinstance(m, P.PreloadComponents)]
     assert sent and sent[0].task_id == 9

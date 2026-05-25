@@ -32,7 +32,7 @@ def _load_mod():
 _CLIP = {"_type": "flux2_clip", "type": "flux2",
          "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "default"}]}
 _MODEL = {"_type": "flux2_model",
-          "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
+          "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1", "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
           "loras": []}
 
 

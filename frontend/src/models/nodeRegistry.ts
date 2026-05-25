@@ -15,7 +15,7 @@ export interface WidgetDef {
   rows?: number
   default?: unknown
   filter?: string
-  role?: 'unet' | 'clip' | 'vae' | 'loras'
+  role?: 'diffusion_models' | 'clip' | 'vae' | 'loras'
 }
 
 export interface DeclarativeNodeDef {
@@ -25,7 +25,7 @@ export interface DeclarativeNodeDef {
   badge: string
   badgeColor: string
   widgets: WidgetDef[]
-  componentRole?: 'unet' | 'clip' | 'vae'
+  componentRole?: 'diffusion_models' | 'clip' | 'vae'
 }
 
 export const DECLARATIVE_NODES: Record<string, DeclarativeNodeDef> = {
@@ -174,7 +174,7 @@ interface PluginNodeDef {
   inputs?: PortDef[]
   outputs?: PortDef[]
   widgets?: WidgetDef[]
-  componentRole?: 'unet' | 'clip' | 'vae'
+  componentRole?: 'diffusion_models' | 'clip' | 'vae'
   _package?: string
 }
 

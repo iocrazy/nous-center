@@ -19,10 +19,10 @@ def test_image_request_components_default_none():
 
 def test_image_request_with_components():
     comps = {
-        "unet": ComponentSpec(kind="unet", file="/m/u.safe", device="cuda:1", dtype="bfloat16", adapter_arch="flux2"),
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file="/m/u.safe", device="cuda:1", dtype="bfloat16", adapter_arch="flux2"),
         "clip": ComponentSpec(kind="clip", file="/m/c.safe", device="cuda:0", dtype="bfloat16", clip_arch="flux2"),
         "vae":  ComponentSpec(kind="vae",  file="/m/v.safe", device="cuda:2", dtype="bfloat16"),
     }
     req = ImageRequest(request_id="r1", prompt="a cat", seed=42, components=comps)
-    assert req.components["unet"].device == "cuda:1"
+    assert req.components["diffusion_models"].device == "cuda:1"
     assert req.components["vae"].kind == "vae"

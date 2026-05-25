@@ -201,7 +201,7 @@ async def lifespan(app: FastAPI):
         logger.info("PR-3: component index warmed — %d files", _ci_total)
     except Exception:  # noqa: BLE001 — index is non-critical at boot
         logger.exception("PR-3: component index warm-up failed; serving empty index")
-        app.state.component_index = {role: [] for role in ("unet", "clip", "vae", "loras")}
+        app.state.component_index = {role: [] for role in ("diffusion_models", "clip", "vae", "loras")}
 
     # Wire ModelManager into workflow executor
     from src.services.workflow_executor import set_model_manager

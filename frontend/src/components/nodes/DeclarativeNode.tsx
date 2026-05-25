@@ -462,7 +462,7 @@ function WidgetRenderer({
         <ComponentSelectWidget
           value={String(resolved ?? '')}
           onChange={(v) => onChange(v)}
-          role={(widget.role ?? 'unet') as ComponentRole}
+          role={(widget.role ?? 'diffusion_models') as ComponentRole}
         />
       )
     case 'clip_stack':

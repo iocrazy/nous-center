@@ -21,7 +21,7 @@ def _reset_component_cache():
 
 def test_load_model_paths_config_returns_role_dirs():
     cfg = load_model_paths_config()
-    assert "unet" in cfg
+    assert "diffusion_models" in cfg
     assert "clip" in cfg
     assert "vae" in cfg
     assert "loras" in cfg
@@ -50,7 +50,7 @@ def test_scan_components_globs_role_dirs(tmp_path, monkeypatch):
     _make_file(tmp_path, "image/loras/style.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
-    unet = scan_components("unet", force_refresh=True)
+    unet = scan_components("diffusion_models", force_refresh=True)
     names = {e["filename"] for e in unet}
     assert "Flux2-bf16.safetensors" in names
     assert "Flux2-fp8mixed.safetensors" in names
@@ -69,7 +69,7 @@ def test_scan_components_finds_diffusion_models_subdir(tmp_path, monkeypatch):
     _make_file(tmp_path, "image/diffusion_models/root-level.safetensors")  # 根仍要匹配
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
-    names = {e["filename"] for e in scan_components("unet", force_refresh=True)}
+    names = {e["filename"] for e in scan_components("diffusion_models", force_refresh=True)}
     assert {"Flux2-bf16.safetensors", "Flux2-fp8mixed.safetensors", "root-level.safetensors"} <= names
 
 
@@ -77,7 +77,7 @@ def test_scan_components_entry_shape(tmp_path, monkeypatch):
     _make_file(tmp_path, "image/diffusion_models/x-bf16.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
-    entry = scan_components("unet", force_refresh=True)[0]
+    entry = scan_components("diffusion_models", force_refresh=True)[0]
     assert set(entry.keys()) >= {"filename", "abs_path", "size_mb", "quant_type"}
     assert entry["abs_path"].endswith("x-bf16.safetensors")
     assert isinstance(entry["size_mb"], (int, float))
@@ -91,7 +91,7 @@ def test_quant_type_detection_by_filename(tmp_path, monkeypatch):
     _make_file(tmp_path, "image/diffusion_models/M-Q4_K.gguf")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
-    by_name = {e["filename"]: e["quant_type"] for e in scan_components("unet", force_refresh=True)}
+    by_name = {e["filename"]: e["quant_type"] for e in scan_components("diffusion_models", force_refresh=True)}
     assert by_name["M-bf16.safetensors"] == "bf16"
     assert by_name["M-fp8mixed.safetensors"] == "fp8mixed"
     assert by_name["M-mxfp8mixed.safetensors"] == "mxfp8mixed"
@@ -120,8 +120,8 @@ def test_get_component_index_returns_all_roles(tmp_path, monkeypatch):
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import get_component_index
     idx = get_component_index()
-    assert set(idx.keys()) == {"unet", "clip", "vae", "loras"}
-    assert len(idx["unet"]) == 1
+    assert set(idx.keys()) == {"diffusion_models", "clip", "vae", "loras"}
+    assert len(idx["diffusion_models"]) == 1
     assert len(idx["clip"]) == 1
     assert len(idx["vae"]) == 1
 
@@ -133,7 +133,7 @@ def test_load_model_paths_config_fail_soft_on_malformed(tmp_path, monkeypatch):
     monkeypatch.setattr("src.services.component_scanner._CONFIG_PATH", bad)
     from src.services.component_scanner import load_model_paths_config
     cfg = load_model_paths_config()
-    assert cfg == {"unet": [], "clip": [], "vae": [], "loras": []}
+    assert cfg == {"diffusion_models": [], "clip": [], "vae": [], "loras": []}
 
 
 def test_collapse_shards_groups_multishard_to_one_entry():

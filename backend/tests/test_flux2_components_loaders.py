@@ -49,10 +49,10 @@ def test_load_diffusion_widgets_have_file_dtype_device():
     + adapter_arch,对齐 ComfyUI UNETLoaderMultiGPU。"""
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
     node = cfg["nodes"]["flux2_load_diffusion_model"]
-    assert node.get("componentRole") == "unet"
+    assert node.get("componentRole") == "diffusion_models"
     by_name = {w["name"]: w for w in node["widgets"]}
     assert by_name["file"]["widget"] == "component_select"
-    assert by_name["file"]["role"] == "unet"
+    assert by_name["file"]["role"] == "diffusion_models"
     assert "weight_dtype" in by_name
     assert "default" in [o if isinstance(o, str) else o for o in by_name["weight_dtype"]["options"]]
     assert by_name["device"]["widget"] == "select"
@@ -96,7 +96,7 @@ async def test_load_diffusion_descriptor():
         {"file": "/m/u.safe", "device": "cuda:1", "weight_dtype": "fp8_e4m3", "adapter_arch": "flux2"}, {})
     assert out["model"] == {
         "_type": "flux2_model",
-        "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1",
+        "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1",
                  "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
         "loras": [],
     }
@@ -157,7 +157,7 @@ async def test_load_vae_descriptor():
 async def test_load_lora_appends_with_path():
     executors = _load_executors()
     base = {"_type": "flux2_model",
-            "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
+            "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1", "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
             "loras": []}
     out = await executors["flux2_load_lora"](
         {"lora_name": "more_details", "lora_path": "/m/loras/more.safe", "strength": 0.6},
@@ -169,7 +169,7 @@ async def test_load_lora_appends_with_path():
 @pytest.mark.asyncio
 async def test_load_lora_chain_accumulates():
     executors = _load_executors()
-    base = {"_type": "flux2_model", "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1",
+    base = {"_type": "flux2_model", "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1",
             "dtype": "fp8_e4m3", "adapter_arch": "flux2"}, "loras": []}
     s1 = await executors["flux2_load_lora"]({"lora_name": "a", "lora_path": "/m/a.safe", "strength": 0.8}, {"model": base})
     s2 = await executors["flux2_load_lora"]({"lora_name": "b", "lora_path": "/m/b.safe", "strength": 0.4}, {"model": s1["model"]})
@@ -179,7 +179,7 @@ async def test_load_lora_chain_accumulates():
 @pytest.mark.asyncio
 async def test_load_lora_empty_name_passes_through():
     executors = _load_executors()
-    base = {"_type": "flux2_model", "spec": {"kind": "unet", "file": "/m/u.safe", "device": "auto",
+    base = {"_type": "flux2_model", "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "auto",
             "dtype": "default", "adapter_arch": "flux2"}, "loras": []}
     out = await executors["flux2_load_lora"]({"lora_name": "", "strength": 1.0}, {"model": base})
     assert out["model"]["loras"] == []

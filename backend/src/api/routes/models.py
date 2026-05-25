@@ -56,11 +56,11 @@ async def preload_components(request: Request, body: dict = Body(...)):
     """Batch-warm a unet+clip+vae combo on the image runner (spec §6.2). Returns
     202 + task_id immediately; state arrives via /ws/models component_state_changed."""
     raw = body.get("components") or {}
-    missing = {"unet", "clip", "vae"} - set(raw)
+    missing = {"diffusion_models", "clip", "vae"} - set(raw)
     if missing:
         raise HTTPException(422, f"missing component kinds: {sorted(missing)}")
     try:
-        components = {k: ComponentSpec(**raw[k]).model_dump() for k in ("unet", "clip", "vae")}
+        components = {k: ComponentSpec(**raw[k]).model_dump() for k in ("diffusion_models", "clip", "vae")}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(422, f"invalid component spec: {e}") from e
 

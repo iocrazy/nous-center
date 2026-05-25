@@ -24,7 +24,7 @@ class _PairChannel:
 class _FakeMM:
     async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None):
         from src.services.inference.component_spec import component_state_key
-        for k in ("unet", "clip", "vae"):
+        for k in ("diffusion_models", "clip", "vae"):
             key = component_state_key(components[k])
             await on_event(key, "loading", None)
             await on_event(key, "loaded", None)
@@ -52,7 +52,7 @@ async def test_preload_to_registry_e2e():
 
     state = _RunnerState("r", "image", [0, 1, 2], _FakeMM())
     comps = {
-        "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+        "diffusion_models": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
         "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
         "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
     }
@@ -61,6 +61,6 @@ async def test_preload_to_registry_e2e():
     demux.cancel()
 
     from src.services.inference.component_spec import ComponentSpec, component_state_key
-    unet_key = component_state_key(ComponentSpec(**comps["unet"]))
+    unet_key = component_state_key(ComponentSpec(**comps["diffusion_models"]))
     assert registry.get(unet_key)["state"] == "loaded"
     assert any(s == "loaded" for (_k, s, _e) in ws.calls)

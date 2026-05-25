@@ -49,7 +49,7 @@ def expand_legacy_image_spec(spec, loras: list[dict] | None = None) -> dict[str,
         for lo in (loras or []) if isinstance(lo, dict) and lo.get("name")
     ]
     return {
-        "unet": ComponentSpec(kind="unet", file=unet_file, device="auto", dtype="bfloat16",
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=unet_file, device="auto", dtype="bfloat16",
                               adapter_arch=arch, loras=lora_specs),
         "clip": ComponentSpec(kind="clip", file=clip_file, device="auto", dtype="bfloat16", clip_arch=arch),
         "vae":  ComponentSpec(kind="vae",  file=vae_file,  device="auto", dtype="bfloat16"),

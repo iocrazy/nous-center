@@ -30,10 +30,10 @@ def test_expand_hf_layout(tmp_path, monkeypatch):
                      paths={"main": "Flux2-klein-9B"}, vram_mb=24000,
                      params={"accepts_lora_archs": ["flux2"]})
     comps = expand_legacy_image_spec(spec, loras=None)
-    assert set(comps) == {"unet", "clip", "vae"}
-    assert comps["unet"].device == "auto"
-    assert comps["unet"].adapter_arch == "flux2"
-    assert Path(comps["unet"].file).parent.name == "transformer"
+    assert set(comps) == {"diffusion_models", "clip", "vae"}
+    assert comps["diffusion_models"].device == "auto"
+    assert comps["diffusion_models"].adapter_arch == "flux2"
+    assert Path(comps["diffusion_models"].file).parent.name == "transformer"
     assert Path(comps["clip"].file).parent.name == "text_encoder"
     assert Path(comps["vae"].file).parent.name == "vae"
 
@@ -53,7 +53,7 @@ def test_expand_quantized_transformer_override(tmp_path, monkeypatch):
                      paths={"main": "Flux2-klein-9B", "quantized_transformer": "qt/Flux2-fp8mixed.safetensors"},
                      vram_mb=18000, params={})
     comps = expand_legacy_image_spec(spec, loras=None)
-    assert comps["unet"].file == str(qt)
+    assert comps["diffusion_models"].file == str(qt)
 
 
 def test_expand_merges_loras(tmp_path, monkeypatch):
@@ -67,5 +67,5 @@ def test_expand_merges_loras(tmp_path, monkeypatch):
                      adapter_class="x.DiffusersImageBackend",
                      paths={"main": "Flux2-klein-9B"}, vram_mb=24000, params={})
     comps = expand_legacy_image_spec(spec, loras=[{"name": "style", "strength": 0.7}])
-    assert comps["unet"].loras[0].name == "style"
-    assert comps["unet"].loras[0].strength == 0.7
+    assert comps["diffusion_models"].loras[0].name == "style"
+    assert comps["diffusion_models"].loras[0].strength == 0.7

@@ -18,7 +18,7 @@ describe('ComponentSelectWidget', () => {
     vi.mocked(apiFetch).mockResolvedValue({ components: [
       { filename: 'flux-unet.safetensors', abs_path: '/m/flux-unet.safetensors', size_mb: 18000, quant_type: 'bf16', mtime: 0 },
     ] })
-    wrap(<ComponentSelectWidget value="" onChange={() => {}} role="unet" />)
+    wrap(<ComponentSelectWidget value="" onChange={() => {}} role="diffusion_models" />)
     await waitFor(() => expect(screen.getByRole('option', { name: /flux-unet/ })).toBeInTheDocument())
     const opt = screen.getByRole('option', { name: /flux-unet/ }) as HTMLOptionElement
     expect(opt.value).toBe('/m/flux-unet.safetensors')

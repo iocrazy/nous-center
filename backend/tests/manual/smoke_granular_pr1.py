@@ -68,7 +68,7 @@ async def main() -> None:
         loras = [LoRASpec(name=Path(LORA).stem, path=LORA, strength=0.8)]
 
     components = {
-        "unet": ComponentSpec(kind="unet", file=_rep(MODEL_ROOT / "transformer"),
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=_rep(MODEL_ROOT / "transformer"),
                               device=DEVICE, dtype=DTYPE, adapter_arch="flux2", loras=loras),
         "clip": ComponentSpec(kind="clip", file=_rep(MODEL_ROOT / "text_encoder"),
                               device=DEVICE, dtype=DTYPE),

@@ -46,21 +46,21 @@ def test_preload_dispatches_to_image_runner(app_with_state):
     app_with_state.state.runner_clients = {"image": _Client()}
     client = TestClient(app_with_state)
     body = {"components": {
-        "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+        "diffusion_models": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
         "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
         "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
     }}
     resp = client.post("/api/v1/models/components/preload", json=body)
     assert resp.status_code == 202
     assert "task_id" in resp.json()
-    assert sent["components"]["unet"]["file"] == "/m/u.safe"
+    assert sent["components"]["diffusion_models"]["file"] == "/m/u.safe"
 
 
 def test_preload_no_runner_returns_503(app_with_state):
     app_with_state.state.runner_clients = {}
     client = TestClient(app_with_state)
     resp = client.post("/api/v1/models/components/preload", json={"components": {
-        "unet": {"kind": "unet", "file": "/m/u.safe", "device": "auto", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+        "diffusion_models": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "auto", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
         "clip": {"kind": "clip", "file": "/m/c.safe", "device": "auto", "dtype": "bfloat16", "clip_arch": "flux2"},
         "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "auto", "dtype": "bfloat16"},
     }})

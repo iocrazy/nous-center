@@ -24,7 +24,7 @@ class _EmptyRegistry(ModelRegistry):
 
 def _comps(unet_dev="cuda:1"):
     return {
-        "unet": ComponentSpec(kind="unet", file="/m/u.safe", device=unet_dev, dtype="bfloat16", adapter_arch="flux2"),
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file="/m/u.safe", device=unet_dev, dtype="bfloat16", adapter_arch="flux2"),
         "clip": ComponentSpec(kind="clip", file="/m/c.safe", device="cuda:0", dtype="bfloat16"),
         "vae":  ComponentSpec(kind="vae",  file="/m/v.safe", device="cuda:2", dtype="bfloat16"),
     }
@@ -85,8 +85,8 @@ async def test_emits_component_events(stubbed):
 
     comps = _comps()
     await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline", on_event=_on_event)
-    unet_dev = mm._resolve_component_device(comps["unet"]).device
-    keys = {component_state_key(comps[k].model_copy(update={"device": unet_dev})) for k in ("unet", "clip", "vae")}
+    unet_dev = mm._resolve_component_device(comps["diffusion_models"]).device
+    keys = {component_state_key(comps[k].model_copy(update={"device": unet_dev})) for k in ("diffusion_models", "clip", "vae")}
     loaded = {k for (k, s, _e) in events if s == "loaded"}
     loading = {k for (k, s, _e) in events if s == "loading"}
     assert keys <= loaded and keys <= loading
