@@ -27,7 +27,7 @@ def client(tmp_path, monkeypatch):
 
 
 def test_get_components_by_role(client):
-    resp = client.get("/api/v1/components?role=unet")
+    resp = client.get("/api/v1/components?role=diffusion_models")
     assert resp.status_code == 200
     data = resp.json()
     assert "components" in data
@@ -45,7 +45,7 @@ def test_get_components_no_role_returns_all(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "index" in data
-    assert set(data["index"].keys()) == {"unet", "clip", "vae", "loras"}
+    assert set(data["index"].keys()) == {"diffusion_models", "clip", "vae", "loras"}
 
 
 def test_post_scan_refreshes_index(client, tmp_path):
@@ -65,4 +65,4 @@ def test_lifespan_warms_component_index(tmp_path, monkeypatch):
     app = create_app()
     with TestClient(app):  # triggers lifespan startup
         assert hasattr(app.state, "component_index")
-        assert "unet" in app.state.component_index
+        assert "diffusion_models" in app.state.component_index

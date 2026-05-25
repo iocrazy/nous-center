@@ -12,7 +12,7 @@
 #   clip 角色 = text_encoders + clip;vae=vae;loras=loras;diffusers=HF 目录。
 # 注:nous 内部角色名仍叫 "unet"(遗留);ComfyUI 现称 diffusion_models(DiT/transformer)。
 roles:
-  unet:
+  diffusion_models:
     - image/diffusion_models/**/*.safetensors
     - image/diffusion_models/**/*.gguf
     - image/unet/**/*.safetensors          # ComfyUI 旧文件夹别名

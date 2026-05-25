@@ -69,8 +69,8 @@ async def test_image_sampler_matches_pipeline_ssim_single_device():
 
     # ===== Our: ImageSampler via DiffusersImageBackend.from_components, same DEVICE =====
     components = {
-        "unet": ComponentSpec(
-            kind="unet", adapter_arch="flux2",
+        "diffusion_models": ComponentSpec(
+            kind="diffusion_models", adapter_arch="flux2",
             file=str(FLUX2_KLEIN_DIR / "transformer/diffusion_pytorch_model.safetensors"),
             device=DEVICE, dtype="bfloat16",
         ),

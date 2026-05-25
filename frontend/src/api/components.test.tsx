@@ -24,9 +24,9 @@ describe('components api', () => {
 
   it('useComponents fetches by role', async () => {
     vi.mocked(apiFetch).mockResolvedValue({ components: [{ filename: 'u.safe', abs_path: '/m/u.safe', size_mb: 1, quant_type: 'bf16', mtime: 0 }] })
-    const { result } = renderHook(() => useComponents('unet'), { wrapper: wrapper() })
+    const { result } = renderHook(() => useComponents('diffusion_models'), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.data).toBeDefined())
-    expect(apiFetch).toHaveBeenCalledWith('/api/v1/components?role=unet')
+    expect(apiFetch).toHaveBeenCalledWith('/api/v1/components?role=diffusion_models')
     expect(result.current.data?.[0].abs_path).toBe('/m/u.safe')
   })
 

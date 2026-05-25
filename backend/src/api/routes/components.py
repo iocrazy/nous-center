@@ -1,6 +1,6 @@
 """GET /api/v1/components + POST /scan — file index for PR-4 loader nodes.
 
-GET ?role=unet|clip|vae|loras → that role's files.
+GET ?role=diffusion_models|clip|vae|loras → that role's files.
 GET (no role)                 → full index across all roles.
 POST /scan                    → admin-only re-glob + cache invalidate + WS broadcast.
 """

@@ -18,9 +18,9 @@ describe('loadPluginDefinitions — componentRole 透传(PR-2)', () => {
           category: 'image',
           badge: 'Loader',
           badgeColor: 'var(--accent)',
-          componentRole: 'unet',
+          componentRole: 'diffusion_models',
           widgets: [
-            { name: 'file', label: '文件', widget: 'component_select', role: 'unet' },
+            { name: 'file', label: '文件', widget: 'component_select', role: 'diffusion_models' },
             { name: 'weight_dtype', label: '精度', widget: 'select', options: [] },
           ],
           outputs: [{ id: 'model', type: 'MODEL', label: 'MODEL' }],
@@ -33,8 +33,8 @@ describe('loadPluginDefinitions — componentRole 透传(PR-2)', () => {
     const def = DECLARATIVE_NODES['pr2_test_unet_loader']
     expect(def).toBeDefined()
     // 四态头靠 declDef.componentRole 触发(DeclarativeNode.tsx:554)
-    expect(def.componentRole).toBe('unet')
+    expect(def.componentRole).toBe('diffusion_models')
     // component_select 靠 widget.role 拉对应组件列表(DeclarativeNode.tsx:368)
-    expect(def.widgets.find((w) => w.name === 'file')?.role).toBe('unet')
+    expect(def.widgets.find((w) => w.name === 'file')?.role).toBe('diffusion_models')
   })
 })

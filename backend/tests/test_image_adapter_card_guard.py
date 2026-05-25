@@ -22,7 +22,7 @@ def mm():
 
 def _comps(dev="cuda:1"):
     return {
-        "unet": ComponentSpec(kind="unet", file="/m/u.safe", device=dev, dtype="bfloat16", adapter_arch="flux2"),
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file="/m/u.safe", device=dev, dtype="bfloat16", adapter_arch="flux2"),
         "clip": ComponentSpec(kind="clip", file="/m/c.safe", device="cuda:0", dtype="bfloat16"),
         "vae":  ComponentSpec(kind="vae",  file="/m/v.safe", device="cuda:2", dtype="bfloat16"),
     }

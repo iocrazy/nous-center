@@ -21,10 +21,10 @@ class ComponentSpec(BaseModel):
     """One Flux2 / SDXL / Z-Image component (transformer | text encoder | vae).
 
     `device` accepts "auto" → ModelManager.get_best_gpu(vram_mb) resolves at load time.
-    `loras` is meaningful only when kind="unet" (Flux2 LoRAs patch DiT, not text_encoder/VAE).
+    `loras` is meaningful only when kind="diffusion_models" (Flux2 LoRAs patch DiT, not text_encoder/VAE).
     """
 
-    kind: Literal["unet", "clip", "vae"]
+    kind: Literal["diffusion_models", "clip", "vae"]
     file: str = Field(..., description="Absolute path resolved by component_scanner")
     device: str = Field(..., description="'auto' | 'cpu' | 'cuda:N'")
     dtype: str = Field(..., description="'bfloat16' | 'float16' | 'fp8_e4m3'")
@@ -54,13 +54,13 @@ class ComponentSpec(BaseModel):
         - clip_arch describes the text encoder family
         Mis-set fields are dropped silently otherwise — fail loud here instead.
         """
-        if self.loras and self.kind != "unet":
+        if self.loras and self.kind != "diffusion_models":
             raise ValueError(
-                f"loras is only meaningful for kind='unet', got kind={self.kind!r}"
+                f"loras is only meaningful for kind='diffusion_models', got kind={self.kind!r}"
             )
-        if self.adapter_arch is not None and self.kind != "unet":
+        if self.adapter_arch is not None and self.kind != "diffusion_models":
             raise ValueError(
-                f"adapter_arch is unet-only, got kind={self.kind!r}"
+                f"adapter_arch is diffusion_models-only, got kind={self.kind!r}"
             )
         if self.clip_arch is not None and self.kind != "clip":
             raise ValueError(

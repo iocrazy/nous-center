@@ -30,12 +30,12 @@ nodes:
     category: image
     badge: Loader
     badgeColor: "var(--accent)"
-    componentRole: unet
+    componentRole: diffusion_models
     inputs: []
     outputs:
       - { id: model, type: MODEL, label: MODEL }
     widgets:
-      - { name: file,         label: "文件", widget: component_select, role: unet }
+      - { name: file,         label: "文件", widget: component_select, role: diffusion_models }
       - { name: weight_dtype, label: "精度", widget: select, options: [default, bfloat16, float16, fp8_e4m3], default: bfloat16 }
       - { name: device,       label: "显卡", widget: select, options: [auto, "cuda:0", "cuda:1", "cuda:2"], default: auto }
       - { name: adapter_arch, label: "架构", widget: select, options: [flux2, flux1], default: flux2 }

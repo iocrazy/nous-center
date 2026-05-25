@@ -15,7 +15,7 @@ from src.services.inference.component_spec import ComponentSpec
 
 
 def _spec() -> ComponentSpec:
-    return ComponentSpec(kind="unet", file="/m/fp8mixed.safetensors", device="cpu",
+    return ComponentSpec(kind="diffusion_models", file="/m/fp8mixed.safetensors", device="cpu",
                          dtype="bfloat16", adapter_arch="flux2")
 
 

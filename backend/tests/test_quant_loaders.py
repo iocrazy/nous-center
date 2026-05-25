@@ -101,10 +101,10 @@ def test_registry_first_match_wins():
     def generic(spec):
         return "generic"
 
-    spec_fp8 = ComponentSpec(kind="unet", file="/p/foo-fp8.safetensors", device="cpu", dtype="bfloat16")
+    spec_fp8 = ComponentSpec(kind="diffusion_models", file="/p/foo-fp8.safetensors", device="cpu", dtype="bfloat16")
     assert reg.dispatch(spec_fp8) == "specific"
 
-    spec_plain = ComponentSpec(kind="unet", file="/p/foo.safetensors", device="cpu", dtype="bfloat16")
+    spec_plain = ComponentSpec(kind="diffusion_models", file="/p/foo.safetensors", device="cpu", dtype="bfloat16")
     assert reg.dispatch(spec_plain) == "generic"
 
 
@@ -145,7 +145,7 @@ def test_plain_safetensors_loader_gguf_not_supported(tmp_path):
     """GGUF is V2 PR-7 — V1 dispatches to UnsupportedQuantError."""
     gguf = tmp_path / "fake.gguf"
     gguf.write_bytes(b"GGUF\x00" * 16)
-    spec = ComponentSpec(kind="unet", file=str(gguf), device="cpu", dtype="bfloat16")
+    spec = ComponentSpec(kind="diffusion_models", file=str(gguf), device="cpu", dtype="bfloat16")
     with pytest.raises(UnsupportedQuantError, match="GGUF .* V2"):
         QUANT_LOADERS.dispatch(spec)
 
@@ -193,7 +193,7 @@ def _make_fp8mixed_safetensors(tmp_path: Path, name: str) -> Path:
 
 def test_fp8mixed_loader_dequants_and_drops_metadata(tmp_path):
     sf = _make_fp8mixed_safetensors(tmp_path, "Flux2-Klein-9B-True-v2-fp8mixed")
-    spec = ComponentSpec(kind="unet", file=str(sf), device="cpu", dtype="bfloat16")
+    spec = ComponentSpec(kind="diffusion_models", file=str(sf), device="cpu", dtype="bfloat16")
 
     sd = QUANT_LOADERS.dispatch(spec)
 
@@ -211,10 +211,10 @@ def test_fp8mixed_loader_match_priority_over_plain():
     """File with 'fp8mixed' in name must dispatch to fp8 loader, not plain."""
     matchers = [m for m, _fn in QUANT_LOADERS._loaders]
     fp8_idx = next(i for i, m in enumerate(matchers)
-                   if m(ComponentSpec(kind="unet", file="x-fp8mixed.safetensors",
+                   if m(ComponentSpec(kind="diffusion_models", file="x-fp8mixed.safetensors",
                                       device="cpu", dtype="bfloat16")))
     plain_idx = next(i for i, m in enumerate(matchers)
-                     if m(ComponentSpec(kind="unet", file="plain.safetensors",
+                     if m(ComponentSpec(kind="diffusion_models", file="plain.safetensors",
                                         device="cpu", dtype="bfloat16")))
     assert fp8_idx < plain_idx
 
@@ -234,7 +234,7 @@ def test_fp8mixed_loader_dispatches_via_header_sniff_when_name_lacks_marker(tmp_
     }
     p = tmp_path / "plain-looking-name.safetensors"   # no 'fp8mixed' substring
     save_file(sd, str(p))
-    spec = ComponentSpec(kind="unet", file=str(p), device="cpu", dtype="bfloat16")
+    spec = ComponentSpec(kind="diffusion_models", file=str(p), device="cpu", dtype="bfloat16")
 
     sd_loaded = QUANT_LOADERS.dispatch(spec)
 
@@ -293,7 +293,7 @@ def _make_mxfp8mixed_safetensors(tmp_path: Path, name: str) -> Path:
 
 def test_mxfp8mixed_loader_block_dequants_to_target_dtype(tmp_path):
     sf = _make_mxfp8mixed_safetensors(tmp_path, "Flux2-X-mxfp8mixed")
-    spec = ComponentSpec(kind="unet", file=str(sf), device="cpu", dtype="bfloat16")
+    spec = ComponentSpec(kind="diffusion_models", file=str(sf), device="cpu", dtype="bfloat16")
 
     sd = QUANT_LOADERS.dispatch(spec)
 
@@ -310,10 +310,10 @@ def test_mxfp8mixed_loader_priority_over_fp8mixed():
     """File named mxfp8mixed must NOT fall through to fp8mixed loader."""
     matchers = [m for m, _fn in QUANT_LOADERS._loaders]
     mxfp8_idx = next(i for i, m in enumerate(matchers)
-                     if m(ComponentSpec(kind="unet", file="x-mxfp8mixed.safetensors",
+                     if m(ComponentSpec(kind="diffusion_models", file="x-mxfp8mixed.safetensors",
                                         device="cpu", dtype="bfloat16")))
     fp8_idx = next(i for i, m in enumerate(matchers)
-                   if m(ComponentSpec(kind="unet", file="x-fp8mixed.safetensors",
+                   if m(ComponentSpec(kind="diffusion_models", file="x-fp8mixed.safetensors",
                                       device="cpu", dtype="bfloat16")))
     assert mxfp8_idx < fp8_idx, "mxfp8mixed matcher must register before fp8mixed"
 
@@ -349,7 +349,7 @@ def _make_nvfp4mixed_safetensors(tmp_path: Path, name: str) -> Path:
 
 def test_nvfp4mixed_loader_unpacks_4bit_blocks(tmp_path):
     sf = _make_nvfp4mixed_safetensors(tmp_path, "Flux2-X-nvfp4mixed")
-    spec = ComponentSpec(kind="unet", file=str(sf), device="cpu", dtype="bfloat16")
+    spec = ComponentSpec(kind="diffusion_models", file=str(sf), device="cpu", dtype="bfloat16")
 
     sd = QUANT_LOADERS.dispatch(spec)
 
@@ -366,9 +366,9 @@ def test_nvfp4mixed_loader_unpacks_4bit_blocks(tmp_path):
 def test_nvfp4mixed_loader_priority_over_mxfp8():
     matchers = [m for m, _fn in QUANT_LOADERS._loaders]
     nvfp4_idx = next(i for i, m in enumerate(matchers)
-                     if m(ComponentSpec(kind="unet", file="x-nvfp4mixed.safetensors",
+                     if m(ComponentSpec(kind="diffusion_models", file="x-nvfp4mixed.safetensors",
                                         device="cpu", dtype="bfloat16")))
     mxfp8_idx = next(i for i, m in enumerate(matchers)
-                     if m(ComponentSpec(kind="unet", file="x-mxfp8mixed.safetensors",
+                     if m(ComponentSpec(kind="diffusion_models", file="x-mxfp8mixed.safetensors",
                                         device="cpu", dtype="bfloat16")))
     assert nvfp4_idx < mxfp8_idx

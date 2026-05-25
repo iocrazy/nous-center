@@ -48,10 +48,10 @@ async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
     comps = expand_legacy_image_spec(spec_obj)  # 路径解析(device=auto/dtype=bfloat16)
     device = data.get("device") or _AUTO
     dtype = data.get("weight_dtype") or _DEFAULT_DTYPE
-    u, c, v = comps["unet"], comps["clip"], comps["vae"]
+    u, c, v = comps["diffusion_models"], comps["clip"], comps["vae"]
     return {
         "model": {"_type": "flux2_model", "spec": {
-            "kind": "unet", "file": u.file, "device": device, "dtype": dtype,
+            "kind": "diffusion_models", "file": u.file, "device": device, "dtype": dtype,
             "adapter_arch": u.adapter_arch or "flux2"}, "loras": []},
         "clip": {"_type": "flux2_clip", "type": c.clip_arch or "flux2",
                  "encoders": [{"kind": "clip", "file": c.file, "dtype": dtype}]},
@@ -64,7 +64,7 @@ async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
 
 def _spec_unet(data: dict) -> dict:
     return {
-        "kind": "unet",
+        "kind": "diffusion_models",
         "file": data["file"],
         "device": data.get("device") or _AUTO,
         "dtype": data.get("weight_dtype") or _DEFAULT_DTYPE,

@@ -63,7 +63,7 @@ class Ping:
 @dataclass(frozen=True)
 class PreloadComponents:
     """主进程 → image runner:批量预热一组 unet+clip+vae(spec §6.2)。
-    components = {"unet": <spec dict>, "clip": <spec dict>, "vae": <spec dict>}。
+    components = {"diffusion_models": <spec dict>, "clip": <spec dict>, "vae": <spec dict>}。
     runner 走 get_or_load_image_adapter,过程中发 ComponentEvent。"""
     task_id: int
     components: dict[str, Any]

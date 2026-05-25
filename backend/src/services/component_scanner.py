@@ -1,5 +1,5 @@
 # backend/src/services/component_scanner.py
-"""component_scanner — enumerate unet/clip/vae/lora files by role for PR-4 loader nodes.
+"""component_scanner — enumerate diffusion_models/clip/vae/lora files by role for PR-4 loader nodes.
 
 Modeled on lora_scanner.py: glob role-dirs declared in model_paths.yaml, detect
 quant_type per file, cache module-level, expose invalidate. base_path from
@@ -19,7 +19,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-ROLE_DIRS = ("unet", "clip", "vae", "loras")
+ROLE_DIRS = ("diffusion_models", "clip", "vae", "loras")
 
 # HF-layout 分片:name-00001-of-00002.safetensors。同目录同 base 的分片是「一个模型拆成
 # 多文件」,折叠成一个条目(否则下拉把每片当一个可选模型,误导;选单片语义也错)。

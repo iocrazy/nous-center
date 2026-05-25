@@ -10,14 +10,14 @@ from src.services.inference.component_spec import ComponentSpec, ComponentKey, t
 
 def test_unet_component_spec_valid():
     spec = ComponentSpec(
-        kind="unet",
+        kind="diffusion_models",
         file="/abs/path/transformer.safetensors",
         device="cuda:1",
         dtype="bfloat16",
         loras=[LoRASpec(name="style", strength=0.8)],
         adapter_arch="flux2",
     )
-    assert spec.kind == "unet"
+    assert spec.kind == "diffusion_models"
     assert spec.device == "cuda:1"
     assert len(spec.loras) == 1
 
@@ -52,7 +52,7 @@ def test_device_must_be_cuda_or_cpu_or_auto():
 
 def test_component_key_is_hashable_tuple():
     spec = ComponentSpec(
-        kind="unet", file="/p/u.safe", device="cuda:1", dtype="bfloat16",
+        kind="diffusion_models", file="/p/u.safe", device="cuda:1", dtype="bfloat16",
         loras=[LoRASpec(name="a", strength=0.8), LoRASpec(name="b", strength=0.4)],
     )
     key = to_component_key(spec)
@@ -71,17 +71,17 @@ def test_component_key_is_hashable_tuple():
 
 def test_component_key_stable_across_lora_order():
     """Two specs with same loras in different order produce equal key (frozenset)."""
-    s1 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+    s1 = ComponentSpec(kind="diffusion_models", file="/p/u", device="cuda:1", dtype="bfloat16",
                       loras=[LoRASpec(name="a", strength=0.8), LoRASpec(name="b", strength=0.4)])
-    s2 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+    s2 = ComponentSpec(kind="diffusion_models", file="/p/u", device="cuda:1", dtype="bfloat16",
                       loras=[LoRASpec(name="b", strength=0.4), LoRASpec(name="a", strength=0.8)])
     assert to_component_key(s1) == to_component_key(s2)
 
 
 def test_component_key_distinguishes_strength():
-    s1 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+    s1 = ComponentSpec(kind="diffusion_models", file="/p/u", device="cuda:1", dtype="bfloat16",
                       loras=[LoRASpec(name="a", strength=0.8)])
-    s2 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+    s2 = ComponentSpec(kind="diffusion_models", file="/p/u", device="cuda:1", dtype="bfloat16",
                       loras=[LoRASpec(name="a", strength=0.4)])
     assert to_component_key(s1) != to_component_key(s2)
 
@@ -118,10 +118,10 @@ def test_loras_rejected_on_non_unet():
 
 
 def test_adapter_arch_rejected_on_non_unet():
-    with pytest.raises(ValidationError, match="adapter_arch is unet-only"):
+    with pytest.raises(ValidationError, match="adapter_arch is diffusion_models-only"):
         ComponentSpec(kind="vae", file="/p/x", device="cuda:0", dtype="bfloat16",
                      adapter_arch="flux2")
-    with pytest.raises(ValidationError, match="adapter_arch is unet-only"):
+    with pytest.raises(ValidationError, match="adapter_arch is diffusion_models-only"):
         ComponentSpec(kind="clip", file="/p/x", device="cuda:0", dtype="bfloat16",
                      adapter_arch="flux2")
 
@@ -131,7 +131,7 @@ def test_clip_arch_rejected_on_non_clip():
         ComponentSpec(kind="vae", file="/p/x", device="cuda:0", dtype="bfloat16",
                      clip_arch="qwen")
     with pytest.raises(ValidationError, match="clip_arch is clip-only"):
-        ComponentSpec(kind="unet", file="/p/x", device="cuda:0", dtype="bfloat16",
+        ComponentSpec(kind="diffusion_models", file="/p/x", device="cuda:0", dtype="bfloat16",
                      clip_arch="qwen")
 
 
@@ -144,9 +144,9 @@ def test_component_key_distinguishes_dtype():
 
 def test_component_key_unchanged_when_only_lora_order_differs():
     """Sanity (regression): the existing frozenset-based stability still holds with 4-tuple."""
-    s1 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+    s1 = ComponentSpec(kind="diffusion_models", file="/p/u", device="cuda:1", dtype="bfloat16",
                       loras=[LoRASpec(name="a", strength=0.8), LoRASpec(name="b", strength=0.4)])
-    s2 = ComponentSpec(kind="unet", file="/p/u", device="cuda:1", dtype="bfloat16",
+    s2 = ComponentSpec(kind="diffusion_models", file="/p/u", device="cuda:1", dtype="bfloat16",
                       loras=[LoRASpec(name="b", strength=0.4), LoRASpec(name="a", strength=0.8)])
     assert to_component_key(s1) == to_component_key(s2)
 
@@ -155,7 +155,7 @@ def test_component_state_key_stable_and_lora_aware():
     from src.services.inference.base import LoRASpec
     from src.services.inference.component_spec import ComponentSpec, component_state_key
 
-    base = ComponentSpec(kind="unet", file="/m/u.safe", device="cuda:1", dtype="bfloat16", adapter_arch="flux2")
+    base = ComponentSpec(kind="diffusion_models", file="/m/u.safe", device="cuda:1", dtype="bfloat16", adapter_arch="flux2")
     assert component_state_key(base) == "/m/u.safe|cuda:1|bfloat16|"
     a = base.model_copy(update={"loras": [LoRASpec(name="x", strength=0.8), LoRASpec(name="y", strength=0.4)]})
     b = base.model_copy(update={"loras": [LoRASpec(name="y", strength=0.4), LoRASpec(name="x", strength=0.8)]})

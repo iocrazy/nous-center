@@ -24,7 +24,7 @@ def _modular_repo_from_components(resolved: dict) -> str:
     unet/clip/vae 组件文件向上找 model_index.json —— **unet 是 comfy 量化单文件(无 repo)时,
     从 clip/vae(指向 HF text_encoder/vae)推 repo**(PR-2:transformer 由桥接 override)。
     """
-    for comp_key in ("unet", "clip", "vae"):
+    for comp_key in ("diffusion_models", "clip", "vae"):
         spec = resolved.get(comp_key)
         if spec is None:
             continue
@@ -674,7 +674,7 @@ class ModelManager:
     # 已随 image_diffusers/image_sampler 删除。modular 引擎走 ComponentsManager +
     # build_bridged_transformer(image_modular),不用此缓存。
 
-    _VRAM_EST_MB = {"unet": 18000, "clip": 6000, "vae": 1000}
+    _VRAM_EST_MB = {"diffusion_models": 18000, "clip": 6000, "vae": 1000}
 
     def _resolve_component_device(self, spec):
         """Resolve device='auto' → 'cuda:N' via allocator. Returns a NEW spec
@@ -714,7 +714,7 @@ class ModelManager:
         (纯逻辑测试用 stub 路径)→ None(无法估,跳过保护)。"""
         import os
         total = 0
-        for k in ("unet", "clip", "vae"):
+        for k in ("diffusion_models", "clip", "vae"):
             try:
                 total += os.path.getsize(resolved[k].file)
             except OSError:
@@ -747,7 +747,7 @@ class ModelManager:
         resolved = {k: self._resolve_component_device(s) for k, s in components.items()}
         # 整模型单卡不变式(spec 2026-05-21 rev 2):device=auto 会让三组件各自 resolve
         # 到不同卡 —— 以 unet 解析出的卡为准,强制 clip/vae 落同一张卡。
-        target = resolved["unet"].device
+        target = resolved["diffusion_models"].device
         for k in ("clip", "vae"):
             if resolved[k].device != target:
                 resolved[k] = resolved[k].model_copy(update={"device": target})
@@ -762,7 +762,7 @@ class ModelManager:
                 f"或先释放该卡。"
             )
         combo_key = (pipeline_class,) + tuple(
-            to_component_key(resolved[k]) for k in ("unet", "clip", "vae"))
+            to_component_key(resolved[k]) for k in ("diffusion_models", "clip", "vae"))
         # PR-4 收官:唯一引擎 = Modular Diffusers(自写 ImageSampler/DiffusersImageBackend 已删)。
         return await self._get_or_load_modular_adapter(
             resolved, combo_key, pipeline_class, target, _emit)
@@ -779,12 +779,12 @@ class ModelManager:
         async with self._image_adapter_lock_for(combo_key):
             cached = self._image_adapters.get(combo_key)
             if cached is not None:
-                for k in ("unet", "clip", "vae"):
+                for k in ("diffusion_models", "clip", "vae"):
                     await _emit(resolved[k], "loaded")
                 return cached
 
             repo = _modular_repo_from_components(resolved)
-            for k in ("unet", "clip", "vae"):
+            for k in ("diffusion_models", "clip", "vae"):
                 await _emit(resolved[k], "loading")
             try:
                 if self._modular_cm is None:
@@ -792,24 +792,24 @@ class ModelManager:
                     self._modular_cm = components_manager_cls()
                 # comfy 量化单文件 unet → 桥接 override(dequant+转键+from_config);HF-layout 则 None
                 override = None
-                if _is_comfy_single_file_unet(resolved["unet"]):
+                if _is_comfy_single_file_unet(resolved["diffusion_models"]):
                     from src.services.inference.image_modular import build_bridged_transformer
                     override = await asyncio.to_thread(
-                        build_bridged_transformer, resolved["unet"], repo, target)
+                        build_bridged_transformer, resolved["diffusion_models"], repo, target)
                 adapter = ModularImageBackend(
                     repo=repo,
                     device=target,
-                    dtype=resolved["unet"].dtype,
+                    dtype=resolved["diffusion_models"].dtype,
                     components_manager=self._modular_cm,
                     transformer_override=override,
                 )
                 await adapter.load(target)
                 await asyncio.to_thread(adapter._ensure_pipe)  # 预热(blocking load 进线程)
             except Exception as e:  # noqa: BLE001
-                for k in ("unet", "clip", "vae"):
+                for k in ("diffusion_models", "clip", "vae"):
                     await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
                 raise
-            for k in ("unet", "clip", "vae"):
+            for k in ("diffusion_models", "clip", "vae"):
                 await _emit(resolved[k], "loaded")
             self._image_adapters[combo_key] = adapter
             return adapter

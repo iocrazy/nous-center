@@ -49,7 +49,7 @@ async def main() -> None:
     mm = ModelManager(registry=_EmptyRegistry(), allocator=GPUAllocator())
     # unet = comfy fp8mixed 单文件;clip/vae = HF(提供 config/scheduler/clip/vae)
     components = {
-        "unet": ComponentSpec(kind="unet", file=FP8, device=DEVICE, dtype="bfloat16",
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=FP8, device=DEVICE, dtype="bfloat16",
                               adapter_arch="flux2", loras=[]),
         "clip": ComponentSpec(kind="clip", file=_rep(HF_ROOT / "text_encoder"), device=DEVICE, dtype="bfloat16"),
         "vae":  ComponentSpec(kind="vae", file=_rep(HF_ROOT / "vae"), device=DEVICE, dtype="bfloat16"),

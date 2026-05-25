@@ -48,7 +48,7 @@ def _granular_inputs(prompt, *, seed, w, h, steps):
         "latent": {
             "_type": "flux2_latent",
             "model": {"_type": "flux2_model",
-                      "spec": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1",
+                      "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1",
                                "dtype": "bfloat16", "adapter_arch": "flux2"}, "loras": []},
             "conditioning": {"_type": "flux2_conditioning",
                              "clip": {"_type": "flux2_clip", "type": "flux2",
@@ -78,7 +78,7 @@ async def test_components_path_uses_image_adapter():
 
     results = [m for m in ch.sent if isinstance(m, P.NodeResult)]
     assert results and results[-1].status == "completed"
-    assert mm.calls == [(("clip", "unet", "vae"), "Flux2KleinPipeline")]
+    assert mm.calls == [(("clip", "diffusion_models", "vae"), "Flux2KleinPipeline")]
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_preload_components_emits_events_via_pipe():
     msg = P.PreloadComponents(
         task_id=3,
         components={
-            "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+            "diffusion_models": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
             "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
             "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
         },
@@ -144,7 +144,7 @@ async def test_preload_components_emits_failed_on_error():
     state = _RunnerState("r", "image", [0, 1, 2], _MM())
     ch = _Collect()
     msg = P.PreloadComponents(task_id=4, components={
-        "unet": {"kind": "unet", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
+        "diffusion_models": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "flux2", "loras": []},
         "clip": {"kind": "clip", "file": "/m/c.safe", "device": "cuda:0", "dtype": "bfloat16", "clip_arch": "flux2"},
         "vae":  {"kind": "vae",  "file": "/m/v.safe", "device": "cuda:2", "dtype": "bfloat16"},
     })

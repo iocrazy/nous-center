@@ -18,7 +18,7 @@ def test_repo_derives_from_hf_layout(tmp_path):
     (repo / "model_index.json").write_text("{}")
     unet_file = repo / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors"
     unet_file.write_text("x")
-    resolved = {"unet": ComponentSpec(kind="unet", file=str(unet_file), device="cuda:1", dtype="bfloat16")}
+    resolved = {"diffusion_models": ComponentSpec(kind="diffusion_models", file=str(unet_file), device="cuda:1", dtype="bfloat16")}
     assert _modular_repo_from_components(resolved) == str(repo)
 
 
@@ -34,7 +34,7 @@ def test_repo_derives_from_clip_when_unet_is_comfy_single_file(tmp_path):
     clip_f = repo / "text_encoder" / "model.safetensors"
     clip_f.write_text("x")
     resolved = {
-        "unet": ComponentSpec(kind="unet", file=str(unet_f), device="cuda:1", dtype="bfloat16"),
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(unet_f), device="cuda:1", dtype="bfloat16"),
         "clip": ComponentSpec(kind="clip", file=str(clip_f), device="cuda:1", dtype="bfloat16"),
     }
     assert _modular_repo_from_components(resolved) == str(repo)
@@ -46,6 +46,6 @@ def test_repo_rejects_comfy_single_file(tmp_path):
     d.mkdir(parents=True)
     f = d / "Flux2-Klein-9B-True-v2-fp8mixed.safetensors"
     f.write_text("x")
-    resolved = {"unet": ComponentSpec(kind="unet", file=str(f), device="cuda:1", dtype="bfloat16")}
+    resolved = {"diffusion_models": ComponentSpec(kind="diffusion_models", file=str(f), device="cuda:1", dtype="bfloat16")}
     with pytest.raises(ValueError, match="PR-2|model_index"):
         _modular_repo_from_components(resolved)

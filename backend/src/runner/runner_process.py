@@ -219,7 +219,7 @@ def _build_request(node: P.RunNode):
                 cfg_scale=float(latent.get("cfg_scale") or 4.0),
                 seed=int(lseed) if lseed not in (None, "") else None,
                 components={
-                    "unet": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
+                    "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
                     "clip": ComponentSpec(**clip_spec),
                     "vae": ComponentSpec(**vae_spec),
                 },

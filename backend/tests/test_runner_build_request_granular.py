@@ -13,7 +13,7 @@ def _node(inputs):
 
 def _granular_inputs(unet_dev="cuda:1", loras=None):
     model = {"_type": "flux2_model",
-             "spec": {"kind": "unet", "file": "/m/u.safe", "device": unet_dev, "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
+             "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": unet_dev, "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
              "loras": loras or []}
     cond = {"_type": "flux2_conditioning",
             "clip": {"_type": "flux2_clip", "type": "flux2",
@@ -29,7 +29,7 @@ def test_granular_flatten_single_card():
     req = _build_request(_node(_granular_inputs(unet_dev="cuda:1")))
     assert req.components is not None
     # 整模型单卡:clip/vae 的 device 被覆盖成 unet 的 device
-    assert req.components["unet"].device == "cuda:1"
+    assert req.components["diffusion_models"].device == "cuda:1"
     assert req.components["clip"].device == "cuda:1"
     assert req.components["vae"].device == "cuda:1"
     assert req.components["clip"].file == "/m/c.safe"
@@ -41,14 +41,14 @@ def test_granular_flatten_single_card():
 def test_granular_carries_loras():
     inp = _granular_inputs(loras=[{"name": "a", "path": "/m/loras/a.safe", "strength": 0.8}])
     req = _build_request(_node(inp))
-    assert req.components["unet"].loras[0].name == "a"
-    assert req.components["unet"].loras[0].path == "/m/loras/a.safe"
+    assert req.components["diffusion_models"].loras[0].name == "a"
+    assert req.components["diffusion_models"].loras[0].path == "/m/loras/a.safe"
 
 
 def test_granular_auto_device_passthrough():
     req = _build_request(_node(_granular_inputs(unet_dev="auto")))
     # auto 不在此解析(runner get_or_load_image_adapter 解析);三组件都带 auto
-    assert req.components["unet"].device == "auto"
+    assert req.components["diffusion_models"].device == "auto"
     assert req.components["vae"].device == "auto"
 
 
