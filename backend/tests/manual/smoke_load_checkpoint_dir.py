@@ -39,9 +39,12 @@ def _load_exec_load_checkpoint():
 def _flatten(model_d: dict, clip_d: dict, vae_d: dict, device: str):
     """复刻 runner_process._build_request 的摊平:三描述符 → ComponentSpec(同卡)。"""
     from src.services.inference.component_spec import ComponentSpec
-    unet_spec = dict(model_d["spec"]); unet_spec["device"] = device
-    clip_spec = dict(clip_d["encoders"][0]); clip_spec["device"] = device
-    vae_spec = dict(vae_d["spec"]); vae_spec["device"] = device
+    unet_spec = dict(model_d["spec"])
+    unet_spec["device"] = device
+    clip_spec = dict(clip_d["encoders"][0])
+    clip_spec["device"] = device
+    vae_spec = dict(vae_d["spec"])
+    vae_spec["device"] = device
     return {
         "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
         "clip": ComponentSpec(**clip_spec),
