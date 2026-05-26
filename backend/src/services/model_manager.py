@@ -861,6 +861,7 @@ class ModelManager:
                     repo=repo,
                     device=target,
                     dtype=resolved["diffusion_models"].dtype,
+                    pipeline_class=pipeline_class,
                     components_manager=self._modular_cm,
                     transformer_override=t_ov,
                     text_encoder_override=c_ov,

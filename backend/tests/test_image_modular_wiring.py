@@ -1,8 +1,9 @@
-"""PR-1 wiring 测(CI 可跑,无 GPU/真 diffusers)。
+"""图像后端 wiring 测(CI 可跑,无 GPU/真 diffusers)。
 
-monkeypatch `_import_modular` → fake ModularPipeline/ComponentsManager,断言
-ImageRequest → pipe() 参数映射正确。验「接线」回归,不验真出图(真出图走 standalone
-A/B smoke,见 plan Task 4)。
+PR「true-cfg 修复」后:Flux2 comfy 单文件走**标准** `Flux2KleinPipeline(is_distilled=False)`
+(monkeypatch `_import_klein_pipeline`);非 Flux2(ERNIE)留 modular fallback(monkeypatch
+`_import_modular`)。断言 ImageRequest → pipe() 参数映射 + 构建链;真出图走 standalone smoke
+(spike_true_cfg.py / smoke_single_file_prod.py)。
 """
 from __future__ import annotations
 
@@ -10,12 +11,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.services.inference.base import ImageRequest
+from src.services.inference.base import ImageRequest, LoRASpec
 from src.services.inference import image_modular
 
 
-def _fake_modular(monkeypatch):
-    """装一对 fake (ModularPipeline, ComponentsManager) 并返回内部 pipe mock。"""
+def _fake_klein(monkeypatch):
+    """装 fake (Flux2KleinPipeline, AutoTokenizer, FlowMatchEulerDiscreteScheduler) 并返回 pipe mock。
+
+    pipe 既是 `klein_cls(...)`(直接装配)又是 `klein_cls.from_pretrained(...)`(HF-layout)的返回值。
+    """
     pipe = MagicMock(name="pipe")
     out = MagicMock(name="out")
     img = MagicMock(name="img")
@@ -23,107 +27,153 @@ def _fake_modular(monkeypatch):
     out.images = [img]
     pipe.return_value = out  # pipe(...) → out
 
+    klein_cls = MagicMock(name="Flux2KleinPipeline")
+    klein_cls.return_value = pipe                 # 直接装配(全单文件 override)
+    klein_cls.from_pretrained.return_value = pipe  # HF-layout
+    tokenizer_cls = MagicMock(name="AutoTokenizer")
+    scheduler_cls = MagicMock(name="FlowMatchEulerDiscreteScheduler")
+
+    monkeypatch.setattr(
+        image_modular, "_import_klein_pipeline",
+        lambda: (klein_cls, tokenizer_cls, scheduler_cls))
+    return klein_cls, tokenizer_cls, scheduler_cls, pipe
+
+
+def _fake_modular(monkeypatch):
+    """非 Flux2 fallback:fake (ModularPipeline, ComponentsManager) → pipe mock。"""
+    pipe = MagicMock(name="modular_pipe")
+    out = MagicMock(name="out")
+    img = MagicMock(name="img")
+    img.save.side_effect = lambda buf, format: buf.write(b"\x89PNG\r\n\x1a\n")  # noqa: A002
+    out.images = [img]
+    pipe.return_value = out
+
     modular_cls = MagicMock(name="ModularPipeline")
     modular_cls.from_pretrained.return_value = pipe
     cm_cls = MagicMock(name="ComponentsManager")
-
     monkeypatch.setattr(image_modular, "_import_modular", lambda: (modular_cls, cm_cls))
     return modular_cls, cm_cls, pipe
 
 
+# device="cpu":wiring 测不碰真 CUDA(CI 无 GPU);torch 在 conftest 被 mock。
+
+
 @pytest.mark.asyncio
-async def test_modular_backend_maps_request_to_pipe(monkeypatch):
-    modular_cls, cm_cls, pipe = _fake_modular(monkeypatch)
-    # device="cpu":wiring 测不碰真 CUDA(全套里 torch 可能是真的,CI 无 GPU →
-    # torch.Generator(device="cuda") 会 AcceleratorError)。CPU generator 真假 torch 都行。
+async def test_klein_backend_maps_request_to_pipe(monkeypatch):
+    """HF-layout(无 override)→ from_pretrained;ImageRequest → pipe() 参数映射。"""
+    klein_cls, _tok, _sch, pipe = _fake_klein(monkeypatch)
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", dtype="bfloat16")
 
     res = await be.infer(
         ImageRequest(request_id="t1", prompt="a fox", steps=7, width=512, height=512, seed=42)
     )
 
-    # 结果信封
     assert res.media_type == "image/png"
     assert res.data.startswith(b"\x89PNG")
     assert res.usage.image_count == 1
-    assert res.metadata["engine"] == "modular"
+    assert res.metadata["engine"] == "flux2klein"
 
-    # 构建链:from_pretrained(repo, components_manager=...) + load_components + to(device)
-    modular_cls.from_pretrained.assert_called_once()
-    assert modular_cls.from_pretrained.call_args.args[0] == "/m/flux2"
-    assert "components_manager" in modular_cls.from_pretrained.call_args.kwargs
-    pipe.load_components.assert_called_once()
+    klein_cls.from_pretrained.assert_called_once()
+    assert klein_cls.from_pretrained.call_args.args[0] == "/m/flux2"
     pipe.to.assert_called_once_with("cpu")
 
-    # 参数映射:ImageRequest → pipe(...)
     kw = pipe.call_args.kwargs
     assert kw["prompt"] == "a fox"
     assert kw["num_inference_steps"] == 7
     assert kw["width"] == 512 and kw["height"] == 512
-    assert kw["guidance_scale"] == 7.0  # PR-1:cfg_scale(默认 7.0)→ guidance_scale
+    assert kw["guidance_scale"] == 7.0  # cfg_scale 默认 7.0 → guidance_scale
     assert "generator" in kw
+    assert "negative_prompt_embeds" not in kw  # 无 negative
 
 
 @pytest.mark.asyncio
-async def test_modular_backend_reuses_pipe_across_infers(monkeypatch):
-    """同一 backend 多次 infer 复用已建 pipe(不重复 from_pretrained)。"""
-    modular_cls, _cm, pipe = _fake_modular(monkeypatch)
+async def test_klein_negative_encoded_to_embeds_at_cfg_gt_1(monkeypatch):
+    """cfg>1 + negative → pipe.encode_prompt(neg) → negative_prompt_embeds(true-CFG)。"""
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+
+    await be.infer(ImageRequest(
+        request_id="neg", prompt="a fox", negative_prompt="blurry, ugly",
+        steps=4, width=64, height=64, cfg_scale=4.0))
+
+    pipe.encode_prompt.assert_called_once()
+    assert pipe.encode_prompt.call_args.kwargs.get("prompt") == "blurry, ugly"
+    assert "negative_prompt_embeds" in pipe.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_klein_negative_skipped_at_cfg_1(monkeypatch):
+    """cfg=1 → 无 CFG → negative 被忽略(不编码、不传 embeds),对齐 ComfyUI。"""
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+
+    await be.infer(ImageRequest(
+        request_id="n1", prompt="a fox", negative_prompt="blurry",
+        steps=4, width=64, height=64, cfg_scale=1.0))
+
+    pipe.encode_prompt.assert_not_called()
+    assert "negative_prompt_embeds" not in pipe.call_args.kwargs
+    assert pipe.call_args.kwargs["guidance_scale"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_klein_all_three_overrides_assemble_true_cfg(monkeypatch):
+    """全单文件三 override → 直接装配 klein_cls(is_distilled=False),不 from_pretrained。"""
+    klein_cls, tok_cls, sch_cls, _pipe = _fake_klein(monkeypatch)
+    t, c, v = MagicMock(name="t"), MagicMock(name="c"), MagicMock(name="v")
+    be = image_modular.ModularImageBackend(
+        repo="/m/flux2", device="cpu",
+        transformer_override=t, text_encoder_override=c, vae_override=v)
+
+    await be.infer(ImageRequest(request_id="sf", prompt="x", steps=2, width=64, height=64))
+
+    klein_cls.from_pretrained.assert_not_called()
+    klein_cls.assert_called_once()
+    kw = klein_cls.call_args.kwargs
+    assert kw["is_distilled"] is False
+    assert kw["transformer"] is t and kw["text_encoder"] is c and kw["vae"] is v
+    tok_cls.from_pretrained.assert_called_once()
+    sch_cls.from_pretrained.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_klein_partial_override_registers_modules(monkeypatch):
+    """部分 override(仅 transformer)→ from_pretrained 后 register_modules 换入。"""
+    klein_cls, _tok, _sch, pipe = _fake_klein(monkeypatch)
+    t = MagicMock(name="t")
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", transformer_override=t)
+
+    await be.infer(ImageRequest(request_id="p", prompt="x", steps=2, width=64, height=64))
+
+    klein_cls.from_pretrained.assert_called_once()
+    pipe.register_modules.assert_called_once_with(transformer=t)
+
+
+@pytest.mark.asyncio
+async def test_klein_reuses_pipe_across_infers(monkeypatch):
+    klein_cls, _tok, _sch, _pipe = _fake_klein(monkeypatch)
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
 
     await be.infer(ImageRequest(request_id="a", prompt="x", steps=2, width=64, height=64))
     await be.infer(ImageRequest(request_id="b", prompt="y", steps=2, width=64, height=64))
 
-    modular_cls.from_pretrained.assert_called_once()  # 只建一次
+    klein_cls.from_pretrained.assert_called_once()  # 只建一次
     assert be.is_loaded
 
 
 @pytest.mark.asyncio
-async def test_transformer_override_calls_update_components(monkeypatch):
-    """PR-2:comfy 量化桥接 → transformer_override 经 update_components 替换 HF transformer。"""
-    modular_cls, _cm, pipe = _fake_modular(monkeypatch)
-    override = MagicMock(name="bridged_transformer")
-    be = image_modular.ModularImageBackend(
-        repo="/m/flux2", device="cpu", transformer_override=override)
-
-    await be.infer(ImageRequest(request_id="q", prompt="x", steps=3, width=64, height=64))
-
-    pipe.update_components.assert_called_once_with(transformer=override)
-
-
-@pytest.mark.asyncio
-async def test_no_override_skips_update_components(monkeypatch):
-    """HF-layout(无 override)不调 update_components(transformer=)。"""
-    _m, _cm, pipe = _fake_modular(monkeypatch)
-    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
-    await be.infer(ImageRequest(request_id="h", prompt="x", steps=3, width=64, height=64))
-    pipe.update_components.assert_not_called()
-
-
-def test_wants_fp8_detects_fp8_dtypes():
-    assert image_modular._wants_fp8("fp8_e4m3")
-    assert image_modular._wants_fp8("fp8_e5m2")
-    assert image_modular._wants_fp8("fp8")
-    assert not image_modular._wants_fp8("bfloat16")
-    assert not image_modular._wants_fp8("float16")
-    assert not image_modular._wants_fp8("")
-    assert not image_modular._wants_fp8(None)
-
-
-@pytest.mark.asyncio
 async def test_fp8_dtype_triggers_weight_only_quant(monkeypatch):
-    """weight_dtype=fp8 + 无 override → _quantize_fp8_weight_only(pipe)(torchao 真量化由 smoke 验)。"""
-    _m, _cm, pipe = _fake_modular(monkeypatch)
+    _fake_klein(monkeypatch)
     spy = MagicMock(name="quantize_fp8")
     monkeypatch.setattr(image_modular, "_quantize_fp8_weight_only", spy)
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", dtype="fp8_e4m3")
     await be.infer(ImageRequest(request_id="q8", prompt="x", steps=2, width=64, height=64))
-    spy.assert_called_once_with(pipe)
-    pipe.update_components.assert_not_called()
+    spy.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_bf16_dtype_no_fp8_quant(monkeypatch):
-    _m, _cm, pipe = _fake_modular(monkeypatch)
+    _fake_klein(monkeypatch)
     spy = MagicMock(name="quantize_fp8")
     monkeypatch.setattr(image_modular, "_quantize_fp8_weight_only", spy)
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", dtype="bfloat16")
@@ -132,40 +182,9 @@ async def test_bf16_dtype_no_fp8_quant(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_override_and_fp8_both_apply(monkeypatch):
-    """PR-2:桥接 override + fp8 **都生效** —— update_components 换组件,且 torchao fp8 量化最终组件
-    (这样单文件/comfy 桥接 + fp8 也能省显存;不再 elif 互斥)。"""
-    _m, _cm, pipe = _fake_modular(monkeypatch)
-    spy = MagicMock(name="quantize_fp8")
-    monkeypatch.setattr(image_modular, "_quantize_fp8_weight_only", spy)
-    override = MagicMock(name="bridged")
-    be = image_modular.ModularImageBackend(
-        repo="/m/flux2", device="cpu", dtype="fp8_e4m3", transformer_override=override)
-    await be.infer(ImageRequest(request_id="ov", prompt="x", steps=2, width=64, height=64))
-    pipe.update_components.assert_called_once_with(transformer=override)
-    spy.assert_called_once_with(pipe)
-
-
-@pytest.mark.asyncio
-async def test_all_three_single_file_overrides(monkeypatch):
-    """PR-2:单文件装配 → transformer/text_encoder/vae 三 override 一次 update_components。"""
-    _m, _cm, pipe = _fake_modular(monkeypatch)
-    t, c, v = MagicMock(name="t"), MagicMock(name="c"), MagicMock(name="v")
-    be = image_modular.ModularImageBackend(
-        repo="/m/flux2", device="cpu", transformer_override=t,
-        text_encoder_override=c, vae_override=v)
-    await be.infer(ImageRequest(request_id="sf", prompt="x", steps=2, width=64, height=64))
-    pipe.update_components.assert_called_once_with(transformer=t, text_encoder=c, vae=v)
-
-
-@pytest.mark.asyncio
 async def test_apply_loras_loads_and_sets_adapters(monkeypatch):
-    """PR-3:req.loras → pipe.load_lora_weights + set_adapters(Flux2Klein 经同 LoRA mixin)。
-    fake pipe(type 非 Flux2)→ 跳过 comfy 转换分支(CI 不碰 safetensors/diffusers);
-    comfy 转换由 #125 + PR-3 真模型 smoke 验。"""
-    from src.services.inference.base import LoRASpec
-
-    _m, _cm, pipe = _fake_modular(monkeypatch)
+    """req.loras → pipe.load_lora_weights + set_adapters(标准 Flux2KleinPipeline 经 Flux2LoraLoaderMixin)。"""
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
     pipe.get_active_adapters.return_value = ["turbo"]  # 零匹配检查通过
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
 
@@ -180,7 +199,7 @@ async def test_apply_loras_loads_and_sets_adapters(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_loras_does_not_load(monkeypatch):
-    _m, _cm, pipe = _fake_modular(monkeypatch)
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
     pipe.get_active_adapters.return_value = []
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
     await be.infer(ImageRequest(request_id="n", prompt="x", steps=2, width=64, height=64))
@@ -188,10 +207,34 @@ async def test_no_loras_does_not_load(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_modular_backend_rejects_non_image_request(monkeypatch):
-    _fake_modular(monkeypatch)
+async def test_non_flux2_falls_back_to_modular(monkeypatch):
+    """pipeline_class != Flux2KleinPipeline(ERNIE 等)→ modular fallback 装配链。"""
+    modular_cls, _cm, pipe = _fake_modular(monkeypatch)
+    be = image_modular.ModularImageBackend(
+        repo="/m/ernie", device="cpu", pipeline_class="ErnieImagePipeline")
+
+    res = await be.infer(ImageRequest(request_id="e", prompt="x", steps=3, width=64, height=64))
+
+    modular_cls.from_pretrained.assert_called_once()
+    pipe.load_components.assert_called_once()
+    assert res.metadata["engine"] == "modular"
+
+
+@pytest.mark.asyncio
+async def test_backend_rejects_non_image_request(monkeypatch):
+    _fake_klein(monkeypatch)
     from src.services.inference.base import AudioRequest
 
-    be = image_modular.ModularImageBackend(repo="/m/flux2")
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
     with pytest.raises(TypeError, match="ImageRequest"):
         await be.infer(AudioRequest(request_id="t", text="hi"))
+
+
+def test_wants_fp8_detects_fp8_dtypes():
+    assert image_modular._wants_fp8("fp8_e4m3")
+    assert image_modular._wants_fp8("fp8_e5m2")
+    assert image_modular._wants_fp8("fp8")
+    assert not image_modular._wants_fp8("bfloat16")
+    assert not image_modular._wants_fp8("float16")
+    assert not image_modular._wants_fp8("")
+    assert not image_modular._wants_fp8(None)

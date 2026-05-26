@@ -42,6 +42,19 @@ def _import_flux2_transformer() -> Any:
     return Flux2Transformer2DModel
 
 
+def _import_klein_pipeline() -> tuple[Any, Any, Any]:
+    """Lazy import 标准(非 modular)Flux2 Klein pipeline + tokenizer/scheduler 类(D2 隔离)。
+
+    comfy 单文件类别走**标准** `Flux2KleinPipeline`(true-cfg / negative / 逐步回调内置,行为对齐
+    ComfyUI),取代 modular 蒸馏管线 —— 后者把 cfg/negative 掐了,是图像质量/控制不如 ComfyUI 的根因
+    (真模型 A/B 已证,见 tests/manual/spike_true_cfg.py + plan 2026-05-25)。测试 monkeypatch 本函数注入 fake。
+    """
+    from diffusers import FlowMatchEulerDiscreteScheduler, Flux2KleinPipeline  # noqa: PLC0415
+    from transformers import AutoTokenizer  # noqa: PLC0415
+
+    return Flux2KleinPipeline, AutoTokenizer, FlowMatchEulerDiscreteScheduler
+
+
 def _maybe_convert_comfy_flux2_lora(state_dict: dict):
     """ComfyUI/BFL 格式 Flux2 LoRA(`diffusion_model.` 前缀 + `lora_down/up`)→ diffusers
     `transformer.*` 格式;否则 None(走原 load_lora_weights)。绕 Flux2LoraLoaderMixin 的
@@ -190,6 +203,7 @@ class ModularImageBackend(InferenceAdapter):
         device: str = "cuda",
         *,
         dtype: str = "bfloat16",
+        pipeline_class: str = "Flux2KleinPipeline",
         components_manager: Any = None,
         transformer_override: Any = None,
         text_encoder_override: Any = None,
@@ -199,6 +213,8 @@ class ModularImageBackend(InferenceAdapter):
         super().__init__(paths={"main": repo}, device=device, **params)
         self.repo = repo
         self.dtype = dtype
+        # comfy 单文件 Flux2 → 标准 Flux2KleinPipeline(true-cfg);其它架构(ERNIE 等)→ modular fallback。
+        self.pipeline_class = pipeline_class
         self._cm = components_manager
         # comfy 单文件桥接 override:transformer(量化/comfy)+ text_encoder/vae(单文件装配,PR-2)。
         self._transformer_override = transformer_override
@@ -214,18 +230,12 @@ class ModularImageBackend(InferenceAdapter):
     def _ensure_pipe(self) -> Any:
         if self._pipe is not None:
             return self._pipe
-        modular_pipeline_cls, components_manager_cls = _import_modular()
-        cm = self._cm or components_manager_cls()
-        pipe = modular_pipeline_cls.from_pretrained(self.repo, components_manager=cm)
-        pipe.load_components(torch_dtype=_torch_dtype(self.dtype))
-        # 单文件桥接 override:整模型加载后换出对应组件(transformer / text_encoder / vae)。
-        overrides = {k: v for k, v in (
-            ("transformer", self._transformer_override),
-            ("text_encoder", self._text_encoder_override),
-            ("vae", self._vae_override),
-        ) if v is not None}
-        if overrides:
-            pipe.update_components(**overrides)
+        # Flux2 comfy 单文件 → 标准 Flux2KleinPipeline(true-cfg,行为对齐 ComfyUI);
+        # 其它架构(ERNIE 等)暂留 modular fallback(架构收口 spec 后统一)。
+        if self.pipeline_class == "Flux2KleinPipeline":
+            pipe = self._build_klein_pipe()
+        else:
+            pipe = self._build_modular_pipe()
         if _wants_fp8(self.dtype):
             # fp8 weight-only(torchao):transformer + text_encoder 权重 fp8 存储,省 ~½ 显存,
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
@@ -233,6 +243,52 @@ class ModularImageBackend(InferenceAdapter):
         pipe.to(self.device)
         self._pipe = pipe
         self._model = pipe  # is_loaded → True
+        return pipe
+
+    def _build_klein_pipe(self) -> Any:
+        """comfy Flux2 单文件 → 标准 `Flux2KleinPipeline(is_distilled=False)` = true-CFG。
+
+        全单文件(三桥接 override):直接用桥接组件 + 参考库的 tokenizer/scheduler 装配 ——
+        免加载参考库的整 transformer(省 ~18GB),且 `is_distilled=False` 让 cfg/negative 真生效
+        (用户用 cfg 控:cfg=1 退化无 CFG,cfg>1+negative=true-CFG,对齐 ComfyUI)。
+        HF-layout 整模型(无 override):`from_pretrained` 加载并尊重其 model_index 的 is_distilled
+        (官方蒸馏 klein 仍蒸馏);有部分 override 则换入。
+        """
+        klein_cls, tokenizer_cls, scheduler_cls = _import_klein_pipeline()
+        overrides = {k: v for k, v in (
+            ("transformer", self._transformer_override),
+            ("text_encoder", self._text_encoder_override),
+            ("vae", self._vae_override),
+        ) if v is not None}
+        if len(overrides) == 3:
+            tokenizer = tokenizer_cls.from_pretrained(str(Path(self.repo) / "tokenizer"))
+            scheduler = scheduler_cls.from_pretrained(str(Path(self.repo) / "scheduler"))
+            return klein_cls(
+                scheduler=scheduler,
+                vae=overrides["vae"],
+                text_encoder=overrides["text_encoder"],
+                tokenizer=tokenizer,
+                transformer=overrides["transformer"],
+                is_distilled=False,
+            )
+        pipe = klein_cls.from_pretrained(self.repo, torch_dtype=_torch_dtype(self.dtype))
+        if overrides:
+            pipe.register_modules(**overrides)
+        return pipe
+
+    def _build_modular_pipe(self) -> Any:
+        """非 Flux2(ERNIE 等)的 modular fallback(原 _ensure_pipe 装配链)。架构收口后退役。"""
+        modular_pipeline_cls, components_manager_cls = _import_modular()
+        cm = self._cm or components_manager_cls()
+        pipe = modular_pipeline_cls.from_pretrained(self.repo, components_manager=cm)
+        pipe.load_components(torch_dtype=_torch_dtype(self.dtype))
+        overrides = {k: v for k, v in (
+            ("transformer", self._transformer_override),
+            ("text_encoder", self._text_encoder_override),
+            ("vae", self._vae_override),
+        ) if v is not None}
+        if overrides:
+            pipe.update_components(**overrides)
         return pipe
 
     def _apply_loras(self, loras: list) -> None:
@@ -279,17 +335,24 @@ class ModularImageBackend(InferenceAdapter):
             gen = gen.manual_seed(req.seed)
 
         t = time.monotonic()
-        # cfg → guidance_scale(Flux2 modular InputParam,默认 4.0;之前没传 → 用户 KSampler 的 cfg 被忽略)。
-        # Flux2-klein 是 guidance-distilled:guidance_scale 控蒸馏 guidance。negative 是 negative_prompt_embeds
-        # (Tensor + true_cfg),klein base 不接 negative_prompt 字符串 → 留 future(需单独编码 negative)。
-        out = pipe(
+        cfg = float(req.cfg_scale)
+        # cfg → guidance_scale。标准 Flux2KleinPipeline(is_distilled=False):cfg>1 → 跑 cond+uncond 真 CFG
+        # (cfg=1 退化单次前向);negative 走 **预编码 negative_prompt_embeds**(klein __call__ 无 negative 字符串
+        # 入参,内部 do_cfg 时用它做 true-CFG)。真模型 A/B 已证 cfg/negative 生效(spike_true_cfg.py)。
+        call_kwargs: dict[str, Any] = dict(
             prompt=req.prompt,
             num_inference_steps=req.steps,
             width=req.width,
             height=req.height,
-            guidance_scale=float(req.cfg_scale),
+            guidance_scale=cfg,
             generator=gen,
         )
+        neg = (getattr(req, "negative_prompt", "") or "").strip()
+        if (neg and cfg > 1.0 and self.pipeline_class == "Flux2KleinPipeline"
+                and hasattr(pipe, "encode_prompt")):
+            call_kwargs["negative_prompt_embeds"] = pipe.encode_prompt(
+                prompt=neg, device=self.device)[0]
+        out = pipe(**call_kwargs)
         latency_ms = int((time.monotonic() - t) * 1000)
 
         img = out.images[0]
@@ -302,7 +365,7 @@ class ModularImageBackend(InferenceAdapter):
                 "width": req.width,
                 "height": req.height,
                 "seed": req.seed,
-                "engine": "modular",
+                "engine": ("flux2klein" if self.pipeline_class == "Flux2KleinPipeline" else "modular"),
             },
             usage=UsageMeter(image_count=1, latency_ms=latency_ms),
         )
