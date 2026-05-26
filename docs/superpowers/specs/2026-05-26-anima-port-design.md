@@ -1,6 +1,6 @@
 # Anima 模型移植到 nous — 设计 spec
 
-> 状态:**草稿,待 review**。
+> 状态:**实施中**(PR-anima-1 已 port,2026-05-26)。
 > 接 plan `2026-05-26-image-engine-ux-consolidation.md` PR-C(原 plan 假设 anima = Qwen-Image,实测**错判**)。
 > 依据 [[feedback-long-term-robustness]] [[feedback-verify-real-model]] [[project-image-model-layout]]。
 
@@ -58,7 +58,8 @@ Anima = MiniTrainDIT (来自 cosmos/predict2.py)
 ## 推荐方案 = 选项 A,拆 7 个 PR
 
 ```
-PR-anima-1  Cosmos predict2 building blocks 移植   ← 最大块(MiniTrainDIT + 子组件,~600 LOC)
+PR-anima-1  Cosmos predict2 building blocks 移植   ✅ #(本 PR,2026-05-26)— ~700 LOC port,
+            真 torch CPU forward smoke PASS(`tests/manual/smoke_anima_pr1.py`)
    ↓
 PR-anima-2  Anima nn.Module(继承 MiniTrainDIT + LLMAdapter,~250 LOC)
    ↓
