@@ -8,6 +8,7 @@ import { DECLARATIVE_NODES, type WidgetDef } from '../../models/nodeRegistry'
 import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
 import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
+import NodeSelectPopover from '../nodes/NodeSelectPopover'
 
 // m09 v3: 右侧节点属性面板。选中节点 → 渲染该节点的 widgets，
 // 跟节点体内的 widget 共享 useWorkspaceStore.updateNode，所以两边
@@ -231,22 +232,19 @@ function FieldRenderer({
           }}
         />
       )
-    case 'select':
-      return (
-        <select
-          value={String(v ?? '')}
-          onChange={(e) => onChange(e.target.value)}
-          style={inputStyle}
-        >
-          {(widget.options ?? [])
-            .map((o) => (typeof o === 'string' ? { value: o, label: o } : o))
-            .map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-        </select>
+    case 'select': {
+      const opts = (widget.options ?? []).map((o) =>
+        typeof o === 'string' ? { value: o, label: o } : o,
       )
+      return (
+        <NodeSelectPopover
+          value={String(v ?? '')}
+          onChange={(val) => onChange(val)}
+          options={opts}
+          size="normal"
+        />
+      )
+    }
     case 'slider':
       return <SliderField widget={widget} value={Number(v ?? widget.min ?? 0)} onChange={onChange} />
     case 'checkbox':

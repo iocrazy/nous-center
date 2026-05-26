@@ -11,6 +11,7 @@ import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import { useLoras } from '../../api/loras'
 import { useComponents, useComponentState, componentStateKey, type ComponentRole } from '../../api/components'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
+import NodeSelectPopover from './NodeSelectPopover'
 
 function LoraSelectWidget({
   value,
@@ -382,20 +383,17 @@ function WidgetRenderer({
         />
       )
     case 'select': {
-      // options 兼容字符串列表(node.yaml 常写 [default, bfloat16])与对象列表
-      // ([{value,label}])。字符串→{value:s,label:s};否则 opt.value/label 为 undefined
-      // 会渲染空白选项(细粒度图 loader 的 精度/显卡/架构 曾全空)。
+      // options 兼容字符串列表(node.yaml 常写 [default, bfloat16])与对象列表(支持 description/color)。
       const opts = (widget.options ?? []).map((o) =>
         typeof o === 'string' ? { value: o, label: o } : o,
       )
       return (
-        <NodeSelect value={String(resolved ?? '')} onChange={(e) => onChange(e.target.value)}>
-          {opts.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </NodeSelect>
+        <NodeSelectPopover
+          value={String(resolved ?? '')}
+          onChange={(v) => onChange(v)}
+          options={opts}
+          size="compact"
+        />
       )
     }
     case 'slider':

@@ -6,8 +6,9 @@ export interface WidgetDef {
   name: string
   label: string
   widget: WidgetType
-  // 兼容两种写法:对象 [{value,label}] 或纯字符串 ['a','b'](plugin node.yaml 常用后者)
-  options?: (string | { value: string; label: string })[]
+  // 兼容三种写法:对象 [{value,label,description?,color?}] 或纯字符串 ['a','b'](plugin node.yaml 常用后者)。
+  // description = 副标题(NodeSelectPopover 显示);color = 左侧彩色点(paperclip 风格)。
+  options?: (string | { value: string; label: string; description?: string; color?: string })[]
   min?: number
   max?: number
   step?: number
