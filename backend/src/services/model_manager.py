@@ -138,9 +138,6 @@ class ModelManager:
         # L1 缓存(_components 等);modular 引擎自管组件(ComponentsManager)。
         self._image_adapters: dict = {}
         self._image_adapter_locks: dict = {}
-        # PR-1 modular 引擎:runner 持一个 ComponentsManager 单例(跨请求共享/缓存)。
-        # lazy 建(_import 在 image_modular,避免顶层 import diffusers/torch)。
-        self._modular_cm = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -818,13 +815,13 @@ class ModelManager:
             resolved, combo_key, pipeline_class, target, _emit)
 
     async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit):
-        """PR-1 modular 引擎:建/复用 ModularImageBackend(HF-layout)。
+        """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 
         与 legacy 共用 `_image_adapters` combo 缓存 + 四态事件(coarse:加载前 loading、
         建好 loaded;细粒度 ComponentsManager 事件留后续)。comfy 单文件量化 → PR-2。
         重 load 经 `asyncio.to_thread` 不阻塞 runner 事件循环。
         """
-        from src.services.inference.image_modular import ModularImageBackend, _import_modular
+        from src.services.inference.image_modular import ModularImageBackend
 
         async with self._image_adapter_lock_for(combo_key):
             cached = self._image_adapters.get(combo_key)
@@ -837,11 +834,8 @@ class ModelManager:
             for k in ("diffusion_models", "clip", "vae"):
                 await _emit(resolved[k], "loading")
             try:
-                if self._modular_cm is None:
-                    _, components_manager_cls = _import_modular()
-                    self._modular_cm = components_manager_cls()
                 # 单文件桥接 override:repo 外的单文件组件各自桥接(dequant + from_config of repo);
-                # HF-layout 组件(diffusers/<m>/.../config.json)则 None,由 repo load_components 加载。
+                # HF-layout 组件(diffusers/<m>/.../config.json)则 None,由 from_pretrained 加载。
                 from src.services.inference.image_modular import (  # noqa: PLC0415
                     build_bridged_text_encoder,
                     build_bridged_transformer,
@@ -862,7 +856,6 @@ class ModelManager:
                     device=target,
                     dtype=resolved["diffusion_models"].dtype,
                     pipeline_class=pipeline_class,
-                    components_manager=self._modular_cm,
                     transformer_override=t_ov,
                     text_encoder_override=c_ov,
                     vae_override=v_ov,

@@ -1,12 +1,15 @@
-"""Modular Diffusers 图像引擎(ModularPipeline + ComponentsManager)。
+"""图像引擎(标准 diffusers pipeline)—— 文件名 `image_modular` 是历史包袱(早期走 modular_pipelines)。
 
-spec: 2026-05-22-image-engine-modular-diffusers-design.md。PR-1:与现有
-`DiffusersImageBackend`(自写 ImageSampler)**并存灰度**,经 `NOUS_IMAGE_ENGINE`
-选择(默认 legacy)。PR-4 才删旧。
+变迁:
+- #128-132:迁到 diffusers Modular Diffusers(experimental,ModularPipeline + ComponentsManager)。
+- #144:翻案 —— modular 蒸馏 block 把 cfg/negative 掐了(质量根因);改走**标准** Flux2KleinPipeline。
+- **PR-A(本文件 modular 退役第二刀)**:删 `_import_modular` / `_build_modular_pipe` 死代码,
+  纯标准 pipeline 路径;非 Flux2(ERNIE/Qwen-Image/AuraFlow)等待 PR-C 经 ImageArchSpec 注册表接入。
 
-约束(plan-eng-review D2):`diffusers.modular*` / `diffusers` 的 import **只允许经
-`_import_modular()` 这一个函数**(blast-radius 隔离 + conftest mock torch 时模块顶层
-不 import diffusers/torch,避免 collection 崩)。
+约束(plan-eng-review D2):`diffusers` import **只允许经 `_import_*` 这些 lazy seam 函数**
+(blast-radius 隔离 + conftest mock torch 时模块顶层不 import diffusers/torch,避免 collection 崩)。
+class 名 `ModularImageBackend` 也是历史名,实际是标准 diffusers pipeline 引擎;改名是更大的 churn,
+留给架构收口后(per #145 spec)统一处理。
 """
 from __future__ import annotations
 
@@ -23,16 +26,6 @@ from src.services.inference.base import (
     MediaModality,
     UsageMeter,
 )
-
-
-def _import_modular() -> tuple[Any, Any]:
-    """Lazy import —— diffusers 的 Modular API 只在这里取(D2 隔离)。
-
-    测试可 monkeypatch 本函数返回 fake,从而无需真 diffusers/GPU 验证参数映射。
-    """
-    from diffusers import ComponentsManager, ModularPipeline  # noqa: PLC0415
-
-    return ModularPipeline, ComponentsManager
 
 
 def _import_flux2_transformer() -> Any:
@@ -208,9 +201,10 @@ def _quantize_fp8_weight_only(pipe: Any) -> None:
 
 
 class ModularImageBackend(InferenceAdapter):
-    """ModularPipeline 后端,实现现有 `InferenceAdapter.infer` 接口(与 TTS/LLM 一致)。
+    """图像引擎(标准 diffusers Flux2KleinPipeline);class 名是历史包袱(原 ModularPipeline,见模块 docstring)。
 
-    PR-1 只做 HF-layout 基线(bf16);量化桥接 PR-2、LoRA PR-3。
+    实现 `InferenceAdapter.infer` 接口(与 TTS/LLM 一致)。PR-A 起,modular 死代码已清,
+    非 Flux2 pipeline_class 由 PR-C 的 ImageArchSpec 注册表接入(见 plan 2026-05-26)。
     """
 
     modality: ClassVar[MediaModality] = MediaModality.IMAGE
@@ -223,18 +217,17 @@ class ModularImageBackend(InferenceAdapter):
         *,
         dtype: str = "bfloat16",
         pipeline_class: str = "Flux2KleinPipeline",
-        components_manager: Any = None,
         transformer_override: Any = None,
         text_encoder_override: Any = None,
         vae_override: Any = None,
         **params: Any,
     ):
+        # PR-A:删了 components_manager 参数(modular 才需要的;吞剩余 kwargs 兼容旧调用)。
+        params.pop("components_manager", None)
         super().__init__(paths={"main": repo}, device=device, **params)
         self.repo = repo
         self.dtype = dtype
-        # comfy 单文件 Flux2 → 标准 Flux2KleinPipeline(true-cfg);其它架构(ERNIE 等)→ modular fallback。
         self.pipeline_class = pipeline_class
-        self._cm = components_manager
         # comfy 单文件桥接 override:transformer(量化/comfy)+ text_encoder/vae(单文件装配,PR-2)。
         self._transformer_override = transformer_override
         self._text_encoder_override = text_encoder_override
@@ -252,12 +245,14 @@ class ModularImageBackend(InferenceAdapter):
     def _ensure_pipe(self) -> Any:
         if self._pipe is not None:
             return self._pipe
-        # Flux2 comfy 单文件 → 标准 Flux2KleinPipeline(true-cfg,行为对齐 ComfyUI);
-        # 其它架构(ERNIE 等)暂留 modular fallback(架构收口 spec 后统一)。
-        if self.pipeline_class == "Flux2KleinPipeline":
-            pipe = self._build_klein_pipe()
-        else:
-            pipe = self._build_modular_pipe()
+        # PR-A:diffusers modular 退役。Flux2 → 标准 Flux2KleinPipeline。
+        # 非 Flux2 架构(ERNIE / Qwen-Image / AuraFlow 等)留待 PR-C 经 ImageArchSpec 注册表统一接入。
+        if self.pipeline_class != "Flux2KleinPipeline":
+            raise NotImplementedError(
+                f"pipeline_class {self.pipeline_class!r} 暂未接入;Flux2KleinPipeline 之外的架构"
+                f"(ERNIE / Qwen-Image / AuraFlow 等)需经 PR-C 的 ImageArchSpec 注册表加入"
+                f"(见 plans/2026-05-26-image-engine-ux-consolidation.md)。")
+        pipe = self._build_klein_pipe()
         if _wants_fp8(self.dtype):
             # fp8 weight-only(torchao):transformer + text_encoder 权重 fp8 存储,省 ~½ 显存,
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
@@ -296,21 +291,6 @@ class ModularImageBackend(InferenceAdapter):
         pipe = klein_cls.from_pretrained(self.repo, torch_dtype=_torch_dtype(self.dtype))
         if overrides:
             pipe.register_modules(**overrides)
-        return pipe
-
-    def _build_modular_pipe(self) -> Any:
-        """非 Flux2(ERNIE 等)的 modular fallback(原 _ensure_pipe 装配链)。架构收口后退役。"""
-        modular_pipeline_cls, components_manager_cls = _import_modular()
-        cm = self._cm or components_manager_cls()
-        pipe = modular_pipeline_cls.from_pretrained(self.repo, components_manager=cm)
-        pipe.load_components(torch_dtype=_torch_dtype(self.dtype))
-        overrides = {k: v for k, v in (
-            ("transformer", self._transformer_override),
-            ("text_encoder", self._text_encoder_override),
-            ("vae", self._vae_override),
-        ) if v is not None}
-        if overrides:
-            pipe.update_components(**overrides)
         return pipe
 
     def _apply_loras(self, loras: list) -> None:
