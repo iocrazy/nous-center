@@ -21,6 +21,7 @@ def test_module_files_exist():
     assert (base / "predict2.py").exists()
     assert (base / "position_embedding.py").exists()
     assert (base / "anima.py").exists()  # PR-anima-2
+    assert (base / "text_encoder.py").exists()  # PR-anima-3
 
 
 def test_source_layout():
@@ -66,6 +67,16 @@ def test_source_layout():
         "def _apply_llm_rope",
     ]:
         assert sym in anima_src, f"anima.py missing {sym!r}"
+
+    # PR-anima-3:AnimaTextEncoder wrapper(qwen3-0.6b + 可选 t5xxl)。
+    te_src = (base / "text_encoder.py").read_text()
+    for sym in [
+        "class AnimaTextEncoder",
+        "def load",
+        "def encode",
+        "def unload",
+    ]:
+        assert sym in te_src, f"text_encoder.py missing {sym!r}"
 
 
 def test_no_comfy_imports_left():
