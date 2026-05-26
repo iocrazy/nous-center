@@ -256,12 +256,16 @@ class WorkflowExecutor:
         def _forward_progress(pmsg: "P.NodeProgress") -> None:
             if on_progress_async is None:
                 return
-            loop.create_task(on_progress_async({
+            event: dict[str, Any] = {
                 "type": "node_progress",
                 "node_id": pmsg.node_id,
                 "progress": pmsg.progress,
                 "detail": pmsg.detail,
-            }))
+            }
+            # PR-F:latent 预览 thumbnail(data URI)透传到 WS,前端节点上叠图。
+            if getattr(pmsg, "preview_url", None):
+                event["preview_url"] = pmsg.preview_url
+            loop.create_task(on_progress_async(event))
 
         result = await client.run_node(
             spec, on_progress=_forward_progress, workflow_name=self._workflow_name)

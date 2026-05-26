@@ -342,11 +342,12 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         # 工作线程里，那时需改 loop.call_soon_threadsafe）。
         progress_tasks: list[asyncio.Task] = []
 
-        def _on_progress(done: int, total: int, _node=node) -> None:
+        def _on_progress(done: int, total: int, preview_url: str | None = None, _node=node) -> None:
             t = asyncio.get_running_loop().create_task(ch.send_message(P.NodeProgress(
                 task_id=_node.task_id, node_id=_node.node_id,
                 progress=done / total if total else 1.0,
                 detail=f"step {done}/{total}",
+                preview_url=preview_url,  # PR-F:latent 实时 RGB 预览(可选)
             )))
             progress_tasks.append(t)
 

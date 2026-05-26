@@ -82,7 +82,9 @@ class FakeAdapter(InferenceAdapter):
         self,
         req: InferenceRequest,
         *,
-        progress_callback: Callable[[int, int], None] | None = None,
+        # PR-F:progress_callback 契约扩展为 (done, total, preview_url=None) —— preview_url 可选,
+        # backend 不计算 preview 时省略。fake 这里不发 preview(任何想要 preview 的对接走真 adapter)。
+        progress_callback: Callable[..., None] | None = None,
         cancel_flag: threading.Event | None = None,
     ) -> InferenceResult:
         if self._crash_on_infer:

@@ -441,9 +441,22 @@ class ModularImageBackend(InferenceAdapter):
                 # ~250ms/步已够响应)。raise BaseException(CancelledError)穿出 pipe()。
                 if cancel_flag is not None and cancel_flag.is_set():
                     raise asyncio.CancelledError()
+                # PR-F:latent → 96px JPEG data URI(ComfyUI Latent2RGB 等价,无需 TAESD 权重)。
+                # 失败/不可解 → None,不阻断推理。
+                preview_url = None
+                if progress_callback is not None and self.pipeline_class == "Flux2KleinPipeline":
+                    latents = cb_kwargs.get("latents")
+                    if latents is not None:
+                        from src.services.inference.latent_preview import latent_to_preview_data_uri  # noqa: PLC0415
+                        preview_url = latent_to_preview_data_uri(latents)
                 # 进度:1-based(对齐 fake_adapter / ComfyUI ProgressBar 的 update_absolute)。
+                # 契约扩展:progress_callback 可选接 preview_url kwarg(向后兼容,不接的 fake 不报错)。
                 if progress_callback is not None:
-                    progress_callback(i + 1, total_steps)
+                    try:
+                        progress_callback(i + 1, total_steps, preview_url=preview_url)
+                    except TypeError:
+                        # 老 fake 只接 (done, total) —— fall back 不传 preview。
+                        progress_callback(i + 1, total_steps)
                 return cb_kwargs
 
             call_kwargs["callback_on_step_end"] = _step_cb
