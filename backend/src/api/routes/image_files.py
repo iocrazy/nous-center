@@ -1,18 +1,27 @@
 """GET /files/images/{date}/{uuid}.{ext}?token=&expires= — signed-URL
 static route for image_generate outputs.
 
-Sits OUTSIDE the /api/v1/* tree so admin auth doesn't apply (the URL
-itself is the auth via HMAC). The token binds (uuid, expires) so a
-leaked URL can't be modified to point at a different file or extend
-its lifetime.
+Sits OUTSIDE the /api/v1/* tree so admin gate middleware doesn't apply.
+Authentication is dual-path:
+
+  1. **Admin session cookie** — owner's own browser. Bypasses TTL so the
+     UI doesn't break when a workflow output sits open for >1h then the
+     React Query cache is re-mounted with a now-expired token URL.
+  2. **HMAC signed URL** — anonymous / external share path. The token
+     binds (uuid, expires) so a leaked URL can't be modified to point at
+     a different file or extend its lifetime.
+
+Either path is sufficient. Ordering: cookie first (cheaper, no signature
+work), HMAC second (still required for non-admin URLs).
 """
 from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 
+from src.api.admin_session import request_is_authed
 from src.errors import NotFoundError, NousError
 from src.services.image_output_storage import resolve_path, verify_token
 
@@ -43,9 +52,17 @@ _MIME_BY_EXT = {
 
 
 @router.get("/files/images/{date}/{uuid_filename}")
-async def get_image(date: str, uuid_filename: str, token: str = "", expires: int = 0):
+async def get_image(
+    request: Request,
+    date: str,
+    uuid_filename: str,
+    token: str = "",
+    expires: int = 0,
+):
     # Validate URL components BEFORE touching disk so a malformed request
-    # can't be used to probe the filesystem layout.
+    # can't be used to probe the filesystem layout. These checks run
+    # regardless of auth path so a cookie-authed admin still can't smuggle
+    # ../ paths through.
     if not _DATE_RE.match(date):
         raise _UrlInvalidError("invalid date segment", code="bad_url")
 
@@ -56,32 +73,45 @@ async def get_image(date: str, uuid_filename: str, token: str = "", expires: int
     if not _UUID_RE.match(stem):
         raise _UrlInvalidError("invalid uuid", code="bad_url")
 
-    if not token or not expires:
-        raise _UrlInvalidError(
-            "signed url requires token and expires query params",
-            code="missing_signature",
-            fix="Re-fetch the image URL from the workflow output — tokens expire after 1h",
-        )
-
-    if not verify_token(stem, expires, token):
-        # Same error class for tampered + expired so we don't leak which
-        # case it was. The fix hint covers both.
-        raise _UrlExpiredError(
-            "signed url is expired or tampered",
-            code="url_expired",
-            fix="Re-run the workflow to get a fresh URL (default TTL 1h)",
-        )
+    # Dual auth: admin session cookie OR HMAC signed URL.
+    # Cookie path is checked first (cheap; no HMAC math). When ADMIN_PASSWORD is
+    # empty (dev mode), request_is_authed returns True so dev keeps working
+    # without configuring crypto.
+    admin_authed = request_is_authed(request)
+    if not admin_authed:
+        if not token or not expires:
+            raise _UrlInvalidError(
+                "image url requires admin session or signed token+expires",
+                code="missing_signature",
+                fix="Log in as admin, or re-fetch the workflow output for a fresh signed URL",
+            )
+        if not verify_token(stem, expires, token):
+            # Same error class for tampered + expired so we don't leak which
+            # case it was. The fix hint covers both.
+            raise _UrlExpiredError(
+                "signed url is expired or tampered",
+                code="url_expired",
+                fix="Log in as admin, or re-run the workflow for a fresh URL (default TTL 1h)",
+            )
 
     path = resolve_path(date, stem, ext)
     if not path.exists():
         raise NotFoundError("image not found", code="image_missing")
 
+    # Cache policy:
+    # - HMAC path: aggressive cache OK; URL changes when expires changes so a
+    #   cached response can never outlive its own signature window.
+    # - Cookie path: short cache (60s) — same uuid URL serves repeatedly across
+    #   sessions, can't anchor cache to a signature window.
+    if admin_authed and not (token and expires and verify_token(stem, expires, token)):
+        cache_header = "private, max-age=60"
+    else:
+        cache_header = f"private, max-age={max(0, expires - _now_ts())}"
+
     return FileResponse(
         path=str(path),
         media_type=_MIME_BY_EXT[ext],
-        # Aggressive cache OK: the URL changes when expires changes, so a
-        # cached response can never outlive its own signature window.
-        headers={"Cache-Control": f"private, max-age={max(0, expires - _now_ts())}"},
+        headers={"Cache-Control": cache_header},
     )
 
 

@@ -18,15 +18,31 @@ def storage_tmp(tmp_path, monkeypatch):
 
 @pytest.fixture
 def with_signing_secret(monkeypatch):
-    """Force ADMIN_SESSION_SECRET so the signing path runs."""
+    """Force ADMIN_SESSION_SECRET so the signing path runs.
+
+    The module reads via get_settings() each call, so no further patching
+    needed — but cache is per-process; just toggle directly.
+    """
     from src.config import get_settings
-    from src.services import image_output_storage as svc
 
     settings = get_settings()
     monkeypatch.setattr(settings, "ADMIN_SESSION_SECRET", "test-secret-bytes")
-    # The module reads via get_settings() each call, so no further patching
-    # needed — but cache is per-process; just toggle directly.
-    return svc
+
+
+@pytest.fixture
+def with_login_required(monkeypatch):
+    """Simulate prod-shape `ADMIN_PASSWORD` set so request_is_authed actually
+    checks cookies (rather than the dev-mode `True` short-circuit).
+
+    HMAC-rejection tests must use this — otherwise conftest's forced
+    `ADMIN_PASSWORD=""` makes every browser-shape request admin-authed and the
+    HMAC branch never runs (which would silently de-cover the rejection path).
+    """
+    from src.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD", "test-password")
+    monkeypatch.setattr(settings, "ADMIN_SESSION_SECRET", "test-secret-bytes")
 
 
 # ----- write_image -----
@@ -129,7 +145,9 @@ async def test_image_route_serves_valid_signed_url(storage_tmp, with_signing_sec
 
 
 @pytest.mark.asyncio
-async def test_image_route_403_on_expired_token(storage_tmp, with_signing_secret, client):
+async def test_image_route_403_on_expired_token(
+    storage_tmp, with_signing_secret, with_login_required, client,
+):
     from src.services.image_output_storage import _sign, write_image
 
     rec = write_image(b"x", ext="png", ttl_seconds=600)
@@ -145,7 +163,9 @@ async def test_image_route_403_on_expired_token(storage_tmp, with_signing_secret
 
 
 @pytest.mark.asyncio
-async def test_image_route_403_on_tampered_uuid(storage_tmp, with_signing_secret, client):
+async def test_image_route_403_on_tampered_uuid(
+    storage_tmp, with_signing_secret, with_login_required, client,
+):
     from src.services.image_output_storage import write_image
 
     rec = write_image(b"x", ext="png", ttl_seconds=600)
@@ -159,7 +179,7 @@ async def test_image_route_403_on_tampered_uuid(storage_tmp, with_signing_secret
 
 
 @pytest.mark.asyncio
-async def test_image_route_403_when_token_missing(client):
+async def test_image_route_403_when_token_missing(with_login_required, client):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     resp = await client.get(f"/files/images/{today}/{'a' * 32}.png")
     assert resp.status_code == 403
@@ -168,16 +188,88 @@ async def test_image_route_403_when_token_missing(client):
 
 
 @pytest.mark.asyncio
-async def test_image_route_403_when_no_signing_secret(client, monkeypatch):
+async def test_image_route_403_when_no_signing_secret(
+    client, monkeypatch, with_login_required,
+):
     """Even a 'valid'-looking URL must reject so a leaked URL from a one-off
     run with a transient secret can't survive a deploy that rotated keys."""
     from src.config import get_settings
 
+    # Re-clear the secret AFTER with_login_required set it (fixture ordering).
     monkeypatch.setattr(get_settings(), "ADMIN_SESSION_SECRET", "")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     expires = int(time.time()) + 3600
     url = f"/files/images/{today}/{'a' * 32}.png?token=deadbeef&expires={expires}"
     resp = await client.get(url)
+    assert resp.status_code == 403
+
+
+# ----- admin cookie auth bypass(本 fix 的核心)-----
+
+
+@pytest.mark.asyncio
+async def test_image_route_admin_cookie_bypasses_expired_token(
+    storage_tmp, with_signing_secret, with_login_required, client,
+):
+    """已登录 admin 自己浏览器看自己输出图,不应被 TTL 1h 卡死。
+
+    场景:前端 React Query 缓存里的 task URL token 是 5h 前签的(过期),
+    重新 mount ImageOutputNode 直接发请求 — 应 200(cookie 路径),不该 403。
+    """
+    from src.api.admin_session import COOKIE_NAME, issue_token
+    from src.services.image_output_storage import _sign, write_image
+
+    rec = write_image(b"PNG_OWNER", ext="png", ttl_seconds=600)
+    expired = int(time.time()) - 3600  # 1h ago
+    stale_token = _sign(rec["uuid"], expired)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    url = f"/files/images/{today}/{rec['uuid']}.png?token={stale_token}&expires={expired}"
+
+    admin_cookie, _ = issue_token()
+    resp = await client.get(url, cookies={COOKIE_NAME: admin_cookie})
+    assert resp.status_code == 200
+    assert resp.content == b"PNG_OWNER"
+    # 短缓存(60s),不能用 token 的 expires 锚
+    assert "max-age=60" in resp.headers.get("cache-control", "")
+
+
+@pytest.mark.asyncio
+async def test_image_route_admin_cookie_works_without_token(
+    storage_tmp, with_signing_secret, with_login_required, client,
+):
+    """admin cookie 路径连 token/expires query 都不需要。"""
+    from src.api.admin_session import COOKIE_NAME, issue_token
+    from src.services.image_output_storage import write_image
+
+    rec = write_image(b"BARE", ext="png", ttl_seconds=600)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    url = f"/files/images/{today}/{rec['uuid']}.png"  # 无 query 参数
+
+    admin_cookie, _ = issue_token()
+    resp = await client.get(url, cookies={COOKIE_NAME: admin_cookie})
+    assert resp.status_code == 200
+    assert resp.content == b"BARE"
+
+
+@pytest.mark.asyncio
+async def test_image_route_admin_path_still_blocks_traversal(
+    storage_tmp, with_signing_secret, with_login_required, client,
+):
+    """admin cookie 不能绕过 filename/path 校验 — ../ 类攻击仍 403。"""
+    from src.api.admin_session import COOKIE_NAME, issue_token
+
+    admin_cookie, _ = issue_token()
+    # 非白名单扩展名
+    resp = await client.get(
+        "/files/images/2026-05-26/file.exe",
+        cookies={COOKIE_NAME: admin_cookie},
+    )
+    assert resp.status_code == 403
+    # 非法 uuid 形状
+    resp = await client.get(
+        "/files/images/2026-05-26/not-a-uuid.png",
+        cookies={COOKIE_NAME: admin_cookie},
+    )
     assert resp.status_code == 403
 
 
