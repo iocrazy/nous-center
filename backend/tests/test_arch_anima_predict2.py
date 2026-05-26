@@ -12,7 +12,7 @@ def test_module_files_exist():
     """arch_anima 模块文件齐全(grep 风,不触发 import / metaclass)。
 
     conftest mock torch + einops Rearrange 子类化 nn.Module → 真 import 会 metaclass 冲突。
-    所以只验 path 上文件存在;真 forward 走 `tests/manual/smoke_anima_pr1.py`。
+    所以只验 path 上文件存在;真 forward 走 `tests/manual/smoke_anima_pr*.py`。
     """
     import pathlib  # noqa: PLC0415
 
@@ -20,6 +20,7 @@ def test_module_files_exist():
     assert (base / "__init__.py").exists()
     assert (base / "predict2.py").exists()
     assert (base / "position_embedding.py").exists()
+    assert (base / "anima.py").exists()  # PR-anima-2
 
 
 def test_source_layout():
@@ -29,6 +30,7 @@ def test_source_layout():
     base = pathlib.Path(__file__).parent.parent / "src/services/inference/arch_anima"
     predict2_src = (base / "predict2.py").read_text()
     pos_src = (base / "position_embedding.py").read_text()
+    anima_src = (base / "anima.py").read_text()
 
     for sym in [
         "class GPT2FeedForward",
@@ -52,6 +54,18 @@ def test_source_layout():
         "def normalize",
     ]:
         assert sym in pos_src, f"position_embedding.py missing {sym!r}"
+
+    # PR-anima-2:Anima 主类 + LLMAdapter + 1D RoPE 路径。
+    for sym in [
+        "class Anima",
+        "class LLMAdapter",
+        "class RotaryEmbedding",
+        "class _AnimaAttention",
+        "class _AnimaTransformerBlock",
+        "def _rotate_half",
+        "def _apply_llm_rope",
+    ]:
+        assert sym in anima_src, f"anima.py missing {sym!r}"
 
 
 def test_no_comfy_imports_left():
