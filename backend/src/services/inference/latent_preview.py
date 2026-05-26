@@ -62,7 +62,9 @@ def latent_to_preview_data_uri(latents: Any, *, max_px: int = 96) -> str | None:
         unpacked = _flux2_latent_unpack(latents.detach())
         if unpacked is None:
             return None
-        factors = torch.tensor(_FLUX2_RGB_FACTORS, dtype=unpacked.dtype, device=unpacked.device)
+        # `linear(x, weight, bias)` 要 weight shape `(out=3, in=32)`;
+        # _FLUX2_RGB_FACTORS 原始是 `(32 行 × 3 列)` —— 必须 .T(对齐 ComfyUI Latent2RGB)。
+        factors = torch.tensor(_FLUX2_RGB_FACTORS, dtype=unpacked.dtype, device=unpacked.device).T
         bias = torch.tensor(_FLUX2_RGB_BIAS, dtype=unpacked.dtype, device=unpacked.device)
         x = unpacked[0].movedim(0, -1)  # (H, W, 32)
         rgb = torch.nn.functional.linear(x, factors, bias=bias)  # (H, W, 3)
