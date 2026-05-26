@@ -1,8 +1,9 @@
 """get_or_load_image_adapter(PR-4 起 modular-only)—— auto 解析 + combo 缓存 + 四态事件。
 
 PR-4 删了 legacy 组件 L1 缓存(get_or_load_component / DiffusersImageBackend);本文件改测
-modular 路径(_get_or_load_modular_adapter),mock 掉真 build seam(ModularImageBackend /
-_import_modular / repo 推导)。实际出图由真模型 smoke 验。
+图像 adapter 路径(_get_or_load_modular_adapter),mock 掉真 build seam(ModularImageBackend /
+repo 推导)。实际出图由真模型 smoke 验。PR-A 起 modular 死代码退役;class 名 ModularImageBackend
+是历史包袱(实际是标准 diffusers Flux2KleinPipeline 引擎)。
 """
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ def stubbed(monkeypatch):
     # 让这些 wiring 测试走 HF-layout 路径(不对 fake 文件触发 build_bridged_*)。
     monkeypatch.setattr(MM, "_is_standalone_single_file", lambda spec: False)
     monkeypatch.setattr(MM, "_is_comfy_single_file_unet", lambda spec: False)
-    monkeypatch.setattr(IM, "_import_modular", lambda: (object(), lambda: object()))
+    # PR-A:_import_modular 已删 —— monkeypatch 不再需要(_FakeBackend 也绕开 _ensure_pipe 真路径)。
 
     builds = []
     fail = {"on": False}

@@ -1,8 +1,8 @@
 """图像后端 wiring 测(CI 可跑,无 GPU/真 diffusers)。
 
 PR「true-cfg 修复」后:Flux2 comfy 单文件走**标准** `Flux2KleinPipeline(is_distilled=False)`
-(monkeypatch `_import_klein_pipeline`);非 Flux2(ERNIE)留 modular fallback(monkeypatch
-`_import_modular`)。断言 ImageRequest → pipe() 参数映射 + 构建链;真出图走 standalone smoke
+(monkeypatch `_import_klein_pipeline`);PR-A 起非 Flux2 raise NotImplementedError
+(modular 死代码已退役,新架构经 PR-C 的 ImageArchSpec 注册表接)。断言 ImageRequest → pipe() 参数映射 + 构建链;真出图走 standalone smoke
 (spike_true_cfg.py / smoke_single_file_prod.py)。
 """
 from __future__ import annotations
@@ -39,23 +39,8 @@ def _fake_klein(monkeypatch):
     return klein_cls, tokenizer_cls, scheduler_cls, pipe
 
 
-def _fake_modular(monkeypatch):
-    """非 Flux2 fallback:fake (ModularPipeline, ComponentsManager) → pipe mock。"""
-    pipe = MagicMock(name="modular_pipe")
-    out = MagicMock(name="out")
-    img = MagicMock(name="img")
-    img.save.side_effect = lambda buf, format: buf.write(b"\x89PNG\r\n\x1a\n")  # noqa: A002
-    out.images = [img]
-    pipe.return_value = out
-
-    modular_cls = MagicMock(name="ModularPipeline")
-    modular_cls.from_pretrained.return_value = pipe
-    cm_cls = MagicMock(name="ComponentsManager")
-    monkeypatch.setattr(image_modular, "_import_modular", lambda: (modular_cls, cm_cls))
-    return modular_cls, cm_cls, pipe
-
-
 # device="cpu":wiring 测不碰真 CUDA(CI 无 GPU);torch 在 conftest 被 mock。
+# PR-A:删了 _fake_modular(modular 死代码已退役;非 Flux2 改 raise NotImplementedError)。
 
 
 @pytest.mark.asyncio
@@ -313,17 +298,15 @@ async def test_no_loras_does_not_load(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_flux2_falls_back_to_modular(monkeypatch):
-    """pipeline_class != Flux2KleinPipeline(ERNIE 等)→ modular fallback 装配链。"""
-    modular_cls, _cm, pipe = _fake_modular(monkeypatch)
+async def test_non_flux2_raises_not_implemented(monkeypatch):
+    """PR-A:pipeline_class != Flux2KleinPipeline → fail-loud NotImplementedError
+    (modular 死代码已退役;ERNIE/Qwen-Image/AuraFlow 等待 PR-C 经 ImageArchSpec 注册表接入)。"""
+    _fake_klein(monkeypatch)  # 即便走 klein seam 也无所谓 —— 不应被调
     be = image_modular.ModularImageBackend(
         repo="/m/ernie", device="cpu", pipeline_class="ErnieImagePipeline")
 
-    res = await be.infer(ImageRequest(request_id="e", prompt="x", steps=3, width=64, height=64))
-
-    modular_cls.from_pretrained.assert_called_once()
-    pipe.load_components.assert_called_once()
-    assert res.metadata["engine"] == "modular"
+    with pytest.raises(NotImplementedError, match="ErnieImagePipeline"):
+        await be.infer(ImageRequest(request_id="e", prompt="x", steps=3, width=64, height=64))
 
 
 @pytest.mark.asyncio
