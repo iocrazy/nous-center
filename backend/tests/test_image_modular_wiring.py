@@ -318,12 +318,36 @@ async def test_offload_cpu_calls_enable_model_cpu_offload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_offload_cuda_not_implemented(monkeypatch):
-    """PR-D:offload=cuda:N 跨卡 offload 留 PR-D2 → fail-loud。"""
-    _fake_klein(monkeypatch)
+async def test_offload_cross_gpu_routes_to_cross_gpu_helper(monkeypatch):
+    """PR-D2:offload=cuda:N(≠device)→ 走 `_enable_cross_gpu_offload` 而非
+    pipe.to / pipe.enable_model_cpu_offload(后两条是 PR-D 的 none/cpu 路径)。
+
+    cross-GPU 的真实正确性(accelerate CpuOffload 子类、pipe._execution_device 解析、
+    forward 跨卡 align)依赖真 accelerate + 真模型;conftest mock torch 跑不了,
+    见 `tests/manual/smoke_cross_gpu_offload.py`(feedback_verify_real_model)。
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cuda:0", offload="cuda:1")
-    with pytest.raises(NotImplementedError, match="offload='cuda:1'"):
+
+    # stub helper:验「被调一次 + 参数正确」就够。
+    with patch.object(image_modular, "_enable_cross_gpu_offload") as spy:
         await be.infer(ImageRequest(request_id="o3", prompt="x", steps=2, width=64, height=64))
+        spy.assert_called_once_with(pipe, compute_device="cuda:0", stash_device="cuda:1")
+
+    # 不走 cpu / none 路径。
+    pipe.to.assert_not_called()
+    pipe.enable_model_cpu_offload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_offload_cross_gpu_rejects_same_card(monkeypatch):
+    """PR-D2:offload=cuda:0 = device=cuda:0 → fail-loud(同卡无意义)。"""
+    _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cuda:0", offload="cuda:0")
+    with pytest.raises(ValueError, match="同卡"):
+        await be.infer(ImageRequest(request_id="o4", prompt="x", steps=2, width=64, height=64))
 
 
 @pytest.mark.asyncio

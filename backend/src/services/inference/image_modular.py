@@ -200,6 +200,74 @@ def _quantize_fp8_weight_only(pipe: Any) -> None:
             quantize_(mod, cfg)
 
 
+def _enable_cross_gpu_offload(pipe: Any, *, compute_device: str, stash_device: str) -> None:
+    """跨卡 offload:三组件常驻 stash_device,forward 时挪 compute_device(PR-D2)。
+
+    实现复用 diffusers `enable_model_cpu_offload` 的 chained hook 设计(accelerate
+    `CpuOffload` ModelHook),但**子类化让 offload destination 可配 cuda:N 替代 cpu**。
+    关键:diffusers `pipe._execution_device` 通过 `_hf_hook.execution_device` 解析正确
+    compute_device,latents / random noise 也分配到 compute_device(否则跟 forward output
+    设备不一致,scheduler.step 算式 `sample + dt * model_output` 冲突)。
+
+    主用例:stash=Pro 6000(96GB)+ compute=3090(24GB)—— stash 一卡装下所有组件常驻,
+    compute 卡装下单个最大组件。Pro 6000 当「显存银行」,小卡当算力。
+    PCIe 4.0(~16GB/s)挪 18GB transformer 约 1.1s,20 步多 ~22s —— 比 CPU offload 快(CPU 经
+    PCIe 同速但 host RAM 比 GPU HBM 慢得多),比单卡 OOM 强。
+
+    **不**适用于「2×3090 协作跑 34GB 模型」 —— 那需要 stash 卡装下所有组件常驻,
+    24GB stash 装不下 34GB。layer-level offload(单组件再切块)留之后。
+
+    chain 顺序按 `pipe.model_cpu_offload_seq`(diffusers 标准约定,比如
+    "text_encoder->transformer->vae"):每个组件 pre_forward 时先 offload 上一个回 stash,
+    再加载自己到 compute。任一时刻 compute 卡只有一个组件,不会一起爆。
+    """
+    import torch  # noqa: PLC0415
+    from accelerate.hooks import (  # noqa: PLC0415
+        CpuOffload,
+        UserCpuOffloadHook,
+        add_hook_to_module,
+    )
+
+    compute_t = torch.device(compute_device)
+    stash_t = torch.device(stash_device)
+
+    class _GpuStashOffload(CpuOffload):
+        """CpuOffload 子类:init_hook destination 改 stash_device 而非 cpu。
+
+        关键:用 `UserCpuOffloadHook(model, hook)` 包传给下一个 hook 的 `prev_module_hook`
+        参数 —— accelerate `CpuOffload.pre_forward` 严格 `isinstance(prev, UserCpuOffloadHook)` 检查,
+        传 CpuOffload 子类不通过 → prev.offload() 不触发 → 上一个组件不挪回 stash → OOM。
+        `UserCpuOffloadHook.offload()` 内部就是调 `self.hook.init_hook(self.model)` —— 即我们
+        重写的 init_hook,挪 stash。
+
+        diffusers `pipe._execution_device` 通过 `_hf_hook.execution_device` 解析到 compute_device,
+        latents/noise 在 compute,跟 forward output 一致 —— 不再触发 scheduler.step 跨设备相加。
+        """
+
+        def init_hook(self, module: Any) -> Any:
+            # offload destination = stash_device(覆盖 base 写死的 "cpu")。
+            return module.to(stash_t)
+
+    # chain hooks 按 model_cpu_offload_seq;diffusers Flux2KleinPipeline 有此属性。
+    seq = getattr(pipe, "model_cpu_offload_seq", None)
+    if not seq:
+        raise NotImplementedError(
+            f"{type(pipe).__name__} 无 model_cpu_offload_seq,跨卡 offload 暂不支持;"
+            f"用 offload=cpu 暂代,或为该 pipeline 显式定义组件 chain 顺序。")
+    prev_user_hook: Any = None
+    for model_str in seq.split("->"):
+        name = model_str.strip()
+        model = getattr(pipe, name, None)
+        if not isinstance(model, torch.nn.Module):
+            continue
+        # 链路:每个 CpuOffload 子类的 prev_module_hook 必须是 UserCpuOffloadHook(accelerate 用
+        # isinstance 严格检查);UserCpuOffloadHook.offload() 调 hook.init_hook(model) → 我们的
+        # init_hook 挪 stash → 上一个组件让位给下一个。
+        hook = _GpuStashOffload(execution_device=compute_t, prev_module_hook=prev_user_hook)
+        add_hook_to_module(model, hook, append=True)
+        prev_user_hook = UserCpuOffloadHook(model=model, hook=hook)
+
+
 class ModularImageBackend(InferenceAdapter):
     """图像引擎(标准 diffusers Flux2KleinPipeline);class 名是历史包袱(原 ModularPipeline,见模块 docstring)。
 
@@ -262,19 +330,27 @@ class ModularImageBackend(InferenceAdapter):
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
             # offload 时:在 enable_model_cpu_offload 之前量化(accelerate hooks 才看到量化后权重)。
             _quantize_fp8_weight_only(pipe)
-        # PR-D:offload 策略。none → 普通 .to(device);cpu → enable_model_cpu_offload(替代 .to)。
+        # PR-D / PR-D2:offload 策略。
+        #   none      → 普通 .to(device),全程在 device。最快。
+        #   cpu       → enable_model_cpu_offload(gpu_id=N):accelerate hooks 不用时挪 CPU。慢 3-5×。
+        #   cuda:N    → 跨卡 stash:三大组件常驻 cuda:N,forward 前 to(device) 后 to(stash)。
+        #               用 2×3090 协作跑 34GB 模型(权重 stash 一张,forward 另一张)。
         if self.offload == "cpu":
-            # diffusers enable_model_cpu_offload(gpu_id=N):用 accelerate hooks 把不用的组件挪 CPU,
-            # 用时挪回 cuda:N。慢 ~3-5×,但 34GB 大模型也能塞进 24GB 3090。
             gpu_id = int(self.device.split(":")[1]) if self.device.startswith("cuda:") else 0
             pipe.enable_model_cpu_offload(gpu_id=gpu_id)
         elif self.offload == "none":
             pipe.to(self.device)
+        elif self.offload.startswith("cuda:"):
+            # PR-D2:跨卡 offload(diffusers 没现成 API,手写 hook)。
+            # stash 卡跟 compute 卡不能同卡(就退化成 none 了),fail-loud。
+            if self.offload == self.device:
+                raise ValueError(
+                    f"offload={self.offload!r} 跟 device 同卡 — 跨卡 offload 必须不同卡;"
+                    f"想全程 GPU 用 offload=none,想 CPU offload 用 offload=cpu。")
+            _enable_cross_gpu_offload(pipe, compute_device=self.device, stash_device=self.offload)
         else:
-            # cuda:N 跨卡 offload 留 PR-D2(accelerate 自定义 hook);其它取值 fail-loud。
             raise NotImplementedError(
-                f"offload={self.offload!r} 暂未接入(PR-D 只支持 'none' / 'cpu';"
-                f"cuda:N 跨卡 offload 见 PR-D2)。")
+                f"offload={self.offload!r} 暂未接入(支持的:none / cpu / cuda:N)。")
         self._pipe = pipe
         self._model = pipe  # is_loaded → True
         return pipe

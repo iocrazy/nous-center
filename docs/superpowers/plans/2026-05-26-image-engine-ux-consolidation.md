@@ -98,23 +98,36 @@ executor.py(flux2_model bundle 带 offload)+ smoke。
   用户价值:2 张 3090 协作跑大模型(34GB 在 一张 24GB 不够,但 24+24=48GB 够)。
 - `device=cpu, offload=none`:纯 CPU 推理(极慢,几十秒/step,只为兜底 / 调试)。
 
-- [ ] node.yaml 显卡下拉加 `cpu` 选项;加新 `offload` select 下拉。
-- [ ] executor.py `exec_load_diffusion_model` 把 offload 字段塞 flux2_model bundle。
-- [ ] runner_process `_build_request` 把 offload 透传到 ImageRequest(新字段)+ ComponentSpec(可能放 spec.offload)。
-- [ ] `image_modular._ensure_pipe` 后:
-  - `offload == 'none'`:不动(现状)。
-  - `offload == 'cpu'`:`pipe.enable_model_cpu_offload(gpu_id=int(device.split(':')[1]))`。
-  - `offload == 'cuda:N'`(且 N ≠ device):手写跨卡 hook(`pipe.transformer.register_forward_pre_hook(lambda *_: m.to(device))`
-    + post_hook `lambda *_: m.to(offload_device)`),三组件同样套。
-- [ ] **真模型验**(关键 — feedback-verify-real-model):
-  (a) True-v2-bf16 + offload=cpu + device=cuda:2(空闲 3090)→ 出图正确 + peak_vram ≤24GB;延迟 ~3-5×。
-  (b) offload=cuda:1(Pro 6000)+ device=cuda:0 → 跨卡协作,验权重在 cuda:1 闲、cuda:0 跑 forward。
-- [ ] 单元 + smoke(`smoke_offload_3090.py`)。
-- [ ] 注:与 fp8 weight-only(#139)是两条独立路径,可叠加(`fp8 transformer + offload TE to cpu` 等)。
+- [x] node.yaml 显卡下拉加 `cpu` 选项 + `offload` select 下拉(`#152` PR-D)。
+- [x] executor.py `exec_load_diffusion_model` 把 offload 字段塞 flux2_model bundle(`#152`)。
+- [x] runner_process `_build_request` 把 offload 透传到 ImageRequest(`#152`)。
+- [x] `image_modular._ensure_pipe` 接 offload(`#152` none/cpu, PR-D2 cuda:N):
+  - `offload == 'none'`:`pipe.to(device)`。
+  - `offload == 'cpu'`:`pipe.enable_model_cpu_offload(gpu_id=N)`。
+  - `offload == 'cuda:N'`:**子类化 accelerate `CpuOffload`**(`init_hook` destination 改 stash),
+    用 `UserCpuOffloadHook(model, hook)` 包给下一个 hook 的 `prev_module_hook` —— accelerate
+    `CpuOffload.pre_forward` 用 `isinstance(prev, UserCpuOffloadHook)` 严格检查,传 `CpuOffload`
+    子类不通过会让 offload chain 失效;链按 `pipe.model_cpu_offload_seq` 顺序绑。
+    `pipe._execution_device` 通过 `_hf_hook.execution_device` 解析到 compute(不是组件实际所在的 stash),
+    latents/noise 在 compute,跟 forward output 一致 → scheduler.step 不再触发跨设备相加。
+- [x] **真模型验**(2026-05-26 实测 / `smoke_cross_gpu_offload.py`):
+  公平对比 device=cuda:0 + offload=cpu(baseline) vs device=cuda:0 + offload=cuda:1(cross-gpu)—
+  同 device → RNG 一致 → 应等价。
+  | 指标 | baseline (cpu) | cross-gpu (cuda:1) |
+  |---|---|---|
+  | peak cuda:0(3090) | 18.1 GB | 18.1 GB ≤ 24GB ✓ |
+  | peak cuda:1(Pro 6000) | 0 | 33.1 GB |
+  | latency | 66s | **53s**(快 20%) |
+  | SSIM vs baseline | — | **1.0000** ✓ |
+- [x] 单元(routing)+ 真模型 smoke(`tests/manual/smoke_cross_gpu_offload.py`)。
+- [ ] 注:与 fp8 weight-only(#139)是两条独立路径,可叠加(后续验证)。
+- [ ] **2×3090 协作跑 34GB 模型** 不在 PR-D2 范围 —— stash 卡需装下所有组件常驻
+  (transformer 18 + TE 16 = 34GB > 单 3090 24GB)。需 layer-level offload(单组件再切块,
+  accelerate `dispatch_model` + `device_map`),独立 PR。
 
-> **理由**:你 3 张卡(Pro 6000 + 2×3090),今天大模型只能塞 Pro 6000;offload 后 3090 也能跑大模型(慢但行)。
-> 跨卡 offload(`offload=cuda:N`)可让 2×3090 协作跑 34GB 模型(权重 stash 一张、forward 另一张)。
-> 配合 PR-C 的 anima(更小本来就够塞)= 全卡可用。
+> **理由**:你 3 张卡(Pro 6000 + 2×3090),offload 后 3090 也能跑大模型(慢但行)。
+> 跨卡 `offload=cuda:N` 让小卡借大卡当「显存银行」(Pro 6000 96GB 装权重,3090 24GB 跑算力)。
+> 真实测**比 CPU offload 还快 20%**(GPU→GPU PCIe 比 GPU→CPU host RAM 快)。
 
 ---
 

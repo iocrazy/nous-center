@@ -857,9 +857,16 @@ class ModelManager:
                     build_bridged_transformer,
                     build_bridged_vae,
                 )
-                # PR-D:offload=cpu 时桥接 device 改 'cpu' —— 让 enable_model_cpu_offload(gpu_id=N)
-                # 接管设备调度。直接加载到 cuda 会爆显存(大模型 34GB > 24GB 3090)。
-                load_device = "cpu" if offload == "cpu" else target
+                # PR-D / PR-D2:桥接 load_device 按 offload 模式选 ——
+                #   cpu  → 'cpu'(enable_model_cpu_offload 接管;直接 cuda 加载会爆 34GB > 24GB)
+                #   cuda:N → 'cuda:N'(stash 卡;hook 把组件移到 compute 时再倒)
+                #   none → target(compute 卡;全程在那)
+                if offload == "cpu":
+                    load_device = "cpu"
+                elif offload.startswith("cuda:"):
+                    load_device = offload  # stash 卡
+                else:
+                    load_device = target
                 t_ov = c_ov = v_ov = None
                 if _is_standalone_single_file(resolved["diffusion_models"]):
                     t_ov = await asyncio.to_thread(
