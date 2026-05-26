@@ -39,6 +39,18 @@ def test_flux_klein_adapter_default_guidance_scale():
     assert adapter.default_guidance_scale() == 4.0  # matches Pipeline default
 
 
+def test_flux_klein_supported_samplers_euler_only():
+    """PR-2:diffusers Flux2 flow-matching 只 euler 兼容(真模型验 heun 崩/lcm 错)。"""
+    adapter = FluxKleinArchAdapter()
+    assert adapter.supported_samplers() == {"euler"}
+
+
+def test_flux_klein_supported_schedulers():
+    """PR-2:normal/karras/exponential/beta 经 FlowMatchEuler 真模型验过。"""
+    adapter = FluxKleinArchAdapter()
+    assert adapter.supported_schedulers() == {"normal", "karras", "exponential", "beta"}
+
+
 def test_unknown_pipeline_class_not_in_registry():
     assert "StableDiffusionXLPipeline" not in MODEL_ARCH_REGISTRY
     assert "Flux2Pipeline" not in MODEL_ARCH_REGISTRY  # FluxDev — V2 PR

@@ -111,6 +111,10 @@ nodes:
       - { name: height,     label: "高度",  widget: slider, min: 256, max: 2048, step: 64, default: 1024 }
       - { name: steps,      label: "步数",  widget: slider, min: 1,   max: 100,  step: 1,  default: 25 }
       - { name: cfg_scale,  label: "CFG",   widget: slider, min: 0,   max: 20,   step: 0.1, default: 4.0 }
+      # 复刻 ComfyUI KSampler 两下拉(结构对齐,选项是 diffusers 的)。Flux2 是 flow-matching,
+      # diffusers 只 3 个采样器兼容;sampler_name=scheduler 类,scheduler=sigma 调度(use_*_sigmas)。
+      - { name: sampler_name, label: "采样器", widget: select, options: [euler, heun, lcm], default: euler }
+      - { name: scheduler,    label: "调度器", widget: select, options: [normal, karras, exponential, beta], default: normal }
       - { name: seed,       label: "Seed",  widget: input, default: "" }
 
   flux2_vae_decode:

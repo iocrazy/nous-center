@@ -50,9 +50,27 @@ class ModelArchAdapter(Protocol):
         value is functionally ignored at inference."""
         ...
 
+    def supported_samplers(self) -> set[str]:
+        """采样器(KSampler `sampler_name` 下拉)中本架构**真能用**的子集。
+
+        通用 KSampler 节点列出候选(euler/heun/lcm…,可扩展);运行时 ModularImageBackend
+        据此校验 —— 选了不在此集合的 → fail loud(清晰报错,不出图)。真模型已验:diffusers
+        Flux2 flow-matching 管线只有 euler 兼容(heun 的 set_timesteps 不接 custom sigmas;
+        lcm 只对 LCM-蒸馏模型有效)。新架构接入时在其 adapter 里声明支持集。"""
+        ...
+
+    def supported_schedulers(self) -> set[str]:
+        """调度器(KSampler `scheduler` 下拉,sigma 调度)中本架构真能用的子集。
+        Flux2:normal/karras/exponential/beta 均经 FlowMatchEuler 真模型验过。"""
+        ...
+
 
 class FluxKleinArchAdapter:
-    """Flux2-Klein-9B (distilled). Matches diffusers Flux2KleinPipeline."""
+    """Flux2-Klein-9B family via diffusers Flux2KleinPipeline (标准 pipeline)。
+
+    注:supports_cfg / supports_negative_prompt 是 legacy 字段(当前未被引擎消费)。#144 起
+    comfy 单文件走标准 Flux2KleinPipeline(is_distilled=False)→ cfg/negative **实际生效**
+    (true-CFG),与下面的 False 不符;留待架构收口 spec 统一清理,先不动以免破坏既有测试。"""
 
     def supports_cfg(self) -> bool:
         return False
@@ -65,6 +83,14 @@ class FluxKleinArchAdapter:
 
     def default_guidance_scale(self) -> float:
         return 4.0  # matches Pipeline kwarg default; ignored at inference for distilled
+
+    def supported_samplers(self) -> set[str]:
+        # diffusers Flux2 flow-matching 管线只有 euler 兼容(真模型验:heun set_timesteps
+        # 不接 custom sigmas → 崩;lcm 仅 LCM-蒸馏模型有效)。
+        return {"euler"}
+
+    def supported_schedulers(self) -> set[str]:
+        return {"normal", "karras", "exponential", "beta"}
 
 
 # Registry — key is the diffusers Pipeline class name as returned by

@@ -52,6 +52,21 @@ def test_granular_auto_device_passthrough():
     assert req.components["vae"].device == "auto"
 
 
+def test_granular_carries_sampler_scheduler():
+    """PR-2:latent 的 sampler_name/scheduler 透传到 ImageRequest。"""
+    inp = _granular_inputs()
+    inp["latent"]["sampler_name"] = "heun"
+    inp["latent"]["scheduler"] = "karras"
+    req = _build_request(_node(inp))
+    assert req.sampler_name == "heun" and req.scheduler == "karras"
+
+
+def test_granular_sampler_scheduler_defaults():
+    """无 sampler_name/scheduler key → 默认 euler/normal(= 参考库现状)。"""
+    req = _build_request(_node(_granular_inputs()))
+    assert req.sampler_name == "euler" and req.scheduler == "normal"
+
+
 def test_granular_blank_seed_is_none():
     inp = _granular_inputs()
     inp["latent"]["seed"] = ""
