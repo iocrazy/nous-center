@@ -2165,6 +2165,7 @@ dependencies = [
 image = [
     { name = "accelerate" },
     { name = "diffusers" },
+    { name = "einops" },
     { name = "peft" },
     { name = "protobuf" },
     { name = "safetensors" },
@@ -2194,6 +2195,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=4.0" },
     { name = "celery", extras = ["redis"], specifier = ">=5.4" },
     { name = "diffusers", marker = "extra == 'image'", git = "https://github.com/huggingface/diffusers.git?rev=c8eba433adf1f90d7fcc70092562ea50789ee8fb" },
+    { name = "einops", marker = "extra == 'image'", specifier = ">=0.8" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28" },
     { name = "modelscope", marker = "extra == 'inference'", specifier = ">=1.34.0" },

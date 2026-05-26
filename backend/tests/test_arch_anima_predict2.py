@@ -1,0 +1,92 @@
+"""arch_anima.predict2 wiring 测(CI 可跑;不真 forward —— conftest mock torch)。
+
+CI 跑:验 module symbol 表 + 公共 API 对外。真 forward / 出图等到
+`tests/manual/smoke_anima_pr1.py`(或后续 PR-anima-7 真模型 e2e)。
+
+CLAUDE.md「conftest mock torch + 无 GPU,引擎正确性只靠 standalone smoke」。
+"""
+from __future__ import annotations
+
+
+def test_module_files_exist():
+    """arch_anima 模块文件齐全(grep 风,不触发 import / metaclass)。
+
+    conftest mock torch + einops Rearrange 子类化 nn.Module → 真 import 会 metaclass 冲突。
+    所以只验 path 上文件存在;真 forward 走 `tests/manual/smoke_anima_pr1.py`。
+    """
+    import pathlib  # noqa: PLC0415
+
+    base = pathlib.Path(__file__).parent.parent / "src/services/inference/arch_anima"
+    assert (base / "__init__.py").exists()
+    assert (base / "predict2.py").exists()
+    assert (base / "position_embedding.py").exists()
+
+
+def test_source_layout():
+    """检查源文件含必需的 class 定义(grep 风,不触发 import / metaclass)。"""
+    import pathlib  # noqa: PLC0415
+
+    base = pathlib.Path(__file__).parent.parent / "src/services/inference/arch_anima"
+    predict2_src = (base / "predict2.py").read_text()
+    pos_src = (base / "position_embedding.py").read_text()
+
+    for sym in [
+        "class GPT2FeedForward",
+        "class Attention",
+        "class Timesteps",
+        "class TimestepEmbedding",
+        "class PatchEmbed",
+        "class FinalLayer",
+        "class Block",
+        "class MiniTrainDIT",
+        "def apply_rotary_pos_emb",
+        "def _scaled_dot_product_attention",
+        "def _pad_to_patch_size",
+    ]:
+        assert sym in predict2_src, f"predict2.py missing {sym!r}"
+
+    for sym in [
+        "class VideoPositionEmb",
+        "class VideoRopePosition3DEmb",
+        "class LearnablePosEmbAxis",
+        "def normalize",
+    ]:
+        assert sym in pos_src, f"position_embedding.py missing {sym!r}"
+
+
+def test_no_comfy_imports_left():
+    """port 后不该再有 comfy.* import(spec 2026-05-26-anima-port-design 决策点 = 选项 A 自包含)。"""
+    import pathlib  # noqa: PLC0415
+
+    base = pathlib.Path(__file__).parent.parent / "src/services/inference/arch_anima"
+    for f in base.glob("*.py"):
+        for line in f.read_text().splitlines():
+            stripped = line.strip()
+            # 只检 import 行,不查注释里关于「替代 torchvision」的说明文。
+            if stripped.startswith("#"):
+                continue
+            assert "import comfy" not in stripped, f"{f.name}: 仍有 comfy import:{line!r}"
+            assert "from comfy" not in stripped, f"{f.name}: 仍有 from comfy:{line!r}"
+            assert "import torchvision" not in stripped, f"{f.name}: 仍 import torchvision:{line!r}"
+            assert "from torchvision" not in stripped, f"{f.name}: 仍 from torchvision:{line!r}"
+
+
+def test_no_transformer_options_in_signature():
+    """port 删了 ComfyUI 特有的 transformer_options kwarg(nous 走 diffusers LoRA loader)。
+
+    docstring / 注释里说「删了 transformer_options」是 OK 的;只检代码体不出现 kwarg。
+    """
+    import pathlib  # noqa: PLC0415
+
+    base = pathlib.Path(__file__).parent.parent / "src/services/inference/arch_anima"
+    for f in base.glob("*.py"):
+        for line in f.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            # docstring / quoted 也跳过(简易判断:行内含成对反引号 = 文档说明)
+            if "`transformer_options`" in stripped:
+                continue
+            assert "transformer_options" not in stripped, (
+                f"{f.name}: transformer_options 是 ComfyUI 特有 kwarg,nous port 应删干净:{line!r}"
+            )
