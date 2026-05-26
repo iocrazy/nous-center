@@ -40,38 +40,56 @@ def test_repo_derives_from_clip_when_unet_is_comfy_single_file(tmp_path):
     assert _modular_repo_from_components(resolved) == str(repo)
 
 
-def test_single_file_falls_back_to_arch_reference(tmp_path, monkeypatch):
-    """PR-2:全单文件无 HF repo → 用「架构参考整模型」(diffusers/<m>/model_index.json,_class_name 含架构)。"""
+def test_single_file_flux2_uses_bundled_config(tmp_path, monkeypatch):
+    """**PR-B**:flux2 全单文件 → 仓内 bundled config(backend/configs/image_arch/flux2/),
+    **不再**依赖 LOCAL_MODELS_PATH/image/diffusers/Flux2-klein-9B 参考整模型(18GB)。"""
     from unittest.mock import MagicMock
-    # 单文件 transformer(无 repo)
     d = tmp_path / "image" / "diffusion_models" / "flux"
     d.mkdir(parents=True)
     f = d / "Flux2-Klein-9B-True-v2-fp8mixed.safetensors"
     f.write_text("x")
-    # 架构参考整模型 diffusers/Flux2-klein-9B
-    ref = tmp_path / "image" / "diffusers" / "Flux2-klein-9B"
+    settings = MagicMock()
+    settings.LOCAL_MODELS_PATH = str(tmp_path)  # **无任何 diffusers/ 参考** —— 仍能跑
+    monkeypatch.setattr("src.config.get_settings", lambda: settings)
+
+    resolved = {"diffusion_models": ComponentSpec(
+        kind="diffusion_models", file=str(f), device="cuda:1", dtype="bfloat16", adapter_arch="flux2")}
+    result = _modular_repo_from_components(resolved)
+    assert result is not None
+    assert result.endswith("configs/image_arch/flux2"), f"应返回仓内 bundle,得到 {result!r}"
+
+
+def test_single_file_unknown_arch_falls_back_to_local_diffusers(tmp_path, monkeypatch):
+    """未知架构(无 bundle)→ fallback 扫 LOCAL_MODELS_PATH/image/diffusers/ 找匹配整模型。
+    向后兼容老用户。"""
+    from unittest.mock import MagicMock
+    d = tmp_path / "image" / "diffusion_models"
+    d.mkdir(parents=True)
+    f = d / "ernie.safetensors"
+    f.write_text("x")
+    ref = tmp_path / "image" / "diffusers" / "ERNIE-Image"
     ref.mkdir(parents=True)
-    (ref / "model_index.json").write_text('{"_class_name": "Flux2KleinPipeline"}')
+    (ref / "model_index.json").write_text('{"_class_name": "ErnieImagePipeline"}')
     settings = MagicMock()
     settings.LOCAL_MODELS_PATH = str(tmp_path)
     monkeypatch.setattr("src.config.get_settings", lambda: settings)
 
     resolved = {"diffusion_models": ComponentSpec(
-        kind="diffusion_models", file=str(f), device="cuda:1", dtype="bfloat16", adapter_arch="flux2")}
+        kind="diffusion_models", file=str(f), device="cuda:1", dtype="bfloat16", adapter_arch="ernie")}
     assert _modular_repo_from_components(resolved) == str(ref)
 
 
-def test_single_file_raises_when_no_arch_reference(tmp_path, monkeypatch):
-    """全单文件 + 找不到架构参考整模型 → 清晰报错(提示放对应整模型)。"""
+def test_single_file_unknown_arch_no_bundle_no_local_raises(tmp_path, monkeypatch):
+    """未知架构 + 无 bundle + 无 LOCAL_MODELS_PATH 参考 → 清晰报错。"""
     from unittest.mock import MagicMock
-    d = tmp_path / "image" / "diffusion_models" / "flux"
+    d = tmp_path / "image" / "diffusion_models"
     d.mkdir(parents=True)
     f = d / "x.safetensors"
     f.write_text("x")
     settings = MagicMock()
-    settings.LOCAL_MODELS_PATH = str(tmp_path)  # 无 diffusers/ 参考
+    settings.LOCAL_MODELS_PATH = str(tmp_path)
     monkeypatch.setattr("src.config.get_settings", lambda: settings)
     resolved = {"diffusion_models": ComponentSpec(
-        kind="diffusion_models", file=str(f), device="cuda:1", dtype="bfloat16", adapter_arch="flux2")}
+        kind="diffusion_models", file=str(f), device="cuda:1", dtype="bfloat16", adapter_arch="ernie")}
     with pytest.raises(ValueError, match="参考整模型|model_index"):
         _modular_repo_from_components(resolved)

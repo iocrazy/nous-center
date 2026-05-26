@@ -60,19 +60,33 @@ def _is_standalone_single_file(spec) -> bool:
 
 
 def _reference_repo_for_arch(arch: str) -> str | None:
-    """架构 → 参考整模型目录(单文件装配:借它的 config/scheduler/tokenizer + 各组件 config)。
+    """架构 → 配置目录(单文件装配:借它的 tokenizer + 各组件 config)。
 
-    扫 LOCAL_MODELS_PATH/image/diffusers/*/model_index.json,按 `_class_name` 含架构提示匹配
-    (flux2→'flux2'、ernie→'ernie')。用户库:flux2→Flux2-klein-9B、ernie→ERNIE-Image。
+    **PR-B 起优先返回仓内 bundle**(`backend/configs/image_arch/<arch>/`,几 MB)——
+    用户库可不再放参考整模型(18GB)即能跑同架构单文件。Fallback 扫 LOCAL_MODELS_PATH/image/diffusers/
+    保留向后兼容(老用户仍能用)。
+
+    支持架构:flux2(已 bundle)。新增 arch 经 PR-C 的 ImageArchSpec 注册表 + 在 configs/ 加 bundle 一并接入。
     """
     import json  # noqa: PLC0415
     from src.config import get_settings  # noqa: PLC0415
 
+    arch_lower = (arch or "").lower()
+    if not arch_lower:
+        return None
+
+    # 1. 仓内 bundled config(首选,几 MB,完全 self-contained)
+    # model_manager.py 在 backend/src/services/ → parents[2] = backend/。
+    backend_root = Path(__file__).resolve().parents[2]
+    bundled = backend_root / "configs" / "image_arch" / arch_lower
+    if (bundled / "transformer" / "config.json").is_file():
+        return str(bundled)
+
+    # 2. Fallback:扫 LOCAL_MODELS_PATH/image/diffusers/*/model_index.json(向后兼容)
     base = Path(get_settings().LOCAL_MODELS_PATH) / "image" / "diffusers"
     if not base.is_dir():
         return None
-    hint = {"flux2": "flux2", "flux1": "flux", "ernie": "ernie"}.get(
-        (arch or "").lower(), (arch or "").lower())
+    hint = {"flux2": "flux2", "flux1": "flux", "ernie": "ernie"}.get(arch_lower, arch_lower)
     if not hint:
         return None
     for d in sorted(base.iterdir()):
