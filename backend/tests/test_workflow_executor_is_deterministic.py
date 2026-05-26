@@ -15,7 +15,7 @@ class _CapturingClient:
     def __init__(self):
         self.spec: P.RunNode | None = None
 
-    async def run_node(self, spec, *, workflow_name=""):
+    async def run_node(self, spec, *, on_progress=None, workflow_name=""):
         self.spec = spec
         return P.NodeResult(task_id=spec.task_id, node_id=spec.node_id, status="completed",
                             outputs={"image_url": "u"}, error=None, duration_ms=1)
