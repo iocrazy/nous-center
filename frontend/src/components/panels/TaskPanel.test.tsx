@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import TaskPanel, { sortTasks } from './TaskPanel'
+import TaskPanel from './TaskPanel'
+import { sortTasks } from './taskSort'
 import { ALL_TASK_STATUSES, usePanelStore } from '../../stores/panel'
 import type { ExecutionTask } from '../../api/tasks'
 

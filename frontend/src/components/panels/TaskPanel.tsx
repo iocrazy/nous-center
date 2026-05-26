@@ -33,6 +33,7 @@ import {
   type TaskStatus,
 } from '../../stores/panel'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
+import { SORT_LABEL, STATUS_LABEL, sortTasks } from './taskSort'
 
 /**
  * TaskPanel — 对齐 ComfyUI 「任务历史」面板风格(读用户截图复刻):
@@ -222,43 +223,6 @@ const iconBtnStyle: React.CSSProperties = {
   width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
   background: 'transparent', border: 'none', color: 'var(--muted)',
   borderRadius: 4, cursor: 'pointer',
-}
-
-const STATUS_LABEL: Readonly<Record<TaskStatus, string>> = {
-  queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
-}
-
-const SORT_LABEL: Readonly<Record<`${TaskSortKey}.${TaskSortDir}`, string>> = {
-  'created.desc': '创建时间(新→旧)',
-  'created.asc': '创建时间(旧→新)',
-  'duration.desc': '耗时(长→短)',
-  'duration.asc': '耗时(短→长)',
-}
-
-/** 排序 visible 列表(纯函数,导出便于测试)。
- * - created:用 created_at ISO 串字典序,与时间序一致;
- * - duration:running/queued 没 duration_ms 视为 +Infinity 排末尾(无论升降都在尾),
- *   保证「耗时」排序看到的都是完成态任务。 */
-export function sortTasks(
-  tasks: readonly ExecutionTask[],
-  key: TaskSortKey,
-  dir: TaskSortDir,
-): ExecutionTask[] {
-  const sign = dir === 'asc' ? 1 : -1
-  const arr = [...tasks]
-  if (key === 'created') {
-    arr.sort((a, b) => sign * a.created_at.localeCompare(b.created_at))
-  } else {
-    arr.sort((a, b) => {
-      const da = a.duration_ms ?? Number.POSITIVE_INFINITY
-      const db = b.duration_ms ?? Number.POSITIVE_INFINITY
-      // 把没 duration 的任务永远排到末尾,不被 desc/asc 翻动。
-      if (da === Number.POSITIVE_INFINITY && db !== Number.POSITIVE_INFINITY) return 1
-      if (db === Number.POSITIVE_INFINITY && da !== Number.POSITIVE_INFINITY) return -1
-      return sign * (da - db)
-    })
-  }
-  return arr
 }
 
 function FilterButton({
