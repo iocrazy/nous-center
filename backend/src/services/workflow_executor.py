@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict, deque
 from typing import Any
@@ -247,7 +248,23 @@ class WorkflowExecutor:
             inputs=merged_inputs,
             is_deterministic=is_deterministic,
         )
-        result = await client.run_node(spec, workflow_name=self._workflow_name)
+        # PR-3:转发 runner 的 NodeProgress → WS 节点级进度(KSampler/VAE Decode 的 callback_on_step_end
+        # 每步发一个 NodeProgress;前端 DeclarativeNode 按 node_id 渲染进度条)。
+        loop = asyncio.get_running_loop()
+        on_progress_async = self._on_progress
+
+        def _forward_progress(pmsg: "P.NodeProgress") -> None:
+            if on_progress_async is None:
+                return
+            loop.create_task(on_progress_async({
+                "type": "node_progress",
+                "node_id": pmsg.node_id,
+                "progress": pmsg.progress,
+                "detail": pmsg.detail,
+            }))
+
+        result = await client.run_node(
+            spec, on_progress=_forward_progress, workflow_name=self._workflow_name)
         # 真 RunnerClient 返回 P.NodeResult dataclass;Lane S FakeRunnerClient
         # 直接返回 outputs dict(stub 简化)。统一在这里 unwrap —— executor 上层
         # 把结果当 dict 走(_outputs 索引、下游 _get_inputs 迭代),不 unwrap 就

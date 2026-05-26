@@ -506,6 +506,11 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   } | null>(null)
   const imageStageTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const imageStartAtRef = useRef<number | null>(null)
+  // PR-3:真采样进度(每步从 backend 经 WS node_progress 事件来)。runner 的
+  // P.NodeProgress 用 progress(0-1)+ detail("step N/T")—— parse detail 拿 step/total。
+  const [denoiseProgress, setDenoiseProgress] = useState<
+    { step: number; total: number; percent: number } | null
+  >(null)
 
   const updateStreamingStats = useCallback(() => {
     const count = tokenCountRef.current
@@ -538,11 +543,25 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
           }, 250)
         }
       }
+      if (data.type === 'node_progress' && data.node_id === id) {
+        // 真采样进度:detail = "step N/T",progress = 0-1。
+        const m = typeof data.detail === 'string' ? /step\s+(\d+)\s*\/\s*(\d+)/.exec(data.detail) : null
+        if (m) {
+          const step = Number(m[1])
+          const total = Number(m[2])
+          setDenoiseProgress({
+            step,
+            total,
+            percent: typeof data.progress === 'number' ? Math.round(data.progress * 100) : Math.round((step / total) * 100),
+          })
+        }
+      }
       if (data.type === 'node_start' && data.node_id === id) {
         // New run on this node — clear previous run's stats
         tokenCountRef.current = 0
         firstTokenAtRef.current = null
         setTokenStats(null)
+        setDenoiseProgress(null)
 
         // Image-only: start the 3-stage simulation. text_encode (~1s) →
         // denoise (~stepsBudget) → vae_decode (~0.5s). Per-step time
@@ -570,6 +589,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         }
       }
       if (data.type === 'node_complete' && data.node_id === id) {
+        setDenoiseProgress(null)
         if (throttleRef.current) {
           clearTimeout(throttleRef.current)
           throttleRef.current = null
@@ -690,27 +710,41 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         </div>
       )}
       {imageStage && (
-        <div
-          className="flex items-center gap-1.5"
-          style={{
-            fontSize: 9,
-            color: 'var(--muted)',
-            padding: '4px 10px 6px',
-            transition: 'opacity 0.5s',
-            opacity: imageStage.phase === 'done' ? 0.7 : 1,
-          }}
-        >
-          {imageStage.phase === 'done' ? (
-            <Check size={10} style={{ color: 'var(--ok)', flexShrink: 0 }} />
-          ) : (
-            <ImageIcon size={10} style={{ color: 'var(--info)', flexShrink: 0 }} />
+        <div style={{ padding: '4px 10px 6px' }}>
+          <div
+            className="flex items-center gap-1.5"
+            style={{
+              fontSize: 9,
+              color: 'var(--muted)',
+              transition: 'opacity 0.5s',
+              opacity: imageStage.phase === 'done' ? 0.7 : 1,
+            }}
+          >
+            {imageStage.phase === 'done' ? (
+              <Check size={10} style={{ color: 'var(--ok)', flexShrink: 0 }} />
+            ) : (
+              <ImageIcon size={10} style={{ color: 'var(--info)', flexShrink: 0 }} />
+            )}
+            <span>
+              {imageStage.phase === 'text_encode' && 'Text encode...'}
+              {imageStage.phase === 'denoise' && (denoiseProgress
+                ? `Denoise · step ${denoiseProgress.step}/${denoiseProgress.total} · ${denoiseProgress.percent}%`
+                : `Denoise (~${Math.max(1, Math.round(Number(data.steps ?? 25)))} steps)...`)}
+              {imageStage.phase === 'vae_decode' && 'VAE decode...'}
+              {imageStage.phase === 'done' && `完成 · ${Math.round(imageStage.elapsedSec * 10) / 10}s${imageStage.cached ? ' (cached)' : ''}`}
+            </span>
+          </div>
+          {/* 真进度条:denoiseProgress 来自 backend 每步 node_progress 事件 */}
+          {denoiseProgress && imageStage.phase !== 'done' && (
+            <div style={{
+              marginTop: 3, height: 2, background: 'var(--border)', borderRadius: 1, overflow: 'hidden',
+            }}>
+              <div style={{
+                width: `${denoiseProgress.percent}%`, height: '100%',
+                background: 'var(--accent)', transition: 'width 0.2s linear',
+              }} />
+            </div>
           )}
-          <span>
-            {imageStage.phase === 'text_encode' && 'Text encode...'}
-            {imageStage.phase === 'denoise' && `Denoise (~${Math.max(1, Math.round(Number(data.steps ?? 25)))} steps)...`}
-            {imageStage.phase === 'vae_decode' && 'VAE decode...'}
-            {imageStage.phase === 'done' && `完成 · ${Math.round(imageStage.elapsedSec * 10) / 10}s${imageStage.cached ? ' (cached)' : ''}`}
-          </span>
         </div>
       )}
     </BaseNode>

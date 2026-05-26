@@ -387,9 +387,20 @@ class ModularImageBackend(InferenceAdapter):
             raise ValueError(
                 f"调度器 {scheduler!r} 不被 {self.pipeline_class} 支持(当前支持:{sorted(scheds)})。")
 
-    async def infer(self, req: InferenceRequest) -> InferenceResult:
+    async def infer(
+        self,
+        req: InferenceRequest,
+        *,
+        progress_callback: Any | None = None,
+        cancel_flag: Any | None = None,
+    ) -> InferenceResult:
+        """`progress_callback(done, total)` 每步发进度;`cancel_flag.is_set()` → step 边界
+        raise `asyncio.CancelledError` 中断 pipe()。契约对齐 fake_adapter,runner 已经探测 signature
+        + 接 P.NodeProgress + 捕获 CancelledError 落 cancelled NodeResult。
+        映射 ComfyUI: callback_on_step_end ≈ ProgressBar hook + throw_exception_if_processing_interrupted。"""
         if not isinstance(req, ImageRequest):
             raise TypeError(f"ModularImageBackend 只接受 ImageRequest,收到 {type(req).__name__}")
+        import asyncio  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
         pipe = self._ensure_pipe()
@@ -419,6 +430,27 @@ class ModularImageBackend(InferenceAdapter):
                 and hasattr(pipe, "encode_prompt")):
             call_kwargs["negative_prompt_embeds"] = pipe.encode_prompt(
                 prompt=neg, device=self.device)[0]
+
+        # PR-3 进度 + 中止(对齐 ComfyUI):callback_on_step_end 每步触发 ——
+        # cancel_flag 置位 → raise CancelledError(中断 pipe(),runner 落 cancelled);
+        # progress_callback(done, total) → runner 发 P.NodeProgress。仅 Flux2KleinPipeline
+        # 走标准 pipe,callback_on_step_end 内置;modular fallback(ERNIE 等)不支持回调,这里不挂。
+        if self.pipeline_class == "Flux2KleinPipeline" and (
+                progress_callback is not None or cancel_flag is not None):
+            total_steps = int(req.steps)
+
+            def _step_cb(_pipe: Any, i: int, _t: Any, cb_kwargs: dict) -> dict:
+                # 中止:step 边界检查(ComfyUI 是 op 级 / nous diffusers 这条路只能 step 级,
+                # ~250ms/步已够响应)。raise BaseException(CancelledError)穿出 pipe()。
+                if cancel_flag is not None and cancel_flag.is_set():
+                    raise asyncio.CancelledError()
+                # 进度:1-based(对齐 fake_adapter / ComfyUI ProgressBar 的 update_absolute)。
+                if progress_callback is not None:
+                    progress_callback(i + 1, total_steps)
+                return cb_kwargs
+
+            call_kwargs["callback_on_step_end"] = _step_cb
+
         out = pipe(**call_kwargs)
         latency_ms = int((time.monotonic() - t) * 1000)
 

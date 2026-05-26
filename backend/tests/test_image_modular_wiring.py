@@ -182,6 +182,61 @@ async def test_bf16_dtype_no_fp8_quant(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_callback_on_step_end_forwards_progress(monkeypatch):
+    """PR-3:infer 给 pipe 装 callback_on_step_end → 每步调 progress_callback(done, total)。"""
+    _k, _t, _s, pipe = _fake_klein(monkeypatch)
+    progress: list[tuple[int, int]] = []
+
+    def on_p(step: int, total: int) -> None:
+        progress.append((step, total))
+
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    await be.infer(
+        ImageRequest(request_id="p", prompt="x", steps=3, width=64, height=64),
+        progress_callback=on_p,
+    )
+    cb = pipe.call_args.kwargs.get("callback_on_step_end")
+    assert cb is not None
+    # 模拟 diffusers pipe 每步调 callback
+    cb(pipe, 0, None, {})
+    cb(pipe, 1, None, {})
+    cb(pipe, 2, None, {})
+    assert progress == [(1, 3), (2, 3), (3, 3)]
+
+
+@pytest.mark.asyncio
+async def test_callback_raises_cancelled_on_flag_set(monkeypatch):
+    """PR-3:cancel_flag 置位 → callback raise CancelledError(穿出 pipe(),runner 落 cancelled)。"""
+    import asyncio
+    import threading
+
+    _k, _t, _s, pipe = _fake_klein(monkeypatch)
+    cancel = threading.Event()
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    await be.infer(
+        ImageRequest(request_id="c", prompt="x", steps=3, width=64, height=64),
+        cancel_flag=cancel,
+    )
+    cb = pipe.call_args.kwargs.get("callback_on_step_end")
+    assert cb is not None
+    # 未置位 → 正常通过
+    cb(pipe, 0, None, {})
+    # 置位 → raise CancelledError
+    cancel.set()
+    with pytest.raises(asyncio.CancelledError):
+        cb(pipe, 1, None, {})
+
+
+@pytest.mark.asyncio
+async def test_no_callback_attached_when_progress_and_cancel_absent(monkeypatch):
+    """没传 progress_callback / cancel_flag → pipe() 不带 callback_on_step_end(默认行为)。"""
+    _k, _t, _s, pipe = _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    await be.infer(ImageRequest(request_id="n", prompt="x", steps=2, width=64, height=64))
+    assert "callback_on_step_end" not in pipe.call_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_scheduler_swap_sigma_schedule(monkeypatch):
     """PR-2:scheduler→use_*_sigmas 互斥开关;换 FlowMatchEuler.from_config;保留原 config(shift)。"""
     _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)

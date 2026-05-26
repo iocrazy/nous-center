@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,6 +8,8 @@ from src.models.database import get_async_session
 from src.models.execution_task import ExecutionTask
 from src.utils.constants import VALID_TASK_STATUSES
 from src.api.websocket import ws_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["execution-tasks"])
 
@@ -70,13 +74,26 @@ async def get_task(
 @router.post("/{task_id}/cancel")
 async def cancel_task(
     task_id: int,
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
 ):
+    """对齐 ComfyUI /interrupt 行为:running 任务真正中止(不只是改 DB)。
+    桥接 HTTP cancel → RunnerClient.abort 给所有 runner(image/tts);runner 内置 cancel_flag 通路
+    + 真 adapter 的 callback_on_step_end check → step 边界 raise CancelledError → 落 cancelled
+    NodeResult。修了「点 cancel 但 GPU kernel 还跑完整轮」的真 bug。"""
     task = await session.get(ExecutionTask, task_id)
     if not task:
         raise HTTPException(404)
     if task.status not in ("queued", "running"):
         raise HTTPException(400, "Can only cancel queued or running tasks")
+    # 向 runners 发 Abort(广播给所有 group;不知道任务在哪个 runner 上,每个 runner 自己
+    # 据 task_id 决定;没有该任务的 runner 收到也只是设个 flag 然后被 pop,无副作用)。
+    runner_clients = getattr(request.app.state, "runner_clients", None) or {}
+    for group_id, client in runner_clients.items():
+        try:
+            await client.abort(task_id)
+        except Exception as e:  # noqa: BLE001 —— 单 runner 失败不阻断其它 / 不阻断 DB 落态
+            logger.warning("cancel_task: runner %s abort(%d) failed: %s", group_id, task_id, e)
     task.status = "cancelled"
     await session.commit()
     await ws_manager.broadcast_task_update("updated", _task_to_dict(task))

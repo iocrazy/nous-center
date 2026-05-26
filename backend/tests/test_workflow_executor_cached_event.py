@@ -8,7 +8,7 @@ from src.services.workflow_executor import WorkflowExecutor
 
 
 class _Client:
-    async def run_node(self, spec, *, workflow_name=""):
+    async def run_node(self, spec, *, on_progress=None, workflow_name=""):
         return P.NodeResult(task_id=spec.task_id, node_id=spec.node_id, status="completed",
                             outputs={"image_url": "u", "cached": True}, error=None, duration_ms=3)
 
