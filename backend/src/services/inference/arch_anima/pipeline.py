@@ -121,6 +121,7 @@ class AnimaPipeline:
     def __call__(
         self,
         prompt: str,
+        negative_prompt: str = "",
         num_inference_steps: int = DEFAULT_STEPS,
         width: int = DEFAULT_SIZE,
         height: int = DEFAULT_SIZE,
@@ -129,20 +130,25 @@ class AnimaPipeline:
     ) -> Image.Image:
         """文本 → 图像(单帧)。
 
-        最简实现(本 PR scope):
-          - 不做 CFG(guidance_scale 参数预留,内部 cond-only forward)
-          - 不做 negative_prompt
-          - VAE decode 出 PIL Image
-        完整 CFG / negative 路径在 PR-anima-7 真模型验证时加。
+        - guidance_scale > 1 + negative_prompt → classifier-free guidance(true-CFG):
+          双 forward(cond + uncond),noise_pred = uncond + scale * (cond - uncond)
+        - guidance_scale == 1 或 negative_prompt 空 → cond-only(快一半)
         """
         if self.vae is None:
             raise RuntimeError("AnimaPipeline.__call__ requires vae; init with vae_weights")
 
-        # 1) Text encode → context
-        encoded = self.text_encoder.encode(prompt)
-        context = encoded["context"]  # (1, N, 1024)
-        t5_ids = encoded.get("t5xxl_ids")
-        t5_w = encoded.get("t5xxl_weights")
+        do_cfg = guidance_scale > 1.0 and len(negative_prompt) > 0
+
+        # 1) Text encode → context(可能两次:正/负)
+        cond_enc = self.text_encoder.encode(prompt)
+        cond_ctx = cond_enc["context"]
+        cond_t5_ids = cond_enc.get("t5xxl_ids")
+        cond_t5_w = cond_enc.get("t5xxl_weights")
+        if do_cfg:
+            uncond_enc = self.text_encoder.encode(negative_prompt)
+            uncond_ctx = uncond_enc["context"]
+            uncond_t5_ids = uncond_enc.get("t5xxl_ids")
+            uncond_t5_w = uncond_enc.get("t5xxl_weights")
 
         # 2) Init latents(B=1, C=16, T=1, H/8, W/8)
         latent_h, latent_w = height // 8, width // 8
@@ -154,19 +160,24 @@ class AnimaPipeline:
             device=self.device, dtype=self.dtype, generator=gen,
         )
 
-        # 3) Scheduler timesteps(FlowMatchEuler 不用 init_noise_sigma — 那是 DDIM 风 sigma 缩放)
+        # 3) Scheduler timesteps(FlowMatchEuler:无 init_noise_sigma / scale_model_input)
         self.scheduler.set_timesteps(num_inference_steps, device=self.device)
 
-        # 4) Denoise loop(cond-only,no CFG;PR-7 补)
-        # FlowMatchEuler 是 continuous flow,无 scale_model_input / init_noise_sigma 那套
-        # (sigma 走 sigmas 调度直接);latents 直接传 forward。
+        # 4) Denoise loop(CFG = 双 forward)
         for t in self.scheduler.timesteps:
-            # Anima.forward(x, timesteps, context, t5xxl_ids, t5xxl_weights)
             t_in = t.unsqueeze(0).to(self.device, dtype=self.dtype)
-            noise_pred = self.transformer(
-                latents, t_in, context,
-                t5xxl_ids=t5_ids, t5xxl_weights=t5_w,
+            cond_pred = self.transformer(
+                latents, t_in, cond_ctx,
+                t5xxl_ids=cond_t5_ids, t5xxl_weights=cond_t5_w,
             )
+            if do_cfg:
+                uncond_pred = self.transformer(
+                    latents, t_in, uncond_ctx,
+                    t5xxl_ids=uncond_t5_ids, t5xxl_weights=uncond_t5_w,
+                )
+                noise_pred = uncond_pred + guidance_scale * (cond_pred - uncond_pred)
+            else:
+                noise_pred = cond_pred
             latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
         # 5) VAE decode(latents 是 (1, 16, 1, h, w) — Qwen-Image VAE 接 5D)
