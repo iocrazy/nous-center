@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
   Ban,
+  Check,
   CheckCircle2,
   ExternalLink,
   Image as ImageIcon,
@@ -22,8 +25,15 @@ import {
   type ExecutionTask,
 } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
-import { usePanelStore } from '../../stores/panel'
+import {
+  ALL_TASK_STATUSES,
+  usePanelStore,
+  type TaskSortDir,
+  type TaskSortKey,
+  type TaskStatus,
+} from '../../stores/panel'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
+import { SORT_LABEL, STATUS_LABEL, sortTasks } from './taskSort'
 
 /**
  * TaskPanel — 对齐 ComfyUI 「任务历史」面板风格(读用户截图复刻):
@@ -75,6 +85,11 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
   const { data: tasks } = useTasks()
   const mode = usePanelStore((s) => s.taskPanelMode)
   const setMode = usePanelStore((s) => s.setTaskPanelMode)
+  const filterStatuses = usePanelStore((s) => s.taskFilterStatuses)
+  const setFilterStatuses = usePanelStore((s) => s.setTaskFilterStatuses)
+  const sortKey = usePanelStore((s) => s.taskSortKey)
+  const sortDir = usePanelStore((s) => s.taskSortDir)
+  const setSort = usePanelStore((s) => s.setTaskSort)
   const [tab, setTab] = useState<'all' | 'done'>('all')
   const [now, setNow] = useState(Date.now())
 
@@ -90,7 +105,18 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
   // header 计数对齐 ComfyUI:"N 个正在运行" 只算真正 running,queued 不混在内。
   const running = useMemo(() => (tasks ?? []).filter((t) => t.status === 'running'), [tasks])
   const done = useMemo(() => (tasks ?? []).filter((t) => TERMINAL.has(t.status)), [tasks])
-  const visible = tab === 'all' ? [...active, ...done] : done
+
+  // 应用 status filter(empty = 不过滤显示全部;否则只保留集合中的状态)+ sort。
+  // header chip「N 个正在运行」/ ClearQueueButton 都基于未过滤的原始集合,不受筛选影响 —
+  // 不然「筛掉 queued」会让清理按钮以为没有排队任务,反直觉。
+  const visible = useMemo(() => {
+    const base = tab === 'all' ? [...active, ...done] : done
+    const filtered = filterStatuses.size > 0
+      ? base.filter((t) => filterStatuses.has(t.status))
+      : base
+    return sortTasks(filtered, sortKey, sortDir)
+  }, [tab, active, done, filterStatuses, sortKey, sortDir])
+  const filterActive = filterStatuses.size < ALL_TASK_STATUSES.length
 
   if (!open) return null
 
@@ -135,12 +161,12 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
           </h2>
           {/* PR-E2/F2 header 工具按钮组(对齐 ComfyUI 截图):清理队列 / filter / sort / view */}
           <ClearQueueButton tasks={tasks ?? []} />
-          <button type="button" aria-label="筛选" title="筛选(占位)" style={iconBtnStyle}>
-            <ListFilter size={13} />
-          </button>
-          <button type="button" aria-label="排序" title="排序(占位)" style={iconBtnStyle}>
-            <ArrowUpDown size={13} />
-          </button>
+          <FilterButton
+            statuses={filterStatuses}
+            onChange={setFilterStatuses}
+            active={filterActive}
+          />
+          <SortButton sortKey={sortKey} sortDir={sortDir} onChange={setSort} />
           <button
             type="button"
             onClick={() => setMode(isDock ? 'float' : 'dock')}
@@ -197,6 +223,223 @@ const iconBtnStyle: React.CSSProperties = {
   width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
   background: 'transparent', border: 'none', color: 'var(--muted)',
   borderRadius: 4, cursor: 'pointer',
+}
+
+function FilterButton({
+  statuses,
+  onChange,
+  active,
+}: {
+  statuses: ReadonlySet<TaskStatus>
+  onChange: (next: ReadonlySet<TaskStatus>) => void
+  active: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+  const toggle = (s: TaskStatus) => {
+    const next = new Set(statuses)
+    if (next.has(s)) next.delete(s)
+    else next.add(s)
+    onChange(next)
+  }
+  const count = statuses.size
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="筛选状态"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={active ? `筛选(${count}/${ALL_TASK_STATUSES.length})` : '筛选状态'}
+        style={{
+          ...iconBtnStyle,
+          color: active ? 'var(--accent)' : 'var(--muted)',
+          background: open ? 'var(--bg-hover)' : 'transparent',
+          position: 'relative',
+        }}
+      >
+        <ListFilter size={13} />
+        {active && (
+          <span
+            style={{
+              position: 'absolute', top: 2, right: 2,
+              width: 6, height: 6, borderRadius: '50%',
+              background: 'var(--accent)',
+            }}
+          />
+        )}
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="筛选状态"
+          style={{
+            position: 'absolute', top: 'calc(100% + 4px)', right: 0,
+            width: 180, background: 'var(--bg-elevated)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: 'var(--shadow-lg)', zIndex: 60, padding: 4,
+          }}
+        >
+          <div style={{
+            padding: '4px 8px', fontSize: 10, color: 'var(--muted)',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <span style={{ flex: 1 }}>状态筛选</span>
+            <button
+              type="button"
+              onClick={() => onChange(new Set(ALL_TASK_STATUSES))}
+              style={{
+                background: 'transparent', border: 'none', color: 'var(--accent)',
+                fontSize: 10, cursor: 'pointer', padding: 0,
+              }}
+            >全选</button>
+          </div>
+          {ALL_TASK_STATUSES.map((s) => {
+            const checked = statuses.has(s)
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => toggle(s)}
+                role="menuitemcheckbox"
+                aria-checked={checked}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  padding: '6px 8px', background: 'transparent', border: 'none',
+                  borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  color: 'var(--text)', textAlign: 'left',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+              >
+                <span style={{
+                  width: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  border: '1px solid var(--border)', borderRadius: 3,
+                  background: checked ? 'var(--accent)' : 'transparent',
+                }}>
+                  {checked && <Check size={10} color="white" />}
+                </span>
+                <span>{STATUS_LABEL[s]}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SortButton({
+  sortKey,
+  sortDir,
+  onChange,
+}: {
+  sortKey: TaskSortKey
+  sortDir: TaskSortDir
+  onChange: (key: TaskSortKey, dir: TaskSortDir) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+  const isDefault = sortKey === 'created' && sortDir === 'desc'
+  const opts: { key: TaskSortKey; dir: TaskSortDir }[] = [
+    { key: 'created', dir: 'desc' },
+    { key: 'created', dir: 'asc' },
+    { key: 'duration', dir: 'desc' },
+    { key: 'duration', dir: 'asc' },
+  ]
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="排序"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={SORT_LABEL[`${sortKey}.${sortDir}`]}
+        style={{
+          ...iconBtnStyle,
+          color: isDefault ? 'var(--muted)' : 'var(--accent)',
+          background: open ? 'var(--bg-hover)' : 'transparent',
+        }}
+      >
+        {sortKey === 'created' ? (
+          sortDir === 'desc' ? <ArrowDown size={13} /> : <ArrowUp size={13} />
+        ) : (
+          <ArrowUpDown size={13} />
+        )}
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="排序"
+          style={{
+            position: 'absolute', top: 'calc(100% + 4px)', right: 0,
+            width: 200, background: 'var(--bg-elevated)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: 'var(--shadow-lg)', zIndex: 60, padding: 4,
+          }}
+        >
+          <div style={{ padding: '4px 8px', fontSize: 10, color: 'var(--muted)' }}>排序</div>
+          {opts.map(({ key, dir }) => {
+            const selected = key === sortKey && dir === sortDir
+            return (
+              <button
+                key={`${key}.${dir}`}
+                type="button"
+                onClick={() => { onChange(key, dir); setOpen(false) }}
+                role="menuitemradio"
+                aria-checked={selected}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  padding: '6px 8px', background: selected ? 'var(--accent-subtle)' : 'transparent',
+                  border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  color: selected ? 'var(--accent)' : 'var(--text)', textAlign: 'left',
+                }}
+                onMouseEnter={(e) => {
+                  if (!selected) e.currentTarget.style.background = 'var(--bg-hover)'
+                }}
+                onMouseLeave={(e) => {
+                  if (!selected) e.currentTarget.style.background = 'transparent'
+                }}
+              >
+                <span style={{ width: 14, display: 'flex', justifyContent: 'center' }}>
+                  {selected && <Check size={10} />}
+                </span>
+                <span>{SORT_LABEL[`${key}.${dir}`]}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
