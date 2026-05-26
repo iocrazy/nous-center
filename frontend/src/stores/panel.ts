@@ -17,24 +17,37 @@ export type OverlayId =
   | 'workflows-list'   // v3 m08 列表（vs canvas at /workflows/:id）
   | 'usage'            // v3 新
 
+/** TaskPanel 模式:dock=右侧抽屉(全高,modal-ish),float=右下角浮窗(可拖拽,不阻塞操作)。
+ *  对齐 ComfyUI「停靠 / 悬浮」两态。localStorage 持久。 */
+export type TaskPanelMode = 'dock' | 'float'
+
 interface PanelState {
   activePanel: PanelId | null
   activeOverlay: OverlayId | null
   selectedPresetId: string | null
   panelWidth: number
+  taskPanelMode: TaskPanelMode
   setPanel: (id: PanelId | null) => void
   togglePanel: (id: PanelId) => void
   setOverlay: (id: OverlayId | null) => void
   toggleOverlay: (id: OverlayId) => void
   openPresetDetail: (presetId: string) => void
   setPanelWidth: (width: number) => void
+  setTaskPanelMode: (mode: TaskPanelMode) => void
 }
+
+const TASK_PANEL_MODE_KEY = 'nous.taskPanel.mode'
+const _initialTaskPanelMode: TaskPanelMode =
+  typeof localStorage !== 'undefined' && localStorage.getItem(TASK_PANEL_MODE_KEY) === 'float'
+    ? 'float'
+    : 'dock'
 
 export const usePanelStore = create<PanelState>((set, get) => ({
   activePanel: 'nodes',
   activeOverlay: null,
   selectedPresetId: null,
   panelWidth: 260,
+  taskPanelMode: _initialTaskPanelMode,
 
   setPanel: (id) => set({ activePanel: id, activeOverlay: null }),
 
@@ -60,4 +73,9 @@ export const usePanelStore = create<PanelState>((set, get) => ({
     set({ activeOverlay: 'preset-detail', activePanel: null, selectedPresetId: presetId }),
 
   setPanelWidth: (width) => set({ panelWidth: Math.max(200, Math.min(400, width)) }),
+
+  setTaskPanelMode: (mode) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(TASK_PANEL_MODE_KEY, mode)
+    set({ taskPanelMode: mode })
+  },
 }))
