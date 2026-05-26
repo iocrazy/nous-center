@@ -22,6 +22,7 @@ def test_module_files_exist():
     assert (base / "position_embedding.py").exists()
     assert (base / "anima.py").exists()  # PR-anima-2
     assert (base / "text_encoder.py").exists()  # PR-anima-3
+    assert (base / "load.py").exists()  # PR-anima-4
 
 
 def test_source_layout():
@@ -77,6 +78,15 @@ def test_source_layout():
         "def unload",
     ]:
         assert sym in te_src, f"text_encoder.py missing {sym!r}"
+
+    # PR-anima-4:权重加载器 + anima-base-v1.0 config(strip 'net.' prefix)。
+    load_src = (base / "load.py").read_text()
+    for sym in [
+        "ANIMA_BASE_V1_CONFIG",
+        "def load_anima_dit_from_single_file",
+        'k[4:]',  # strip 'net.' prefix 是关键
+    ]:
+        assert sym in load_src, f"load.py missing {sym!r}"
 
 
 def test_no_comfy_imports_left():
