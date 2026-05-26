@@ -1,8 +1,9 @@
 """nous arch_anima — Cosmos Predict2 + Anima DiT 移植(spec 2026-05-26-anima-port-design)。
 
-PR-anima-1:Cosmos Predict2 building blocks(MiniTrainDIT + 子组件 + 3D RoPE)。✅
-PR-anima-2:Anima 主类(继承 MiniTrainDIT + LLMAdapter + 1D RoPE TransformerBlock)。✅
-后续 PR-anima-3~7 接 text encoder / pipeline 等。
+PR-anima-1:Cosmos Predict2 building blocks(MiniTrainDIT + 子组件 + 3D RoPE)。✅ #161
+PR-anima-2:Anima 主类(继承 MiniTrainDIT + LLMAdapter + 1D RoPE TransformerBlock)。✅ #162
+PR-anima-3:AnimaTextEncoder(qwen3-0.6b base 单文件 + 可选 t5xxl tokenizer)。✅ 本 PR
+后续 PR-anima-4~7 接 pipeline / arch 注册 / 真模型 e2e 等。
 """
 from __future__ import annotations
 
@@ -24,9 +25,11 @@ from .predict2 import (
     Timesteps,
     apply_rotary_pos_emb,
 )
+from .text_encoder import AnimaTextEncoder
 
 __all__ = [
     "Anima",
+    "AnimaTextEncoder",
     "Attention",
     "Block",
     "FinalLayer",
