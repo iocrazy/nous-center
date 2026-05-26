@@ -511,6 +511,9 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   const [denoiseProgress, setDenoiseProgress] = useState<
     { step: number; total: number; percent: number } | null
   >(null)
+  // PR-F:latent 实时 RGB 预览(WS node_progress.preview_url,~96px JPEG data URI)。
+  // 「看图慢慢长出来」—— ComfyUI 杀手锏的等价实现。node_complete 清。
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
   const updateStreamingStats = useCallback(() => {
     const count = tokenCountRef.current
@@ -555,6 +558,10 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
             percent: typeof data.progress === 'number' ? Math.round(data.progress * 100) : Math.round((step / total) * 100),
           })
         }
+        // PR-F:latent live preview thumbnail(若 backend 发了)。
+        if (typeof data.preview_url === 'string' && data.preview_url) {
+          setPreviewUrl(data.preview_url)
+        }
       }
       if (data.type === 'node_start' && data.node_id === id) {
         // New run on this node — clear previous run's stats
@@ -562,6 +569,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         firstTokenAtRef.current = null
         setTokenStats(null)
         setDenoiseProgress(null)
+        setPreviewUrl(null)
 
         // Image-only: start the 3-stage simulation. text_encode (~1s) →
         // denoise (~stepsBudget) → vae_decode (~0.5s). Per-step time
@@ -590,6 +598,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
       }
       if (data.type === 'node_complete' && data.node_id === id) {
         setDenoiseProgress(null)
+        setPreviewUrl(null)
         if (throttleRef.current) {
           clearTimeout(throttleRef.current)
           throttleRef.current = null
@@ -707,6 +716,21 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
               输入 {tokenStats.inputTokens} · 输出 {tokenStats.outputTokens} · 合计 {tokenStats.totalTokens} · {tokenStats.tokensPerSec} tok/s · {tokenStats.durationSec}s
             </span>
           )}
+        </div>
+      )}
+      {/* PR-F:latent live preview thumbnail(出图过程中节点上叠 96px JPEG,「看图慢慢长出来」)。 */}
+      {previewUrl && (
+        <div style={{ padding: '4px 10px 0', display: 'flex', justifyContent: 'center' }}>
+          <img
+            src={previewUrl}
+            alt="latent preview"
+            style={{
+              maxWidth: '100%', maxHeight: 96, borderRadius: 4,
+              border: '1px solid var(--border)',
+              imageRendering: 'pixelated',
+              opacity: 0.95,
+            }}
+          />
         </div>
       )}
       {imageStage && (

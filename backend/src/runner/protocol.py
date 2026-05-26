@@ -103,6 +103,9 @@ class NodeProgress:
     node_id: str
     progress: float  # 0.0 ~ 1.0
     detail: str | None = None
+    # PR-F:latent → 96px JPEG data URI(ComfyUI Latent2RGB 等价,无 TAESD 权重)。
+    # 出图过程中每步可选发一帧,前端节点上叠 thumbnail,「看图慢慢长出来」。
+    preview_url: str | None = None
     kind: Literal["node_progress"] = "node_progress"
 
 
