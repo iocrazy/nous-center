@@ -1,53 +1,36 @@
 /**
- * TaskMenuButton — Topbar 全局任务入口(Vercel deployments / Linear inbox 风渐进披露)。
+ * TaskMenuButton — Topbar 全局任务入口(对齐 ComfyUI 截图 1:1)。
  *
- * 三层披露:
- *   1. 顶栏 chip:`○ idle` / `● N 运行中`(常驻,不打断流)。
- *   2. 点开 popover:运行中 + 最近完成的紧凑列表(行内 cancel,缩略图)。
- *   3. 「查看全部 →」打开完整 TaskPanel(详情/历史管理,PR-5 抽屉)。
+ * 渐进披露(用户截图明确指出 popover 和 drawer 不该重复):
+ *   - chip:`● N 个活动任务`(蓝点突出)/ `任务`(idle)。
+ *   - **紧凑 popover**:只显**当前任务** + live preview + **双进度条**(全部:N% / 节点:M%)
+ *     + 行内中止;**不**列已完成(那是 drawer 的事)。
+ *   - 「查看全部 →」打开 TaskPanel(完整管理,见 PR-5)。
  *
- * Click-outside / ESC 关 popover。
+ * 双进度条对齐 ComfyUI「全部:59% / 自定义采样器(高级):12%」。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  CheckCircle2,
-  ChevronRight,
-  Image as ImageIcon,
-  Loader2,
-  XCircle,
-} from 'lucide-react'
+import { ChevronRight, Zap, XCircle } from 'lucide-react'
 import { useCancelTask, useTasks, type ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
 
-const TERMINAL = new Set<ExecutionTask['status']>(['completed', 'failed', 'cancelled'])
 const RUNNING = new Set<ExecutionTask['status']>(['queued', 'running'])
-const MAX_ROWS = 6
-
-function fmtDur(ms: number | null | undefined): string {
-  if (!ms) return ''
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
-
-function statusColor(s: ExecutionTask['status']): string {
-  if (s === 'completed') return 'var(--ok)'
-  if (s === 'failed') return 'var(--err, #ef4444)'
-  if (s === 'cancelled') return 'var(--muted)'
-  if (s === 'running') return 'var(--info)'
-  return 'var(--warn)'
-}
 
 export default function TaskMenuButton() {
   const { data: tasks } = useTasks()
   const toggleTaskPanel = useExecutionStore((s) => s.toggleTaskPanel)
+  const wfProgress = useExecutionStore((s) => s.progress)
+  const nodeProgress = useExecutionStore((s) => s.currentNodeProgress)
+  const nodeStep = useExecutionStore((s) => s.currentNodeStep)
+  const nodeType = useExecutionStore((s) => s.currentNodeType)
+  const previewUrl = useExecutionStore((s) => s.latestPreviewUrl)
+  const cancel = useCancelTask()
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
 
   const running = useMemo(() => (tasks ?? []).filter((t) => RUNNING.has(t.status)), [tasks])
-  const recent = useMemo(
-    () => (tasks ?? []).filter((t) => TERMINAL.has(t.status)).slice(0, MAX_ROWS),
-    [tasks],
-  )
+  const current = running[0]
+  const isBusy = running.length > 0
 
   useEffect(() => {
     if (!open) return
@@ -65,8 +48,6 @@ export default function TaskMenuButton() {
     }
   }, [open])
 
-  const isBusy = running.length > 0
-
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <button
@@ -83,46 +64,47 @@ export default function TaskMenuButton() {
           padding: '4px 10px',
           fontSize: 11,
           fontWeight: 500,
-          background: open ? 'var(--bg-hover)' : 'transparent',
+          background: open ? 'var(--bg-hover)' : isBusy ? 'var(--accent-subtle)' : 'transparent',
           border: '1px solid ' + (isBusy ? 'var(--info)' : 'var(--border)'),
           borderRadius: 6,
           color: isBusy ? 'var(--info)' : 'var(--text)',
           cursor: 'pointer',
           transition: 'background 0.15s, border-color 0.15s',
         }}
-        onMouseEnter={(e) => {
-          if (!open) e.currentTarget.style.background = 'var(--bg-hover)'
-        }}
-        onMouseLeave={(e) => {
-          if (!open) e.currentTarget.style.background = 'transparent'
-        }}
       >
         {isBusy ? (
-          <Loader2 size={11} className="animate-spin" />
+          <>
+            <span
+              style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: 'var(--info)', boxShadow: '0 0 6px var(--info)',
+                flexShrink: 0,
+              }}
+            />
+            <span>{running.length} 个活动任务</span>
+          </>
         ) : (
-          <span
-            style={{
-              width: 6, height: 6, borderRadius: '50%',
-              background: 'var(--muted)',
-            }}
-          />
+          <>
+            <span
+              style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: 'var(--muted)', flexShrink: 0,
+              }}
+            />
+            <span>任务</span>
+          </>
         )}
-        <span>{isBusy ? `${running.length} 运行中` : '任务'}</span>
       </button>
 
       {open && (
         <div
           role="dialog"
           aria-label="任务概览"
-          className="nowheel"
           style={{
             position: 'absolute',
             top: 'calc(100% + 6px)',
             right: 0,
             width: 320,
-            maxHeight: 480,
-            display: 'flex',
-            flexDirection: 'column',
             background: 'var(--bg-elevated)',
             border: '1px solid var(--border)',
             borderRadius: 8,
@@ -131,69 +113,22 @@ export default function TaskMenuButton() {
             overflow: 'hidden',
           }}
         >
-          <div
-            style={{
-              padding: '8px 10px',
-              borderBottom: '1px solid var(--border)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-            }}
-          >
-            <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
-              任务概览
-            </span>
-            {isBusy && (
-              <span
-                style={{
-                  padding: '1px 6px',
-                  borderRadius: 10,
-                  background: 'var(--accent-subtle)',
-                  color: 'var(--accent)',
-                  fontSize: 10,
-                  fontWeight: 600,
-                }}
-              >
-                {running.length} 运行中
-              </span>
-            )}
-          </div>
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: 6 }}>
-            {running.length === 0 && recent.length === 0 && (
-              <div
-                style={{
-                  padding: 24,
-                  textAlign: 'center',
-                  fontSize: 11,
-                  color: 'var(--muted)',
-                }}
-              >
-                暂无任务
-              </div>
-            )}
-            {running.map((t) => (
-              <RunningRow key={t.id} task={t} />
-            ))}
-            {running.length > 0 && recent.length > 0 && (
-              <div
-                style={{
-                  margin: '6px 4px',
-                  padding: '0 6px',
-                  fontSize: 9,
-                  color: 'var(--muted)',
-                  textTransform: 'uppercase',
-                  letterSpacing: 0.4,
-                }}
-              >
-                最近完成
-              </div>
-            )}
-            {recent.map((t) => (
-              <CompletedRow key={t.id} task={t} />
-            ))}
-          </div>
-
+          {current ? (
+            <ActiveTaskPanel
+              task={current}
+              wfProgress={wfProgress}
+              nodeProgress={nodeProgress}
+              nodeStep={nodeStep}
+              nodeType={nodeType}
+              previewUrl={previewUrl}
+              onCancel={() => cancel.mutate(current.id)}
+              canceling={cancel.isPending}
+            />
+          ) : (
+            <div style={{ padding: 24, textAlign: 'center', fontSize: 11, color: 'var(--muted)' }}>
+              暂无运行中任务
+            </div>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -205,6 +140,7 @@ export default function TaskMenuButton() {
               alignItems: 'center',
               justifyContent: 'center',
               gap: 4,
+              width: '100%',
               padding: '8px 10px',
               borderTop: '1px solid var(--border)',
               background: 'transparent',
@@ -214,8 +150,6 @@ export default function TaskMenuButton() {
               cursor: 'pointer',
               fontWeight: 500,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
           >
             查看全部 <ChevronRight size={11} />
           </button>
@@ -225,29 +159,41 @@ export default function TaskMenuButton() {
   )
 }
 
-function RunningRow({ task }: { task: ExecutionTask }) {
-  const cancel = useCancelTask()
-  const pct =
-    task.nodes_total > 0 ? Math.round((task.nodes_done / task.nodes_total) * 100) : 0
+function ActiveTaskPanel({
+  task,
+  wfProgress,
+  nodeProgress,
+  nodeStep,
+  nodeType,
+  previewUrl,
+  onCancel,
+  canceling,
+}: {
+  task: ExecutionTask
+  wfProgress: number
+  nodeProgress: number | null
+  nodeStep: { done: number; total: number } | null
+  nodeType: string | null
+  previewUrl: string | null
+  onCancel: () => void
+  canceling: boolean
+}) {
+  // 工作流总 % 来自 backend nodes_done/total(节点级);若 backend 没发就用 execution store 的 wfProgress。
+  const wfPct = task.nodes_total > 0
+    ? Math.round((task.nodes_done / task.nodes_total) * 100)
+    : Math.round(wfProgress)
+  // 节点内 step 进度(PR-3 / PR-F),如 KSampler 第 12/25 步 → 48%。
+  const nodePct = nodeProgress ?? 0
   return (
-    <div
-      style={{
-        padding: '6px 8px',
-        marginBottom: 2,
-        background: 'var(--card)',
-        border: '1px solid var(--border)',
-        borderRadius: 4,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Loader2 size={10} className="animate-spin" style={{ color: 'var(--info)' }} />
+    <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* 标题行:闪电图标 + 工作流名 + 中止 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Zap size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
         <span
           style={{
             flex: 1,
-            fontSize: 11,
+            fontSize: 12,
+            fontWeight: 500,
             color: 'var(--text)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -258,31 +204,69 @@ function RunningRow({ task }: { task: ExecutionTask }) {
         </span>
         <button
           type="button"
-          onClick={() => cancel.mutate(task.id)}
-          disabled={cancel.isPending}
-          aria-label="中止"
-          title="中止"
+          onClick={onCancel}
+          disabled={canceling}
+          aria-label="中止任务"
+          title="中止任务"
           style={{
-            width: 18,
-            height: 18,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'transparent',
-            border: 'none',
-            color: 'var(--err, #ef4444)',
-            cursor: 'pointer',
-            borderRadius: 3,
+            width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--err, #ef4444)', borderRadius: 3,
           }}
         >
-          <XCircle size={12} />
+          <XCircle size={13} />
         </button>
       </div>
+      {/* live preview(latent → RGB JPEG;PR-F)。出图过程图慢慢长出来。 */}
+      {previewUrl && (
+        <div
+          style={{
+            width: '100%',
+            display: 'flex',
+            justifyContent: 'center',
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            padding: 4,
+          }}
+        >
+          <img
+            src={previewUrl}
+            alt="latent preview"
+            style={{
+              maxHeight: 120,
+              maxWidth: '100%',
+              borderRadius: 3,
+              imageRendering: 'pixelated',
+            }}
+          />
+        </div>
+      )}
+      {/* 双进度条(对齐 ComfyUI):全部 + 当前节点 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <ProgressBar label={`全部:${wfPct}%`} pct={wfPct} thick />
+        {nodeProgress !== null && (
+          <ProgressBar
+            label={`${nodeType || '当前节点'}${nodeStep ? ` ${nodeStep.done}/${nodeStep.total}` : ''} · ${nodePct}%`}
+            pct={nodePct}
+            thick={false}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ProgressBar({ label, pct, thick }: { label: string; pct: number; thick: boolean }) {
+  return (
+    <div>
       <div
         style={{
-          height: 2,
-          background: 'var(--border)',
-          borderRadius: 1,
+          position: 'relative',
+          height: thick ? 18 : 10,
+          background: 'var(--bg)',
+          border: '1px solid var(--border)',
+          borderRadius: thick ? 4 : 3,
           overflow: 'hidden',
         }}
       >
@@ -290,80 +274,24 @@ function RunningRow({ task }: { task: ExecutionTask }) {
           style={{
             width: `${pct}%`,
             height: '100%',
-            background: 'var(--info)',
-            transition: 'width 0.3s linear',
+            background: thick ? 'var(--info)' : 'var(--accent-2, #14b8a6)',
+            transition: 'width 0.3s ease',
           }}
         />
-      </div>
-    </div>
-  )
-}
-
-function CompletedRow({ task }: { task: ExecutionTask }) {
-  const thumb = task.output_thumbnails?.[0]
-  return (
-    <div
-      style={{
-        padding: 5,
-        marginBottom: 2,
-        background: 'transparent',
-        border: '1px solid transparent',
-        borderRadius: 4,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = 'var(--bg-hover)'
-        e.currentTarget.style.borderColor = 'var(--border)'
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = 'transparent'
-        e.currentTarget.style.borderColor = 'transparent'
-      }}
-    >
-      <div
-        style={{
-          width: 24,
-          height: 24,
-          flexShrink: 0,
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          borderRadius: 3,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          overflow: 'hidden',
-        }}
-      >
-        {thumb ? (
-          <img
-            src={thumb}
-            alt=""
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          />
-        ) : task.task_type === 'image' ? (
-          <ImageIcon size={11} style={{ color: 'var(--muted)' }} />
-        ) : task.status === 'failed' ? (
-          <XCircle size={11} style={{ color: 'var(--err, #ef4444)' }} />
-        ) : (
-          <CheckCircle2 size={11} style={{ color: 'var(--ok)' }} />
-        )}
-      </div>
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
         <span
           style={{
-            fontSize: 11,
-            color: 'var(--text)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            paddingLeft: 8,
+            fontSize: thick ? 10 : 9,
+            fontWeight: thick ? 600 : 500,
+            color: 'var(--text-strong, white)',
+            mixBlendMode: 'difference',
           }}
         >
-          {task.workflow_name || `任务 ${String(task.id).slice(0, 8)}`}
-        </span>
-        <span style={{ fontSize: 9, color: 'var(--muted)' }}>
-          <span style={{ color: statusColor(task.status) }}>●</span> {fmtDur(task.duration_ms)}
+          {label}
         </span>
       </div>
     </div>

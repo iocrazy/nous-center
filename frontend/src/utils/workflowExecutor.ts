@@ -215,9 +215,21 @@ function openProgressChannel(channelId: string): Promise<WebSocket> {
           exec.setNodeState(d.node_id, 'running')
           exec.setCurrentNode(d.node_id, d.node_type ?? null)
           if (typeof d.progress === 'number') exec.setProgress(d.progress)
+          exec.setCurrentNodeProgress(null, null, null)  // 新节点清重 step 进度
         } else if (d.type === 'node_complete') {
           exec.clearNodeState(d.node_id)
           if (typeof d.progress === 'number') exec.setProgress(d.progress)
+          exec.setCurrentNodeProgress(null, null)
+        } else if (d.type === 'node_progress') {
+          // PR-E2/F2:对齐 ComfyUI「节点:N%」+ live preview 缩略图。
+          const m = typeof d.detail === 'string' ? /step\s+(\d+)\s*\/\s*(\d+)/.exec(d.detail) : null
+          const percent = typeof d.progress === 'number' ? Math.round(d.progress * 100)
+            : (m ? Math.round((Number(m[1]) / Number(m[2])) * 100) : null)
+          exec.setCurrentNodeProgress(
+            percent,
+            m ? { done: Number(m[1]), total: Number(m[2]) } : null,
+            typeof d.preview_url === 'string' && d.preview_url ? d.preview_url : undefined,
+          )
         } else if (d.type === 'node_error') {
           exec.setNodeState(d.node_id, 'error')
         } else if (d.type === 'complete') {

@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowUpDown,
   Ban,
   CheckCircle2,
   ExternalLink,
   Image as ImageIcon,
-  Loader2,
+  ListFilter,
   Maximize2,
   Minimize2,
   RotateCcw,
+  Trash2,
   X,
   XCircle,
+  Zap,
 } from 'lucide-react'
 import {
   useCancelTask,
@@ -18,6 +21,7 @@ import {
   useTasks,
   type ExecutionTask,
 } from '../../api/tasks'
+import { useExecutionStore } from '../../stores/execution'
 import { usePanelStore } from '../../stores/panel'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
 
@@ -82,9 +86,11 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
     return () => clearInterval(h)
   }, [tasks])
 
-  const running = useMemo(() => (tasks ?? []).filter((t) => RUNNING.has(t.status)), [tasks])
+  const active = useMemo(() => (tasks ?? []).filter((t) => RUNNING.has(t.status)), [tasks])
+  // header 计数对齐 ComfyUI:"N 个正在运行" 只算真正 running,queued 不混在内。
+  const running = useMemo(() => (tasks ?? []).filter((t) => t.status === 'running'), [tasks])
   const done = useMemo(() => (tasks ?? []).filter((t) => TERMINAL.has(t.status)), [tasks])
-  const visible = tab === 'all' ? [...running, ...done] : done
+  const visible = tab === 'all' ? [...active, ...done] : done
 
   if (!open) return null
 
@@ -125,16 +131,16 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
             flex: 1, margin: 0,
             fontSize: isDock ? 14 : 13, fontWeight: 600, color: 'var(--text)',
           }}>
-            任务面板
-            {running.length > 0 && (
-              <span style={{
-                marginLeft: 8, padding: '1px 6px', borderRadius: 10,
-                background: 'var(--accent-subtle)', color: 'var(--accent)',
-                fontSize: 10, fontWeight: 600,
-              }}>{running.length} 运行中</span>
-            )}
+            {running.length > 0 ? `${running.length} 个正在运行` : '任务面板'}
           </h2>
-          {/* dock/float toggle */}
+          {/* PR-E2/F2 header 工具按钮组(对齐 ComfyUI 截图):清理队列 / filter / sort / view */}
+          <ClearQueueButton tasks={tasks ?? []} />
+          <button type="button" aria-label="筛选" title="筛选(占位)" style={iconBtnStyle}>
+            <ListFilter size={13} />
+          </button>
+          <button type="button" aria-label="排序" title="排序(占位)" style={iconBtnStyle}>
+            <ArrowUpDown size={13} />
+          </button>
           <button
             type="button"
             onClick={() => setMode(isDock ? 'float' : 'dock')}
@@ -208,29 +214,67 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
   )
 }
 
+function ClearQueueButton({ tasks }: { tasks: ExecutionTask[] }) {
+  // 清理队列:批量删 cancel queued 任务(running 不动)。
+  const cancel = useCancelTask()
+  const del = useDeleteTask()
+  const queued = tasks.filter((t) => t.status === 'queued')
+  const has = queued.length > 0
+  const onClick = () => {
+    if (!has) return
+    if (!confirm(`清理 ${queued.length} 个排队任务?`)) return
+    for (const t of queued) {
+      cancel.mutate(t.id, {
+        onSettled: () => del.mutate(t.id),
+      })
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!has}
+      aria-label="清理队列"
+      title={has ? `清理 ${queued.length} 个排队任务` : '无排队任务'}
+      style={{
+        ...iconBtnStyle,
+        color: has ? 'var(--text)' : 'var(--muted)',
+        cursor: has ? 'pointer' : 'default',
+      }}
+    >
+      <Trash2 size={13} />
+    </button>
+  )
+}
+
 function RunningTaskCard({ task, now: _now }: { task: ExecutionTask; now: number }) {
   const cancel = useCancelTask()
+  // PR-E2/F2:对齐 ComfyUI「全部:N% / 节点:M%」+ live preview thumbnail。
+  const nodeProgress = useExecutionStore((s) => s.currentNodeProgress)
+  const nodeStep = useExecutionStore((s) => s.currentNodeStep)
+  const nodeType = useExecutionStore((s) => s.currentNodeType)
+  const previewUrl = useExecutionStore((s) => s.latestPreviewUrl)
+
   const isCancelled = task.status === 'cancelled'
   const elapsed = tickElapsed(task.created_at)
-  const pct = Math.max(0, Math.min(100, task.nodes_total
+  const wfPct = Math.max(0, Math.min(100, task.nodes_total
     ? Math.round((task.nodes_done / task.nodes_total) * 100)
     : 0))
+  const nodePct = nodeProgress ?? 0
+
   return (
     <div style={{
       padding: 10, marginBottom: 6,
-      background: 'var(--card)', border: '1px solid var(--border)',
-      borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 6,
+      background: 'var(--card)', border: '1px solid var(--info)',
+      borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 8,
     }}>
+      {/* 标题行:闪电 + 工作流名 + 耗时 + 中止(对齐 ComfyUI active card)。 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {task.status === 'running' ? (
-          <Loader2 size={12} className="animate-spin" style={{ color: 'var(--info)' }} />
-        ) : (
-          <span style={{
-            width: 6, height: 6, borderRadius: '50%',
-            background: statusColor(task.status), flexShrink: 0,
-          }} />
-        )}
-        <span style={{ flex: 1, fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <Zap size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+        <span style={{
+          flex: 1, fontSize: 12, fontWeight: 500, color: 'var(--text)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
           {task.workflow_name || `任务 ${String(task.id).slice(0, 8)}`}
         </span>
         <span style={{ fontSize: 10, color: 'var(--muted)' }}>{elapsed}</span>
@@ -247,19 +291,78 @@ function RunningTaskCard({ task, now: _now }: { task: ExecutionTask; now: number
           </button>
         )}
       </div>
-      {task.current_node && (
-        <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-          {task.current_node} · {task.nodes_done}/{task.nodes_total}
+      {/* live preview thumbnail(latent → RGB,出图过程图慢慢长出来;PR-F)。 */}
+      {previewUrl && (
+        <div style={{
+          width: '100%', display: 'flex', justifyContent: 'center',
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: 4, padding: 4,
+        }}>
+          <img
+            src={previewUrl}
+            alt="latent preview"
+            style={{
+              maxHeight: 160, maxWidth: '100%',
+              borderRadius: 3, imageRendering: 'pixelated',
+            }}
+          />
         </div>
       )}
-      {/* 工作流级进度条(node_done / total) */}
-      <div style={{
-        height: 3, background: 'var(--border)', borderRadius: 1.5, overflow: 'hidden',
-      }}>
-        <div style={{
-          width: `${pct}%`, height: '100%', background: 'var(--accent)',
-          transition: 'width 0.3s linear',
-        }} />
+      {/* 双进度条(ComfyUI 风):全部 + 当前节点 */}
+      <ThickProgressBar label={`全部:${wfPct}%`} pct={wfPct} />
+      {nodeProgress !== null && (
+        <ThinProgressBar
+          label={`${nodeType || '当前节点'}${nodeStep ? ` ${nodeStep.done}/${nodeStep.total}` : ''} · ${nodePct}%`}
+          pct={nodePct}
+        />
+      )}
+    </div>
+  )
+}
+
+function ThickProgressBar({ label, pct }: { label: string; pct: number }) {
+  return (
+    <div
+      style={{
+        position: 'relative', height: 18, background: 'var(--bg)',
+        border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          width: `${pct}%`, height: '100%', background: 'var(--info)',
+          transition: 'width 0.3s ease',
+        }}
+      />
+      <span
+        style={{
+          position: 'absolute', inset: 0,
+          display: 'flex', alignItems: 'center', paddingLeft: 8,
+          fontSize: 10, fontWeight: 600, color: 'var(--text-strong, white)',
+          mixBlendMode: 'difference',
+        }}
+      >
+        {label}
+      </span>
+    </div>
+  )
+}
+
+function ThinProgressBar({ label, pct }: { label: string; pct: number }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 2 }}>{label}</div>
+      <div
+        style={{
+          height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${pct}%`, height: '100%', background: 'var(--accent-2, #14b8a6)',
+            transition: 'width 0.3s linear',
+          }}
+        />
       </div>
     </div>
   )
