@@ -63,6 +63,9 @@ class AnimaTextEncoder:
     def is_loaded(self) -> bool:
         return self._loaded
 
+    # Bundle config path(PR-anima-5):repo 内置 Qwen3-0.6B-Base config.json 副本,免运行时联网。
+    _BUNDLE_CONFIG = Path(__file__).resolve().parents[4] / "configs" / "image_arch" / "anima" / "qwen3_06b_base_config.json"
+
     def load(self) -> None:
         """加载 Qwen3-0.6B base 单文件 + Qwen2 tokenizer +(可选)T5 tokenizer。
 
@@ -72,6 +75,8 @@ class AnimaTextEncoder:
         """
         if self._loaded:
             return
+        import json  # noqa: PLC0415
+
         import torch  # noqa: PLC0415
         from accelerate import init_empty_weights  # noqa: PLC0415
         from safetensors.torch import load_file  # noqa: PLC0415
@@ -91,11 +96,14 @@ class AnimaTextEncoder:
         self._qwen_tokenizer = Qwen2Tokenizer.from_pretrained(str(self.qwen_tokenizer_dir))
 
         # Qwen3-0.6B base:加载单文件 state_dict 到 AutoModel。
-        # config 从 transformers 拿(Qwen3 在 main 分支已 ship)。
         sd = load_file(str(self.qwen_weights_path))
-        # 推断 config:从 weights 形状推或者 caller 给 config_name。这里先用 Qwen3-0.6B 标准 config。
-        # 因 transformers 已知 Qwen3-0.6B-Base 的 HF id,用 AutoConfig.from_pretrained 拉(网络下载一次缓存)。
-        cfg = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B-Base")
+        # config 来源(优先级):bundle config(免联网)→ HF 网络拉(兜底)。
+        if self._BUNDLE_CONFIG.exists():
+            with self._BUNDLE_CONFIG.open() as fh:
+                cfg_dict = json.load(fh)
+            cfg = AutoConfig.for_model(**cfg_dict)
+        else:
+            cfg = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B-Base")
         with init_empty_weights():
             model = AutoModel.from_config(cfg)
         missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
