@@ -15,8 +15,20 @@ export interface ExecutionState {
   currentNodeId: string | null
   currentNodeType: string | null
 
+  // PR-E2/F2:对齐 ComfyUI「全部:N% / 节点:M%」+ live preview thumbnail。
+  // currentNodeProgress = 当前节点内步级进度(0-100,例如 KSampler step 12/25 = 48%);
+  // latestPreviewUrl = 最近一帧 latent live preview(WS node_progress.preview_url)。
+  currentNodeProgress: number | null
+  currentNodeStep: { done: number; total: number } | null
+  latestPreviewUrl: string | null
+
   start: (taskId?: string) => void
   setProgress: (progress: number) => void
+  setCurrentNodeProgress: (
+    percent: number | null,
+    step?: { done: number; total: number } | null,
+    previewUrl?: string | null,
+  ) => void
   succeed: (result: ExecutionState['result']) => void
   fail: (error: string) => void
   reset: () => void
@@ -49,22 +61,32 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   nodeStates: {},
   currentNodeId: null,
   currentNodeType: null,
+  currentNodeProgress: null,
+  currentNodeStep: null,
+  latestPreviewUrl: null,
   taskPanelOpen: false,
   taskIconBadge: 0,
 
   start: (taskId) =>
-    set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null }),
+    set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null }),
 
   setProgress: (progress) => set({ progress }),
 
+  setCurrentNodeProgress: (percent, step = null, previewUrl) =>
+    set((s) => ({
+      currentNodeProgress: percent,
+      currentNodeStep: step,
+      latestPreviewUrl: previewUrl !== undefined ? previewUrl : s.latestPreviewUrl,
+    })),
+
   succeed: (result) =>
-    set({ isRunning: false, progress: 100, result, error: null, currentNodeId: null, currentNodeType: null }),
+    set({ isRunning: false, progress: 100, result, error: null, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null }),
 
   fail: (error) =>
-    set({ isRunning: false, error, currentNodeId: null, currentNodeType: null }),
+    set({ isRunning: false, error, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null }),
 
   reset: () =>
-    set({ isRunning: false, taskId: null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null }),
+    set({ isRunning: false, taskId: null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null }),
 
   setNodeState: (nodeId, state) =>
     set((s) => ({ nodeStates: { ...s.nodeStates, [nodeId]: state } })),
@@ -110,6 +132,22 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
         set((s) => ({
           progress: data.progress ?? s.progress,
           nodeStates: { ...s.nodeStates, [data.node_id]: 'completed' },
+          // 节点完成 → 清当前节点进度(下个 node_start/node_progress 会重置)。
+          currentNodeProgress: null,
+          currentNodeStep: null,
+        }))
+      }
+      // PR-E2/F2:每步 node_progress 更新「节点内 %」+ latest preview thumbnail。
+      if (data.type === 'node_progress') {
+        const m = typeof data.detail === 'string' ? /step\s+(\d+)\s*\/\s*(\d+)/.exec(data.detail) : null
+        const percent = typeof data.progress === 'number' ? Math.round(data.progress * 100)
+          : (m ? Math.round((Number(m[1]) / Number(m[2])) * 100) : null)
+        set((s) => ({
+          currentNodeProgress: percent,
+          currentNodeStep: m ? { done: Number(m[1]), total: Number(m[2]) } : s.currentNodeStep,
+          latestPreviewUrl: typeof data.preview_url === 'string' && data.preview_url
+            ? data.preview_url
+            : s.latestPreviewUrl,
         }))
       }
       if (data.type === 'node_error') {

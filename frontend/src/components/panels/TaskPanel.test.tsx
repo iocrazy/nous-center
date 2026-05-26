@@ -43,10 +43,9 @@ function withQuery(ui: React.ReactNode) {
 }
 
 describe('TaskPanel — ComfyUI 对齐(PR-5)', () => {
-  it('header 显示「任务面板」+ 运行中计数 chip', () => {
+  it('header 运行中时显示「N 个正在运行」(对齐 ComfyUI 截图)', () => {
     render(withQuery(<TaskPanel open onClose={() => {}} />))
-    expect(screen.getByRole('heading', { name: /任务面板/ })).toBeTruthy()
-    expect(screen.getByText(/1\s*运行中/)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /1 个正在运行/ })).toBeTruthy()
   })
 
   it('「全部」tab 显示所有任务,「已完成」tab 过滤掉 running', () => {
