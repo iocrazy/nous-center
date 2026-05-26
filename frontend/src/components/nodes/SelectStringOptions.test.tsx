@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { ReactFlowProvider } from '@xyflow/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -28,12 +28,14 @@ function wrap(ui: React.ReactElement) {
   return render(<QueryClientProvider client={qc}><ReactFlowProvider>{ui}</ReactFlowProvider></QueryClientProvider>)
 }
 
-describe('select widget 字符串 options', () => {
-  it('字符串列表 options 渲染出可选项(非空白)', () => {
+describe('select widget 字符串 options(NodeSelectPopover)', () => {
+  it('字符串列表 options 渲染出可选项(非空白) — 点开 popover 后能看到 role=option', () => {
     wrap(<DeclarativeNode id="n" type="t_stropts" data={{}} selected={false} {...({} as any)} />)
+    // 默认值 'default' → 触发按钮显示 'default'。点开 popover 才能看到选项。
+    const trigger = screen.getByRole('button', { name: /default/i })
+    fireEvent.click(trigger)
     for (const v of ['default', 'bfloat16', 'fp8_e4m3']) {
-      const opt = screen.getByRole('option', { name: v }) as HTMLOptionElement
-      expect(opt.value).toBe(v)
+      expect(screen.getByRole('option', { name: v })).toBeTruthy()
     }
   })
 })

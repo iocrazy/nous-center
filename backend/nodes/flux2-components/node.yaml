@@ -113,8 +113,24 @@ nodes:
       - { name: cfg_scale,  label: "CFG",   widget: slider, min: 0,   max: 20,   step: 0.1, default: 4.0 }
       # 复刻 ComfyUI KSampler 两下拉(结构对齐,选项是 diffusers 的)。Flux2 是 flow-matching,
       # diffusers 只 3 个采样器兼容;sampler_name=scheduler 类,scheduler=sigma 调度(use_*_sigmas)。
-      - { name: sampler_name, label: "采样器", widget: select, options: [euler, heun, lcm], default: euler }
-      - { name: scheduler,    label: "调度器", widget: select, options: [normal, karras, exponential, beta], default: normal }
+      # 选了不支持的 → 后端 _validate_sampler_scheduler 清晰报错不出图。
+      - name: sampler_name
+        label: "采样器"
+        widget: select
+        default: euler
+        options:
+          - { value: euler, label: "Euler",          description: "Flux2 默认 / 推荐" }
+          - { value: heun,  label: "Heun (2 阶)",    description: "diffusers Heun 不接 custom sigmas → Flux2 不支持" }
+          - { value: lcm,   label: "LCM",            description: "LCM 蒸馏模型专用 — True-v2 等普通模型出错图" }
+      - name: scheduler
+        label: "调度器"
+        widget: select
+        default: normal
+        options:
+          - { value: normal,      label: "Normal",      description: "线性默认 — 参考库基线" }
+          - { value: karras,      label: "Karras",      description: "低/高 step 都更平滑 — 推荐细节" }
+          - { value: exponential, label: "Exponential", description: "指数衰减 — 早期细节更强" }
+          - { value: beta,        label: "Beta",        description: "Beta 分布 — 风格变化温和" }
       - { name: seed,       label: "Seed",  widget: input, default: "" }
 
   flux2_vae_decode:
