@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import PublishDialog from '../workflow/PublishDialog'
+import TaskMenuButton from './TaskMenuButton'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
@@ -16,7 +17,7 @@ export default function Topbar() {
   const setWorkflow = useWorkspaceStore((s) => s.setWorkflow)
   const { activeOverlay } = usePanelStore()
   const navigate = useNavigate()
-  const { isRunning, progress, currentNodeType, start, succeed, fail, resetNodeStates, bumpTaskBadge } = useExecutionStore()
+  const { isRunning, progress, start, succeed, fail, resetNodeStates, bumpTaskBadge } = useExecutionStore()
   const toast = useToastStore((s) => s.add)
   const unpublishWf = useUnpublishWorkflow()
   const requestNotifyPermission = useNotificationStore((s) => s.requestPermission)
@@ -151,14 +152,11 @@ export default function Topbar() {
         </>
       )}
 
-      {/* Current node execution indicator */}
-      {isRunning && currentNodeType && (
-        <span style={{ fontSize: 10, color: 'var(--ok)', marginLeft: 8, flexShrink: 0 }}>
-          ● {progress}% — {currentNodeType}
-        </span>
-      )}
+      {/* PR-E:删了旧 `● progress% — node` 文字提示;改用 TaskMenuButton chip(更结构化)。 */}
 
-      <div className="ml-auto flex gap-1.5">
+      <div className="ml-auto flex gap-1.5 items-center">
+        {/* 全局任务 chip + dropdown:Vercel/Linear 风渐进披露,「查看全部」打开完整 TaskPanel。 */}
+        <TaskMenuButton />
         {!activeOverlay && (
           <>
             <TopbarButton>Templates</TopbarButton>
