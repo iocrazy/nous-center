@@ -92,15 +92,20 @@ async def run_workflow_task(
             await _broadcast(channel_id, {"type": "complete", "progress": 100})
         except ExecutionError as e:
             elapsed = int((time.monotonic() - start) * 1000)
-            task.status = "failed"
-            task.error = str(e)
+            # PR-3:HTTP cancel 在另一路径已把 status 写 cancelled —— 不要覆盖成 failed。
+            await session.refresh(task)
+            if task.status != "cancelled":
+                task.status = "failed"
+                task.error = str(e)
             task.duration_ms = elapsed
             await session.commit()
-            logger.error("workflow %s failed: %s", task_id, e)
+            logger.info("workflow %s end: status=%s err=%s", task_id, task.status, e)
         except Exception as e:  # noqa: BLE001 — 后台 task 永不冒泡
             elapsed = int((time.monotonic() - start) * 1000)
-            task.status = "failed"
-            task.error = str(e)
+            await session.refresh(task)
+            if task.status != "cancelled":
+                task.status = "failed"
+                task.error = str(e)
             task.duration_ms = elapsed
             await session.commit()
-            logger.error("workflow %s errored: %s", task_id, e, exc_info=True)
+            logger.info("workflow %s end: status=%s err=%s", task_id, task.status, e, exc_info=task.status != "cancelled")
