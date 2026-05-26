@@ -25,7 +25,7 @@ class _FakeMM:
     def __init__(self):
         self.calls = []
 
-    async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None):
+    async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None, offload="none"):
         self.calls.append((tuple(sorted(components)), pipeline_class))
         return _FakeAdapter()
 
@@ -86,7 +86,7 @@ async def test_components_path_adapter_error_fails_gracefully():
     """A bare exception from get_or_load_image_adapter must become NodeResult
     failed, NOT crash _node_executor (which would hang the workflow)."""
     class _BoomMM:
-        async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None):
+        async def get_or_load_image_adapter(self, components, pipeline_class, on_event=None, offload="none"):
             raise RuntimeError("scheduler dir not found")
         async def get_or_load(self, key):
             raise AssertionError("legacy path not expected")
