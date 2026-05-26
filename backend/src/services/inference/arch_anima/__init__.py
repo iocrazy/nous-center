@@ -1,10 +1,12 @@
 """nous arch_anima — Cosmos Predict2 + Anima DiT 移植(spec 2026-05-26-anima-port-design)。
 
-PR-anima-1:Cosmos Predict2 building blocks(MiniTrainDIT + 子组件 + 3D RoPE)。
-后续 PR-anima-2~7 接 LLMAdapter / text encoder / pipeline 等。
+PR-anima-1:Cosmos Predict2 building blocks(MiniTrainDIT + 子组件 + 3D RoPE)。✅
+PR-anima-2:Anima 主类(继承 MiniTrainDIT + LLMAdapter + 1D RoPE TransformerBlock)。✅
+后续 PR-anima-3~7 接 text encoder / pipeline 等。
 """
 from __future__ import annotations
 
+from .anima import Anima, LLMAdapter, RotaryEmbedding
 from .position_embedding import (
     LearnablePosEmbAxis,
     VideoPositionEmb,
@@ -24,13 +26,16 @@ from .predict2 import (
 )
 
 __all__ = [
+    "Anima",
     "Attention",
     "Block",
     "FinalLayer",
     "GPT2FeedForward",
+    "LLMAdapter",
     "LearnablePosEmbAxis",
     "MiniTrainDIT",
     "PatchEmbed",
+    "RotaryEmbedding",
     "TimestepEmbedding",
     "Timesteps",
     "VideoPositionEmb",
