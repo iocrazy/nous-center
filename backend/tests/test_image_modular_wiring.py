@@ -182,6 +182,57 @@ async def test_bf16_dtype_no_fp8_quant(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scheduler_swap_sigma_schedule(monkeypatch):
+    """PR-2:scheduler→use_*_sigmas 互斥开关;换 FlowMatchEuler.from_config;保留原 config(shift)。"""
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
+    pipe.scheduler.config = {"shift": 3.0, "use_dynamic_shifting": True}
+    euler, heun, lcm = MagicMock(name="EulerCls"), MagicMock(name="HeunCls"), MagicMock(name="LCMCls")
+    monkeypatch.setattr(image_modular, "_import_flow_schedulers",
+                        lambda: {"euler": euler, "heun": heun, "lcm": lcm})
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+
+    await be.infer(ImageRequest(request_id="s", prompt="x", steps=2, width=64, height=64,
+                                sampler_name="euler", scheduler="karras"))
+
+    euler.from_config.assert_called_once()
+    cfg = euler.from_config.call_args.args[0]
+    assert cfg["use_karras_sigmas"] is True
+    assert cfg["use_exponential_sigmas"] is False and cfg["use_beta_sigmas"] is False
+    assert cfg["shift"] == 3.0  # 原 config 保留
+    assert be._sched_key == ("euler", "karras")
+
+
+@pytest.mark.asyncio
+async def test_unsupported_sampler_fails_loud(monkeypatch):
+    """选了本架构不支持的采样器(heun 之于 Flux2)→ 清晰报错,不出图(不崩在 diffusers 深处)。"""
+    _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    with pytest.raises(ValueError, match="采样器 'heun' 不被"):
+        await be.infer(ImageRequest(request_id="h", prompt="x", steps=2, width=64, height=64,
+                                    sampler_name="heun", scheduler="normal"))
+
+
+@pytest.mark.asyncio
+async def test_unsupported_scheduler_fails_loud(monkeypatch):
+    _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    with pytest.raises(ValueError, match="调度器 'sgm_uniform' 不被"):
+        await be.infer(ImageRequest(request_id="g", prompt="x", steps=2, width=64, height=64,
+                                    sampler_name="euler", scheduler="sgm_uniform"))
+
+
+@pytest.mark.asyncio
+async def test_scheduler_default_euler_normal_no_swap(monkeypatch):
+    """默认 euler+normal = 参考库现状 → 不换 scheduler(不 import,出图基线不动)。"""
+    _fake_klein(monkeypatch)
+    spy = MagicMock(name="import_flow_schedulers")
+    monkeypatch.setattr(image_modular, "_import_flow_schedulers", spy)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    await be.infer(ImageRequest(request_id="d", prompt="x", steps=2, width=64, height=64))
+    spy.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_apply_loras_loads_and_sets_adapters(monkeypatch):
     """req.loras → pipe.load_lora_weights + set_adapters(标准 Flux2KleinPipeline 经 Flux2LoraLoaderMixin)。"""
     _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)

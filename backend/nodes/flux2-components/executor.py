@@ -145,6 +145,8 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
         "_type": "flux2_latent", "model": model, "conditioning": cond,
         "width": int(data.get("width", 1024)), "height": int(data.get("height", 1024)),
         "steps": int(data.get("steps", 25)), "cfg_scale": float(data.get("cfg_scale", 4.0)),
+        "sampler_name": data.get("sampler_name") or "euler",
+        "scheduler": data.get("scheduler") or "normal",
         "seed": seed,
     }}
 

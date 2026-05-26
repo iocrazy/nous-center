@@ -55,6 +55,25 @@ def _import_klein_pipeline() -> tuple[Any, Any, Any]:
     return Flux2KleinPipeline, AutoTokenizer, FlowMatchEulerDiscreteScheduler
 
 
+def _import_flow_schedulers() -> dict:
+    """Lazy import diffusers flow-matching scheduler 类(PR-2 采样器选择;D2 隔离)。
+
+    复刻 ComfyUI KSampler 的 sampler_name 下拉,但选项是 diffusers 的:Flux2 是 flow-matching,
+    只有这 3 个兼容(不追 ComfyUI 40 个 k-diffusion 采样器)。测试可 monkeypatch 本函数。
+    """
+    from diffusers import (  # noqa: PLC0415
+        FlowMatchEulerDiscreteScheduler,
+        FlowMatchHeunDiscreteScheduler,
+        FlowMatchLCMScheduler,
+    )
+
+    return {
+        "euler": FlowMatchEulerDiscreteScheduler,
+        "heun": FlowMatchHeunDiscreteScheduler,
+        "lcm": FlowMatchLCMScheduler,
+    }
+
+
 def _maybe_convert_comfy_flux2_lora(state_dict: dict):
     """ComfyUI/BFL 格式 Flux2 LoRA(`diffusion_model.` 前缀 + `lora_down/up`)→ diffusers
     `transformer.*` 格式;否则 None(走原 load_lora_weights)。绕 Flux2LoraLoaderMixin 的
@@ -222,6 +241,9 @@ class ModularImageBackend(InferenceAdapter):
         self._vae_override = vae_override
         self._pipe: Any = None
         self._loaded_loras: set[str] = set()  # PR-3
+        # PR-2 当前已装的 (sampler_name, scheduler);初值 = 参考库默认(FlowMatchEuler + normal sigmas)
+        # → 默认请求不触发换 scheduler。
+        self._sched_key: tuple[str, str] = ("euler", "normal")
 
     async def load(self, device: str) -> None:
         """对齐 ABC;实际 pipeline 构建在首次 infer 时 lazy(_ensure_pipe)。"""
@@ -323,6 +345,48 @@ class ModularImageBackend(InferenceAdapter):
             self._loaded_loras.add(spec.name)
         pipe.set_adapters([s.name for s in loras], adapter_weights=[s.strength for s in loras])
 
+    def _apply_scheduler(self, pipe: Any, sampler_name: str, scheduler: str) -> None:
+        """PR-2:换 pipe.scheduler 实现采样器/调度器选择(复刻 ComfyUI KSampler 两下拉)。
+
+        通用节点:下拉列候选(可扩展),但本架构**真能用**的子集由 model_arch_adapter 注册表声明。
+        选了不支持的 → **fail loud 清晰报错,不出图**(用户决策:别静默 fallback,也别崩在 diffusers 深处)。
+        sampler_name → scheduler **类**(euler/heun/lcm);scheduler → **sigma 调度** config
+        (normal/karras/exponential/beta → use_*_sigmas 互斥)。`from_config(原 config)` 保留 shift /
+        use_dynamic_shifting(不改已验好的基线),只覆盖 use_*_sigmas + 换类。带缓存键避免重复换。
+        """
+        sampler_name = sampler_name or "euler"
+        scheduler = scheduler or "normal"
+        self._validate_sampler_scheduler(sampler_name, scheduler)
+        key = (sampler_name, scheduler)
+        if key == self._sched_key:
+            return
+        cls_map = _import_flow_schedulers()
+        cls = cls_map.get(key[0]) or cls_map["euler"]
+        cfg = dict(pipe.scheduler.config)
+        cfg["use_karras_sigmas"] = key[1] == "karras"
+        cfg["use_exponential_sigmas"] = key[1] == "exponential"
+        cfg["use_beta_sigmas"] = key[1] == "beta"
+        pipe.scheduler = cls.from_config(cfg)
+        self._sched_key = key
+
+    def _validate_sampler_scheduler(self, sampler_name: str, scheduler: str) -> None:
+        """据 model_arch_adapter 注册表校验本架构是否支持该采样器/调度器;不支持 → 清晰报错。
+        未注册的 pipeline_class → 放行(无约束信息,不拦)。"""
+        from src.services.inference.model_arch_adapter import MODEL_ARCH_REGISTRY  # noqa: PLC0415
+
+        arch = MODEL_ARCH_REGISTRY.get(self.pipeline_class)
+        if arch is None:
+            return
+        samplers = arch.supported_samplers()
+        if sampler_name not in samplers:
+            raise ValueError(
+                f"采样器 {sampler_name!r} 不被 {self.pipeline_class} 支持(当前支持:{sorted(samplers)})。"
+                f"diffusers flow-matching 这条路上 Flux2 只 euler 可用;其它采样器待对应模型/架构接入。")
+        scheds = arch.supported_schedulers()
+        if scheduler not in scheds:
+            raise ValueError(
+                f"调度器 {scheduler!r} 不被 {self.pipeline_class} 支持(当前支持:{sorted(scheds)})。")
+
     async def infer(self, req: InferenceRequest) -> InferenceResult:
         if not isinstance(req, ImageRequest):
             raise TypeError(f"ModularImageBackend 只接受 ImageRequest,收到 {type(req).__name__}")
@@ -330,6 +394,9 @@ class ModularImageBackend(InferenceAdapter):
 
         pipe = self._ensure_pipe()
         self._apply_loras(list(getattr(req, "loras", None) or []))
+        if self.pipeline_class == "Flux2KleinPipeline":
+            self._apply_scheduler(
+                pipe, getattr(req, "sampler_name", "euler"), getattr(req, "scheduler", "normal"))
         gen = torch.Generator(device=self.device)
         if req.seed is not None:
             gen = gen.manual_seed(req.seed)

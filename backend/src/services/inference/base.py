@@ -94,6 +94,11 @@ class ImageRequest(InferenceRequest):
     steps: int = Field(25, ge=1, le=200)
     seed: int | None = None
     cfg_scale: float = Field(7.0, ge=0, le=30)
+    # 采样控制(复刻 ComfyUI KSampler 两下拉,映射 diffusers flow-match scheduler):
+    # sampler_name = scheduler 类(euler→FlowMatchEulerDiscrete / heun→Heun / lcm→LCM);
+    # scheduler = sigma 调度(normal=默认 / karras / exponential / beta → use_*_sigmas)。
+    sampler_name: str = "euler"
+    scheduler: str = "normal"
     loras: list[LoRASpec] = Field(default_factory=list)
     # PR-4: component path. When set, the runner routes through
     # ModelManager.get_or_load_image_adapter instead of model_key. None ⇒

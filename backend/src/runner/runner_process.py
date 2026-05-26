@@ -217,6 +217,8 @@ def _build_request(node: P.RunNode):
                 height=int(latent.get("height") or 1024),
                 steps=int(latent.get("steps") or 25),
                 cfg_scale=float(latent.get("cfg_scale") or 4.0),
+                sampler_name=str(latent.get("sampler_name") or "euler"),
+                scheduler=str(latent.get("scheduler") or "normal"),
                 seed=int(lseed) if lseed not in (None, "") else None,
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
@@ -241,6 +243,8 @@ def _build_request(node: P.RunNode):
             width=int(node.inputs.get("width") or 1024),
             height=int(node.inputs.get("height") or 1024),
             cfg_scale=float(node.inputs.get("cfg_scale") or 7.0),
+            sampler_name=str(node.inputs.get("sampler_name") or "euler"),
+            scheduler=str(node.inputs.get("scheduler") or "normal"),
             seed=seed,
             loras=loras_raw if isinstance(loras_raw, list) else [],
         )
