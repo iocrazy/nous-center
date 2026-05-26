@@ -217,6 +217,7 @@ class ModularImageBackend(InferenceAdapter):
         *,
         dtype: str = "bfloat16",
         pipeline_class: str = "Flux2KleinPipeline",
+        offload: str = "none",
         transformer_override: Any = None,
         text_encoder_override: Any = None,
         vae_override: Any = None,
@@ -228,6 +229,9 @@ class ModularImageBackend(InferenceAdapter):
         self.repo = repo
         self.dtype = dtype
         self.pipeline_class = pipeline_class
+        # PR-D:权重 offload 策略 — "none"(全程 GPU)/ "cpu"(enable_model_cpu_offload,大模型塞小卡)。
+        # "cuda:N" 跨卡 offload 留 PR-D2(需 accelerate 自定义 hook)。
+        self.offload = offload
         # comfy 单文件桥接 override:transformer(量化/comfy)+ text_encoder/vae(单文件装配,PR-2)。
         self._transformer_override = transformer_override
         self._text_encoder_override = text_encoder_override
@@ -256,8 +260,21 @@ class ModularImageBackend(InferenceAdapter):
         if _wants_fp8(self.dtype):
             # fp8 weight-only(torchao):transformer + text_encoder 权重 fp8 存储,省 ~½ 显存,
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
+            # offload 时:在 enable_model_cpu_offload 之前量化(accelerate hooks 才看到量化后权重)。
             _quantize_fp8_weight_only(pipe)
-        pipe.to(self.device)
+        # PR-D:offload 策略。none → 普通 .to(device);cpu → enable_model_cpu_offload(替代 .to)。
+        if self.offload == "cpu":
+            # diffusers enable_model_cpu_offload(gpu_id=N):用 accelerate hooks 把不用的组件挪 CPU,
+            # 用时挪回 cuda:N。慢 ~3-5×,但 34GB 大模型也能塞进 24GB 3090。
+            gpu_id = int(self.device.split(":")[1]) if self.device.startswith("cuda:") else 0
+            pipe.enable_model_cpu_offload(gpu_id=gpu_id)
+        elif self.offload == "none":
+            pipe.to(self.device)
+        else:
+            # cuda:N 跨卡 offload 留 PR-D2(accelerate 自定义 hook);其它取值 fail-loud。
+            raise NotImplementedError(
+                f"offload={self.offload!r} 暂未接入(PR-D 只支持 'none' / 'cpu';"
+                f"cuda:N 跨卡 offload 见 PR-D2)。")
         self._pipe = pipe
         self._model = pipe  # is_loaded → True
         return pipe

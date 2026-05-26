@@ -99,6 +99,9 @@ class ImageRequest(InferenceRequest):
     # scheduler = sigma 调度(normal=默认 / karras / exponential / beta → use_*_sigmas)。
     sampler_name: str = "euler"
     scheduler: str = "normal"
+    # PR-D:权重 offload 目标(none = 不 offload;cpu = enable_model_cpu_offload 把不用的组件挪 CPU,慢
+    # 但让大模型塞进小显存,如 True-v2 bf16 进 3090 24GB)。cuda:N 跨卡 offload 留 PR-D2。
+    offload: str = "none"
     loras: list[LoRASpec] = Field(default_factory=list)
     # PR-4: component path. When set, the runner routes through
     # ModelManager.get_or_load_image_adapter instead of model_key. None ⇒

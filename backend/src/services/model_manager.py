@@ -786,7 +786,7 @@ class ModelManager:
     def _image_adapter_lock_for(self, key) -> asyncio.Lock:
         return self._image_adapter_locks.setdefault(key, asyncio.Lock())
 
-    async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline", on_event=None):
+    async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline", on_event=None, offload: str = "none"):
         """PR-4 entry for the runner component path. Resolves auto devices,
         loads/reuses base modules via the component L1 cache, assembles (or
         reuses) a DiffusersImageBackend keyed by the full 3-component combo.
@@ -813,22 +813,24 @@ class ModelManager:
             if resolved[k].device != target:
                 resolved[k] = resolved[k].model_copy(update={"device": target})
         # LLM 卡保护:目标卡空闲显存不足(常驻 LLM 占着)→ 装载前清晰报错,不静默 OOM。
-        # 无 GPU / 文件不存在(纯逻辑测试)时 free/need 为 None → 跳过,不阻塞。
-        free_mb = self._free_vram_mb(target)
-        need_mb = self._estimate_image_vram_mb(resolved)
-        if free_mb is not None and need_mb is not None and free_mb < need_mb:
-            raise RuntimeError(
-                f"{target} 空闲显存不足({free_mb}MB < 约需 {need_mb}MB)—— "
-                f"该卡可能被常驻 LLM 占用。换张卡(device)、用更低精度(fp8),"
-                f"或先释放该卡。"
-            )
-        combo_key = (pipeline_class,) + tuple(
+        # PR-D:offload=cpu 时跳过这检查 — accelerate hooks 会按需挪 CPU,峰值 VRAM 远低于估算。
+        if offload == "none":
+            free_mb = self._free_vram_mb(target)
+            need_mb = self._estimate_image_vram_mb(resolved)
+            if free_mb is not None and need_mb is not None and free_mb < need_mb:
+                raise RuntimeError(
+                    f"{target} 空闲显存不足({free_mb}MB < 约需 {need_mb}MB)—— "
+                    f"该卡可能被常驻 LLM 占用。换张卡(device)、用更低精度(fp8)、"
+                    f"或启用 offload=cpu(让大模型自动倒换 CPU)。"
+                )
+        # combo_key 包含 offload:不同 offload 模式是不同的 pipe 实例(enable_model_cpu_offload 改了内部 hook,
+        # 不能复用为 offload=none 的 adapter)。
+        combo_key = (pipeline_class, offload) + tuple(
             to_component_key(resolved[k]) for k in ("diffusion_models", "clip", "vae"))
-        # PR-4 收官:唯一引擎 = Modular Diffusers(自写 ImageSampler/DiffusersImageBackend 已删)。
         return await self._get_or_load_modular_adapter(
-            resolved, combo_key, pipeline_class, target, _emit)
+            resolved, combo_key, pipeline_class, target, _emit, offload)
 
-    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit):
+    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none"):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 
         与 legacy 共用 `_image_adapters` combo 缓存 + 四态事件(coarse:加载前 loading、
@@ -855,21 +857,25 @@ class ModelManager:
                     build_bridged_transformer,
                     build_bridged_vae,
                 )
+                # PR-D:offload=cpu 时桥接 device 改 'cpu' —— 让 enable_model_cpu_offload(gpu_id=N)
+                # 接管设备调度。直接加载到 cuda 会爆显存(大模型 34GB > 24GB 3090)。
+                load_device = "cpu" if offload == "cpu" else target
                 t_ov = c_ov = v_ov = None
                 if _is_standalone_single_file(resolved["diffusion_models"]):
                     t_ov = await asyncio.to_thread(
-                        build_bridged_transformer, resolved["diffusion_models"], repo, target)
+                        build_bridged_transformer, resolved["diffusion_models"], repo, load_device)
                 if _is_standalone_single_file(resolved["clip"]):
                     c_ov = await asyncio.to_thread(
-                        build_bridged_text_encoder, resolved["clip"], repo, target)
+                        build_bridged_text_encoder, resolved["clip"], repo, load_device)
                 if _is_standalone_single_file(resolved["vae"]):
                     v_ov = await asyncio.to_thread(
-                        build_bridged_vae, resolved["vae"], repo, target)
+                        build_bridged_vae, resolved["vae"], repo, load_device)
                 adapter = ModularImageBackend(
                     repo=repo,
                     device=target,
                     dtype=resolved["diffusion_models"].dtype,
                     pipeline_class=pipeline_class,
+                    offload=offload,
                     transformer_override=t_ov,
                     text_encoder_override=c_ov,
                     vae_override=v_ov,

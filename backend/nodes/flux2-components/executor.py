@@ -75,8 +75,11 @@ def _spec_unet(data: dict) -> dict:
 
 
 async def exec_load_diffusion_model(data: dict, inputs: dict) -> dict:
-    """MODEL —— transformer 组件描述符 + device(整张图跑哪张卡)。"""
-    return {"model": {"_type": "flux2_model", "spec": _spec_unet(data), "loras": []}}
+    """MODEL —— transformer 组件描述符 + device(整张图跑哪张卡)+ offload(权重 stash,PR-D)。"""
+    return {
+        "model": {"_type": "flux2_model", "spec": _spec_unet(data), "loras": [],
+                  "offload": data.get("offload") or "none"},
+    }
 
 
 async def exec_load_clip(data: dict, inputs: dict) -> dict:

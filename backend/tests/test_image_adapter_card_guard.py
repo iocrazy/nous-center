@@ -45,7 +45,7 @@ async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
     monkeypatch.setattr(mm, "_estimate_image_vram_mb", lambda resolved: 99999)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none"):
         return object()
 
     monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
@@ -84,7 +84,7 @@ async def test_single_card_unifies_clip_vae_to_unet_device(mm, monkeypatch):
     seen = {}
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none"):
         seen["resolved"] = resolved
         return object()
 
