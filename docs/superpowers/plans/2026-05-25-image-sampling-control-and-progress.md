@@ -60,20 +60,36 @@
   `pipe.scheduler = cls.from_config({**pipe.scheduler.config, use_karras_sigmas/exponential/beta: ...})`。
 - [ ] 真模型验:换 sampler/scheduler 出图正确 + 风格差异。单元:类映射 + sigma 开关 + 透传。
 
-## PR-3:逐步进度(任务感知)
+## PR-3:逐步进度 + **任务中止**(对齐 ComfyUI)
 
-**Files**:`image_modular`(progress 覆盖)+ `runner_process` / protocol(denoise_progress 事件)+
-`workflow_executor`(转发)+ 前端(ImageOutputNode / DeclarativeNode / TaskPanel 进度条)
+**Files**:`image_modular`(callback_on_step_end + cancel_flag)+ `runner_process`(progress 转发)+
+`execution_tasks`(HTTP cancel → scheduler 桥修复)+ protocol(denoise_progress 事件)+
+`workflow_executor`(转发)+ 前端(节点进度条 + WS 监听)
 
-> **PR-1 换标准 pipe 后简化**:标准 `Flux2KleinPipeline.__call__` 自带 `callback_on_step_end(pipe, i, t, kw)`
-> —— 直接用它拿 (step, total),**不用再 hack `progress_bar`**(那是 modular 才需要的)。
+> **设计映射 ComfyUI**(读 `comfy/utils.py` ProgressBar / `samplers.py` k_callback / `model_management.py`
+> InterruptProcessingException + `throw_exception_if_processing_interrupted` / `server.py /interrupt`):
+> 进度 = 每步回调 → hook → WS;中止 = 全局 flag,采样回调 check 置位则 raise → 执行循环捕获。
+> nous 已有 `CancelFlag`(`cancel_flag.py`)+ `group_scheduler.request_cancel(task_id)` 完整通路;
+> **唯一缺**:HTTP cancel 端点 现在只更 DB status,没调 `scheduler.request_cancel` → running 任务的 cancel 实际无效。
+> 用 standard `Flux2KleinPipeline` 的 `callback_on_step_end`(modular 没有,#144 换标准后白送)实现 step 级中止
+> (ComfyUI 是 op 级因为它每 op check;diffusers 这条路上 step 级 ~250ms 已够响应)。
 
-- [ ] `infer(on_step=...)`:传 `callback_on_step_end` → 每步算 pct → `on_step(pct, i+1, total)`(节流 ~0.5%)。
-- [ ] runner 出图任务接 on_step → RunnerClient → 主进程 → WS `denoise_progress {node_id, percent, step, total}`
-  走现有 channel(复用 #141 progress WS / openProgressChannel)。
-- [ ] 前端:dispatch 节点 / ImageOutputNode 监听 `node-progress` 的 denoise_progress → 进度条 + %;
-  TaskPanel 泳道更新。
-- [ ] 真机验:浏览器 Run 看到逐步 %(像 ComfyUI)。tsc/vitest/build。
+- [ ] `image_modular.infer` 加 `progress_callback` + `cancel_flag` kwargs(契约对齐 `fake_adapter`)。
+  组装 `callback_on_step_end(pipe, i, t, kw)`:check `cancel_flag.is_set()` → raise `InterruptedError(reason)`;
+  调 `progress_callback(step, total)`(节流 ~0.5%,首/末步必发)。
+- [ ] `runner_process._node_executor` 出图任务:用 inspect signature 探测,传 cancel_flag(已有)+
+  新增 progress_callback(发 RunnerClient 进度消息)→ 主进程 → WS。
+- [ ] protocol 加 `denoise_progress {task_id, node_id, step, total, percent}`(或扩 #141 progress 事件)。
+- [ ] **修桥**:`execution_tasks.py POST /<id>/cancel` 调 `scheduler.request_cancel(task_id)`(否则
+  running 任务 cancel 无效 —— 现在的真 bug)。
+- [ ] 前端:DeclarativeNode(KSampler / VAEDecode)监听 denoise_progress(任务 + node 匹配)→ 进度条 + %;
+  TaskPanel 已有 cancel 按钮 + cancelTask mutate,桥修复后自动生效(端到端验)。
+- [ ] **真模型验**(关键,feedback-verify-real-model):
+  (a) 浏览器 Run 看到逐步 %(每 ~250ms 一次),像 ComfyUI;
+  (b) 跑到一半点 cancel → ~1 步内停(<500ms),task 落 cancelled 状态,GPU 释放;
+  (c) 取消后再 Run 同 task → 正常出图(flag 复位)。
+- [ ] 单元(CI mock):cancel_flag 置位 → callback raise;progress_callback 每步被调;节流逻辑;
+  cancel HTTP 端点调 scheduler.request_cancel。tsc/vitest/build。
 
 ---
 
