@@ -79,21 +79,42 @@
 
 ---
 
-## PR-D:offload 到小卡(`enable_*_cpu_offload`)
+## PR-D:offload 多目标(cpu / cuda:0/1/2)
 
-**Files**:`image_modular.py`(infer 后 `pipe.enable_model_cpu_offload(...)` 可选)+ 节点 widget(显卡下拉
-加「auto-offload」选项)+ runner 透传。
+**Files**:`image_modular.py`(infer 路径加 offload kwarg + cross-device hook)+ `base.py`(ImageRequest 加字段)
++ runner _build_request 透传 + node.yaml(`flux2_load_diffusion_model` 加 `offload` 下拉 + device 加 `cpu`)+
+executor.py(flux2_model bundle 带 offload)+ smoke。
 
-- [ ] `image_modular`:加 `offload: bool` infer 参数(或 ImageRequest 字段)。`pipe.enable_model_cpu_offload(gpu_id=N)`
-  ——transformer/text_encoder/vae 按需 CPU↔GPU 倒换,放下大模型进 24GB 3090。
-- [ ] node.yaml `flux2_load_diffusion_model` 显卡下拉加选项「auto-offload」(或独立 widget)。
-- [ ] **真模型验**:True-v2-bf16(18GB 单 transformer)+ qwen3-8b(16GB TE)= 34GB 在 24GB 3090 → 启用 offload 应能出图,
-  慢但能跑。peak_vram 应 ≤24GB。
-- [ ] 注:与 fp8 weight-only(#139)是两条独立路径,可叠加(fp8 transformer + offload TE)。
-- [ ] 单元 + smoke。
+**两个 widget,语义解耦**:
+- `device` ∈ [auto, cuda:0, cuda:1, cuda:2, **cpu**]:**计算所在设备**(运行 forward 的地方)。
+- `offload` ∈ [**none**, cpu, cuda:0, cuda:1, cuda:2]:**权重不用时挪去哪**(空闲 stash)。
 
-> **理由**:用户 3 张卡里 2 个 3090 + 1 个 Pro 6000。今天大模型只能塞 Pro 6000;有 offload 后,3090 也能跑大模型
-> (慢但行)。配合 PR-C 的 anima(更小,本来就够塞)= 全卡可用。
+**组合语义**:
+- `device=cuda:0, offload=none`:全程 cuda:0(现状)。
+- `device=cuda:0, offload=cpu`:diffusers `pipe.enable_model_cpu_offload(gpu_id=0)` —— transformer/text_encoder/vae 按需
+  CPU↔cuda:0 倒换。慢但塞得下(34GB 模型在 24GB 3090 也能跑)。
+- `device=cuda:0, offload=cuda:1`:**跨卡 offload**(diffusers 没现成 API):权重常驻 cuda:1,每个 forward 前
+  `module.to('cuda:0')` 运行后 `to('cuda:1')`。手写 hook(per-component pre_forward / post_forward)。
+  用户价值:2 张 3090 协作跑大模型(34GB 在 一张 24GB 不够,但 24+24=48GB 够)。
+- `device=cpu, offload=none`:纯 CPU 推理(极慢,几十秒/step,只为兜底 / 调试)。
+
+- [ ] node.yaml 显卡下拉加 `cpu` 选项;加新 `offload` select 下拉。
+- [ ] executor.py `exec_load_diffusion_model` 把 offload 字段塞 flux2_model bundle。
+- [ ] runner_process `_build_request` 把 offload 透传到 ImageRequest(新字段)+ ComponentSpec(可能放 spec.offload)。
+- [ ] `image_modular._ensure_pipe` 后:
+  - `offload == 'none'`:不动(现状)。
+  - `offload == 'cpu'`:`pipe.enable_model_cpu_offload(gpu_id=int(device.split(':')[1]))`。
+  - `offload == 'cuda:N'`(且 N ≠ device):手写跨卡 hook(`pipe.transformer.register_forward_pre_hook(lambda *_: m.to(device))`
+    + post_hook `lambda *_: m.to(offload_device)`),三组件同样套。
+- [ ] **真模型验**(关键 — feedback-verify-real-model):
+  (a) True-v2-bf16 + offload=cpu + device=cuda:2(空闲 3090)→ 出图正确 + peak_vram ≤24GB;延迟 ~3-5×。
+  (b) offload=cuda:1(Pro 6000)+ device=cuda:0 → 跨卡协作,验权重在 cuda:1 闲、cuda:0 跑 forward。
+- [ ] 单元 + smoke(`smoke_offload_3090.py`)。
+- [ ] 注:与 fp8 weight-only(#139)是两条独立路径,可叠加(`fp8 transformer + offload TE to cpu` 等)。
+
+> **理由**:你 3 张卡(Pro 6000 + 2×3090),今天大模型只能塞 Pro 6000;offload 后 3090 也能跑大模型(慢但行)。
+> 跨卡 offload(`offload=cuda:N`)可让 2×3090 协作跑 34GB 模型(权重 stash 一张、forward 另一张)。
+> 配合 PR-C 的 anima(更小本来就够塞)= 全卡可用。
 
 ---
 
