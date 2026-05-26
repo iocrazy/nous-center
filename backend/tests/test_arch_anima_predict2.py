@@ -23,6 +23,7 @@ def test_module_files_exist():
     assert (base / "anima.py").exists()  # PR-anima-2
     assert (base / "text_encoder.py").exists()  # PR-anima-3
     assert (base / "load.py").exists()  # PR-anima-4
+    assert (base / "pipeline.py").exists()  # PR-anima-5(p2)
 
 
 def test_source_layout():
@@ -87,6 +88,17 @@ def test_source_layout():
         'k[4:]',  # strip 'net.' prefix 是关键
     ]:
         assert sym in load_src, f"load.py missing {sym!r}"
+
+    # PR-anima-5(p2):AnimaPipeline 装配类。
+    pipeline_src = (base / "pipeline.py").read_text()
+    for sym in [
+        "class AnimaPipeline",
+        "def from_components",
+        "FlowMatchEulerDiscreteScheduler",
+        "AutoencoderKLQwenImage",
+        "DEFAULT_SHIFT = 3.0",  # 对齐 ComfyUI anima sampling_settings
+    ]:
+        assert sym in pipeline_src, f"pipeline.py missing {sym!r}"
 
 
 def test_bundle_config_present():
