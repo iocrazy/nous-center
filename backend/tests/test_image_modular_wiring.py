@@ -298,6 +298,35 @@ async def test_no_loras_does_not_load(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_offload_none_calls_pipe_to(monkeypatch):
+    """PR-D:offload=none → pipe.to(device)(普通路径,不挂 accelerate hook)。"""
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", offload="none")
+    await be.infer(ImageRequest(request_id="o1", prompt="x", steps=2, width=64, height=64))
+    pipe.to.assert_called_once_with("cpu")
+    pipe.enable_model_cpu_offload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_offload_cpu_calls_enable_model_cpu_offload(monkeypatch):
+    """PR-D:offload=cpu → pipe.enable_model_cpu_offload(gpu_id=N)(替代 .to)。"""
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cuda:2", offload="cpu")
+    await be.infer(ImageRequest(request_id="o2", prompt="x", steps=2, width=64, height=64))
+    pipe.enable_model_cpu_offload.assert_called_once_with(gpu_id=2)
+    pipe.to.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_offload_cuda_not_implemented(monkeypatch):
+    """PR-D:offload=cuda:N 跨卡 offload 留 PR-D2 → fail-loud。"""
+    _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cuda:0", offload="cuda:1")
+    with pytest.raises(NotImplementedError, match="offload='cuda:1'"):
+        await be.infer(ImageRequest(request_id="o3", prompt="x", steps=2, width=64, height=64))
+
+
+@pytest.mark.asyncio
 async def test_non_flux2_raises_not_implemented(monkeypatch):
     """PR-A:pipeline_class != Flux2KleinPipeline → fail-loud NotImplementedError
     (modular 死代码已退役;ERNIE/Qwen-Image/AuraFlow 等待 PR-C 经 ImageArchSpec 注册表接入)。"""

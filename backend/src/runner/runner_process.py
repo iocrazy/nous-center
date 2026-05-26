@@ -219,6 +219,7 @@ def _build_request(node: P.RunNode):
                 cfg_scale=float(latent.get("cfg_scale") or 4.0),
                 sampler_name=str(latent.get("sampler_name") or "euler"),
                 scheduler=str(latent.get("scheduler") or "normal"),
+                offload=str(model_d.get("offload") or "none"),
                 seed=int(lseed) if lseed not in (None, "") else None,
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
@@ -313,7 +314,8 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             if components:
                 adapter = await state.mm.get_or_load_image_adapter(
                     components, getattr(req, "pipeline_class", "Flux2KleinPipeline"),
-                    on_event=_make_component_event_sender(ch))
+                    on_event=_make_component_event_sender(ch),
+                    offload=getattr(req, "offload", "none"))
             else:
                 adapter = await state.mm.get_or_load(node.model_key) if node.model_key else None
         except Exception as e:  # noqa: BLE001

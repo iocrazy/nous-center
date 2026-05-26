@@ -99,6 +99,7 @@ async def test_load_diffusion_descriptor():
         "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "cuda:1",
                  "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
         "loras": [],
+        "offload": "none",
     }
 
 

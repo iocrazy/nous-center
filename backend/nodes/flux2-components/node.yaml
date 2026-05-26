@@ -38,6 +38,15 @@ nodes:
       - { name: file,         label: "文件", widget: component_select, role: diffusion_models }
       - { name: weight_dtype, label: "精度", widget: select, options: [default, bfloat16, float16, fp8_e4m3], default: bfloat16 }
       - { name: device,       label: "显卡", widget: select, options: [auto, "cuda:0", "cuda:1", "cuda:2"], default: auto }
+      # PR-D:权重 offload 目标(不用时挪去哪)。cpu = enable_model_cpu_offload,让大模型塞进 24GB 3090
+      # (慢 ~3-5×,但能跑)。cuda:N 跨卡 offload 留 PR-D2(需要 accelerate 自定义 hook)。
+      - name: offload
+        label: "Offload"
+        widget: select
+        default: none
+        options:
+          - { value: none, label: "None",          description: "不 offload — 全程 GPU,最快" }
+          - { value: cpu,  label: "CPU offload",   description: "权重不用时挪 CPU — 慢 3-5× 但塞得下大模型(34GB 进 24GB 卡)" }
       - { name: adapter_arch, label: "架构", widget: select, options: [flux2, flux1], default: flux2 }
 
   flux2_load_clip:
