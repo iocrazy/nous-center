@@ -89,6 +89,31 @@ def test_source_layout():
         assert sym in load_src, f"load.py missing {sym!r}"
 
 
+def test_bundle_config_present():
+    """PR-anima-5:Qwen3-0.6B-Base config bundled 进 repo,免运行时联网。
+
+    config 是 1.7KB JSON,极小;tokenizer(qwen25_tokenizer/ + t5_tokenizer/ 共 6.7M)
+    暂不 bundle,留运行时通过 env var / setting 指定。
+    """
+    import json  # noqa: PLC0415
+    import pathlib  # noqa: PLC0415
+
+    bundle = (
+        pathlib.Path(__file__).parent.parent
+        / "configs/image_arch/anima/qwen3_06b_base_config.json"
+    )
+    assert bundle.exists(), f"qwen3 bundle config missing: {bundle}"
+
+    with bundle.open() as fh:
+        cfg = json.load(fh)
+    # 关键字段验证 — 真 Qwen3-0.6B-Base 必备。
+    assert cfg.get("model_type") == "qwen3"
+    assert cfg.get("hidden_size") == 1024
+    assert cfg.get("num_hidden_layers") == 28
+    assert cfg.get("vocab_size") == 151936  # Qwen3 默认 vocab
+    assert cfg.get("rms_norm_eps") == 1e-06
+
+
 def test_no_comfy_imports_left():
     """port 后不该再有 comfy.* import(spec 2026-05-26-anima-port-design 决策点 = 选项 A 自包含)。"""
     import pathlib  # noqa: PLC0415
