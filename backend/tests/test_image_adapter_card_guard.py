@@ -96,16 +96,17 @@ async def test_single_card_unifies_clip_vae_to_unet_device(mm, monkeypatch):
 # --- PR-2: 单文件装配辅助(架构参考整模型 + 单文件检测)---
 
 def test_reference_repo_for_arch_matches_class(tmp_path, monkeypatch):
+    """PR-B 后:flux2 优先返回仓内 bundle(几 MB);未知架构 fallback 扫 LOCAL_MODELS_PATH。"""
     from src.services import model_manager as mm_mod
     base = tmp_path / "image" / "diffusers"
-    (base / "Flux2-klein-9B").mkdir(parents=True)
-    (base / "Flux2-klein-9B" / "model_index.json").write_text('{"_class_name": "Flux2KleinPipeline"}')
     (base / "ERNIE-Image").mkdir(parents=True)
     (base / "ERNIE-Image" / "model_index.json").write_text('{"_class_name": "ErnieImagePipeline"}')
     settings = MagicMock()
     settings.LOCAL_MODELS_PATH = str(tmp_path)
     monkeypatch.setattr("src.config.get_settings", lambda: settings)
-    assert mm_mod._reference_repo_for_arch("flux2").endswith("Flux2-klein-9B")
+    # flux2 → 优先 bundle(无需 LOCAL_MODELS_PATH/diffusers/Flux2-klein-9B);
+    assert mm_mod._reference_repo_for_arch("flux2").endswith("configs/image_arch/flux2")
+    # ernie 未 bundle → fallback 扫 LOCAL_MODELS_PATH。
     assert mm_mod._reference_repo_for_arch("ernie").endswith("ERNIE-Image")
     assert mm_mod._reference_repo_for_arch("nope") is None
 
