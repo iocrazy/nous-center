@@ -1,0 +1,104 @@
+/**
+ * Task Panel Reset — design tokens
+ *
+ * 出处:`docs/superpowers/specs/2026-05-27-task-panel-reset-design.md` D6/D7。
+ * 视觉真相:`frontend/public/dev-mockups/task-panel.html`(本机 dev 起 vite 后访问
+ *   `http://localhost:9999/dev-mockups/task-panel.html` 跟实际 React 组件并排对比)。
+ *
+ * 命名约定:
+ *   --tp-*       task panel 专用(避免污染既有 theme.css token)
+ *   --status-*   状态色(running / queued / done / failed)— 全局可复用
+ *   --type-*     服务类型色(image / tts / vision / llm)— 全局可复用
+ *
+ * 重要:status 跟 type 的颜色解耦 ——
+ *   active(running)task 的视觉 glow / border / callout 用 --status-running,
+ *   而 type chip 始终用 --type-{image|tts|vision|llm}。两套色绝不混用。
+ */
+
+:root {
+  /* === Task panel · background layers === */
+  --tp-bg-base: #0a0a0c;         /* canvas / 整体底色 */
+  --tp-bg-panel: #0d0d0f;        /* sidebar / panel 容器 */
+  --tp-bg-card: #18181b;         /* task card / modal */
+  --tp-bg-hover: #16161a;        /* row hover */
+  --tp-bg-elevated: #1a1a1c;     /* header bar / inset */
+  --tp-bg-mono: #1f1f22;         /* button bg / chip bg */
+
+  /* === Task panel · borders === */
+  --tp-border-faint: #1a1a1c;    /* section divider */
+  --tp-border: #1f1f22;          /* card border */
+  --tp-border-strong: #2a2a2d;   /* button border / modal border / node box border */
+  --tp-border-node-strong: #383839;
+
+  /* === Task panel · text === */
+  --tp-text: #ededee;
+  --tp-text-muted: #888;
+  --tp-text-dim: #666;
+  --tp-text-faint: #555;
+  --tp-text-ghost: #444;
+
+  /* === Status (跨 service 通用,不被 type 色覆盖) === */
+  --status-running: #4ade80;     /* green — active task glow + callout border + 状态 chip */
+  --status-running-strong: #86efac;   /* callout strong text */
+  --status-running-glow: rgba(74, 222, 128, 0.55);
+  --status-running-inset: rgba(74, 222, 128, 0.18);
+  --status-running-bg-subtle: rgba(74, 222, 128, 0.05);
+  --status-running-bg-chip: rgba(74, 222, 128, 0.13);
+  --status-running-border: rgba(74, 222, 128, 0.4);
+  --status-running-shadow: rgba(74, 222, 128, 0.06);
+
+  --status-queued: #fbbf24;      /* amber */
+  --status-queued-bg-chip: rgba(251, 191, 36, 0.1);
+
+  --status-done: #6b7280;        /* muted gray */
+
+  --status-failed: #ef4444;      /* red */
+  --status-failed-bg-chip: rgba(239, 68, 68, 0.13);
+
+  /* === Service type (image/tts/vision/llm) === */
+  --type-image: #c084fc;
+  --type-image-bg-chip: rgba(192, 132, 252, 0.13);
+  --type-image-border-subtle: rgba(192, 132, 252, 0.25);
+
+  --type-tts: #22d3ee;
+  --type-tts-bg-chip: rgba(34, 211, 238, 0.13);
+  --type-tts-border-subtle: rgba(34, 211, 238, 0.25);
+  --type-tts-audio-bg: #0e1a1d;
+  --type-tts-audio-border: #1a3038;
+  --type-tts-quote-bg: #0b1518;
+
+  --type-vision: #fb923c;
+  --type-vision-bg-chip: rgba(251, 146, 60, 0.13);
+  --type-vision-bg-card: #1a0f06;
+
+  --type-llm: #60a5fa;
+  --type-llm-bg-chip: rgba(96, 165, 250, 0.13);
+  --type-llm-bg-card: #0a1322;
+  --type-llm-bg-history: rgba(96, 165, 250, 0.08);
+  --type-llm-border-history: rgba(96, 165, 250, 0.35);
+
+  /* === Typography === */
+  --tp-font-ui: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --tp-font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* === Radii === */
+  --tp-radius-chip: 3px;
+  --tp-radius-button: 6px;
+  --tp-radius-card: 8px;
+  --tp-radius-modal: 12px;
+
+  /* === Shadows / glow === */
+  --tp-shadow-card: 0 6px 16px rgba(0, 0, 0, 0.3);
+  --tp-shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.75);
+  --tp-shadow-thumb: 0 2px 6px rgba(0, 0, 0, 0.3);
+  --tp-shadow-active: 0 0 0 1px var(--status-running-border), 0 6px 16px var(--status-running-shadow);
+  --tp-shadow-active-glow: 0 0 14px var(--status-running-glow), inset 0 0 8px var(--status-running-inset);
+
+  /* === Sizing === */
+  --tp-sidebar-width: 380px;
+  --tp-sidebar-collapsed-width: 48px;
+  --tp-topbar-height: 44px;
+  --tp-modal-width: 820px;
+  --tp-modal-height: 600px;
+  --tp-modal-image-size: 480px;
+}
