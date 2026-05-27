@@ -137,6 +137,56 @@ def test_detect_image_meta_handles_image_without_dimensions():
     assert meta["image_height"] is None
 
 
+def test_detect_vision_meta_recognizes_multimodal_marker():
+    """PR-1d:LLMNode 标了 multimodal=True → _detect_vision_meta 归 type=vision。"""
+    from src.api.routes.execution_tasks import _detect_vision_meta
+
+    result = {
+        "vis-1": {
+            "text": "a cat",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13},
+            "multimodal": True,
+        }
+    }
+    meta = _detect_vision_meta(result)
+    assert meta == {"task_type": "vision", "vision_completion_tokens": 8}
+
+
+def test_detect_vision_meta_returns_none_for_pure_llm():
+    """multimodal=False 或缺失 → 不算 vision(由 _detect_llm_meta 兜底)。"""
+    from src.api.routes.execution_tasks import _detect_vision_meta
+
+    assert _detect_vision_meta({"a": {"text": "x", "usage": {}}})["task_type"] is None
+    assert _detect_vision_meta(
+        {"a": {"text": "x", "usage": {}, "multimodal": False}})["task_type"] is None
+
+
+def test_task_to_dict_vision_takes_precedence_over_llm():
+    """PR-1d 关键:vision 检测顺序在 LLM 之前 —— 同样 {text, usage} envelope,有
+    multimodal=True 就归 vision,无就归 llm。"""
+    from datetime import datetime, timezone
+
+    from src.api.routes.execution_tasks import _task_to_dict
+    from src.models.execution_task import ExecutionTask
+
+    now = datetime.now(timezone.utc)
+    t_vision = ExecutionTask(
+        id=6, workflow_id=1, workflow_name="vqa", status="completed",
+        nodes_total=2, nodes_done=2, current_node=None,
+        result={"vis-1": {
+            "text": "a cat",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13},
+            "multimodal": True,
+        }},
+        error=None, duration_ms=900, created_at=now, updated_at=now,
+    )
+    d = _task_to_dict(t_vision)
+    assert d["type"] == "vision"
+    assert d["vision_completion_tokens"] == 8
+    # 不应该被误标为 llm
+    assert d.get("llm_completion_tokens") is None
+
+
 def test_detect_llm_meta_recognizes_text_and_usage_envelope():
     """PR-1c:LLM workflow result envelope 识别(text + usage)。"""
     from src.api.routes.execution_tasks import _detect_llm_meta

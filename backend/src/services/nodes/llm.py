@@ -52,6 +52,32 @@ def _strip_thinking(text: str) -> str:
     return result.strip()
 
 
+def _has_multimodal_input(inputs: dict) -> bool:
+    """PR-1d:LLM 节点是否带图像/音频输入 → 视为 vision lane(spec ServiceType=vision)。
+    检测 inputs.messages 里 content list 含 image_url / input_audio(用户外部传 messages),
+    或 inputs.images / inputs.image / inputs.audio(节点 builder 内部组装路径)。
+    """
+    messages = inputs.get("messages")
+    if isinstance(messages, list):
+        for m in messages:
+            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            if isinstance(content, list):
+                for part in content:
+                    t = part.get("type") if isinstance(part, dict) else None
+                    if t in ("image_url", "input_audio", "image"):
+                        return True
+    images = inputs.get("images") or []
+    if images:
+        return True
+    single = inputs.get("image") or ""
+    if single and single.startswith("data:"):
+        return True
+    audio = inputs.get("audio") or ""
+    if audio and audio.startswith("data:"):
+        return True
+    return False
+
+
 def _build_messages(data: dict, inputs: dict) -> list[Message]:
     """Build typed Message list from inputs.
 
@@ -131,6 +157,7 @@ class LLMNode:
     async def invoke(self, data: dict, inputs: dict) -> dict:
         adapter = await _resolve_adapter(data)
         req = _build_request(data, inputs, stream=False)
+        multimodal = _has_multimodal_input(inputs)
 
         t0 = _time.monotonic()
         result = await adapter.infer(req)
@@ -140,7 +167,12 @@ class LLMNode:
         choices = body.get("choices") or []
         text = choices[0].get("message", {}).get("content", "") if choices else ""
         text = _strip_thinking(text)
-        return {"text": text, "usage": body.get("usage"), "duration_ms": duration_ms}
+        # PR-1d:multimodal=True 让 _detect_vision_meta 把任务归 type=vision(对应前端
+        # 紫色橙色 service color + ServiceType=vision)。LLM 节点结构不变,只多一个 flag。
+        return {
+            "text": text, "usage": body.get("usage"), "duration_ms": duration_ms,
+            "multimodal": multimodal,
+        }
 
     async def stream(
         self,
@@ -150,6 +182,7 @@ class LLMNode:
     ) -> dict:
         adapter = await _resolve_adapter(data)
         req = _build_request(data, inputs, stream=True)
+        multimodal = _has_multimodal_input(inputs)
 
         t0 = _time.monotonic()
         full_text = ""
@@ -172,4 +205,5 @@ class LLMNode:
             "text": _strip_thinking(full_text),
             "usage": usage,
             "duration_ms": duration_ms,
+            "multimodal": multimodal,
         }
