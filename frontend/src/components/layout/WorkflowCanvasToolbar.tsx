@@ -10,7 +10,6 @@
  */
 import { useEffect, useCallback, useState } from 'react'
 import PublishDialog from '../workflow/PublishDialog'
-import TaskMenuButton from './TaskMenuButton'
 import { useLocation } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
@@ -121,8 +120,8 @@ export default function WorkflowCanvasToolbar() {
 
       <Sep />
 
-      {/* TaskMenuButton 留兼容入口(用户也可走 GlobalTopbar 右侧任务按钮)*/}
-      <TaskMenuButton />
+      {/* PR-2c D8 决策:删 TaskMenuButton —— 任务管理是全局的,只在 GlobalTopbar 右上
+          ListTodo 入口出现,不与 workflow editor 的 Run/Publish 同列。 */}
 
       <ToolbarBtn onClick={() => {/* TODO templates */}}>Templates</ToolbarBtn>
       <ToolbarBtn
