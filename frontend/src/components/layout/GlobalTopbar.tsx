@@ -7,17 +7,16 @@
  *   nous-logo  · Workflow · Image · TTS · LLM · Models                    infra healthy · 3 GPU  ⌕  ⋮
  *   ─────────────────────── 5 服务 tab(主路由)───────────────────  ── 全局状态 / 搜索 / admin 下拉
  *
- * IconRail 在 PR-2 删除;它的 6 个 admin 项(Dashboard/服务/API Key/用量/日志/设置)+ 主题切换 + 退出
- * 全部塞进右侧 admin dropdown(adminMenuOpen state)。
+ * IconRail **保留**作为 admin 主 nav(D3 决策修正:用户偏好侧边栏继续放
+ * Dashboard/API Key/Logs/Settings 等管理入口)。GlobalTopbar 右上 ⋮ 仅放
+ * 「user 菜单」—— 当前只有退出登录(管理项请走 IconRail,避免冗余入口)。
  */
 import { useState, useRef, useEffect } from 'react'
 import {
-  Search, MoreVertical,
-  LayoutDashboard, Activity, KeyRound, BarChart3, ScrollText, SlidersHorizontal,
-  Sun, Moon, Monitor, LogOut, GitBranch, Image as ImageIcon, Mic, MessageSquare, Database,
+  Search, MoreVertical, LogOut,
+  GitBranch, Image as ImageIcon, Mic, MessageSquare, Database,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { useThemeStore } from '../../stores/theme'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
 import type { LucideIcon } from 'lucide-react'
 
@@ -29,17 +28,6 @@ const SERVICE_TABS: { id: ServiceTabId; label: string; icon: LucideIcon; route: 
   { id: 'tts',      label: 'TTS',      icon: Mic,            route: '/tts' },
   { id: 'llm',      label: 'LLM',      icon: MessageSquare,  route: '/llm' },
   { id: 'models',   label: 'Models',   icon: Database,       route: '/models' },
-]
-
-type AdminMenuItem = { id: string; label: string; icon: LucideIcon; route: string }
-
-const ADMIN_ITEMS: AdminMenuItem[] = [
-  { id: 'dashboard',  label: 'Dashboard', icon: LayoutDashboard,     route: '/dashboard' },
-  { id: 'services',   label: '服务',      icon: Activity,            route: '/services' },
-  { id: 'api-keys',   label: 'API Key',   icon: KeyRound,            route: '/api-keys' },
-  { id: 'usage',      label: '用量',      icon: BarChart3,           route: '/usage' },
-  { id: 'logs',       label: '日志',      icon: ScrollText,          route: '/logs' },
-  { id: 'settings',   label: '设置',      icon: SlidersHorizontal,   route: '/settings' },
 ]
 
 function routeToTab(pathname: string): ServiceTabId {
@@ -56,7 +44,6 @@ function routeToTab(pathname: string): ServiceTabId {
 export default function GlobalTopbar() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { mode, setMode } = useThemeStore()
   const me = useAdminMe()
   const logout = useAdminLogout()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -77,11 +64,6 @@ export default function GlobalTopbar() {
 
   const handleTabClick = (route: string) => {
     if (location.pathname !== route) navigate(route)
-  }
-
-  const handleAdminClick = (route: string) => {
-    navigate(route)
-    setMenuOpen(false)
   }
 
   const handleLogout = () => {
@@ -161,88 +143,44 @@ export default function GlobalTopbar() {
         <Search size={16} />
       </button>
 
-      {/* admin dropdown */}
-      <div className="relative" ref={menuRef}>
-        <button
-          onClick={() => setMenuOpen((o) => !o)}
-          className="p-1.5 ml-1 transition-colors"
-          style={{ color: 'var(--tp-text-muted)', cursor: 'pointer' }}
-          aria-label="管理菜单"
-          aria-expanded={menuOpen}
-          aria-haspopup="menu"
-        >
-          <MoreVertical size={16} />
-        </button>
-        {menuOpen && (
-          <div
-            role="menu"
-            className="absolute right-0 top-full mt-2 py-1 rounded-md"
-            style={{
-              minWidth: 200,
-              background: 'var(--tp-bg-card)',
-              border: '1px solid var(--tp-border-strong)',
-              boxShadow: 'var(--shadow-card, 0 6px 16px rgba(0,0,0,0.3))',
-            }}
+      {/* user 菜单(右上 ⋮)—— 只放退出登录;Dashboard/服务/API Key/用量/日志/设置/主题
+          全在左侧 IconRail,避免冗余。登录态隐藏时整个按钮不显示(没东西可点)。 */}
+      {canLogout && (
+        <div className="relative" ref={menuRef}>
+          <button
+            onClick={() => setMenuOpen((o) => !o)}
+            className="p-1.5 ml-1 transition-colors"
+            style={{ color: 'var(--tp-text-muted)', cursor: 'pointer' }}
+            aria-label="用户菜单"
+            aria-expanded={menuOpen}
+            aria-haspopup="menu"
           >
-            {ADMIN_ITEMS.map(({ id, label, icon: Icon, route }) => (
+            <MoreVertical size={16} />
+          </button>
+          {menuOpen && (
+            <div
+              role="menu"
+              className="absolute right-0 top-full mt-2 py-1 rounded-md"
+              style={{
+                minWidth: 160,
+                background: 'var(--tp-bg-card)',
+                border: '1px solid var(--tp-border-strong)',
+                boxShadow: 'var(--shadow-card, 0 6px 16px rgba(0,0,0,0.3))',
+              }}
+            >
               <button
-                key={id}
-                onClick={() => handleAdminClick(route)}
+                onClick={handleLogout}
                 role="menuitem"
                 className="w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors hover:bg-[var(--tp-bg-hover)]"
                 style={{ color: 'var(--tp-text)', cursor: 'pointer' }}
               >
-                <Icon size={14} style={{ color: 'var(--tp-text-muted)' }} />
-                {label}
+                <LogOut size={14} style={{ color: 'var(--tp-text-muted)' }} />
+                退出登录
               </button>
-            ))}
-            <div className="my-1" style={{ height: 1, background: 'var(--tp-border-faint)' }} />
-            {/* 主题切换 */}
-            <div className="flex items-center gap-1 px-3 py-2">
-              <ThemeBtn active={mode === 'light'} onClick={() => setMode('light')} aria="浅色主题"><Sun size={12} /></ThemeBtn>
-              <ThemeBtn active={mode === 'dark'} onClick={() => setMode('dark')} aria="深色主题"><Moon size={12} /></ThemeBtn>
-              <ThemeBtn active={mode === 'auto'} onClick={() => setMode('auto')} aria="跟随系统"><Monitor size={12} /></ThemeBtn>
             </div>
-            {canLogout && (
-              <>
-                <div className="my-1" style={{ height: 1, background: 'var(--tp-border-faint)' }} />
-                <button
-                  onClick={handleLogout}
-                  role="menuitem"
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors hover:bg-[var(--tp-bg-hover)]"
-                  style={{ color: 'var(--tp-text)', cursor: 'pointer' }}
-                >
-                  <LogOut size={14} style={{ color: 'var(--tp-text-muted)' }} />
-                  退出登录
-                </button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
-  )
-}
-
-function ThemeBtn({
-  active, onClick, children, aria,
-}: {
-  active: boolean; onClick: () => void; children: React.ReactNode; aria: string
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-label={aria}
-      aria-pressed={active}
-      className="flex items-center justify-center transition-colors"
-      style={{
-        width: 22, height: 22, borderRadius: 4,
-        background: active ? 'var(--tp-bg-elevated)' : 'transparent',
-        color: active ? 'var(--tp-text)' : 'var(--tp-text-muted)',
-        cursor: 'pointer',
-      }}
-    >
-      {children}
-    </button>
   )
 }

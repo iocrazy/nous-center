@@ -239,9 +239,9 @@ function AccountPanel() {
 function AppearancePanel() {
   return (
     <Card>
-      <Header title="外观" subtitle="主题切换在右上角管理菜单内操作" />
+      <Header title="外观" subtitle="主题切换在左侧 IconRail 底部直接操作" />
       <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.7 }}>
-        当前控制台支持深色 / 浅色 / 跟随系统三种主题，点顶部右侧管理菜单(⋮)里的太阳/月亮/显示器图标切换。
+        当前控制台支持深色 / 浅色 / 跟随系统三种主题，点 IconRail 左下角太阳/月亮/显示器图标切换。
         UI 主色、字体大小等更细的外观开关计划在后续 PR 接入。
       </div>
     </Card>
@@ -305,7 +305,7 @@ function DeveloperPanel() {
         待实现：日志级别动态调整、SQL echo 开关、性能 trace。当前请直接看控制台终端输出。
       </div>
       <Note tone="info">
-        需要查看请求日志？右上管理菜单(⋮)的"日志"入口(m14)已经有完整的请求 / 应用 / 前端 / 审计四档过滤。
+        需要查看请求日志？左侧 IconRail "日志" 入口（m14）已经有完整的请求 / 应用 / 前端 / 审计四档过滤。
       </Note>
     </Card>
   )

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import GlobalTopbar from './components/layout/GlobalTopbar'
+import IconRail from './components/layout/IconRail'
 import Topbar from './components/layout/Topbar'
 import WorkflowTabs from './components/layout/WorkflowTabs'
 import NodeEditor from './components/nodes/NodeEditor'
@@ -98,18 +99,21 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
   // 全局监听任务终态翻转，发完成/失败通知（spec §6.3 DD6）。
   useTaskCompletionNotifier()
 
-  // PR-2(任务面板重置):layout 改为「顶部 GlobalTopbar + 主区」(去掉了左侧 IconRail)。
-  // 顶部全局 nav 复刻 mockup variant-final;原 IconRail 上的 6 个 admin 项 + 主题切换 + 退出
-  // 全部进 GlobalTopbar 右侧 admin dropdown。
+  // PR-2(任务面板重置):layout = 顶部 GlobalTopbar(5 服务 tab + 状态/搜索/admin 快捷)+
+  // 左侧 IconRail(原 admin nav,保留)+ 主区。GlobalTopbar 加入,IconRail **不动** ——
+  // 用户偏好(D3 决策修正:保留侧边栏作 admin 主入口,Topbar 仅做服务路由)。
   return (
     <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
       <RouteSync />
       {workflowRoute && <WorkflowRouteLoader />}
       <GlobalTopbar />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {isWorkflowView && <WorkflowTabs />}
-        {isWorkflowView && <Topbar />}
-        <NodeEditor />
+      <div className="flex-1 flex overflow-hidden">
+        <IconRail />
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {isWorkflowView && <WorkflowTabs />}
+          {isWorkflowView && <Topbar />}
+          <NodeEditor />
+        </div>
       </div>
       <ToastContainer />
     </div>
@@ -117,13 +121,16 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
 }
 
 function ServicePageLayout({ children }: { children: React.ReactNode }) {
-  // PR-2:服务子页(/image / /tts / /llm)的极简 layout — 仅 GlobalTopbar + 内容,
-  // 不挂 workflow 编辑器(NodeEditor / WorkflowTabs / 工作流 Topbar)。
-  // 内容区目前是 placeholder,后续 PR 各自实施真 UI。
+  // PR-2:服务子页(/image / /tts / /llm)— GlobalTopbar + IconRail + 内容,不挂
+  // workflow 编辑器(NodeEditor / WorkflowTabs / 工作流 Topbar)。内容区目前是
+  // placeholder,后续 PR 各自实施真 UI。
   return (
     <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
       <GlobalTopbar />
-      <div className="flex-1 flex overflow-hidden">{children}</div>
+      <div className="flex-1 flex overflow-hidden">
+        <IconRail />
+        {children}
+      </div>
       <ToastContainer />
     </div>
   )
