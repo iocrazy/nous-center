@@ -12,11 +12,11 @@
  */
 import { useState, useRef, useEffect, useMemo } from 'react'
 import {
-  Search, MoreVertical, LogOut, ListTodo,
+  Search, MoreVertical, LogOut,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
-import { useTasks } from '../../api/tasks'
+import { useTasks, type ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
 
 export default function GlobalTopbar() {
@@ -136,8 +136,11 @@ export default function GlobalTopbar() {
 }
 
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
-const TASK_TYPE_LABEL: Record<string, string> = {
-  image: '图像', tts: '语音', llm: '对话', vision: '视觉',
+const TASK_TYPES = ['image', 'tts', 'vision', 'llm'] as const
+type TaskType = typeof TASK_TYPES[number]
+
+const TASK_TYPE_LABEL: Record<TaskType, string> = {
+  image: '图像', tts: '语音', vision: '视觉', llm: '对话',
 }
 const STATUS_LABEL: Record<string, string> = {
   queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
@@ -148,15 +151,18 @@ const STATUS_COLOR: Record<string, string> = {
   cancelled: 'var(--tp-text-faint)',
 }
 
+function getTaskType(t: ExecutionTask): TaskType | null {
+  const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
+  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ? v : null
+}
+
 /**
- * TaskMenu — GlobalTopbar 右侧任务管理入口(PR-2b D4-2/D4-3)。
+ * TaskMenu — GlobalTopbar 右侧任务管理入口(PR-2d D9:4 种 service type chip)。
  *
- * 显示当前活动任务数 badge,点击下拉「任务管理列表」—— 活动任务 + 最近完成 各 5 条。
- * 列表项点击可跳到对应任务详情(暂时 navigate 触发 IconRail TaskRailButton 同等动作 ——
- * 切到 panel 模式;PR-3 sidebar dock 上线后改为直接 highlight)。
- *
- * 实现复用 TaskMenuButton 的 useTasks() + useExecutionStore.toggleTaskPanel(),但把
- * 视觉从单按钮升级为 button + dropdown 列表(D4-3「下拉出 task 的任务管理列表」)。
+ * D9 决策:取代原单一 ListTodo 按钮,改为 4 个 service type mini chip(image/tts/
+ * vision/llm),各按 mockup variant-final 服务类型色:image 紫 / tts 青 / vision 橙 /
+ * llm 蓝。每个 chip 显示该类型活动任务数(0 时 dim)。点击任一 chip 展开统一下拉,
+ * 下拉里按 4 种 type 分组显示活动 + 最近完成任务列表。
  */
 function TaskMenu() {
   const { data: tasks } = useTasks()
@@ -164,14 +170,17 @@ function TaskMenu() {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
 
-  const { active, recent } = useMemo(() => {
+  const { active, recent, activeByType } = useMemo(() => {
     const all = tasks ?? []
-    return {
-      active: all.filter((t) => ACTIVE_STATUSES.has(t.status)).slice(0, 5),
-      recent: all.filter((t) => !ACTIVE_STATUSES.has(t.status)).slice(0, 5),
+    const _active = all.filter((t) => ACTIVE_STATUSES.has(t.status))
+    const _recent = all.filter((t) => !ACTIVE_STATUSES.has(t.status))
+    const _byType: Record<TaskType, number> = { image: 0, tts: 0, vision: 0, llm: 0 }
+    for (const t of _active) {
+      const tt = getTaskType(t)
+      if (tt) _byType[tt]++
     }
+    return { active: _active, recent: _recent, activeByType: _byType }
   }, [tasks])
-  const badge = active.length
 
   useEffect(() => {
     if (!open) return
@@ -183,45 +192,85 @@ function TaskMenu() {
   }, [open])
 
   return (
-    <div className="relative ml-1" ref={wrapRef}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-label={badge > 0 ? `${badge} 个活动任务` : '任务'}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        className="p-1.5 transition-colors relative"
-        style={{
-          color: badge > 0 ? 'var(--status-running)' : 'var(--tp-text-muted)',
-          cursor: 'pointer',
-        }}
-      >
-        <ListTodo size={16} />
-        {badge > 0 && (
-          <span
-            className="absolute -top-0.5 -right-0.5 flex items-center justify-center text-[9px] font-semibold rounded-full"
-            style={{
-              minWidth: 14, height: 14, padding: '0 3px',
-              background: 'var(--status-running)', color: '#0a0a0c',
-            }}
-          >
-            {badge > 99 ? '99+' : badge}
-          </span>
-        )}
-      </button>
+    <div className="relative ml-2" ref={wrapRef}>
+      {/* 4 种 type chip 行 —— 全部 click 都打开同一下拉 */}
+      <div className="flex items-center gap-1.5">
+        {TASK_TYPES.map((type) => {
+          const count = activeByType[type]
+          const hasActive = count > 0
+          return (
+            <button
+              key={type}
+              onClick={() => setOpen((o) => !o)}
+              aria-label={`${TASK_TYPE_LABEL[type]} ${count} 个活动`}
+              title={`${TASK_TYPE_LABEL[type]}: ${count} 个活动`}
+              className="inline-flex items-center gap-1 px-2 h-6 rounded text-[11px] font-mono transition-colors"
+              style={{
+                background: hasActive ? `var(--type-${type}-bg-chip)` : 'transparent',
+                border: `1px solid ${hasActive ? `var(--type-${type}-border-subtle, var(--type-${type}))` : 'var(--tp-border-faint)'}`,
+                color: hasActive ? `var(--type-${type})` : 'var(--tp-text-faint)',
+                cursor: 'pointer',
+              }}
+            >
+              <span
+                style={{
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: hasActive ? `var(--type-${type})` : 'var(--tp-text-ghost)',
+                  boxShadow: hasActive ? `0 0 6px var(--type-${type})` : undefined,
+                }}
+              />
+              {count}
+            </button>
+          )
+        })}
+      </div>
       {open && (
         <div
           role="menu"
           className="absolute right-0 top-full mt-2 py-1 rounded-md"
           style={{
-            width: 320, maxHeight: 480, overflowY: 'auto',
+            width: 360, maxHeight: 520, overflowY: 'auto',
             background: 'var(--tp-bg-card)',
             border: '1px solid var(--tp-border-strong)',
             boxShadow: 'var(--shadow-card, 0 6px 16px rgba(0,0,0,0.3))',
           }}
         >
-          <TaskGroup title={`活动任务 (${active.length})`} tasks={active} emptyText="当前无活动任务" />
+          {/* 活动任务按 4 type 分组 */}
+          <div
+            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: 'var(--tp-text-muted)' }}
+          >
+            活动任务 ({active.length})
+          </div>
+          {active.length === 0 ? (
+            <div className="px-3 py-2 text-xs" style={{ color: 'var(--tp-text-faint)' }}>
+              当前无活动任务
+            </div>
+          ) : (
+            TASK_TYPES.map((type) => {
+              const tasksOfType = active.filter((t) => getTaskType(t) === type)
+              if (tasksOfType.length === 0) return null
+              return <TypeGroup key={type} type={type} tasks={tasksOfType} />
+            })
+          )}
+
           <div className="my-1" style={{ height: 1, background: 'var(--tp-border-faint)' }} />
-          <TaskGroup title={`最近完成 (${recent.length})`} tasks={recent} emptyText="暂无历史记录" />
+
+          {/* 最近完成 — 单列,不分组(历史只关心时间序) */}
+          <div
+            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: 'var(--tp-text-muted)' }}
+          >
+            最近完成 ({recent.length})
+          </div>
+          {recent.length === 0 ? (
+            <div className="px-3 py-2 text-xs" style={{ color: 'var(--tp-text-faint)' }}>
+              暂无历史记录
+            </div>
+          ) : (
+            recent.slice(0, 8).map((t) => <TaskRow key={t.id} task={t} />)
+          )}
+
           <div className="my-1" style={{ height: 1, background: 'var(--tp-border-faint)' }} />
           <button
             onClick={() => { setOpen(false); togglePanel() }}
@@ -237,59 +286,60 @@ function TaskMenu() {
   )
 }
 
-function TaskGroup({
-  title, tasks, emptyText,
-}: {
-  title: string
-  tasks: ReturnType<typeof useTasks>['data']
-  emptyText: string
-}) {
-  const list = tasks ?? []
+function TypeGroup({ type, tasks }: { type: TaskType; tasks: ExecutionTask[] }) {
   return (
     <div>
       <div
-        className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
-        style={{ color: 'var(--tp-text-muted)' }}
+        className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-mono"
+        style={{ color: `var(--type-${type})` }}
       >
-        {title}
+        <span
+          style={{
+            width: 6, height: 6, borderRadius: '50%',
+            background: `var(--type-${type})`,
+            boxShadow: `0 0 6px var(--type-${type})`,
+          }}
+        />
+        {TASK_TYPE_LABEL[type]} · {tasks.length}
       </div>
-      {list.length === 0 ? (
-        <div className="px-3 py-2 text-xs" style={{ color: 'var(--tp-text-faint)' }}>{emptyText}</div>
-      ) : (
-        list.map((t) => (
-          <div
-            key={t.id}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs"
-            style={{ color: 'var(--tp-text)' }}
-          >
-            <span
-              style={{
-                width: 7, height: 7, borderRadius: '50%',
-                background: STATUS_COLOR[t.status] ?? 'var(--tp-text-faint)',
-                boxShadow: t.status === 'running' ? '0 0 8px var(--status-running)' : undefined,
-                flexShrink: 0,
-              }}
-              title={STATUS_LABEL[t.status] ?? t.status}
-            />
-            <span className="truncate flex-1" title={t.workflow_name || `#${t.id}`}>
-              {t.workflow_name || `#${t.id}`}
-            </span>
-            {t.task_type && TASK_TYPE_LABEL[t.task_type] && (
-              <span
-                className="text-[9px] px-1.5 py-0.5 rounded shrink-0"
-                style={{
-                  background: 'var(--tp-bg-elevated)', color: 'var(--tp-text-muted)',
-                }}
-              >
-                {TASK_TYPE_LABEL[t.task_type]}
-              </span>
-            )}
-            <span className="text-[10px] shrink-0" style={{ color: 'var(--tp-text-muted)' }}>
-              {STATUS_LABEL[t.status] ?? t.status}
-            </span>
-          </div>
-        ))
+      {tasks.map((t) => <TaskRow key={t.id} task={t} />)}
+    </div>
+  )
+}
+
+function TaskRow({ task: t }: { task: ExecutionTask }) {
+  const type = getTaskType(t)
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-1.5 text-xs"
+      style={{ color: 'var(--tp-text)' }}
+    >
+      <span
+        style={{
+          width: 7, height: 7, borderRadius: '50%',
+          background: STATUS_COLOR[t.status] ?? 'var(--tp-text-faint)',
+          boxShadow: t.status === 'running' ? '0 0 8px var(--status-running)' : undefined,
+          flexShrink: 0,
+        }}
+        title={STATUS_LABEL[t.status] ?? t.status}
+      />
+      <span className="truncate flex-1" title={t.workflow_name || `#${t.id}`}>
+        {t.workflow_name || `#${t.id}`}
+      </span>
+      {type && (
+        <span
+          className="text-[9px] px-1.5 py-0.5 rounded shrink-0 font-mono"
+          style={{
+            background: `var(--type-${type}-bg-chip)`,
+            color: `var(--type-${type})`,
+          }}
+        >
+          {TASK_TYPE_LABEL[type]}
+        </span>
       )}
+      <span className="text-[10px] shrink-0" style={{ color: 'var(--tp-text-muted)' }}>
+        {STATUS_LABEL[t.status] ?? t.status}
+      </span>
     </div>
   )
 }
