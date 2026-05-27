@@ -168,12 +168,14 @@ async def test_bf16_dtype_no_fp8_quant(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_callback_on_step_end_forwards_progress(monkeypatch):
-    """PR-3:infer 给 pipe 装 callback_on_step_end → 每步调 progress_callback(done, total)。"""
+    """PR-3 + PR-1a:infer 给 pipe 装 callback_on_step_end → 每步调 progress_callback;
+    PR-1a 加 stage 三态(text_encode 在 pipe() 前发 / dit_denoise 每步 / vae_decode 在 pipe() 后发)
+    + step_latency_ms + eta_ms。本测试覆盖**新契约**(老 (done, total) 兼容由 _make_emit 兜底)。"""
     _k, _t, _s, pipe = _fake_klein(monkeypatch)
-    progress: list[tuple[int, int]] = []
+    events: list[dict] = []
 
-    def on_p(step: int, total: int) -> None:
-        progress.append((step, total))
+    def on_p(step: int, total: int, **extras) -> None:
+        events.append({"step": step, "total": total, **extras})
 
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
     await be.infer(
@@ -186,7 +188,41 @@ async def test_callback_on_step_end_forwards_progress(monkeypatch):
     cb(pipe, 0, None, {})
     cb(pipe, 1, None, {})
     cb(pipe, 2, None, {})
-    assert progress == [(1, 3), (2, 3), (3, 3)]
+
+    # pipe() 前 text_encode + pipe() 后 vae_decode + 3 个 dit_denoise = 5 个 event
+    stages = [e["stage"] for e in events]
+    assert stages == ["text_encode", "vae_decode", "dit_denoise", "dit_denoise", "dit_denoise"]
+    # dit_denoise 三步 step(callback 位置参数 `done`)单调 + total 一致(`total` = total_steps)。
+    dit = [e for e in events if e["stage"] == "dit_denoise"]
+    assert [e["step"] for e in dit] == [1, 2, 3]
+    assert all(e["total"] == 3 for e in dit)
+    # 每步带 step_latency_ms(int)+ ETA(int 非负);最后一步 ETA = 0(total-step=0)。
+    assert all(isinstance(e["step_latency_ms"], int) and e["step_latency_ms"] >= 0 for e in dit)
+    assert dit[-1]["eta_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_callback_legacy_done_total_signature_backcompat(monkeypatch):
+    """PR-1a:老 fake 只接 `(done, total)` 不收 **extras —— _make_emit 应 TypeError 降级两次后,
+    用最简 (done, total) 调用。验向后兼容,旧 fake 不必改就能存活。"""
+    _k, _t, _s, pipe = _fake_klein(monkeypatch)
+    calls: list[tuple[int, int]] = []
+
+    def on_p(step: int, total: int) -> None:  # 老契约
+        calls.append((step, total))
+
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    await be.infer(
+        ImageRequest(request_id="legacy", prompt="x", steps=3, width=64, height=64),
+        progress_callback=on_p,
+    )
+    cb = pipe.call_args.kwargs.get("callback_on_step_end")
+    cb(pipe, 0, None, {})
+    cb(pipe, 1, None, {})
+    cb(pipe, 2, None, {})
+
+    # text_encode (0,3) + vae_decode (3,3) + 三步 dit_denoise (1,3)/(2,3)/(3,3)
+    assert calls == [(0, 3), (3, 3), (1, 3), (2, 3), (3, 3)]
 
 
 @pytest.mark.asyncio

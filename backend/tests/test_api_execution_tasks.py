@@ -135,3 +135,44 @@ def test_detect_image_meta_handles_image_without_dimensions():
     assert meta["task_type"] == "image"
     assert meta["image_width"] is None
     assert meta["image_height"] is None
+
+
+def test_task_to_dict_exposes_type_field_for_image_result():
+    """PR-1a:_task_to_dict 加显式 `type` 字段(对齐 spec State model ServiceType)。
+    image result → type="image";text-only / None result → type=None(前端 Other 兜底)。
+    沿用 _detect_image_meta 的检测,tts/llm/vision 由后续 PR-1b/c/d 扩展。"""
+    from datetime import datetime, timezone
+
+    from src.api.routes.execution_tasks import _task_to_dict
+    from src.models.execution_task import ExecutionTask
+
+    now = datetime.now(timezone.utc)
+    # image result
+    t_img = ExecutionTask(
+        id=1, workflow_id=1, workflow_name="w", status="completed",
+        nodes_total=1, nodes_done=1, current_node=None,
+        result={"out": {"image_url": "/x.png", "media_type": "image/png",
+                        "width": 1024, "height": 1024}},
+        error=None, duration_ms=100, created_at=now, updated_at=now,
+    )
+    d = _task_to_dict(t_img)
+    assert d["type"] == "image"
+    assert d["task_type"] == "image"  # 旧字段保留(向后兼容)
+
+    # text-only result → type=None
+    t_text = ExecutionTask(
+        id=2, workflow_id=1, workflow_name="w2", status="completed",
+        nodes_total=1, nodes_done=1, current_node=None,
+        result={"out": {"text": "hi"}},
+        error=None, duration_ms=50, created_at=now, updated_at=now,
+    )
+    assert _task_to_dict(t_text)["type"] is None
+
+    # None result → type=None
+    t_none = ExecutionTask(
+        id=3, workflow_id=1, workflow_name="w3", status="queued",
+        nodes_total=0, nodes_done=0, current_node=None,
+        result=None, error=None, duration_ms=None,
+        created_at=now, updated_at=now,
+    )
+    assert _task_to_dict(t_none)["type"] is None

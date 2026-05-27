@@ -106,6 +106,15 @@ class NodeProgress:
     # PR-F:latent → 96px JPEG data URI(ComfyUI Latent2RGB 等价,无 TAESD 权重)。
     # 出图过程中每步可选发一帧,前端节点上叠 thumbnail,「看图慢慢长出来」。
     preview_url: str | None = None
+    # PR-1a(2026-05-27 任务面板重置 L3 进度颗粒度):stage + step + per-step latency
+    # + ETA。spec §State model TaskProgress。stage 候选:"text_encode" / "dit_denoise" /
+    # "vae_decode"(image)/ "tts_synth" / "llm_gen"。全 nullable —— 旧 fake 不发 stage
+    # 时这些字段保持 None,前端兜底显示 detail 文本(向后兼容)。
+    stage: str | None = None
+    step: int | None = None
+    total_steps: int | None = None
+    step_latency_ms: int | None = None
+    eta_ms: int | None = None
     kind: Literal["node_progress"] = "node_progress"
 
 
