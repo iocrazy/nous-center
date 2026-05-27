@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import GlobalTopbar from './components/layout/GlobalTopbar'
 import IconRail from './components/layout/IconRail'
-import Topbar from './components/layout/Topbar'
-import WorkflowTabs from './components/layout/WorkflowTabs'
+import WorkflowCanvasToolbar from './components/layout/WorkflowCanvasToolbar'
 import NodeEditor from './components/nodes/NodeEditor'
 import ToastContainer from './components/common/ToastContainer'
 import { usePanelStore, type OverlayId } from './stores/panel'
@@ -99,9 +98,11 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
   // 全局监听任务终态翻转，发完成/失败通知（spec §6.3 DD6）。
   useTaskCompletionNotifier()
 
-  // PR-2(任务面板重置):layout = 顶部 GlobalTopbar(5 服务 tab + 状态/搜索/admin 快捷)+
-  // 左侧 IconRail(原 admin nav,保留)+ 主区。GlobalTopbar 加入,IconRail **不动** ——
-  // 用户偏好(D3 决策修正:保留侧边栏作 admin 主入口,Topbar 仅做服务路由)。
+  // PR-2b(任务面板重置 D4-D5 修正):工作流的两条二级 nav 都从主顶部移除 ——
+  // WorkflowTabs(多 workflow 浏览器式 tabs)暂时不渲染(用户走 GlobalTopbar
+  // Workflow tab → 列表切换);工作流 Topbar(Run/Templates/Clear/发布)挪进
+  // 画布内浮动条 WorkflowCanvasToolbar(画布顶部正中)。NodeEditor 现在直
+  // 占满 isWorkflowView 主区,toolbar 浮在画布上层。
   return (
     <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
       <RouteSync />
@@ -109,9 +110,8 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
       <GlobalTopbar />
       <div className="flex-1 flex overflow-hidden">
         <IconRail />
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {isWorkflowView && <WorkflowTabs />}
-          {isWorkflowView && <Topbar />}
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          {isWorkflowView && <WorkflowCanvasToolbar />}
           <NodeEditor />
         </div>
       </div>
