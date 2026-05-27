@@ -51,8 +51,8 @@ export default function Topbar() {
 
     try {
       // Lane S（D17）：executeWorkflow 入队后立即返回 { task_id }，不再阻塞到完成。
-      // 反馈 UX（spec §6.3 DD4）：toast「已入队」+ IconRail badge 计数 +
-      // 面板【不】自动打开（用户点 IconRail 任务图标进面板）。
+      // 反馈 UX（spec §6.3 DD4）：toast「已入队」+ Tasks badge 计数 +
+      // 面板【不】自动打开（用户打开侧栏看任务进度）。
       const result = await executeWorkflow(workflow)
       const taskId = (result as { task_id?: string })?.task_id
       bumpTaskBadge()

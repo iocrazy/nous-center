@@ -21,7 +21,7 @@ export default function WorkflowTabs() {
 
   // Keep URL in sync with active tab's dbId — but ONLY when用户处在 canvas
   // 表面（`/` 或 `/workflows/<id>`）。`/workflows` 是 m08 列表页 intent；
-  // 不能 stomp 它，否则用户点 IconRail Workflow 想回列表会被 effect 立刻
+  // 不能 stomp 它，否则用户点 GlobalTopbar Workflow tab 想回列表会被 effect 立刻
   // 弹回画布（dbId 触发 effect → navigate 改写 URL → RouteSync 又把 overlay
   // 设回 null → 用户视觉上根本没离开画布）。
   const activeTab = tabs.find((t) => t.id === activeTabId)

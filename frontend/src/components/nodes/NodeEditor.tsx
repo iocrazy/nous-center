@@ -268,7 +268,7 @@ export default function NodeEditor() {
 
   // m09: 画布模式下左节点库 + 右属性面板**常驻**。overlay 视图
   // （dashboard / services / 设置 等）下两边都隐藏。
-  // v3 没有 panel 切换 — IconRail.PANEL_ITEMS 已空 — activePanel
+  // v3 没有 panel 切换 — PanelStore.PANEL_ITEMS 已空 — activePanel
   // 系统作为 legacy workflows/presets 兜底（如有，仍然 PANEL_MAP 渲染）。
   const showPropertyPanel = !activeOverlay
   const PROPERTY_PANEL_WIDTH = 300
