@@ -379,25 +379,21 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             progress_tasks.append(t)
 
         try:
-            if node.node_type == "tts":
-                # spec §4.4：TTS = boundary-cancel only。TTSEngine.infer(req)
-                # 签名只收 req —— 不传 progress_callback / cancel_flag。节点边界
-                # 的 cancel 由 pipe-reader 在 dispatch 前置位的 cancel_flag +
-                # 下面的 boundary check 覆盖（含 Abort-before-RunNode）。
-                if cancel_flag.is_set():
-                    raise asyncio.CancelledError()
-                result = await adapter.infer(req)
-            else:
-                # image：用 signature 探测决定是否传 progress_callback / cancel_flag。
-                # FakeAdapter 接受这俩 kwarg；真 image adapter 由 Lane G/D14 接
-                # callback_on_step_end + CancelFlag。
-                infer_params = inspect.signature(adapter.infer).parameters
-                infer_kwargs: dict = {}
-                if "progress_callback" in infer_params:
-                    infer_kwargs["progress_callback"] = _on_progress
-                if "cancel_flag" in infer_params:
-                    infer_kwargs["cancel_flag"] = cancel_flag
-                result = await adapter.infer(req, **infer_kwargs)
+            # PR-1b(2026-05-27 任务面板重置):**统一**用 signature 探测决定是否传
+            # progress_callback / cancel_flag。spec §4.4「TTS = boundary-cancel only」
+            # 升级 —— TTSEngine.infer 现在接 progress_callback + cancel_flag 可选 kwarg,
+            # 发 tts_synth stage 事件(start/end + 支持 streaming 的 engine 还可逐 chunk)。
+            # 节点边界 cancel 仍生效(infer 内部 boundary 查 cancel_flag + 仍由 pipe-reader
+            # dispatch 前置位)。
+            if cancel_flag.is_set():
+                raise asyncio.CancelledError()
+            infer_params = inspect.signature(adapter.infer).parameters
+            infer_kwargs: dict = {}
+            if "progress_callback" in infer_params:
+                infer_kwargs["progress_callback"] = _on_progress
+            if "cancel_flag" in infer_params:
+                infer_kwargs["cancel_flag"] = cancel_flag
+            result = await adapter.infer(req, **infer_kwargs)
         except ValueError as e:
             # 未知 node_type —— _build_request 抛 ValueError。明确判 failed，
             # 不崩 runner。注意：必须放在泛 except Exception 之前，否则被吞掉、

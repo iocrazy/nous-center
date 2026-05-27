@@ -137,6 +137,67 @@ def test_detect_image_meta_handles_image_without_dimensions():
     assert meta["image_height"] is None
 
 
+def test_detect_tts_meta_recognizes_audio_envelope():
+    """PR-1b:TTS workflow result envelope 识别(audio_url + duration_seconds)。"""
+    from src.api.routes.execution_tasks import _detect_tts_meta
+
+    result = {
+        "node-tts": {
+            "audio_url": "/v1/audio/x.wav?sig=...",
+            "media_type": "audio/wav",
+            "duration_seconds": 3.42,
+        }
+    }
+    meta = _detect_tts_meta(result)
+    assert meta == {"task_type": "tts", "audio_duration_seconds": 3.42}
+
+
+def test_detect_tts_meta_via_meta_envelope():
+    """PR-1b:duration 可能在 meta 子对象里(runner_process outputs envelope 形状)。"""
+    from src.api.routes.execution_tasks import _detect_tts_meta
+
+    result = {
+        "node-tts": {
+            "media_type": "audio/wav",
+            "meta": {"duration_seconds": 5.0, "sample_rate": 24000},
+        }
+    }
+    meta = _detect_tts_meta(result)
+    assert meta["task_type"] == "tts"
+    assert meta["audio_duration_seconds"] == 5.0
+
+
+def test_detect_tts_meta_returns_none_for_image_result():
+    """PR-1b:image result(audio media_type 缺)→ TTS 检测 None。"""
+    from src.api.routes.execution_tasks import _detect_tts_meta
+
+    assert _detect_tts_meta({"x": {"media_type": "image/png"}})["task_type"] is None
+
+
+def test_task_to_dict_exposes_type_field_for_tts_result():
+    """PR-1b:TTS-only result → _task_to_dict 加 type=\"tts\" + audio_duration_seconds。"""
+    from datetime import datetime, timezone
+
+    from src.api.routes.execution_tasks import _task_to_dict
+    from src.models.execution_task import ExecutionTask
+
+    now = datetime.now(timezone.utc)
+    t_tts = ExecutionTask(
+        id=4, workflow_id=1, workflow_name="w", status="completed",
+        nodes_total=1, nodes_done=1, current_node=None,
+        result={"node-tts": {
+            "audio_url": "/v1/audio/x.wav",
+            "media_type": "audio/wav",
+            "duration_seconds": 2.5,
+        }},
+        error=None, duration_ms=200, created_at=now, updated_at=now,
+    )
+    d = _task_to_dict(t_tts)
+    assert d["type"] == "tts"
+    assert d["task_type"] == "tts"
+    assert d["audio_duration_seconds"] == 2.5
+
+
 def test_task_to_dict_exposes_type_field_for_image_result():
     """PR-1a:_task_to_dict 加显式 `type` 字段(对齐 spec State model ServiceType)。
     image result → type="image";text-only / None result → type=None(前端 Other 兜底)。
