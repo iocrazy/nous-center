@@ -162,6 +162,30 @@ def _detect_image_meta(result: object) -> dict:
     return out
 
 
+def _detect_llm_meta(result: object) -> dict:
+    """PR-1c:LLM workflow result envelope 识别 —— `text` 字符串 + `usage` dict 是
+    LLMNode.invoke/stream 的标准返回形状(见 src/services/nodes/llm.py)。
+    返 completion_tokens / prompt_tokens 供前端 callout 显示「47 tokens · 23 tok/s」。"""
+    out: dict = {
+        "task_type": None,
+        "llm_prompt_tokens": None,
+        "llm_completion_tokens": None,
+    }
+    if not isinstance(result, dict):
+        return out
+    for v in result.values():
+        if not isinstance(v, dict):
+            continue
+        # LLM 节点返回 {text: str, usage: {...}, duration_ms: int}
+        if isinstance(v.get("text"), str) and isinstance(v.get("usage"), dict):
+            out["task_type"] = "llm"
+            usage = v["usage"]
+            out["llm_prompt_tokens"] = usage.get("prompt_tokens")
+            out["llm_completion_tokens"] = usage.get("completion_tokens")
+            return out
+    return out
+
+
 def _detect_tts_meta(result: object) -> dict:
     """PR-1b:TTS workflow result envelope 识别 —— audio/* media_type 或 audio_url。
     匹配 ImageBackend 落 image_output_storage 后的形状的 TTS 对应版本(audio_url + duration)。
@@ -201,8 +225,9 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
-    # 顺序:image 先(workflow 多含 image_output);未命中再 TTS 检测。
-    # llm / vision 由 PR-1c/d 扩展(各自 _detect_*_meta)。
+    # 顺序:image 先(workflow 多含 image_output);未命中再 TTS、再 LLM 检测(LLM envelope
+    # 是 {text, usage} 最普遍,放最后避免误识别 — TTS / image 都不会同时有 text+usage 形状)。
+    # vision 由 PR-1d 扩展(_detect_vision_meta)。
     img_meta = _detect_image_meta(t.result)
     d.update(img_meta)
     if img_meta.get("task_type") is None:
@@ -210,7 +235,14 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         if tts_meta.get("task_type"):
             d["task_type"] = tts_meta["task_type"]
             d["audio_duration_seconds"] = tts_meta["audio_duration_seconds"]
-    # PR-1a/1b(2026-05-27 任务面板重置 spec §State model):显式 `type` 字段(image / tts /
-    # vision / llm),对应前端 ServiceType。type=None → 旧 fake / 未识别 workflow,前端 Other 兜底。
+        else:
+            llm_meta = _detect_llm_meta(t.result)
+            if llm_meta.get("task_type"):
+                d["task_type"] = llm_meta["task_type"]
+                d["llm_prompt_tokens"] = llm_meta["llm_prompt_tokens"]
+                d["llm_completion_tokens"] = llm_meta["llm_completion_tokens"]
+    # PR-1a/1b/1c(2026-05-27 任务面板重置 spec §State model):显式 `type` 字段
+    # (image / tts / llm / vision),对应前端 ServiceType。type=None → 旧 fake / 未识别
+    # workflow,前端 Other 兜底。
     d["type"] = d.get("task_type")
     return d

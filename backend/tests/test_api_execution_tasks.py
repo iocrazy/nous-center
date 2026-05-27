@@ -137,6 +137,60 @@ def test_detect_image_meta_handles_image_without_dimensions():
     assert meta["image_height"] is None
 
 
+def test_detect_llm_meta_recognizes_text_and_usage_envelope():
+    """PR-1c:LLM workflow result envelope 识别(text + usage)。"""
+    from src.api.routes.execution_tasks import _detect_llm_meta
+
+    result = {
+        "llm-node": {
+            "text": "answer",
+            "usage": {"prompt_tokens": 12, "completion_tokens": 47, "total_tokens": 59},
+            "duration_ms": 1234,
+        }
+    }
+    meta = _detect_llm_meta(result)
+    assert meta == {
+        "task_type": "llm",
+        "llm_prompt_tokens": 12,
+        "llm_completion_tokens": 47,
+    }
+
+
+def test_detect_llm_meta_returns_none_for_non_llm():
+    """text 但无 usage / usage 但无 text → 不算 LLM。"""
+    from src.api.routes.execution_tasks import _detect_llm_meta
+
+    # 只有 text(text_input 节点)
+    assert _detect_llm_meta({"a": {"text": "hi"}})["task_type"] is None
+    # 只有 usage(理论上不会发生但保护)
+    assert _detect_llm_meta({"a": {"usage": {}}})["task_type"] is None
+
+
+def test_task_to_dict_exposes_type_field_for_llm_result():
+    """PR-1c:LLM-only result → type=\"llm\" + llm_prompt/completion_tokens。"""
+    from datetime import datetime, timezone
+
+    from src.api.routes.execution_tasks import _task_to_dict
+    from src.models.execution_task import ExecutionTask
+
+    now = datetime.now(timezone.utc)
+    t_llm = ExecutionTask(
+        id=5, workflow_id=1, workflow_name="chat", status="completed",
+        nodes_total=2, nodes_done=2, current_node=None,
+        result={"llm-1": {
+            "text": "hi",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
+            "duration_ms": 500,
+        }},
+        error=None, duration_ms=500, created_at=now, updated_at=now,
+    )
+    d = _task_to_dict(t_llm)
+    assert d["type"] == "llm"
+    assert d["task_type"] == "llm"
+    assert d["llm_prompt_tokens"] == 5
+    assert d["llm_completion_tokens"] == 10
+
+
 def test_detect_tts_meta_recognizes_audio_envelope():
     """PR-1b:TTS workflow result envelope 识别(audio_url + duration_seconds)。"""
     from src.api.routes.execution_tasks import _detect_tts_meta

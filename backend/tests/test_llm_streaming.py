@@ -108,3 +108,67 @@ async def test_llm_streaming_dispatch_pushes_node_stream_events(monkeypatch):
         "completion_tokens": 2,
         "total_tokens": 3,
     }
+
+    # PR-1c:LLM lane L3 progress —— stream 末尾必有一个 final node_progress
+    # (stage=llm_gen, progress=1.0, eta_ms=0, step=真 completion_tokens 回填 2)。
+    # 中间 throttled 帧因为 fake_infer_stream 没有 sleep 可能 0 个(throttle 250ms),
+    # 末帧 emit 不受 throttle 影响,必有。
+    llm_progress = [e for e in events if e.get("type") == "node_progress"
+                    and e.get("node_id") == "llm_node_1"]
+    assert llm_progress, "PR-1c:LLM stream 应至少发一个 node_progress(末帧)"
+    final = llm_progress[-1]
+    assert final["stage"] == "llm_gen"
+    assert final["progress"] == 1.0
+    assert final["eta_ms"] == 0
+    assert final["step"] == 2  # usage.completion_tokens 回填
+    assert final["total_steps"] == 2
+
+
+async def test_llm_progress_emitter_throttles_token_rate_and_finals():
+    """PR-1c 直接单测 _LlmProgressEmitter:throttle 250ms + final 末帧回填。"""
+    import asyncio
+
+    from src.services.workflow_executor import _LlmProgressEmitter
+
+    events: list[dict] = []
+
+    async def on_progress(ev: dict) -> None:
+        events.append(ev)
+
+    em = _LlmProgressEmitter(node_id="n", max_tokens=100, on_progress=on_progress)
+
+    # 高速发 token —— 第 1 个会立刻发(last_emit_t=0,任何 now 都 >250ms),
+    # 接下来的 token 在 250ms 内不发 → 应只有 1 个 throttled 帧 + 末帧。
+    for _ in range(20):
+        await em.on_token("x")
+    await em.emit_final(true_completion=20)
+
+    # 中间 throttled 至少 1 帧(首 token 触发 first emit);最后 1 帧 final。
+    progress_events = [e for e in events if e["stage"] == "llm_gen"]
+    assert len(progress_events) >= 2
+    # 末帧:回填 true_completion=20 / progress=1.0 / eta=0
+    final = progress_events[-1]
+    assert final["progress"] == 1.0
+    assert final["step"] == 20
+    assert final["total_steps"] == 20
+    assert final["eta_ms"] == 0
+    assert "done" in final["detail"]
+
+    # —— throttle 验证 ——
+    # 等 300ms 后再发,应该能再触发一次中间 emit。
+    em2 = _LlmProgressEmitter(node_id="n2", max_tokens=100, on_progress=on_progress)
+    events2: list[dict] = []
+
+    async def on_p2(ev: dict) -> None:
+        events2.append(ev)
+
+    em2 = _LlmProgressEmitter(node_id="n2", max_tokens=100, on_progress=on_p2)
+    await em2.on_token("a")  # 立即 emit(首次 throttle 通过)
+    await asyncio.sleep(0.05)  # < 250ms,下次不发
+    await em2.on_token("b")
+    await em2.on_token("c")
+    await asyncio.sleep(0.3)  # > 250ms,下次可再发
+    await em2.on_token("d")
+    # 至少 2 个中间帧(首次 + 第二次 throttle 窗口后)。
+    intermediate = [e for e in events2 if e["progress"] < 1.0]
+    assert len(intermediate) >= 2
