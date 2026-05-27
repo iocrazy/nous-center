@@ -52,7 +52,14 @@ nodes:
           - { value: "cuda:0", label: "GPU stash → cuda:0", description: "跨卡 offload:权重常驻 cuda:0,forward 时挪到 device 卡" }
           - { value: "cuda:1", label: "GPU stash → cuda:1", description: "跨卡 offload:权重常驻 cuda:1,forward 时挪到 device 卡" }
           - { value: "cuda:2", label: "GPU stash → cuda:2", description: "跨卡 offload:权重常驻 cuda:2,forward 时挪到 device 卡" }
-      - { name: adapter_arch, label: "架构", widget: select, options: [flux2, flux1], default: flux2 }
+      - name: adapter_arch
+        label: "架构"
+        widget: select
+        default: flux2
+        options:
+          - { value: flux2, label: "Flux2", description: "Flux2 family — Flux2-Klein-9B-True 等 ComfyUI 单文件" }
+          - { value: flux1, label: "Flux1", description: "Flux1 family(legacy)" }
+          - { value: anima, label: "Anima", description: "Anima 2B 自定义 DiT(自动选 AnimaPipeline + qwen3 TE + Qwen-Image VAE)" }
 
   flux2_load_clip:
     label: "Load CLIP"

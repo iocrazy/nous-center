@@ -209,6 +209,10 @@ def _build_request(node: P.RunNode):
             vae_spec = dict(vae_d["spec"])
             vae_spec["device"] = device
             lseed = latent.get("seed")
+            # PR-anima-6:adapter_arch="anima" → pipeline_class="AnimaPipeline"(走 AnimaImageBackend);
+            # 默认 "flux2" → "Flux2KleinPipeline"(走 ModularImageBackend)。
+            arch = unet_spec.get("adapter_arch") or "flux2"
+            pipeline_class = "AnimaPipeline" if arch == "anima" else "Flux2KleinPipeline"
             return ImageRequest(
                 request_id=f"task-{node.task_id}",
                 prompt=str(cond_d.get("text", "")),
@@ -226,7 +230,7 @@ def _build_request(node: P.RunNode):
                     "clip": ComponentSpec(**clip_spec),
                     "vae": ComponentSpec(**vae_spec),
                 },
-                pipeline_class="Flux2KleinPipeline",
+                pipeline_class=pipeline_class,
             )
 
         # 非细粒度图:model_key 单模型路径 —— runner _node_executor 用 node.model_key

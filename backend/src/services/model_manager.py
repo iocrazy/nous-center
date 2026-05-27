@@ -827,8 +827,57 @@ class ModelManager:
         # 不能复用为 offload=none 的 adapter)。
         combo_key = (pipeline_class, offload) + tuple(
             to_component_key(resolved[k]) for k in ("diffusion_models", "clip", "vae"))
+        # PR-anima-6 engine 集成:pipeline_class="AnimaPipeline" → 走 AnimaImageBackend
+        # (Anima 是 2B 自定义 DiT,跟 Flux2KleinPipeline 走不同路径)。
+        if pipeline_class == "AnimaPipeline":
+            return await self._get_or_load_anima_adapter(
+                resolved, combo_key, target, _emit, offload)
         return await self._get_or_load_modular_adapter(
             resolved, combo_key, pipeline_class, target, _emit, offload)
+
+    async def _get_or_load_anima_adapter(self, resolved, combo_key, target, _emit, offload: str):
+        """Anima(2B 自定义 DiT)adapter 装配 —— spec 2026-05-26-anima-port,PR-anima-6 集成。
+
+        跟 _get_or_load_modular_adapter 不同:不走桥接 build_bridged_*(那是 Flux2 转换 ComfyUI
+        单文件给 diffusers 用的),anima 直接由 arch_anima.AnimaPipeline.from_components 装配
+        anima 单文件 + qwen3 + qwen-image VAE。tokenizer 路径走 env NOUS_ANIMA_QWEN_TOKENIZER。
+        """
+        from src.services.inference.image_anima import AnimaImageBackend  # noqa: PLC0415
+
+        # combo cache hit → 复用(同 Flux2 路径行为)
+        if combo_key in self._image_adapters:
+            adapter = self._image_adapters[combo_key]
+            for k in ("diffusion_models", "clip", "vae"):
+                await _emit(resolved[k], "loaded")
+            return adapter
+
+        for k in ("diffusion_models", "clip", "vae"):
+            await _emit(resolved[k], "loading")
+        try:
+            paths = {
+                "transformer": resolved["diffusion_models"].file,
+                "text_encoder": resolved["clip"].file,
+                "vae": resolved["vae"].file,
+            }
+            adapter = AnimaImageBackend(
+                paths=paths,
+                device=target,
+                dtype=resolved["diffusion_models"].dtype,
+                pipeline_class="AnimaPipeline",
+                offload=offload,
+            )
+            await adapter.load(target)
+            # 预热在首次 infer 时 lazy(_ensure_pipe);不像 Flux2 在装 adapter 时就构建 pipe
+            # —— anima pipe 装配 = 4.5s 加载,留首次 infer 一起付,UX 不卡 startup。
+        except Exception as e:  # noqa: BLE001
+            for k in ("diffusion_models", "clip", "vae"):
+                await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
+            raise
+
+        for k in ("diffusion_models", "clip", "vae"):
+            await _emit(resolved[k], "loaded")
+        self._image_adapters[combo_key] = adapter
+        return adapter
 
     async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none"):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
