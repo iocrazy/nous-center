@@ -9,7 +9,7 @@
  *   nous-logo  · spacer · infra healthy · ⌕ search · ☰ tasks(下拉)· ⋮ user
  */
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { Search, MoreVertical, LogOut, ListTodo, Cpu } from 'lucide-react'
+import { Search, MoreVertical, LogOut, ListTodo, Cpu, Menu, Info } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
 import { useTasks, type ExecutionTask } from '../../api/tasks'
@@ -222,11 +222,12 @@ function TaskMenu() {
             boxShadow: 'var(--shadow-card, 0 12px 32px rgba(0,0,0,0.5))',
           }}
         >
-          {/* sb-header */}
+          {/* sb-header(对齐 mockup:左 ☰ menu icon + 标题 + global queue 标签)*/}
           <div
             className="flex items-center gap-2 shrink-0"
             style={{ height: 44, padding: '0 16px', borderBottom: '1px solid var(--tp-border-faint)' }}
           >
+            <Menu size={16} style={{ color: 'var(--tp-text-muted)' }} />
             <span className="text-sm font-semibold" style={{ color: 'var(--tp-text)' }}>
               全部任务
             </span>
@@ -279,27 +280,34 @@ function TaskMenu() {
               <TaskList
                 tasks={activeTasks}
                 emptyText="当前无活动任务"
-                sectionLabel={`正在跑 · ${counts.active}`}
+                sectionLabel={`正在跑 · ${counts.active} 个`}
                 mode="active"
               />
             ) : (
               <TaskList
                 tasks={historyTasks}
                 emptyText="暂无历史记录"
-                sectionLabel={`历史 · ${counts.history}`}
+                sectionLabel={`最近完成 · ${counts.history} 条`}
                 mode="history"
               />
             )}
           </div>
 
-          <div className="shrink-0" style={{ borderTop: '1px solid var(--tp-border-faint)' }}>
+          {/* footer:对齐 mockup `ⓘ collapsed → 点击展开 → 缩略图点开 modal` 解释性
+              + 「打开完整任务面板 →」操作链接(放右侧)。 */}
+          <div
+            className="shrink-0 flex items-center gap-2 px-3 py-2 text-[10.5px]"
+            style={{ borderTop: '1px solid var(--tp-border-faint)', color: 'var(--tp-text-faint)' }}
+          >
+            <Info size={11} />
+            <span>点击展开 · 缩略图点开大图</span>
             <button
               onClick={() => { setOpen(false); togglePanel() }}
               role="menuitem"
-              className="w-full text-center py-2.5 text-xs transition-colors hover:bg-[var(--tp-bg-hover)]"
+              className="ml-auto transition-colors hover:text-[var(--tp-text)]"
               style={{ color: 'var(--tp-text-muted)', cursor: 'pointer' }}
             >
-              打开完整任务面板 →
+              完整面板 →
             </button>
           </div>
         </div>
