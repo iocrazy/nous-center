@@ -39,13 +39,16 @@ function getTaskType(t: ExecutionTask): TaskType | null {
   return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ? v : null
 }
 
-function typeIcon(type: TaskType | null) {
+// 把 icon 选择写成直接返回 JSX,避免「render 期间创建组件 ref」eslint 报错
+// (react-x/no-context-provider 类规则会把函数返回组件 ref 再用作 JSX 元素当作创建组件)。
+function renderTypeIcon(type: TaskType | null) {
+  const props = { size: 14, strokeWidth: 1.8 } as const
   switch (type) {
-    case 'image': return ImageIcon
-    case 'tts': return Mic
-    case 'llm': return MessageSquare
-    case 'vision': return Eye
-    default: return Activity
+    case 'image': return <ImageIcon {...props} />
+    case 'tts': return <Mic {...props} />
+    case 'llm': return <MessageSquare {...props} />
+    case 'vision': return <Eye {...props} />
+    default: return <Activity {...props} />
   }
 }
 
@@ -69,7 +72,6 @@ function getMetaLine(t: ExecutionTask): string {
 
 export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
   const type = getTaskType(task)
-  const Icon = typeIcon(type)
   const isRunning = task.status === 'running'
 
   const execTaskId = useExecutionStore((s) => s.taskId)
@@ -97,7 +99,7 @@ export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
         }}
         aria-label={`task type ${type ?? 'unknown'}`}
       >
-        <Icon size={14} strokeWidth={1.8} />
+        {renderTypeIcon(type)}
       </div>
 
       {/* task-card */}
