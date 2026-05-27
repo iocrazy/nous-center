@@ -124,6 +124,86 @@ async def test_llm_streaming_dispatch_pushes_node_stream_events(monkeypatch):
     assert final["total_steps"] == 2
 
 
+async def test_llm_node_marks_multimodal_when_image_input_present(monkeypatch):
+    """PR-1d:LLMNode.invoke/stream 检测到 image input → result.multimodal=True。"""
+    from src.services import workflow_executor as we
+    from src.services.inference.base import InferenceResult, UsageMeter
+    from src.services.nodes.llm import LLMNode
+
+    adapter = MagicMock()
+    adapter.is_loaded = True
+    adapter.infer = AsyncMock(return_value=InferenceResult(
+        media_type="application/json", data=b"{}", metadata={"raw": {
+            "choices": [{"message": {"content": "a cat"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        }},
+        usage=UsageMeter(input_tokens=5, output_tokens=2, latency_ms=10),
+    ))
+    mgr = MagicMock()
+    mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
+    monkeypatch.setattr(we, "_model_manager", mgr)
+
+    node = LLMNode()
+    # 多模态:inputs.image data URI
+    r_vision = await node.invoke(
+        {"model": "x", "model_key": "x"},
+        {"prompt": "what is this?", "image": "data:image/png;base64,xxx"},
+    )
+    assert r_vision["multimodal"] is True
+    # 纯文本:无 image / audio
+    r_text = await node.invoke({"model": "x", "model_key": "x"}, {"prompt": "hi"})
+    assert r_text["multimodal"] is False
+
+
+async def test_llm_streaming_emits_vision_inference_stage_when_multimodal(monkeypatch):
+    """PR-1d:workflow_executor 在 LLM 节点 + image 输入时,emitter 用 stage=vision_inference。"""
+    from src.services import workflow_executor as we
+    from src.services.inference.base import StreamEvent
+    from src.services.workflow_executor import WorkflowExecutor
+
+    async def fake_infer_stream(req):
+        yield StreamEvent(type="delta", payload={"content": "a"})
+        yield StreamEvent(type="delta", payload={"content": "cat"})
+        yield StreamEvent(type="done", payload={"usage": {
+            "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}})
+
+    adapter = MagicMock()
+    adapter.is_loaded = True
+    adapter.infer_stream = fake_infer_stream
+    mgr = MagicMock()
+    mgr.get_loaded_adapter = AsyncMock(return_value=adapter)
+    monkeypatch.setattr(we, "_model_manager", mgr)
+
+    events: list[dict] = []
+
+    async def on_progress(ev: dict) -> None:
+        events.append(ev)
+
+    # workflow 含 image 输入 → LLM 节点应走 vision_inference stage
+    workflow = {
+        "nodes": [
+            {"id": "img", "type": "text_input",
+             "data": {"text": "data:image/png;base64,xxx"},
+             "position": {"x": 0, "y": 0}},
+            {"id": "vis", "type": "llm",
+             "data": {"model": "vl", "model_key": "vl-model", "stream": True},
+             "position": {"x": 1, "y": 0}},
+        ],
+        "edges": [
+            {"source": "img", "target": "vis",
+             "sourceHandle": "text", "targetHandle": "image"},
+        ],
+    }
+    executor = WorkflowExecutor(workflow, on_progress=on_progress)
+    await executor.execute()
+
+    progress_events = [e for e in events if e.get("type") == "node_progress"]
+    assert progress_events, "PR-1d:multimodal LLM stream 应至少发一个 node_progress(末帧)"
+    # 末帧 stage = vision_inference(不是 llm_gen)
+    assert progress_events[-1]["stage"] == "vision_inference"
+    assert progress_events[-1]["progress"] == 1.0
+
+
 async def test_llm_progress_emitter_throttles_token_rate_and_finals():
     """PR-1c 直接单测 _LlmProgressEmitter:throttle 250ms + final 末帧回填。"""
     import asyncio

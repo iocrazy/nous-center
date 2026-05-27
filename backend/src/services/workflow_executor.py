@@ -71,10 +71,17 @@ class _LlmProgressEmitter:
     THROTTLE_MS = 250
     LATENCY_WINDOW = 16  # 最近 16 个 token 的滑窗均值,平滑掉首 token 冷启动 spike
 
-    def __init__(self, *, node_id: str, max_tokens: int, on_progress: Any) -> None:
+    def __init__(
+        self, *,
+        node_id: str, max_tokens: int, on_progress: Any,
+        stage: str = "llm_gen",
+    ) -> None:
         self._node_id = node_id
         self._max_tokens = max(1, int(max_tokens))
         self._on_progress = on_progress
+        # PR-1d:stage 可注入 —— 默认 llm_gen(纯文本);多模态(LLMNode 探测 inputs 有图/音)
+        # 由调用方传 stage="vision_inference",前端 callout 据此用紫橙渐变 + Vision 图标。
+        self._stage = stage
         self._token_count = 0
         self._t0 = time.monotonic()
         self._last_token_t = self._t0
@@ -108,13 +115,13 @@ class _LlmProgressEmitter:
         await self._on_progress({
             "type": "node_progress",
             "node_id": self._node_id,
-            "stage": "llm_gen",
+            "stage": self._stage,
             "step": self._token_count,
             "total_steps": self._max_tokens,
             "step_latency_ms": avg_latency_ms,
             "eta_ms": eta_ms,
             "progress": progress,
-            "detail": f"llm_gen {self._token_count}/{self._max_tokens}",
+            "detail": f"{self._stage} {self._token_count}/{self._max_tokens}",
         })
 
     async def emit_final(self, *, true_completion: int | None) -> None:
@@ -129,13 +136,13 @@ class _LlmProgressEmitter:
         await self._on_progress({
             "type": "node_progress",
             "node_id": self._node_id,
-            "stage": "llm_gen",
+            "stage": self._stage,
             "step": total,
             "total_steps": total,
             "step_latency_ms": avg_latency_ms,
             "eta_ms": 0,
             "progress": 1.0,
-            "detail": f"llm_gen done ({total} tokens)",
+            "detail": f"{self._stage} done ({total} tokens)",
         })
 
 
@@ -421,9 +428,17 @@ class WorkflowExecutor:
             # step_latency_ms=平均/token,eta_ms)。前端 ActiveTaskRow callout 显示
             # 「🤖 gen 47/2048 · 23 tok/s · ETA 1.5m」。throttle 250ms 防止高速 stream
             # 把 WS 打爆(60+ token/s 时若每 token 都发 progress 是 60+ msg/s 冗余)。
+            # PR-1d(vision lane):node_type=llm 且 inputs 含图/音 → stage="vision_inference"
+            # (vllm OpenAI 兼容接口下,vision encode + 生成在 server 端不可分,所以共享 LLM
+            # 路径,只换 stage 标识让前端 callout 用 vision 配色 + Vision 图标渲染)。
             max_tokens = int(data.get("max_tokens", 2048))
+            from src.services.nodes.llm import _has_multimodal_input  # PR-1d:同模块的多模态探测
+            stage = ("vision_inference"
+                     if node_type == "llm" and _has_multimodal_input(inputs)
+                     else "llm_gen")
             emitter = _LlmProgressEmitter(
-                node_id=node["id"], max_tokens=max_tokens, on_progress=self._on_progress)
+                node_id=node["id"], max_tokens=max_tokens,
+                on_progress=self._on_progress, stage=stage)
 
             async def _on_token(token: str) -> None:
                 if self._on_progress:

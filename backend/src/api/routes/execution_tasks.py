@@ -162,6 +162,25 @@ def _detect_image_meta(result: object) -> dict:
     return out
 
 
+def _detect_vision_meta(result: object) -> dict:
+    """PR-1d:vision lane(LLM 节点带图/音输入)— LLMNode 返回 {text, usage, multimodal=True}。
+    `multimodal=True` 是 PR-1d 在 LLMNode invoke/stream 加的标记字段;_detect_vision_meta
+    据此把任务归 type=vision(spec ServiceType / 前端 紫橙渐变 + Vision 图标)。
+    返 completion_tokens 供 callout 显示。"""
+    out: dict = {"task_type": None, "vision_completion_tokens": None}
+    if not isinstance(result, dict):
+        return out
+    for v in result.values():
+        if not isinstance(v, dict):
+            continue
+        if v.get("multimodal") is True and isinstance(v.get("text"), str):
+            out["task_type"] = "vision"
+            usage = v.get("usage") or {}
+            out["vision_completion_tokens"] = usage.get("completion_tokens")
+            return out
+    return out
+
+
 def _detect_llm_meta(result: object) -> dict:
     """PR-1c:LLM workflow result envelope 识别 —— `text` 字符串 + `usage` dict 是
     LLMNode.invoke/stream 的标准返回形状(见 src/services/nodes/llm.py)。
@@ -225,9 +244,9 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
-    # 顺序:image 先(workflow 多含 image_output);未命中再 TTS、再 LLM 检测(LLM envelope
-    # 是 {text, usage} 最普遍,放最后避免误识别 — TTS / image 都不会同时有 text+usage 形状)。
-    # vision 由 PR-1d 扩展(_detect_vision_meta)。
+    # 顺序:image 先(workflow 多含 image_output)→ tts → vision(LLM 带图)→ llm(纯文本)。
+    # 关键:vision 必须在 LLM 之前 —— 两者 envelope 都是 {text, usage},vision 多一个
+    # multimodal=True 标记。先 vision 命中就归 vision,否则才 LLM。
     img_meta = _detect_image_meta(t.result)
     d.update(img_meta)
     if img_meta.get("task_type") is None:
@@ -236,12 +255,17 @@ def _task_to_dict(t: ExecutionTask) -> dict:
             d["task_type"] = tts_meta["task_type"]
             d["audio_duration_seconds"] = tts_meta["audio_duration_seconds"]
         else:
-            llm_meta = _detect_llm_meta(t.result)
-            if llm_meta.get("task_type"):
-                d["task_type"] = llm_meta["task_type"]
-                d["llm_prompt_tokens"] = llm_meta["llm_prompt_tokens"]
-                d["llm_completion_tokens"] = llm_meta["llm_completion_tokens"]
-    # PR-1a/1b/1c(2026-05-27 任务面板重置 spec §State model):显式 `type` 字段
+            vision_meta = _detect_vision_meta(t.result)
+            if vision_meta.get("task_type"):
+                d["task_type"] = vision_meta["task_type"]
+                d["vision_completion_tokens"] = vision_meta["vision_completion_tokens"]
+            else:
+                llm_meta = _detect_llm_meta(t.result)
+                if llm_meta.get("task_type"):
+                    d["task_type"] = llm_meta["task_type"]
+                    d["llm_prompt_tokens"] = llm_meta["llm_prompt_tokens"]
+                    d["llm_completion_tokens"] = llm_meta["llm_completion_tokens"]
+    # PR-1a/1b/1c/1d(2026-05-27 任务面板重置 spec §State model):显式 `type` 字段
     # (image / tts / llm / vision),对应前端 ServiceType。type=None → 旧 fake / 未识别
     # workflow,前端 Other 兜底。
     d["type"] = d.get("task_type")
