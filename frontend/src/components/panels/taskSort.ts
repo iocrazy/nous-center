@@ -17,6 +17,34 @@ export const SORT_LABEL: Readonly<Record<`${TaskSortKey}.${TaskSortDir}`, string
   'duration.asc': '耗时(短→长)',
 }
 
+/** 按相对日期分组(对齐 ComfyUI「昨天/今天/上周」grouping)。
+ *  返回 [(label, items), ...],label 是 「今天」/「昨天」/「本周」/「上周」/「更早」。
+ *  按时间倒序保持(最新分组在前),items 内顺序由 caller 保留(已 sort 过)。 */
+export function groupByDate(tasks: readonly ExecutionTask[]): Array<[string, ExecutionTask[]]> {
+  const now = new Date()
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const yesterday0 = today0 - 86_400_000
+  const dow = now.getDay() === 0 ? 7 : now.getDay()
+  const weekStart0 = today0 - (dow - 1) * 86_400_000
+  const lastWeekStart0 = weekStart0 - 7 * 86_400_000
+
+  const buckets: Record<string, ExecutionTask[]> = {
+    今天: [], 昨天: [], 本周: [], 上周: [], 更早: [],
+  }
+  for (const t of tasks) {
+    const ts = new Date(t.created_at).getTime()
+    if (ts >= today0) buckets['今天'].push(t)
+    else if (ts >= yesterday0) buckets['昨天'].push(t)
+    else if (ts >= weekStart0) buckets['本周'].push(t)
+    else if (ts >= lastWeekStart0) buckets['上周'].push(t)
+    else buckets['更早'].push(t)
+  }
+  return (['今天', '昨天', '本周', '上周', '更早'] as const)
+    .map((k) => [k, buckets[k]] as [string, ExecutionTask[]])
+    .filter(([, items]) => items.length > 0)
+}
+
+
 /** 排序 visible 列表。
  * - created:用 created_at ISO 串字典序,与时间序一致;
  * - duration:running/queued 没 duration_ms 视为 +Infinity 排末尾(无论升降都在尾),

@@ -39,7 +39,7 @@ import WorkflowsList from '../../pages/WorkflowsList'
 import UsagePage from '../../pages/UsagePage'
 import ApiKeysList from '../../pages/ApiKeysList'
 import ApiKeyDetail from '../../pages/ApiKeyDetail'
-import TaskPanel from '../panels/TaskPanel'
+import QueueProgressOverlay from '../queue/QueueProgressOverlay'
 
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
   const def = NODE_DEFS[nodeType as NodeType]
@@ -364,8 +364,9 @@ export default function NodeEditor() {
       {activeOverlay === 'workflows-list' && <WorkflowsList />}
       {activeOverlay === 'usage' && <UsagePage />}
 
-      {/* Task panel */}
-      <TaskPanel open={taskPanelOpen} onClose={toggleTaskPanel} />
+      {/* 任务进度 overlay(对齐 ComfyUI QueueProgressOverlay,350px 右上角浮动)。
+          三态:hidden / active(running 时自动显紧凑卡)/ expanded(用户 chip 触发显完整列表)。 */}
+      <QueueProgressOverlay open={taskPanelOpen} onClose={toggleTaskPanel} />
     </div>
   )
 }
