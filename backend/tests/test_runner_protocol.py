@@ -31,6 +31,14 @@ ALL_MESSAGES = [
         error=None, duration_ms=4200,
     ),
     P.NodeProgress(task_id=101, node_id="sampler", progress=0.4, detail="step 12/30"),
+    # PR-1a:NodeProgress 带 L3 stage 字段 —— 验 stage/step/total_steps/step_latency_ms/eta_ms
+    # 编解码 round-trip 不丢失。
+    P.NodeProgress(
+        task_id=101, node_id="sampler", progress=0.4,
+        detail="dit_denoise 12/30",
+        stage="dit_denoise", step=12, total_steps=30,
+        step_latency_ms=850, eta_ms=15300,
+    ),
     P.ModelEvent(event="loaded", model_key="flux2-dev", error=None),
     P.Pong(runner_id="runner-i", loaded_models=["flux2-dev"]),
     P.PreloadComponents(

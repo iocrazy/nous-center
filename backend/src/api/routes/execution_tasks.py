@@ -177,5 +177,11 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
-    d.update(_detect_image_meta(t.result))
+    meta = _detect_image_meta(t.result)
+    d.update(meta)
+    # PR-1a(2026-05-27 任务面板重置 spec §State model):显式 `type` 字段(image / tts / vision /
+    # llm),对应前端 ServiceType。当前 _detect_image_meta 只识别 image;tts/llm/vision 由后续
+    # PR-1b/c/d 在 _detect_*_meta 里扩展(改 result envelope 形状识别)。type=None → 旧 fake/未识别
+    # workflow 不强制归类(前端 Other 兜底)。
+    d["type"] = meta.get("task_type")
     return d

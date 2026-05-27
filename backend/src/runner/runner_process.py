@@ -346,12 +346,35 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         # 工作线程里，那时需改 loop.call_soon_threadsafe）。
         progress_tasks: list[asyncio.Task] = []
 
-        def _on_progress(done: int, total: int, preview_url: str | None = None, _node=node) -> None:
+        def _on_progress(
+            done: int, total: int,
+            preview_url: str | None = None,
+            *,
+            # PR-1a(任务面板重置 L3 进度颗粒度):stage/step/total_steps/step_latency_ms/eta_ms
+            # 从 adapter callback 透传到 NodeProgress IPC,再经 workflow_executor → WS → 前端
+            # ActiveTaskRow callout 展示「⚡ dit step 27/50 · ETA 5.5s」。
+            stage: str | None = None,
+            step: int | None = None,
+            total_steps: int | None = None,
+            step_latency_ms: int | None = None,
+            eta_ms: int | None = None,
+            progress: float | None = None,
+            detail: str | None = None,
+            _node=node,
+        ) -> None:
             t = asyncio.get_running_loop().create_task(ch.send_message(P.NodeProgress(
                 task_id=_node.task_id, node_id=_node.node_id,
-                progress=done / total if total else 1.0,
-                detail=f"step {done}/{total}",
+                # 显式 progress 优先(callback 自己算了);否则用 done/total。
+                progress=progress if progress is not None else (done / total if total else 1.0),
+                # 显式 detail 优先;否则 fallback "step n/N"。
+                detail=detail if detail is not None else f"step {done}/{total}",
                 preview_url=preview_url,  # PR-F:latent 实时 RGB 预览(可选)
+                stage=stage,
+                # step 默认 = done(1-based);total_steps 默认 = total。
+                step=step if step is not None else done,
+                total_steps=total_steps if total_steps is not None else total,
+                step_latency_ms=step_latency_ms,
+                eta_ms=eta_ms,
             )))
             progress_tasks.append(t)
 
