@@ -109,9 +109,14 @@ describe('TaskPanel — ComfyUI 对齐(PR-5)', () => {
     expect(container.textContent).toBe('')
   })
 
-  it('failed 任务有重试按钮', () => {
+  it('failed 任务右键菜单有「重试」选项(对齐 ComfyUI 紧凑卡片设计)', () => {
+    // PR v2(2026-05-27)对齐 ComfyUI 截图后,完成卡删了 inline 重试按钮 — 右键菜单足够,
+    // UI 不噪。test 改为打开右键菜单后找「重试」。
     render(withQuery(<TaskPanel open onClose={() => {}} />))
-    expect(screen.getByRole('button', { name: '重试任务' })).toBeTruthy()
+    const failedCard = screen.getByText('tts-旁白').closest('div[style*="cursor: context-menu"]') as HTMLElement
+    expect(failedCard).toBeTruthy()
+    fireEvent.contextMenu(failedCard)
+    expect(screen.getByText('重试')).toBeTruthy()
   })
 
   it('筛选 popover:取消勾「失败」后 failed 任务被过滤掉', () => {

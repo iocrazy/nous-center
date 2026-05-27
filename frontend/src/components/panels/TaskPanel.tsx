@@ -6,12 +6,10 @@ import {
   Ban,
   Check,
   CheckCircle2,
-  ExternalLink,
   Image as ImageIcon,
   ListFilter,
   Maximize2,
   Minimize2,
-  RotateCcw,
   Trash2,
   X,
   XCircle,
@@ -33,7 +31,7 @@ import {
   type TaskStatus,
 } from '../../stores/panel'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
-import { SORT_LABEL, STATUS_LABEL, sortTasks } from './taskSort'
+import { SORT_LABEL, STATUS_LABEL, groupByDate, sortTasks } from './taskSort'
 
 /**
  * TaskPanel — 对齐 ComfyUI 「任务历史」面板风格(读用户截图复刻):
@@ -199,7 +197,8 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
           </span>
         </div>
 
-        {/* body */}
+        {/* body — 按时间分组(对齐 ComfyUI「昨天/今天/上周」grouping)。
+            active(running/queued)放在最顶部不分组,然后完成任务按时间分组。 */}
         <div style={{ flex: 1, overflowY: 'auto', padding: isDock ? 12 : 8 }}>
           {visible.length === 0 && (
             <div style={{
@@ -208,11 +207,27 @@ export default function TaskPanel({ open, onClose }: { open: boolean; onClose: (
               {tab === 'done' ? '暂无完成任务' : '暂无任务 — 跑一个 workflow 试试'}
             </div>
           )}
-          {visible.map((t) => (
-            t.status === 'running' || t.status === 'queued'
-              ? <RunningTaskCard key={t.id} task={t} now={now} />
-              : <CompletedTaskCard key={t.id} task={t} />
-          ))}
+          {(() => {
+            const activeItems = visible.filter((t) => t.status === 'running' || t.status === 'queued')
+            const doneItems = visible.filter((t) => t.status !== 'running' && t.status !== 'queued')
+            const grouped = groupByDate(doneItems)
+            return (
+              <>
+                {activeItems.map((t) => (
+                  <RunningTaskCard key={t.id} task={t} now={now} />
+                ))}
+                {grouped.map(([label, items]) => (
+                  <div key={label}>
+                    <div style={{
+                      padding: '12px 4px 6px', fontSize: 10, color: 'var(--muted)',
+                      fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+                    }}>{label}</div>
+                    {items.map((t) => <CompletedTaskCard key={t.id} task={t} />)}
+                  </div>
+                ))}
+              </>
+            )
+          })()}
         </div>
       </aside>
     </>
@@ -654,73 +669,55 @@ function CompletedTaskCard({ task }: { task: ExecutionTask }) {
     },
   ]
 
+  // ComfyUI 紧凑横向卡(2026-05-27 用户截图对齐):小 thumb(48×48)+ 工作流名 + 耗时,
+  // 删状态点 / 状态文字 / quick action 按钮(右键菜单足够,UI 不噪)。
+  // 注:ComfyUI 显文件名(ComfyUI_temp_*.png)是因它没工作流名;nous 有名字直接用之。
+  const displayName = task.workflow_name || `任务 ${String(task.id).slice(0, 8)}`
   return (
     <>
       <div
         ref={cardRef}
         onContextMenu={onContextMenu}
         style={{
-          padding: 8, marginBottom: 4,
-          background: 'var(--card)', border: '1px solid var(--border)',
-          borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 4px', marginBottom: 2,
+          display: 'flex', alignItems: 'center', gap: 10,
+          borderRadius: 4,
+          transition: 'background 0.1s',
           cursor: 'context-menu',
         }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
       >
-        {/* 缩略图 / 占位图标 */}
+        {/* 缩略图(48×48)/ 占位图标 — 对齐 ComfyUI 紧凑横向布局 */}
         <div style={{
-          width: 40, height: 40, flexShrink: 0,
-          background: 'var(--bg)', border: '1px solid var(--border)',
-          borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 48, height: 48, flexShrink: 0,
+          background: 'var(--bg)', borderRadius: 4,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
           overflow: 'hidden',
         }}>
           {thumb ? (
             <img src={thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           ) : task.task_type === 'image' ? (
-            <ImageIcon size={16} style={{ color: 'var(--muted)' }} />
+            <ImageIcon size={20} style={{ color: 'var(--muted)' }} />
           ) : task.status === 'failed' ? (
-            <XCircle size={16} style={{ color: 'var(--err, #ef4444)' }} />
+            <XCircle size={20} style={{ color: 'var(--err, #ef4444)' }} />
           ) : task.status === 'cancelled' ? (
-            <Ban size={16} style={{ color: 'var(--muted)' }} />
+            <Ban size={20} style={{ color: 'var(--muted)' }} />
           ) : (
-            <CheckCircle2 size={16} style={{ color: 'var(--ok)' }} />
+            <CheckCircle2 size={20} style={{ color: 'var(--ok)' }} />
           )}
         </div>
-        {/* meta */}
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {/* 文件名 + 耗时(2 行)— ComfyUI 卡片信息密度 */}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
           <div style={{
             fontSize: 12, color: 'var(--text)', fontWeight: 500,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {task.workflow_name || `任务 ${String(task.id).slice(0, 8)}`}
+            {displayName}
           </div>
-          <div style={{ fontSize: 10, color: 'var(--muted)', display: 'flex', gap: 6 }}>
-            <span style={{ color: statusColor(task.status) }}>● {statusLabel(task.status)}</span>
-            <span>{fmtMs(task.duration_ms)}</span>
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+            {fmtMs(task.duration_ms)}
           </div>
-        </div>
-        {/* 快捷动作 */}
-        <div style={{ display: 'flex', gap: 2 }}>
-          {(task.status === 'failed' || task.status === 'cancelled') && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); retry.mutate(task.id) }}
-              disabled={retry.isPending}
-              title="重试"
-              aria-label="重试任务"
-              style={iconBtnStyle}
-            >
-              <RotateCcw size={12} />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setMenuPos({ x: e.clientX, y: e.clientY }) }}
-            title="更多"
-            aria-label="更多操作"
-            style={iconBtnStyle}
-          >
-            <ExternalLink size={12} />
-          </button>
         </div>
       </div>
       {menuPos && (
