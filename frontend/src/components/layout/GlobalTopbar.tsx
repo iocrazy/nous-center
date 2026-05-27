@@ -1,22 +1,18 @@
 /**
- * GlobalTopbar — 全局顶部 nav(PR-2c 简化版,任务面板重置)。
+ * GlobalTopbar — 全局顶部 nav(PR-3a 任务面板重置)。
  *
- * D7 决策修正:删原 5 服务 tab(Workflow/Image/TTS/LLM/Models)—— 用户心智模型里
- * 所有功能都通过 workflow 节点搭建(Image/TTS/LLM 是 workflow 类型而非独立路由)。
- * Topbar 现在只剩全局元素:
+ * D10 决策修正:task UI 是 **GlobalTopbar 下拉悬浮面板**(不是右侧固定 sidebar)。
+ * 下拉里复刻 mockup `variant-final.html` 的完整 task 结构:Active/History tabs +
+ * cook overview(运行/排队/完成 + GPU)+ 任务行(4 type 配色)。
  *
- *   nous-logo                              infra healthy · 3 GPU  ⌕  ☰tasks  ⋮user
- *
- * 多 workflow 切换走 IconRail Workflow → 列表;Image/TTS/LLM 不再独立路由;
- * Models 通过 IconRail「引擎库」入口。
+ * Topbar 布局:
+ *   nous-logo  · spacer · infra healthy · ⌕ search · ☰ tasks(下拉)· ⋮ user
  */
 import { useState, useRef, useEffect, useMemo } from 'react'
-import {
-  Search, MoreVertical, LogOut, ListTodo,
-} from 'lucide-react'
+import { Search, MoreVertical, LogOut, ListTodo, Cpu } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
-import { useTasks } from '../../api/tasks'
+import { useTasks, type ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
 
 export default function GlobalTopbar() {
@@ -81,7 +77,7 @@ export default function GlobalTopbar() {
         infra <span style={{ color: 'var(--tp-text)', fontWeight: 500 }}>healthy</span>
       </div>
 
-      {/* 搜索 placeholder(PR-2 仅 UI 占位;搜索功能后续 PR)*/}
+      {/* 搜索 placeholder */}
       <button
         className="p-1.5 transition-colors"
         style={{ color: 'var(--tp-text-muted)', cursor: 'pointer' }}
@@ -91,10 +87,10 @@ export default function GlobalTopbar() {
         <Search size={16} />
       </button>
 
-      {/* PR-2b D4-2:任务管理入口 + badge + 下拉(D4-3 任务列表)。 */}
+      {/* PR-3a:任务下拉悬浮面板(对齐 mockup variant-final sidebar 形态)*/}
       <TaskMenu />
 
-      {/* user 菜单(⋮)—— 只放退出登录(admin 项 + 主题在 IconRail);未登录态不渲染。 */}
+      {/* user 菜单(⋮)—— 只放退出登录。 */}
       {canLogout && (
         <div className="relative" ref={menuRef}>
           <button
@@ -135,9 +131,25 @@ export default function GlobalTopbar() {
   )
 }
 
+/* ============================================================
+ * TaskMenu — 任务下拉悬浮面板(PR-3a)
+ *
+ * 入口:Topbar 右侧 ListTodo 图标 + 活动任务 badge。
+ * 下拉内容(复刻 mockup variant-final sidebar 内部结构,但作为悬浮 panel):
+ *   ┌─ sb-header:全部任务 [global queue]
+ *   ├─ sb-tabs:Active N · History N
+ *   ├─ cook-overview:●N 运行 · ●N 排队 · ●N 完成 · GPU
+ *   ├─ sb-body:Active tab → 任务行(timeline node + task-card + L3 callout)
+ *   │           History tab → 4 type 任务行(image/tts/llm/vision 配色)
+ *   └─ footer:打开完整任务面板 →
+ * ============================================================ */
+
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
-const TASK_TYPE_LABEL: Record<string, string> = {
-  image: '图像', tts: '语音', llm: '对话', vision: '视觉',
+const TASK_TYPES = ['image', 'tts', 'vision', 'llm'] as const
+type TaskType = typeof TASK_TYPES[number]
+
+const TASK_TYPE_LABEL: Record<TaskType, string> = {
+  image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM',
 }
 const STATUS_LABEL: Record<string, string> = {
   queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
@@ -148,30 +160,35 @@ const STATUS_COLOR: Record<string, string> = {
   cancelled: 'var(--tp-text-faint)',
 }
 
-/**
- * TaskMenu — GlobalTopbar 右侧任务管理入口(PR-2b D4-2/D4-3)。
- *
- * 显示当前活动任务数 badge,点击下拉「任务管理列表」—— 活动任务 + 最近完成 各 5 条。
- * 列表项点击可跳到对应任务详情(暂时 navigate 触发 IconRail TaskRailButton 同等动作 ——
- * 切到 panel 模式;PR-3 sidebar dock 上线后改为直接 highlight)。
- *
- * 实现复用 TaskMenuButton 的 useTasks() + useExecutionStore.toggleTaskPanel(),但把
- * 视觉从单按钮升级为 button + dropdown 列表(D4-3「下拉出 task 的任务管理列表」)。
- */
+function getTaskType(t: ExecutionTask): TaskType | null {
+  const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
+  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ? v : null
+}
+
 function TaskMenu() {
   const { data: tasks } = useTasks()
   const togglePanel = useExecutionStore((s) => s.toggleTaskPanel)
   const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState<'active' | 'history'>('active')
   const wrapRef = useRef<HTMLDivElement>(null)
 
-  const { active, recent } = useMemo(() => {
+  const counts = useMemo(() => {
+    const all = tasks ?? []
+    const running = all.filter((t) => t.status === 'running').length
+    const queued = all.filter((t) => t.status === 'queued').length
+    const done = all.filter((t) => t.status === 'completed').length
+    const active = running + queued
+    const history = all.length - active
+    return { running, queued, done, active, history }
+  }, [tasks])
+
+  const { activeTasks, historyTasks } = useMemo(() => {
     const all = tasks ?? []
     return {
-      active: all.filter((t) => ACTIVE_STATUSES.has(t.status)).slice(0, 5),
-      recent: all.filter((t) => !ACTIVE_STATUSES.has(t.status)).slice(0, 5),
+      activeTasks: all.filter((t) => ACTIVE_STATUSES.has(t.status)),
+      historyTasks: all.filter((t) => !ACTIVE_STATUSES.has(t.status)),
     }
   }, [tasks])
-  const badge = active.length
 
   useEffect(() => {
     if (!open) return
@@ -181,6 +198,8 @@ function TaskMenu() {
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
+
+  const badge = counts.active
 
   return (
     <div className="relative ml-1" ref={wrapRef}>
@@ -211,85 +230,231 @@ function TaskMenu() {
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full mt-2 py-1 rounded-md"
+          className="absolute right-0 top-full mt-2 rounded-md overflow-hidden flex flex-col"
           style={{
-            width: 320, maxHeight: 480, overflowY: 'auto',
-            background: 'var(--tp-bg-card)',
+            width: 400, maxHeight: 600,
+            background: 'var(--tp-bg-panel)',
             border: '1px solid var(--tp-border-strong)',
-            boxShadow: 'var(--shadow-card, 0 6px 16px rgba(0,0,0,0.3))',
+            boxShadow: 'var(--shadow-card, 0 12px 32px rgba(0,0,0,0.5))',
           }}
         >
-          <TaskGroup title={`活动任务 (${active.length})`} tasks={active} emptyText="当前无活动任务" />
-          <div className="my-1" style={{ height: 1, background: 'var(--tp-border-faint)' }} />
-          <TaskGroup title={`最近完成 (${recent.length})`} tasks={recent} emptyText="暂无历史记录" />
-          <div className="my-1" style={{ height: 1, background: 'var(--tp-border-faint)' }} />
-          <button
-            onClick={() => { setOpen(false); togglePanel() }}
-            role="menuitem"
-            className="w-full text-center py-2 text-xs transition-colors hover:bg-[var(--tp-bg-hover)]"
-            style={{ color: 'var(--tp-text-muted)', cursor: 'pointer' }}
+          {/* sb-header */}
+          <div
+            className="flex items-center gap-2 shrink-0"
+            style={{ height: 44, padding: '0 16px', borderBottom: '1px solid var(--tp-border-faint)' }}
           >
-            打开完整任务面板 →
-          </button>
+            <span className="text-sm font-semibold" style={{ color: 'var(--tp-text)' }}>
+              全部任务
+            </span>
+            <span
+              className="text-[10px] font-medium px-1.5 py-0.5 rounded font-mono"
+              style={{
+                background: 'var(--tp-bg-elevated)',
+                color: 'var(--tp-text-muted)',
+              }}
+            >
+              global queue
+            </span>
+          </div>
+
+          {/* sb-tabs */}
+          <div
+            className="flex shrink-0"
+            style={{ padding: '0 16px', gap: 18, borderBottom: '1px solid var(--tp-border-faint)' }}
+          >
+            <SbTab label="Active" count={counts.active} active={tab === 'active'} onClick={() => setTab('active')} />
+            <SbTab label="History" count={counts.history} active={tab === 'history'} onClick={() => setTab('history')} />
+          </div>
+
+          {/* cook-overview */}
+          <div
+            className="shrink-0"
+            style={{
+              padding: '10px 16px',
+              background: 'linear-gradient(180deg, var(--tp-bg-card-subtle, #0f0f12) 0%, var(--tp-bg-panel) 100%)',
+              borderBottom: '1px solid var(--tp-border-faint)',
+            }}
+          >
+            <div className="flex items-center gap-3.5 text-[11.5px]">
+              <CookStat dotColor="var(--status-running)" glow num={counts.running} label="运行" />
+              <CookStat dotColor="var(--status-queued)" num={counts.queued} label="排队" />
+              <CookStat dotColor="var(--tp-text-dim)" num={counts.done} label="完成" />
+              <span
+                className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-mono"
+                style={{ color: 'var(--tp-text-muted)' }}
+              >
+                <Cpu size={12} style={{ color: 'var(--status-running)' }} />
+                GPU
+              </span>
+            </div>
+          </div>
+
+          {/* sb-body */}
+          <div className="flex-1 overflow-y-auto">
+            {tab === 'active' ? (
+              <TaskList tasks={activeTasks} emptyText="当前无活动任务" sectionLabel={`正在跑 · ${counts.active}`} />
+            ) : (
+              <TaskList tasks={historyTasks} emptyText="暂无历史记录" sectionLabel={`历史 · ${counts.history}`} />
+            )}
+          </div>
+
+          <div className="shrink-0" style={{ borderTop: '1px solid var(--tp-border-faint)' }}>
+            <button
+              onClick={() => { setOpen(false); togglePanel() }}
+              role="menuitem"
+              className="w-full text-center py-2.5 text-xs transition-colors hover:bg-[var(--tp-bg-hover)]"
+              style={{ color: 'var(--tp-text-muted)', cursor: 'pointer' }}
+            >
+              打开完整任务面板 →
+            </button>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function TaskGroup({
-  title, tasks, emptyText,
+function SbTab({
+  label, count, active, onClick,
 }: {
-  title: string
-  tasks: ReturnType<typeof useTasks>['data']
-  emptyText: string
+  label: string
+  count: number
+  active: boolean
+  onClick: () => void
 }) {
-  const list = tasks ?? []
   return (
-    <div>
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 text-xs font-medium transition-colors"
+      style={{
+        height: 36,
+        color: active ? 'var(--tp-text)' : 'var(--tp-text-muted)',
+        borderBottom: `2px solid ${active ? 'var(--status-running)' : 'transparent'}`,
+        cursor: 'pointer',
+      }}
+      aria-current={active ? 'page' : undefined}
+    >
+      {label}
+      <span
+        className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+        style={{
+          background: active ? 'rgba(74, 222, 128, 0.13)' : 'var(--tp-bg-elevated)',
+          color: active ? 'var(--status-running)' : 'var(--tp-text-muted)',
+        }}
+      >
+        {count}
+      </span>
+    </button>
+  )
+}
+
+function CookStat({
+  dotColor, glow, num, label,
+}: {
+  dotColor: string
+  glow?: boolean
+  num: number
+  label: string
+}) {
+  return (
+    <span className="inline-flex items-center gap-1.5" style={{ color: 'var(--tp-text)' }}>
+      <span
+        style={{
+          width: 7, height: 7, borderRadius: '50%',
+          background: dotColor,
+          boxShadow: glow ? `0 0 8px ${dotColor}` : undefined,
+          flexShrink: 0,
+        }}
+      />
+      <span className="font-mono font-semibold">{num}</span>
+      <span style={{ color: 'var(--tp-text-muted)' }}>{label}</span>
+    </span>
+  )
+}
+
+function TaskList({
+  tasks, emptyText, sectionLabel,
+}: {
+  tasks: ExecutionTask[]
+  emptyText: string
+  sectionLabel: string
+}) {
+  return (
+    <div className="p-3">
       <div
-        className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+        className="text-[10px] uppercase tracking-wider font-semibold mb-2 px-1"
         style={{ color: 'var(--tp-text-muted)' }}
       >
-        {title}
+        {sectionLabel}
       </div>
-      {list.length === 0 ? (
-        <div className="px-3 py-2 text-xs" style={{ color: 'var(--tp-text-faint)' }}>{emptyText}</div>
+      {tasks.length === 0 ? (
+        <div className="text-xs py-3 text-center" style={{ color: 'var(--tp-text-faint)' }}>
+          {emptyText}
+        </div>
       ) : (
-        list.map((t) => (
-          <div
-            key={t.id}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs"
-            style={{ color: 'var(--tp-text)' }}
-          >
-            <span
-              style={{
-                width: 7, height: 7, borderRadius: '50%',
-                background: STATUS_COLOR[t.status] ?? 'var(--tp-text-faint)',
-                boxShadow: t.status === 'running' ? '0 0 8px var(--status-running)' : undefined,
-                flexShrink: 0,
-              }}
-              title={STATUS_LABEL[t.status] ?? t.status}
-            />
-            <span className="truncate flex-1" title={t.workflow_name || `#${t.id}`}>
-              {t.workflow_name || `#${t.id}`}
-            </span>
-            {t.task_type && TASK_TYPE_LABEL[t.task_type] && (
-              <span
-                className="text-[9px] px-1.5 py-0.5 rounded shrink-0"
-                style={{
-                  background: 'var(--tp-bg-elevated)', color: 'var(--tp-text-muted)',
-                }}
-              >
-                {TASK_TYPE_LABEL[t.task_type]}
-              </span>
-            )}
-            <span className="text-[10px] shrink-0" style={{ color: 'var(--tp-text-muted)' }}>
-              {STATUS_LABEL[t.status] ?? t.status}
-            </span>
-          </div>
-        ))
+        <div className="flex flex-col gap-1.5">
+          {tasks.slice(0, 20).map((t) => <TaskRow key={t.id} task={t} />)}
+        </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * TaskRow — 任务卡片(对齐 mockup task-card 紧凑版)。
+ *
+ * 行结构:[type chip 4 色] [workflow_name] [status chip] [meta]
+ * type chip 按 image 紫 / tts 青 / llm 蓝 / vision 橙 配色。
+ * status running 时左侧加 glow dot;done 状态灰 chip。
+ */
+function TaskRow({ task: t }: { task: ExecutionTask }) {
+  const type = getTaskType(t)
+  const isRunning = t.status === 'running'
+  return (
+    <div
+      className="flex items-center gap-2 p-2 rounded transition-colors hover:bg-[var(--tp-bg-hover)]"
+      style={{
+        background: isRunning ? 'rgba(74, 222, 128, 0.05)' : 'var(--tp-bg-card)',
+        border: `1px solid ${isRunning ? 'rgba(74, 222, 128, 0.4)' : 'var(--tp-border)'}`,
+      }}
+    >
+      {type && (
+        <span
+          className="text-[9px] font-bold tracking-wider font-mono px-1.5 py-0.5 rounded shrink-0"
+          style={{
+            background: `var(--type-${type}-bg-chip)`,
+            color: `var(--type-${type})`,
+          }}
+          title={TASK_TYPE_LABEL[type]}
+        >
+          {TASK_TYPE_LABEL[type]}
+        </span>
+      )}
+      <span
+        className="text-xs font-mono truncate flex-1"
+        style={{ color: 'var(--tp-text)' }}
+        title={t.workflow_name || `#${t.id}`}
+      >
+        {t.workflow_name || `#${t.id}`}
+      </span>
+      <span
+        className="text-[10px] font-semibold tracking-wider uppercase px-1.5 py-0.5 rounded shrink-0 inline-flex items-center gap-1"
+        style={{
+          background: isRunning ? 'rgba(74, 222, 128, 0.13)' : 'var(--tp-bg-elevated)',
+          color: STATUS_COLOR[t.status] ?? 'var(--tp-text-muted)',
+        }}
+      >
+        {isRunning && (
+          <span
+            style={{
+              width: 5, height: 5, borderRadius: '50%',
+              background: 'var(--status-running)',
+              boxShadow: '0 0 6px var(--status-running)',
+            }}
+          />
+        )}
+        {STATUS_LABEL[t.status] ?? t.status}
+      </span>
     </div>
   )
 }
