@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>nous task panel · final — 三态交互(collapsed → expanded → modal)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 1440px; height: 900px;
+    overflow: hidden;
+    background: #0a0a0c;
+    color: #ededee;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .topbar { height: 44px; display: flex; align-items: center; padding: 0 18px; background: #0d0d0f; border-bottom: 1px solid #1a1a1c; }
+  .logo { font-weight: 700; font-size: 15px; color: #ededee; display: inline-flex; align-items: center; gap: 8px; }
+  .logo-dot { width: 8px; height: 8px; border-radius: 2px; background: linear-gradient(135deg, #c084fc, #22d3ee 50%, #60a5fa); }
+  .nav-tabs { display: flex; gap: 4px; margin-left: 32px; }
+  .nav-tab { padding: 0 12px; height: 28px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #888; border-radius: 6px; cursor: pointer; }
+  .nav-tab.active { background: #18181b; color: #ededee; }
+  .nav-spacer { flex: 1; }
+  .global-status { font-size: 12px; color: #888; display: inline-flex; align-items: center; gap: 6px; margin-right: 16px; }
+  .global-status .pulse { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+  .topbar-icons { display: flex; gap: 14px; color: #888; }
+
+  .main { display: flex; height: 856px; position: relative; }
+
+  .canvas {
+    width: 1060px;
+    background: radial-gradient(circle at 1px 1px, #1c1c1f 1px, transparent 1px) 0 0 / 16px 16px, #0a0a0c;
+    position: relative; overflow: hidden;
+  }
+  .node-box { position: absolute; background: #18181b; border: 1.5px solid #2a2a2d; border-radius: 10px; overflow: hidden; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5); }
+  .node-box.center { top: 50%; left: 50%; transform: translate(-50%, -50%); width: 280px; height: 180px; }
+  .node-box.left { top: 32%; left: 24%; transform: translate(-50%, -50%); width: 200px; height: 130px; opacity: 0.5; }
+  .node-box.right { top: 65%; left: 76%; transform: translate(-50%, -50%); width: 200px; height: 130px; opacity: 0.5; }
+  .node-title { height: 32px; background: linear-gradient(180deg, #1f1f22, #18181b); border-bottom: 1px solid #2a2a2d; display: flex; align-items: center; padding: 0 12px; gap: 7px; font-size: 12px; font-weight: 500; color: #ededee; }
+  .node-body { padding: 12px; position: relative; height: 148px; font-size: 11px; color: #888; line-height: 1.7; font-family: 'JetBrains Mono', monospace; }
+  .node-body .kv { display: flex; justify-content: space-between; }
+  .node-body .kv .k { color: #666; }
+  .node-body .kv .v { color: #ededee; }
+  .socket { position: absolute; width: 10px; height: 10px; border-radius: 50%; border: 2px solid #0a0a0c; }
+  .socket-in1 { top: 38px; left: -6px; background: #fbbf24; }
+  .socket-in2 { top: 66px; left: -6px; background: #fbbf24; }
+  .socket-out1 { top: 38px; right: -6px; background: #60a5fa; }
+  .socket-out2 { top: 66px; right: -6px; background: #c084fc; }
+  .conn { stroke: #2a2a2d; stroke-width: 1.5; fill: none; }
+
+  /* === Sidebar === */
+  .sidebar { width: 380px; background: #0d0d0f; border-left: 1px solid #1a1a1c; display: flex; flex-direction: column; overflow: hidden; }
+  .sb-header { height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid #1a1a1c; flex-shrink: 0; }
+  .sb-title { font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; gap: 7px; }
+  .sb-title-badge { font-size: 10px; color: #888; font-weight: 500; background: #1a1a1c; padding: 2px 7px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; }
+  .sb-close { color: #888; cursor: pointer; }
+
+  .sb-tabs { display: flex; padding: 0 16px; gap: 18px; border-bottom: 1px solid #1a1a1c; flex-shrink: 0; }
+  .sb-tab { height: 36px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #888; cursor: pointer; border-bottom: 2px solid transparent; font-weight: 500; }
+  .sb-tab.active { color: #ededee; border-bottom-color: #4ade80; }
+  .sb-tab .badge { font-size: 10px; padding: 1px 6px; background: #1a1a1c; color: #888; border-radius: 3px; font-family: 'JetBrains Mono', monospace; }
+  .sb-tab.active .badge { background: rgba(74, 222, 128, 0.13); color: #4ade80; }
+
+  .cook-overview { padding: 10px 16px; background: linear-gradient(180deg, #0f0f12 0%, #0d0d0f 100%); border-bottom: 1px solid #1a1a1c; flex-shrink: 0; }
+  .cook-stats-row { display: flex; align-items: center; gap: 14px; font-size: 11.5px; }
+  .cook-count { display: inline-flex; align-items: center; gap: 5px; color: #ededee; }
+  .cook-count .num { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .cook-stats-row .gpu-info { margin-left: auto; font-size: 11px; color: #888; font-family: 'JetBrains Mono', monospace; display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .dot.run { background: #4ade80; box-shadow: 0 0 8px rgba(74, 222, 128, 0.7); }
+  .dot.queue { background: #fbbf24; }
+  .dot.done { background: #6b7280; }
+
+  .sb-body { flex: 1; overflow-y: auto; }
+  .sb-section { padding: 10px 16px 6px; font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+  .sb-section .count { color: #555; font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+
+  /* Active timeline */
+  .active-wrap { padding: 0 12px 4px; }
+  .task-row { position: relative; display: flex; gap: 10px; }
+  .timeline-node { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 2px solid; background: #0d0d0f; }
+  .timeline-node.running { border-color: #4ade80; color: #4ade80; box-shadow: 0 0 14px rgba(74, 222, 128, 0.55), inset 0 0 8px rgba(74, 222, 128, 0.18); }
+  .task-card { flex: 1; background: #18181b; border: 1px solid #1f1f22; border-radius: 8px; padding: 10px 12px; }
+  .task-card.active { border-color: rgba(74, 222, 128, 0.4); background: linear-gradient(180deg, #18181b 0%, rgba(74, 222, 128, 0.05) 100%); box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.2), 0 6px 16px rgba(74, 222, 128, 0.06); }
+  .task-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+  .task-head .name-wrap { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .task-type-chip { height: 18px; padding: 0 6px; border-radius: 3px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+  .task-type-chip.image { background: rgba(192, 132, 252, 0.13); color: #c084fc; }
+  .task-type-chip.tts { background: rgba(34, 211, 238, 0.13); color: #22d3ee; }
+  .task-type-chip.llm { background: rgba(96, 165, 250, 0.13); color: #60a5fa; }
+  .task-type-chip.vision { background: rgba(251, 146, 60, 0.13); color: #fb923c; }
+  .task-name { font-size: 12.5px; font-weight: 600; color: #ededee; font-family: 'JetBrains Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip.status { height: 18px; padding: 0 7px; border-radius: 4px; font-size: 10px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; letter-spacing: 0.04em; text-transform: uppercase; flex-shrink: 0; }
+  .chip.status.run { background: rgba(74, 222, 128, 0.13); color: #4ade80; }
+  .chip.status.done { background: #1f1f22; color: #888; }
+  .task-meta { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #888; font-family: 'JetBrains Mono', monospace; }
+  .task-meta .sep { color: #444; }
+  .task-callout { margin-top: 8px; padding: 7px 10px; background: rgba(74, 222, 128, 0.08); border-left: 2px solid #4ade80; border-radius: 4px; font-size: 11px; color: #4ade80; display: flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace; }
+  .task-callout .strong { color: #86efac; font-weight: 600; }
+
+  /* === History list === */
+  .history-list { padding: 0 12px 8px; display: flex; flex-direction: column; gap: 6px; }
+
+  /* Collapsed row */
+  .hist-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+  .hist-row:hover { background: #16161a; border-color: #232325; }
+  .hist-thumb-mini { width: 32px; height: 32px; border-radius: 5px; flex-shrink: 0; border: 1px solid #2a2a2d; overflow: hidden; }
+  .hist-thumb-mini.image-a { background: linear-gradient(135deg, #1e3a5f 0%, #4a7fa8 50%, #c5d9e8 100%); }
+  .hist-thumb-mini.image-b { background: linear-gradient(135deg, #4a2a5a 0%, #a05080 50%, #f0a0c0 100%); }
+  .hist-thumb-mini.llm { background: #0a1322; display: flex; align-items: center; justify-content: center; }
+  .hist-thumb-mini.vision { background: #1a0f06; display: flex; align-items: center; justify-content: center; }
+  .hist-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .hist-line1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .hist-line1 .name { font-size: 12px; color: #ededee; font-weight: 500; font-family: 'JetBrains Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .hist-line2 { font-size: 10.5px; color: #666; font-family: 'JetBrains Mono', monospace; }
+  .hist-right { font-size: 10.5px; color: #555; flex-shrink: 0; font-family: 'JetBrains Mono', monospace; }
+  .hist-row .chevron { color: #444; }
+
+  /* Expanded card (rich) */
+  .hist-card-expanded {
+    background: #18181b;
+    border: 1px solid #2a2a2d;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .hist-card-expanded.image { border-color: rgba(192, 132, 252, 0.25); }
+  .hist-card-expanded.tts { border-color: rgba(34, 211, 238, 0.25); }
+  .exp-head {
+    padding: 9px 12px;
+    display: flex; align-items: center; gap: 6px;
+    background: #1a1a1c;
+    border-bottom: 1px solid #232325;
+  }
+  .exp-collapse { color: #888; cursor: pointer; transform: rotate(90deg); }
+  .exp-meta {
+    padding: 6px 12px;
+    font-size: 11px; color: #888;
+    font-family: 'JetBrains Mono', monospace;
+    display: flex; align-items: center; gap: 8px;
+    border-bottom: 1px solid #1f1f22;
+  }
+  .exp-meta .sep { color: #444; }
+  .exp-meta .time { margin-left: auto; color: #555; font-size: 10.5px; }
+
+  /* image expanded body */
+  .img-row {
+    padding: 10px 12px;
+    display: flex; gap: 11px; align-items: center;
+  }
+  .thumb-64 {
+    width: 64px; height: 64px;
+    border-radius: 6px; flex-shrink: 0;
+    background: linear-gradient(135deg, #1e3a5f 0%, #4a7fa8 35%, #b8d0e8 70%, #e8d8c0 100%);
+    position: relative; cursor: pointer;
+    border: 1px solid #2a2a2d;
+    overflow: hidden;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  }
+  .thumb-64::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse 70% 50% at 40% 60%, rgba(255,255,255,0.15), transparent 65%); pointer-events: none; }
+  .thumb-64 .lupe {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.55);
+    color: #ededee;
+    z-index: 2;
+  }
+  .thumb-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .thumb-info .title-line { font-size: 12px; color: #ededee; font-weight: 500; display: inline-flex; align-items: center; gap: 5px; }
+  .thumb-info .sub-line { font-size: 11px; color: #888; font-family: 'JetBrains Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .thumb-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+  .icon-btn {
+    width: 28px; height: 28px;
+    background: #1f1f22;
+    border: 1px solid #2a2a2d;
+    border-radius: 5px;
+    color: #aaa; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .icon-btn.primary { color: #4ade80; border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.1); }
+
+  /* tts expanded body */
+  .tts-text {
+    margin: 10px 12px 8px;
+    font-size: 11.5px; color: #ededee;
+    line-height: 1.45;
+    padding: 7px 10px;
+    background: #0b1518;
+    border-left: 2px solid #22d3ee;
+    border-radius: 3px;
+  }
+  .tts-text .quote-mark { color: #22d3ee; font-weight: 600; }
+  .audio-player {
+    margin: 0 12px 11px;
+    padding: 9px 11px;
+    background: #0e1a1d;
+    border: 1px solid #1a3038;
+    border-radius: 6px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .play-btn {
+    width: 30px; height: 30px;
+    background: #22d3ee;
+    border: none; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; flex-shrink: 0;
+    box-shadow: 0 0 12px rgba(34, 211, 238, 0.45);
+  }
+  .play-btn svg { fill: #062430; }
+  .waveform-wrap { flex: 1; min-width: 0; }
+  .waveform { height: 22px; display: flex; align-items: center; gap: 2px; }
+  .waveform .bar { width: 2px; background: #22d3ee; border-radius: 1px; opacity: 0.35; }
+  .waveform .bar.played { opacity: 1; }
+  .audio-time { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #888; margin-top: 3px; display: flex; justify-content: space-between; }
+  .audio-time .cur { color: #22d3ee; }
+
+  /* Footer */
+  .sb-footer { padding: 10px 14px; border-top: 1px solid #1a1a1c; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #666; flex-shrink: 0; gap: 6px; }
+
+  /* === Modal === */
+  .modal-backdrop {
+    position: absolute; inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(3px);
+    z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal {
+    width: 820px; height: 600px;
+    background: #18181b;
+    border: 1px solid #2a2a2d;
+    border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-header { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid #232325; background: #1a1a1c; }
+  .modal-header .name { font-size: 14px; font-weight: 600; color: #ededee; font-family: 'JetBrains Mono', monospace; }
+  .modal-spacer { flex: 1; }
+  .modal-close { width: 28px; height: 28px; border-radius: 5px; color: #888; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .modal-body { flex: 1; display: flex; min-height: 0; }
+  .modal-image-pane { width: 560px; background: #0a0a0c; display: flex; align-items: center; justify-content: center; border-right: 1px solid #232325; position: relative; overflow: hidden; }
+  .modal-image { width: 480px; height: 480px; background: linear-gradient(135deg, #1e3a5f 0%, #4a7fa8 35%, #b8d0e8 70%, #e8d8c0 100%); border-radius: 6px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); position: relative; }
+  .modal-image::after { content: ''; position: absolute; inset: 0; border-radius: 6px; background: radial-gradient(ellipse 70% 50% at 40% 60%, rgba(255,255,255,0.15), transparent 65%); }
+  .modal-image-tools { position: absolute; top: 16px; right: 16px; display: flex; gap: 6px; }
+  .img-tool-btn { width: 32px; height: 32px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; color: #ededee; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
+  .modal-detail-pane { flex: 1; padding: 18px 18px; display: flex; flex-direction: column; overflow-y: auto; }
+  .detail-section { margin-bottom: 14px; }
+  .detail-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+  .detail-prompt { font-size: 12px; color: #ededee; line-height: 1.55; font-family: 'JetBrains Mono', monospace; padding: 8px 10px; background: #0e0e10; border-left: 2px solid #c084fc; border-radius: 3px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+  .detail-grid .k { color: #666; }
+  .detail-grid .v { color: #ededee; }
+  .detail-buttons { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+  .btn-modal { height: 36px; border-radius: 6px; border: 1px solid #2a2a2d; background: #1f1f22; color: #ededee; font-size: 12px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+  .btn-modal.primary { background: rgba(74, 222, 128, 0.12); border-color: rgba(74, 222, 128, 0.45); color: #4ade80; font-weight: 600; }
+
+  .ic { width: 14px; height: 14px; stroke: currentColor; stroke-width: 1.7; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .ic-sm { width: 11px; height: 11px; stroke: currentColor; stroke-width: 1.7; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .ic-md { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.7; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="logo"><span class="logo-dot"></span>nous</div>
+    <div class="nav-tabs">
+      <div class="nav-tab active"><svg class="ic-sm" viewBox="0 0 24 24"><circle cx="9" cy="9" r="2"/><circle cx="9" cy="17" r="2"/><circle cx="17" cy="13" r="2"/><path d="M11 9h4M11 17h4M9 11v4"/></svg>Workflow</div>
+      <div class="nav-tab"><svg class="ic-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>Image</div>
+      <div class="nav-tab"><svg class="ic-sm" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>TTS</div>
+      <div class="nav-tab"><svg class="ic-sm" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>LLM</div>
+      <div class="nav-tab"><svg class="ic-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Models</div>
+    </div>
+    <div class="nav-spacer"></div>
+    <div class="global-status"><span class="pulse"></span>infra <span style="color:#ededee;font-weight:500">healthy</span> · 3 GPU</div>
+    <div class="topbar-icons">
+      <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/></svg>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="canvas">
+      <div class="node-box left"><div class="node-title"><svg class="ic-sm" viewBox="0 0 24 24" style="color:#fbbf24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 3v18M16 3v18"/></svg>Checkpoint Loader</div><div class="node-body"><div class="kv"><span class="k">model</span><span class="v">flux2-klein</span></div><div class="kv"><span class="k">dtype</span><span class="v">bf16</span></div><div class="socket socket-out1"></div></div></div>
+      <div class="node-box center"><div class="node-title"><svg class="ic-sm" viewBox="0 0 24 24" style="color:#c084fc"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="#c084fc"/></svg>Image Generation · Flux2 Klein</div><div class="node-body"><div class="kv"><span class="k">prompt</span><span class="v">a serene mountain...</span></div><div class="kv"><span class="k">size</span><span class="v">1024×1024</span></div><div class="kv"><span class="k">seed</span><span class="v">42</span></div><div class="kv"><span class="k">cfg</span><span class="v">4.5</span></div><div class="kv"><span class="k">steps</span><span class="v">50</span></div><div class="socket socket-in1"></div><div class="socket socket-in2"></div><div class="socket socket-out1"></div><div class="socket socket-out2"></div></div></div>
+      <div class="node-box right"><div class="node-title"><svg class="ic-sm" viewBox="0 0 24 24" style="color:#60a5fa"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>Image Save</div><div class="node-body"><div class="kv"><span class="k">path</span><span class="v">/out/{seed}</span></div><div class="kv"><span class="k">format</span><span class="v">png</span></div><div class="socket socket-in1"></div></div></div>
+      <svg style="position:absolute;inset:0;pointer-events:none" width="1060" height="856"><path class="conn" d="M 360 274 C 430 274, 450 414, 530 414"/><path class="conn" d="M 678 442 C 720 442, 740 558, 800 558"/></svg>
+
+      <!-- MODAL (state 3: 详情) -->
+      <div class="modal-backdrop">
+        <div class="modal">
+          <div class="modal-header">
+            <span class="task-type-chip image">image</span>
+            <span class="name">flux2-klein-bf16</span>
+            <span class="chip status done">done</span>
+            <span class="modal-spacer"></span>
+            <span style="font-size:11px;color:#666;font-family:'JetBrains Mono',monospace">2 分钟前 · 4.4s</span>
+            <div class="modal-close"><svg class="ic" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>
+          </div>
+          <div class="modal-body">
+            <div class="modal-image-pane">
+              <div class="modal-image"></div>
+              <div class="modal-image-tools">
+                <div class="img-tool-btn"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+                <div class="img-tool-btn"><svg class="ic" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></div>
+              </div>
+            </div>
+            <div class="modal-detail-pane">
+              <div class="detail-section">
+                <div class="detail-label">PROMPT</div>
+                <div class="detail-prompt">a serene mountain lake at dawn, soft mist drifting across the still water, photorealistic, dramatic lighting, ultra detailed</div>
+              </div>
+              <div class="detail-section">
+                <div class="detail-label">参数</div>
+                <div class="detail-grid">
+                  <span class="k">size</span><span class="v">1024×1024</span>
+                  <span class="k">seed</span><span class="v">6712</span>
+                  <span class="k">cfg</span><span class="v">4.5</span>
+                  <span class="k">steps</span><span class="v">50</span>
+                  <span class="k">scheduler</span><span class="v">euler-flow</span>
+                  <span class="k">dtype</span><span class="v">bf16</span>
+                </div>
+              </div>
+              <div class="detail-section">
+                <div class="detail-label">运行</div>
+                <div class="detail-grid">
+                  <span class="k">created</span><span class="v">14:23:08</span>
+                  <span class="k">duration</span><span class="v">4.4s</span>
+                  <span class="k">device</span><span class="v">cuda:1</span>
+                  <span class="k">peak vram</span><span class="v">9.4 GiB</span>
+                </div>
+              </div>
+              <div class="detail-buttons">
+                <div class="btn-modal primary">
+                  <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                  重跑(相同参数)
+                </div>
+                <div style="display:flex;gap:8px">
+                  <div class="btn-modal" style="flex:1"><svg class="ic-sm" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制 prompt</div>
+                  <div class="btn-modal" style="flex:1"><svg class="ic-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>下载</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sb-header">
+        <div class="sb-title">
+          <svg class="ic-md" viewBox="0 0 24 24" style="color:#ededee"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          全部任务
+          <span class="sb-title-badge">global queue</span>
+        </div>
+        <div class="sb-close"><svg class="ic" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></div>
+      </div>
+
+      <div class="sb-tabs">
+        <div class="sb-tab active">Active <span class="badge">1</span></div>
+        <div class="sb-tab">History <span class="badge">47</span></div>
+      </div>
+
+      <div class="cook-overview">
+        <div class="cook-stats-row">
+          <span class="cook-count"><span class="dot run"></span><span class="num">1</span> 运行</span>
+          <span class="cook-count"><span class="dot queue"></span><span class="num">12</span> 排队</span>
+          <span class="cook-count"><span class="dot done"></span><span class="num">47</span> 完成</span>
+          <span class="gpu-info"><svg class="ic-sm" viewBox="0 0 24 24" style="color:#4ade80"><rect x="2" y="9" width="20" height="6" rx="1"/><path d="M6 12h.01M10 12h.01M14 12h.01M18 12h.01"/></svg>GPU 1·62%</span>
+        </div>
+      </div>
+
+      <div class="sb-body">
+        <div class="sb-section"><span>正在跑</span><span class="count">1 个</span></div>
+        <div class="active-wrap">
+          <div class="task-row">
+            <div class="timeline-node running"><svg class="ic-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg></div>
+            <div class="task-card active">
+              <div class="task-head">
+                <div class="name-wrap"><span class="task-type-chip image">image</span><span class="task-name">flux2-klein-bf16</span></div>
+                <span class="chip status run"><span class="dot run" style="width:5px;height:5px"></span>running</span>
+              </div>
+              <div class="task-meta"><span>1024×1024</span><span class="sep">·</span><span>seed 42</span><span class="sep">·</span><span>cfg 4.5</span></div>
+              <div class="task-callout"><svg class="ic-sm" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span><span class="strong">dit denoise · step 27/50</span> · 240ms/step · ETA 5.5s</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sb-section" style="margin-top:6px"><span>最近完成</span><span class="count">5 条</span></div>
+
+        <div class="history-list">
+
+          <!-- Card 1: image EXPANDED (rich card) -->
+          <div class="hist-card-expanded image">
+            <div class="exp-head">
+              <span class="task-type-chip image">image</span>
+              <span class="task-name" style="flex:1">flux2-klein-bf16</span>
+              <span class="chip status done">done</span>
+              <span class="exp-collapse"><svg class="ic-sm" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span>
+            </div>
+            <div class="exp-meta">
+              <span>seed 6712</span><span class="sep">·</span><span>1024×1024</span><span class="sep">·</span><span>4.4s</span><span class="time">2m ago</span>
+            </div>
+            <div class="img-row">
+              <div class="thumb-64">
+                <div class="lupe">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                </div>
+              </div>
+              <div class="thumb-info">
+                <div class="title-line" style="color:#c084fc">
+                  <svg class="ic-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  点击放大 →
+                </div>
+                <div class="sub-line">prompt: a serene mountain lake...</div>
+              </div>
+              <div class="thumb-actions">
+                <div class="icon-btn primary" title="重跑"><svg class="ic-sm" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></div>
+                <div class="icon-btn" title="复制"><svg class="ic-sm" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></div>
+                <div class="icon-btn" title="下载"><svg class="ic-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 2: TTS EXPANDED with audio player -->
+          <div class="hist-card-expanded tts">
+            <div class="exp-head">
+              <span class="task-type-chip tts">tts</span>
+              <span class="task-name" style="flex:1">doubao-zh-female-04</span>
+              <span class="chip status done">done</span>
+              <span class="exp-collapse"><svg class="ic-sm" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span>
+            </div>
+            <div class="exp-meta">
+              <span>15.8s</span><span class="sep">·</span><span>22.05kHz</span><span class="sep">·</span><span>1×RT</span><span class="time">6m ago</span>
+            </div>
+            <div class="tts-text">
+              <span class="quote-mark">"</span>欢迎使用 nous 推理平台,这里集成了图像生成、语音合成、视觉识别和大语言模型四大服务...<span class="quote-mark">"</span>
+            </div>
+            <div class="audio-player">
+              <div class="play-btn"><svg width="10" height="10" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+              <div class="waveform-wrap">
+                <div class="waveform">
+                  <div class="bar played" style="height:5px"></div><div class="bar played" style="height:12px"></div><div class="bar played" style="height:7px"></div><div class="bar played" style="height:18px"></div><div class="bar played" style="height:16px"></div><div class="bar played" style="height:9px"></div><div class="bar played" style="height:20px"></div><div class="bar played" style="height:14px"></div><div class="bar played" style="height:10px"></div><div class="bar played" style="height:18px"></div><div class="bar played" style="height:12px"></div>
+                  <div class="bar" style="height:5px"></div><div class="bar" style="height:16px"></div><div class="bar" style="height:10px"></div><div class="bar" style="height:8px"></div><div class="bar" style="height:14px"></div><div class="bar" style="height:10px"></div><div class="bar" style="height:18px"></div><div class="bar" style="height:7px"></div><div class="bar" style="height:12px"></div><div class="bar" style="height:5px"></div><div class="bar" style="height:11px"></div><div class="bar" style="height:16px"></div><div class="bar" style="height:9px"></div><div class="bar" style="height:13px"></div><div class="bar" style="height:7px"></div><div class="bar" style="height:14px"></div><div class="bar" style="height:5px"></div><div class="bar" style="height:10px"></div><div class="bar" style="height:4px"></div>
+                </div>
+                <div class="audio-time"><span class="cur">0:08</span><span>0:15</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Collapsed row 3: LLM -->
+          <div class="hist-row">
+            <div class="hist-thumb-mini llm">
+              <svg width="18" height="12" viewBox="0 0 24 18" fill="none" stroke="#60a5fa" stroke-width="1.5"><line x1="2" y1="3" x2="22" y2="3"/><line x1="2" y1="9" x2="16" y2="9"/><line x1="2" y1="15" x2="20" y2="15"/></svg>
+            </div>
+            <div class="hist-info">
+              <div class="hist-line1">
+                <span class="task-type-chip llm">llm</span>
+                <span class="name">qwen3-32b · chat</span>
+              </div>
+              <div class="hist-line2">234 tok · 18 tok/s · 13s</div>
+            </div>
+            <div class="hist-right">9m</div>
+            <div class="chevron"><svg class="ic-sm" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></div>
+          </div>
+
+          <!-- Collapsed row 4: vision -->
+          <div class="hist-row">
+            <div class="hist-thumb-mini vision">
+              <svg width="18" height="12" viewBox="0 0 24 16" fill="none" stroke="#fb923c" stroke-width="1.4"><path d="M1 8s4-6 11-6 11 6 11 6-4 6-11 6-11-6-11-6z"/><circle cx="12" cy="8" r="2"/></svg>
+            </div>
+            <div class="hist-info">
+              <div class="hist-line1">
+                <span class="task-type-chip vision">vision</span>
+                <span class="name">llava-1.6 · describe</span>
+              </div>
+              <div class="hist-line2">2 张图 · 156 tok · 4.2s</div>
+            </div>
+            <div class="hist-right">12m</div>
+            <div class="chevron"><svg class="ic-sm" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="sb-footer">
+        <svg class="ic-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span>collapsed → 点击展开 → 缩略图点开 modal</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
