@@ -44,7 +44,7 @@ export interface ExecutionState {
   // Task panel
   taskPanelOpen: boolean
   toggleTaskPanel: () => void
-  /** IconRail 任务图标 badge 计数（DD4）：点 Run 累加，打开面板清零。
+  /** Tasks badge(后续 sidebar PR-3 接管) 计数（DD4）：点 Run 累加，打开面板清零。
    * 与「running task 数」解耦 —— 它表达的是「有未查看的新提交」。 */
   taskIconBadge: number
   bumpTaskBadge: () => void
