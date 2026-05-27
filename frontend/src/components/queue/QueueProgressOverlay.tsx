@@ -268,12 +268,25 @@ function ExpandedView({
   onClose: () => void
   onClearQueued: () => void
 }) {
+  const deleteMutation = useDeleteTask()
+  const [historyMenuPos, setHistoryMenuPos] = useState<{ x: number; y: number } | null>(null)
   const filteredDone = useMemo(() => {
     if (tab === 'All') return done
     if (tab === 'Completed') return done.filter((t) => t.status === 'completed')
     return done.filter((t) => t.status === 'failed')
   }, [tab, done])
   const groups = useMemo(() => groupByDate(filteredDone), [filteredDone])
+  // FINDING-005:JobHistoryActionsMenu 等价 — 「清空历史」入口
+  const historyMenuItems: MenuItem[] = [
+    {
+      label: '清空历史记录', danger: true,
+      disabled: done.length === 0,
+      onClick: () => {
+        if (!confirm(`清空 ${done.length} 条历史记录?(不可恢复)`)) return
+        for (const t of done) deleteMutation.mutate(t.id)
+      },
+    },
+  ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0, flex: 1, minHeight: 0 }}>
@@ -306,6 +319,14 @@ function ExpandedView({
             }}
           ><ListX size={14} /></button>
         </div>
+        {/* FINDING-005:JobHistoryActionsMenu 等价 — ⋯ button 弹「清空历史」menu */}
+        <button
+          type="button"
+          onClick={(e) => setHistoryMenuPos({ x: e.clientX, y: e.clientY })}
+          aria-label="更多操作"
+          title="更多操作"
+          style={iconBtn}
+        ><MoreHorizontal size={14} /></button>
         <button
           type="button" onClick={onClose} aria-label="关闭"
           style={iconBtn}
@@ -338,6 +359,13 @@ function ExpandedView({
           </div>
         ))}
       </div>
+      {historyMenuPos && (
+        <ContextMenu
+          items={historyMenuItems}
+          position={historyMenuPos}
+          onClose={() => setHistoryMenuPos(null)}
+        />
+      )}
     </div>
   )
 }
