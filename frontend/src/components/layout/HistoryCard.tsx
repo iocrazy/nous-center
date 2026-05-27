@@ -259,6 +259,8 @@ function HistoryCardExpanded({
 function ImageExpandedBody({ task }: { task: ExecutionTask }) {
   const thumb = getFirstThumbnail(task)
   const prompt = getFirstPrompt(task)
+  const openModal = useExecutionStore((s) => s.openDetailModal)
+  const onOpen = () => openModal(task.id)
   return (
     <>
       <ExpMeta task={task} segments={[
@@ -266,24 +268,31 @@ function ImageExpandedBody({ task }: { task: ExecutionTask }) {
         durationLabel(task.duration_ms),
       ]} />
       <div className="flex items-center gap-2 px-3 pb-3">
-        {/* thumb-64 */}
-        <div
-          className="relative shrink-0 rounded overflow-hidden"
+        {/* thumb-64 → 点击打开 detail modal (PR-3e) */}
+        <button
+          onClick={onOpen}
+          className="relative shrink-0 rounded overflow-hidden transition-transform hover:scale-105"
           style={{
             width: 64, height: 64,
             background: thumb ? `center / cover url(${JSON.stringify(thumb)})` : 'var(--tp-bg-elevated)',
             border: '1px solid var(--tp-border-strong)',
+            cursor: 'pointer',
           }}
-          aria-label="缩略图"
+          aria-label="放大查看"
         >
           {!thumb && (
             <div className="w-full h-full flex items-center justify-center">
               <ImageIcon size={24} style={{ color: 'var(--type-image)' }} />
             </div>
           )}
-        </div>
-        {/* thumb-info */}
-        <div className="flex-1 min-w-0 flex flex-col gap-1">
+        </button>
+        {/* thumb-info → 点击同样打开 modal(扩大点击区) */}
+        <button
+          onClick={onOpen}
+          className="flex-1 min-w-0 flex flex-col gap-1 text-left"
+          style={{ cursor: 'pointer', background: 'transparent', border: 'none', padding: 0 }}
+          aria-label="放大查看(prompt)"
+        >
           <div
             className="flex items-center gap-1.5 text-[11px] font-mono"
             style={{ color: 'var(--type-image)' }}
@@ -298,7 +307,7 @@ function ImageExpandedBody({ task }: { task: ExecutionTask }) {
           >
             {prompt ? `prompt: ${prompt}` : <span style={{ color: 'var(--tp-text-faint)' }}>(no prompt)</span>}
           </div>
-        </div>
+        </button>
         {/* thumb-actions */}
         <div className="flex gap-1 shrink-0">
           <IconBtn label="重跑" primary><RefreshCw size={12} /></IconBtn>

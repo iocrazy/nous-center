@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, useLocation, useParams } from 'react-rout
 import GlobalTopbar from './components/layout/GlobalTopbar'
 import IconRail from './components/layout/IconRail'
 import WorkflowCanvasToolbar from './components/layout/WorkflowCanvasToolbar'
+import TaskDetailModal from './components/layout/TaskDetailModal'
 import NodeEditor from './components/nodes/NodeEditor'
 import ToastContainer from './components/common/ToastContainer'
 import { usePanelStore, type OverlayId } from './stores/panel'
@@ -113,6 +114,7 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
         </div>
       </div>
       <ToastContainer />
+      <TaskDetailModal />
     </div>
   )
 }
