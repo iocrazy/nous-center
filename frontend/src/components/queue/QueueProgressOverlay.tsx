@@ -105,7 +105,9 @@ export default function QueueProgressOverlay({
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
         transition: 'background 0.2s, border-color 0.2s, box-shadow 0.2s',
-        fontFamily: 'var(--font)',
+        // FINDING-002(/design-review):ComfyUI 用 font-inter;nous 应明确 fallback
+        // 链(避免 var(--font) 落到无 weight 的字体导致字重不一致)。
+        fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif',
       }}
     >
       {isExpanded ? (
@@ -152,10 +154,10 @@ function ActiveView({
   onInterruptAll: () => void
   onClearQueued: () => void
 }) {
-  // FINDING-001(/design-review):active 卡 ComfyUI 不显 headerTitle —
-  // 只在 expanded 卡顶 header 显标题。active 是紧凑双进度卡,标题是冗余。
+  // FINDING-001:active 卡 ComfyUI 不显 headerTitle(只 expanded 用)。
+  // FINDING-004:active 内部 gap=3(12px),对齐 ComfyUI gap-3。原 8px 偏紧。
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 8 }}>
       {/* 双 progress bar 叠加(对齐 ComfyUI active overlay) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{
@@ -175,8 +177,9 @@ function ActiveView({
           }} />
         </div>
         <div style={{
+          // FINDING-003:ComfyUI text-[12px] leading-none — nous 原 11px 偏小。
           display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end',
-          gap: 16, fontSize: 11, lineHeight: 1,
+          gap: 16, fontSize: 12, lineHeight: 1,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text)', opacity: 0.9 }}>
             <span>全部:</span>
@@ -212,7 +215,8 @@ function ActiveView({
         transition: 'opacity 0.2s ease',
         padding: '0 4px',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text)' }}>
+        {/* FINDING-003:ComfyUI bottom row text-[12px] — 字号应 12px */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text)' }}>
           <span style={{ fontWeight: 700 }}>{runningCount}</span>
           <span style={{ opacity: 0.9 }}>正在运行</span>
           {runningCount > 0 && (
@@ -223,7 +227,7 @@ function ActiveView({
             ><X size={12} /></button>
           )}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text)' }}>
           <span style={{ fontWeight: 700 }}>{queuedCount}</span>
           <span style={{ opacity: 0.9 }}>排队中</span>
           {queuedCount > 0 && (
@@ -283,8 +287,9 @@ function ExpandedView({
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{headerTitle}</div>
         <div style={{
+          // FINDING-003:ComfyUI header tools text-[12px] leading-none
           display: 'inline-flex', alignItems: 'center', gap: 8,
-          fontSize: 11, color: 'var(--text)',
+          fontSize: 12, color: 'var(--text)',
         }}>
           <span style={{ opacity: queuedCount === 0 ? 0.5 : 1 }}>清理队列</span>
           <button
@@ -326,7 +331,8 @@ function ExpandedView({
         {groups.map(([label, items]) => (
           <div key={label}>
             <div style={{
-              padding: '0 12px 8px 12px', fontSize: 11, color: 'var(--muted)', lineHeight: 1,
+              // FINDING-003:ComfyUI text-xs (12px) leading-none for group header
+              padding: '0 12px 8px 12px', fontSize: 12, color: 'var(--muted)', lineHeight: 1,
             }}>{label}</div>
             {items.map((t) => <JobRow key={t.id} task={t} />)}
           </div>
@@ -415,7 +421,7 @@ function JobRow({ task }: { task: ExecutionTask }) {
             fontSize: 13, color: 'var(--text)', fontWeight: 500,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{title}</div>
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{meta}</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>{meta}</div>
         </div>
         {hover && (
           <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
