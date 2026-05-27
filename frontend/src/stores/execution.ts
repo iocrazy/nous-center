@@ -60,6 +60,12 @@ export interface ExecutionState {
    * 用户点 chevron 强制覆盖默认。 */
   expandedHistoryRowIds: Set<string>
   toggleHistoryRowExpanded: (id: string) => void
+
+  /** PR-3e:任务详情 modal。点任务缩略图 / 「点击放大→」打开,820×600 居中浮层,
+   * 按 service type 切换内部布局(image/tts/llm/vision)。 */
+  detailModalTaskId: string | null
+  openDetailModal: (taskId: string) => void
+  closeDetailModal: () => void
 }
 
 export const useExecutionStore = create<ExecutionState>((set, get) => ({
@@ -81,6 +87,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   taskPanelOpen: false,
   taskIconBadge: 0,
   expandedHistoryRowIds: new Set<string>(),
+  detailModalTaskId: null,
 
   start: (taskId) =>
     set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null, currentNodeStage: null, currentNodeStepLatencyMs: null, currentNodeEtaMs: null }),
@@ -132,6 +139,9 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       else next.add(id)
       return { expandedHistoryRowIds: next }
     }),
+
+  openDetailModal: (taskId) => set({ detailModalTaskId: taskId }),
+  closeDetailModal: () => set({ detailModalTaskId: null }),
 
   wsConnect: (instanceId: string) => {
     const existing = get()._ws
