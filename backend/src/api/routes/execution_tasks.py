@@ -162,6 +162,30 @@ def _detect_image_meta(result: object) -> dict:
     return out
 
 
+def _detect_tts_meta(result: object) -> dict:
+    """PR-1b:TTS workflow result envelope 识别 —— audio/* media_type 或 audio_url。
+    匹配 ImageBackend 落 image_output_storage 后的形状的 TTS 对应版本(audio_url + duration)。
+    返 duration_seconds 供前端音频时长展示。"""
+    out: dict = {"task_type": None, "audio_duration_seconds": None}
+    if not isinstance(result, dict):
+        return out
+    for v in result.values():
+        if not isinstance(v, dict):
+            continue
+        media_type = v.get("media_type")
+        is_audio = (
+            (isinstance(media_type, str) and media_type.startswith("audio/"))
+            or "audio_url" in v
+        )
+        if is_audio:
+            out["task_type"] = "tts"
+            dur = v.get("duration_seconds") or (v.get("meta") or {}).get("duration_seconds")
+            if isinstance(dur, (int, float)):
+                out["audio_duration_seconds"] = float(dur)
+            return out
+    return out
+
+
 def _task_to_dict(t: ExecutionTask) -> dict:
     d = {
         "id": str(t.id),
@@ -177,11 +201,16 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
-    meta = _detect_image_meta(t.result)
-    d.update(meta)
-    # PR-1a(2026-05-27 任务面板重置 spec §State model):显式 `type` 字段(image / tts / vision /
-    # llm),对应前端 ServiceType。当前 _detect_image_meta 只识别 image;tts/llm/vision 由后续
-    # PR-1b/c/d 在 _detect_*_meta 里扩展(改 result envelope 形状识别)。type=None → 旧 fake/未识别
-    # workflow 不强制归类(前端 Other 兜底)。
-    d["type"] = meta.get("task_type")
+    # 顺序:image 先(workflow 多含 image_output);未命中再 TTS 检测。
+    # llm / vision 由 PR-1c/d 扩展(各自 _detect_*_meta)。
+    img_meta = _detect_image_meta(t.result)
+    d.update(img_meta)
+    if img_meta.get("task_type") is None:
+        tts_meta = _detect_tts_meta(t.result)
+        if tts_meta.get("task_type"):
+            d["task_type"] = tts_meta["task_type"]
+            d["audio_duration_seconds"] = tts_meta["audio_duration_seconds"]
+    # PR-1a/1b(2026-05-27 任务面板重置 spec §State model):显式 `type` 字段(image / tts /
+    # vision / llm),对应前端 ServiceType。type=None → 旧 fake / 未识别 workflow,前端 Other 兜底。
+    d["type"] = d.get("task_type")
     return d

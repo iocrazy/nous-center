@@ -69,6 +69,102 @@ async def test_fake_tts_adapter_rejects_non_audio_request():
         await a.infer(ImageRequest(request_id="x", prompt="a cat"))
 
 
+@pytest.mark.asyncio
+async def test_fake_tts_infer_emits_tts_synth_start_and_end(monkeypatch):
+    """PR-1b:TTSEngine.infer 默认 emit `tts_synth` start(progress=0)+ end(progress=1.0)。
+    fake synthesize 同步返回(<1ms),ticker 没机会 fire,所以只看 start/end 两帧。
+    end 帧 step_latency_ms 是 int / eta_ms == 0 / detail 含 duration_seconds。"""
+    events: list[dict] = []
+
+    def on_p(step: int, total: int, **extras) -> None:
+        events.append({"step": step, "total": total, **extras})
+
+    a = FakeTTSAdapter(paths={"main": "/fake/tts"})
+    await a.load("cpu")
+    await a.infer(_audio_req("你好"), progress_callback=on_p)
+
+    # 至少 2 帧(start + end);ticker 可能没机会 fire(fake synth <1ms)。
+    assert len(events) >= 2
+    start, end = events[0], events[-1]
+    # start
+    assert start["stage"] == "tts_synth"
+    assert start["progress"] == 0.0
+    assert start["step"] == 0
+    # end
+    assert end["stage"] == "tts_synth"
+    assert end["progress"] == 1.0
+    assert end["eta_ms"] == 0
+    assert isinstance(end["step_latency_ms"], int)
+    assert "done" in end["detail"]
+
+
+@pytest.mark.asyncio
+async def test_fake_tts_infer_boundary_cancel_raises():
+    """PR-1b spec §4.4 升级:boundary cancel 仍然立刻 raise CancelledError,
+    synthesize 不会跑(节省 GPU/CPU)。"""
+    import threading
+
+    a = FakeTTSAdapter(paths={"main": "/fake/tts"})
+    await a.load("cpu")
+    flag = threading.Event()
+    flag.set()
+    with pytest.raises(asyncio.CancelledError):
+        await a.infer(_audio_req("any"), cancel_flag=flag)
+
+
+@pytest.mark.asyncio
+async def test_fake_tts_infer_ticker_fires_under_slow_synthesize(monkeypatch):
+    """PR-1b ticker 集成:synthesize 慢(500ms)时,periodic ticker 应至少 fire 一次
+    (默认 300ms 间隔)。覆盖「synthesize 走 to_thread + 主 loop 跑 ticker」并发路径,
+    本测试是「假合成 + 真 asyncio.to_thread」的最小集成,补足真 TTS 引擎本地无 dep
+    跑不了的 smoke 验证缺口(torchaudio/qwen_tts/voxcpm/librosa 都不在本 dev 环境)。"""
+    import time
+
+    events: list[dict] = []
+
+    def on_p(step: int, total: int, **extras) -> None:
+        events.append({"step": step, "total": total, **extras})
+
+    a = FakeTTSAdapter(paths={"main": "/fake/tts"})
+    await a.load("cpu")
+
+    # 真 to_thread 跑 500ms 阻塞 —— 主 loop 同时跑 ticker(300ms)→ 应抓到 >=1 中间帧。
+    orig_synth = a.synthesize
+
+    def slow_synth(*args, **kwargs):
+        time.sleep(0.5)
+        return orig_synth(*args, **kwargs)
+
+    monkeypatch.setattr(a, "synthesize", slow_synth)
+    await a.infer(_audio_req("hello"), progress_callback=on_p)
+
+    # start + 至少 1 ticker + end ≥ 3 帧。
+    assert len(events) >= 3, f"ticker 应 fire 至少 1 次 (got {len(events)} events)"
+    # 中间帧 progress 严格在 (0, 1) 区间(ticker 上限 0.95)。
+    middle = events[1:-1]
+    assert middle, "ticker 中间帧应存在"
+    for e in middle:
+        assert 0 < e["progress"] < 1.0, f"ticker 帧 progress 应 ∈ (0,1),实际:{e['progress']}"
+        assert e["stage"] == "tts_synth"
+
+
+@pytest.mark.asyncio
+async def test_fake_tts_infer_legacy_callback_signature_backcompat():
+    """PR-1b:老 callback 只接 (done, total) → _make_tts_emit TypeError 降级。"""
+    calls: list[tuple[int, int]] = []
+
+    def on_p(step: int, total: int) -> None:  # 老契约
+        calls.append((step, total))
+
+    a = FakeTTSAdapter(paths={"main": "/fake/tts"})
+    await a.load("cpu")
+    await a.infer(_audio_req("hi"), progress_callback=on_p)
+    # start (0, est) + end (n, n)
+    assert len(calls) >= 2
+    assert calls[0][0] == 0
+    assert calls[-1][0] == calls[-1][1]
+
+
 # ---- runner 子进程 TTS 路径（真 multiprocessing.Process）----
 
 

@@ -265,8 +265,9 @@ class WorkflowExecutor:
             # PR-F:latent 预览 thumbnail(data URI)透传到 WS,前端节点上叠图。
             if getattr(pmsg, "preview_url", None):
                 event["preview_url"] = pmsg.preview_url
-            # PR-1a:L3 stage 字段(text_encode / dit_denoise / vae_decode)+ step + ETA 透传。
-            # 前端 ActiveTaskRow / callout 据此渲染「⚡ dit step 27/50 · ETA 5.5s」(spec §State model
+            # PR-1a / PR-1b:L3 stage 字段(image: text_encode / dit_denoise / vae_decode;
+            # tts: tts_synth)+ step + ETA 透传。前端 ActiveTaskRow / callout 据此渲染
+            # 「⚡ dit step 27/50 · ETA 5.5s」/ 「🔊 合成 3/6秒 · ETA 3s」(spec §State model
             # TaskProgress)。任一字段为 None 不发,保前端解析时只看有的键。
             for field_name in ("stage", "step", "total_steps", "step_latency_ms", "eta_ms"):
                 v = getattr(pmsg, field_name, None)

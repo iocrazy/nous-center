@@ -8,8 +8,10 @@ adapter 形状完全一致。
 不 import torch / torchaudio / soundfile —— synthesize 直接拼一段最小合法 WAV
 header + 静音 PCM，conftest 的 CUDA_VISIBLE_DEVICES="" 对它无影响。
 
-spec §4.4：TTS 节点只需 boundary-cancel。TTSEngine.infer(req) 签名只收 req，
-不接 progress_callback / cancel_flag —— FakeTTSAdapter 保持这个形状。
+spec §4.4 升级(PR-1b 任务面板重置 L3 stage 事件):TTSEngine.infer 现在
+接 progress_callback + cancel_flag 可选 kwarg,发 tts_synth start/end 帧
+(支持 streaming 的具体 engine 还可逐 chunk emit)。FakeTTSAdapter 继承基类
+infer,自动跟上新契约,**不**重写 —— 它只覆盖 synthesize(返回静音 WAV)。
 """
 from __future__ import annotations
 
