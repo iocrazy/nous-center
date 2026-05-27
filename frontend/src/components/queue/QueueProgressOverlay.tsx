@@ -121,7 +121,6 @@ export default function QueueProgressOverlay({
         />
       ) : (
         <ActiveView
-          headerTitle={headerTitle}
           runningCount={running.length}
           queuedCount={queued.length}
           totalPct={totalPct}
@@ -141,11 +140,10 @@ export default function QueueProgressOverlay({
 // ---------- ActiveView(紧凑 active 卡) ----------
 
 function ActiveView({
-  headerTitle, runningCount, queuedCount,
+  runningCount, queuedCount,
   totalPct, nodePct, currentNodeName, previewUrl,
   isHovered, onViewAll, onInterruptAll, onClearQueued,
 }: {
-  headerTitle: string
   runningCount: number; queuedCount: number
   totalPct: number; nodePct: number; currentNodeName: string
   previewUrl: string | null
@@ -154,15 +152,10 @@ function ActiveView({
   onInterruptAll: () => void
   onClearQueued: () => void
 }) {
+  // FINDING-001(/design-review):active 卡 ComfyUI 不显 headerTitle —
+  // 只在 expanded 卡顶 header 显标题。active 是紧凑双进度卡,标题是冗余。
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
-      <div style={{
-        fontSize: 11, color: 'var(--text)', fontWeight: 500,
-        padding: '0 4px', opacity: 0.9,
-      }}>
-        {headerTitle}
-      </div>
-
       {/* 双 progress bar 叠加(对齐 ComfyUI active overlay) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{
