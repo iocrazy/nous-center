@@ -12,9 +12,6 @@ import type { WorkflowFull } from './api/workflows'
 import { useToastStore } from './stores/toast'
 import { useAdminMe } from './api/admin'
 import Login from './pages/Login'
-import ImagePage from './pages/ImagePage'
-import TtsPage from './pages/TtsPage'
-import LlmPage from './pages/LlmPage'
 import { loadPluginDefinitions } from './models/nodeRegistry'
 import { useTaskCompletionNotifier } from './hooks/useTaskCompletionNotifier'
 
@@ -120,21 +117,6 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
   )
 }
 
-function ServicePageLayout({ children }: { children: React.ReactNode }) {
-  // PR-2:服务子页(/image / /tts / /llm)— GlobalTopbar + IconRail + 内容,不挂
-  // workflow 编辑器(NodeEditor / WorkflowTabs / 工作流 Topbar)。内容区目前是
-  // placeholder,后续 PR 各自实施真 UI。
-  return (
-    <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
-      <GlobalTopbar />
-      <div className="flex-1 flex overflow-hidden">
-        <IconRail />
-        {children}
-      </div>
-      <ToastContainer />
-    </div>
-  )
-}
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { data, isLoading } = useAdminMe()
@@ -179,11 +161,8 @@ export default function App() {
           <Route path="/" element={<MainLayout />} />
           <Route path="/workflows" element={<MainLayout />} />
           <Route path="/workflows/:id" element={<MainLayout workflowRoute />} />
-          {/* PR-2:3 个新服务路由 — 真 UI 由后续 PR 实施;当前为 placeholder。 */}
-          <Route path="/image" element={<ServicePageLayout><ImagePage /></ServicePageLayout>} />
-          <Route path="/tts" element={<ServicePageLayout><TtsPage /></ServicePageLayout>} />
-          <Route path="/llm" element={<ServicePageLayout><LlmPage /></ServicePageLayout>} />
-          {/* 既有 overlay 路由(admin dropdown 进入)— layout 不变,仅 GlobalTopbar 取代 IconRail。 */}
+          {/* PR-2c:删原 /image /tts /llm placeholder 路由 — 所有功能通过 workflow
+              节点搭建(D7 决策),独立 service 路由对用户心智模型不合理。 */}
           <Route path="/models" element={<MainLayout />} />
           <Route path="/services" element={<MainLayout />} />
           <Route path="/apps" element={<MainLayout />} />

@@ -1,57 +1,31 @@
 /**
- * GlobalTopbar — 全局顶部 nav(PR-2,任务面板重置)。
+ * GlobalTopbar — 全局顶部 nav(PR-2c 简化版,任务面板重置)。
  *
- * 复刻 spec mockup `docs/superpowers/specs/assets/2026-05-27-task-panel-reset/variant-final.html`
- * 的 .topbar 结构。布局:
+ * D7 决策修正:删原 5 服务 tab(Workflow/Image/TTS/LLM/Models)—— 用户心智模型里
+ * 所有功能都通过 workflow 节点搭建(Image/TTS/LLM 是 workflow 类型而非独立路由)。
+ * Topbar 现在只剩全局元素:
  *
- *   nous-logo  · Workflow · Image · TTS · LLM · Models                    infra healthy · 3 GPU  ⌕  ⋮
- *   ─────────────────────── 5 服务 tab(主路由)───────────────────  ── 全局状态 / 搜索 / admin 下拉
+ *   nous-logo                              infra healthy · 3 GPU  ⌕  ☰tasks  ⋮user
  *
- * IconRail **保留**作为 admin 主 nav(D3 决策修正:用户偏好侧边栏继续放
- * Dashboard/API Key/Logs/Settings 等管理入口)。GlobalTopbar 右上 ⋮ 仅放
- * 「user 菜单」—— 当前只有退出登录(管理项请走 IconRail,避免冗余入口)。
+ * 多 workflow 切换走 IconRail Workflow → 列表;Image/TTS/LLM 不再独立路由;
+ * Models 通过 IconRail「引擎库」入口。
  */
 import { useState, useRef, useEffect, useMemo } from 'react'
 import {
   Search, MoreVertical, LogOut, ListTodo,
-  GitBranch, Image as ImageIcon, Mic, MessageSquare, Database,
 } from 'lucide-react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
 import { useTasks } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
-import type { LucideIcon } from 'lucide-react'
-
-type ServiceTabId = 'workflow' | 'image' | 'tts' | 'llm' | 'models'
-
-const SERVICE_TABS: { id: ServiceTabId; label: string; icon: LucideIcon; route: string }[] = [
-  { id: 'workflow', label: 'Workflow', icon: GitBranch,      route: '/workflows' },
-  { id: 'image',    label: 'Image',    icon: ImageIcon,      route: '/image' },
-  { id: 'tts',      label: 'TTS',      icon: Mic,            route: '/tts' },
-  { id: 'llm',      label: 'LLM',      icon: MessageSquare,  route: '/llm' },
-  { id: 'models',   label: 'Models',   icon: Database,       route: '/models' },
-]
-
-function routeToTab(pathname: string): ServiceTabId {
-  // /workflows / /workflows/:id / / (root) → workflow
-  if (pathname === '/' || pathname.startsWith('/workflow')) return 'workflow'
-  if (pathname.startsWith('/image')) return 'image'
-  if (pathname.startsWith('/tts')) return 'tts'
-  if (pathname.startsWith('/llm')) return 'llm'
-  if (pathname.startsWith('/models')) return 'models'
-  // admin overlay 路由 — 沿用 workflow tab 高亮(避免「我在设置页但没 tab 高亮」)
-  return 'workflow'
-}
 
 export default function GlobalTopbar() {
   const navigate = useNavigate()
-  const location = useLocation()
   const me = useAdminMe()
   const logout = useAdminLogout()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  const activeTab = routeToTab(location.pathname)
   const canLogout = me.data?.login_required && me.data?.authenticated
 
   // 点外部关菜单
@@ -63,10 +37,6 @@ export default function GlobalTopbar() {
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [menuOpen])
-
-  const handleTabClick = (route: string) => {
-    if (location.pathname !== route) navigate(route)
-  }
 
   const handleLogout = () => {
     logout.mutate(undefined, {
@@ -96,30 +66,6 @@ export default function GlobalTopbar() {
         />
         nous
       </div>
-
-      {/* 5 服务 tab */}
-      <nav className="flex gap-1 ml-8" role="navigation" aria-label="主导航">
-        {SERVICE_TABS.map(({ id, label, icon: Icon, route }) => {
-          const active = activeTab === id
-          return (
-            <button
-              key={id}
-              onClick={() => handleTabClick(route)}
-              className="inline-flex items-center gap-1.5 px-3 h-7 text-xs rounded-md transition-colors"
-              style={{
-                background: active ? 'var(--tp-bg-card)' : 'transparent',
-                color: active ? 'var(--tp-text)' : 'var(--tp-text-muted)',
-                cursor: 'pointer',
-              }}
-              aria-current={active ? 'page' : undefined}
-              data-tab-id={id}
-            >
-              <Icon size={14} />
-              {label}
-            </button>
-          )
-        })}
-      </nav>
 
       <div className="flex-1" />
 
