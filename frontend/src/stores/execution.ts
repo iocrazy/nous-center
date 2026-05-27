@@ -54,6 +54,12 @@ export interface ExecutionState {
   taskIconBadge: number
   bumpTaskBadge: () => void
   clearTaskBadge: () => void
+
+  /** PR-3c:history list 行级展开态(按 task.id key 入 Set)。默认空 → 按 task_type 决定:
+   * image/tts 默认展开;llm/vision 默认折叠(对齐 mockup variant-final 示例形态)。
+   * 用户点 chevron 强制覆盖默认。 */
+  expandedHistoryRowIds: Set<string>
+  toggleHistoryRowExpanded: (id: string) => void
 }
 
 export const useExecutionStore = create<ExecutionState>((set, get) => ({
@@ -74,6 +80,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   currentNodeEtaMs: null,
   taskPanelOpen: false,
   taskIconBadge: 0,
+  expandedHistoryRowIds: new Set<string>(),
 
   start: (taskId) =>
     set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null, currentNodeStage: null, currentNodeStepLatencyMs: null, currentNodeEtaMs: null }),
@@ -117,6 +124,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   bumpTaskBadge: () => set((s) => ({ taskIconBadge: s.taskIconBadge + 1 })),
 
   clearTaskBadge: () => set({ taskIconBadge: 0 }),
+
+  toggleHistoryRowExpanded: (id) =>
+    set((s) => {
+      const next = new Set(s.expandedHistoryRowIds)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return { expandedHistoryRowIds: next }
+    }),
 
   wsConnect: (instanceId: string) => {
     const existing = get()._ws

@@ -15,6 +15,7 @@ import { useAdminLogout, useAdminMe } from '../../api/admin'
 import { useTasks, type ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
 import ActiveTaskRow from './ActiveTaskRow'
+import HistoryCard from './HistoryCard'
 
 export default function GlobalTopbar() {
   const navigate = useNavigate()
@@ -146,25 +147,7 @@ export default function GlobalTopbar() {
  * ============================================================ */
 
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
-const TASK_TYPES = ['image', 'tts', 'vision', 'llm'] as const
-type TaskType = typeof TASK_TYPES[number]
-
-const TASK_TYPE_LABEL: Record<TaskType, string> = {
-  image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM',
-}
-const STATUS_LABEL: Record<string, string> = {
-  queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
-}
-const STATUS_COLOR: Record<string, string> = {
-  queued: 'var(--status-queued)', running: 'var(--status-running)',
-  completed: 'var(--tp-text-muted)', failed: 'var(--status-failed, #f87171)',
-  cancelled: 'var(--tp-text-faint)',
-}
-
-function getTaskType(t: ExecutionTask): TaskType | null {
-  const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
-  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ? v : null
-}
+// type 标签 / 状态色 / getTaskType helper 已搬到子组件(ActiveTaskRow / HistoryCard)各自维护。
 
 function TaskMenu() {
   const { data: tasks } = useTasks()
@@ -408,7 +391,7 @@ function TaskList({
           {tasks.slice(0, 20).map((t) =>
             mode === 'active'
               ? <ActiveTaskRow key={t.id} task={t} />
-              : <TaskRow key={t.id} task={t} />,
+              : <HistoryCard key={t.id} task={t} />,
           )}
         </div>
       )}
@@ -416,61 +399,3 @@ function TaskList({
   )
 }
 
-/**
- * TaskRow — 任务卡片(对齐 mockup task-card 紧凑版)。
- *
- * 行结构:[type chip 4 色] [workflow_name] [status chip] [meta]
- * type chip 按 image 紫 / tts 青 / llm 蓝 / vision 橙 配色。
- * status running 时左侧加 glow dot;done 状态灰 chip。
- */
-function TaskRow({ task: t }: { task: ExecutionTask }) {
-  const type = getTaskType(t)
-  const isRunning = t.status === 'running'
-  return (
-    <div
-      className="flex items-center gap-2 p-2 rounded transition-colors hover:bg-[var(--tp-bg-hover)]"
-      style={{
-        background: isRunning ? 'rgba(74, 222, 128, 0.05)' : 'var(--tp-bg-card)',
-        border: `1px solid ${isRunning ? 'rgba(74, 222, 128, 0.4)' : 'var(--tp-border)'}`,
-      }}
-    >
-      {type && (
-        <span
-          className="text-[9px] font-bold tracking-wider font-mono px-1.5 py-0.5 rounded shrink-0"
-          style={{
-            background: `var(--type-${type}-bg-chip)`,
-            color: `var(--type-${type})`,
-          }}
-          title={TASK_TYPE_LABEL[type]}
-        >
-          {TASK_TYPE_LABEL[type]}
-        </span>
-      )}
-      <span
-        className="text-xs font-mono truncate flex-1"
-        style={{ color: 'var(--tp-text)' }}
-        title={t.workflow_name || `#${t.id}`}
-      >
-        {t.workflow_name || `#${t.id}`}
-      </span>
-      <span
-        className="text-[10px] font-semibold tracking-wider uppercase px-1.5 py-0.5 rounded shrink-0 inline-flex items-center gap-1"
-        style={{
-          background: isRunning ? 'rgba(74, 222, 128, 0.13)' : 'var(--tp-bg-elevated)',
-          color: STATUS_COLOR[t.status] ?? 'var(--tp-text-muted)',
-        }}
-      >
-        {isRunning && (
-          <span
-            style={{
-              width: 5, height: 5, borderRadius: '50%',
-              background: 'var(--status-running)',
-              boxShadow: '0 0 6px var(--status-running)',
-            }}
-          />
-        )}
-        {STATUS_LABEL[t.status] ?? t.status}
-      </span>
-    </div>
-  )
-}

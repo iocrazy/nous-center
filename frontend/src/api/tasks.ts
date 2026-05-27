@@ -17,9 +17,20 @@ export interface ExecutionTask {
   updated_at: string
   /** Server-derived from result envelope. null until the run completes
    * with an image_output, then 'image'. Used for the task card badge. */
-  task_type: 'image' | null
+  task_type: 'image' | 'tts' | 'llm' | 'vision' | null
   image_width: number | null
   image_height: number | null
+
+  // PR-1a/1b/1c/1d 后端落 task_type 检测时同步暴露的字段;旧 payload 缺 → undefined。
+  /** PR-1a/b/c/d:显式 ServiceType,优先于 task_type 读(getTaskType helper)。 */
+  type?: 'image' | 'tts' | 'llm' | 'vision' | null
+  /** PR-1b:TTS 任务音频时长(秒)。 */
+  audio_duration_seconds?: number | null
+  /** PR-1c:LLM 任务 token 统计。 */
+  llm_prompt_tokens?: number | null
+  llm_completion_tokens?: number | null
+  /** PR-1d:Vision (多模态 LLM) 任务 completion tokens。 */
+  vision_completion_tokens?: number | null
 
   // —— V1.5 新增（Lane I，对齐 Lane B execution_tasks schema）——
   // 全部 optional：旧后端 payload 不带这些字段时为 undefined，
