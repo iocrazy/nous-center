@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
 import { useTasks, type ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
+import ActiveTaskRow from './ActiveTaskRow'
 
 export default function GlobalTopbar() {
   const navigate = useNavigate()
@@ -292,9 +293,19 @@ function TaskMenu() {
           {/* sb-body */}
           <div className="flex-1 overflow-y-auto">
             {tab === 'active' ? (
-              <TaskList tasks={activeTasks} emptyText="当前无活动任务" sectionLabel={`正在跑 · ${counts.active}`} />
+              <TaskList
+                tasks={activeTasks}
+                emptyText="当前无活动任务"
+                sectionLabel={`正在跑 · ${counts.active}`}
+                mode="active"
+              />
             ) : (
-              <TaskList tasks={historyTasks} emptyText="暂无历史记录" sectionLabel={`历史 · ${counts.history}`} />
+              <TaskList
+                tasks={historyTasks}
+                emptyText="暂无历史记录"
+                sectionLabel={`历史 · ${counts.history}`}
+                mode="history"
+              />
             )}
           </div>
 
@@ -373,11 +384,12 @@ function CookStat({
 }
 
 function TaskList({
-  tasks, emptyText, sectionLabel,
+  tasks, emptyText, sectionLabel, mode,
 }: {
   tasks: ExecutionTask[]
   emptyText: string
   sectionLabel: string
+  mode: 'active' | 'history'
 }) {
   return (
     <div className="p-3">
@@ -392,8 +404,12 @@ function TaskList({
           {emptyText}
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
-          {tasks.slice(0, 20).map((t) => <TaskRow key={t.id} task={t} />)}
+        <div className="flex flex-col gap-2">
+          {tasks.slice(0, 20).map((t) =>
+            mode === 'active'
+              ? <ActiveTaskRow key={t.id} task={t} />
+              : <TaskRow key={t.id} task={t} />,
+          )}
         </div>
       )}
     </div>

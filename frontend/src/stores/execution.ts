@@ -21,6 +21,11 @@ export interface ExecutionState {
   currentNodeProgress: number | null
   currentNodeStep: { done: number; total: number } | null
   latestPreviewUrl: string | null
+  // PR-3b(任务面板重置 L3 callout):接 PR-1a 后端发的 stage/step_latency_ms/eta_ms。
+  // 用于 ActiveTaskRow task-callout 渲染「⚡ dit denoise · step 27/50 · 240ms/step · ETA 5.5s」。
+  currentNodeStage: string | null          // 'text_encode' / 'dit_denoise' / 'vae_decode' / 'tts_synth' / 'llm_gen' / 'vision_inference'
+  currentNodeStepLatencyMs: number | null  // per-step 平均 latency
+  currentNodeEtaMs: number | null          // 估计剩余 ms
 
   start: (taskId?: string) => void
   setProgress: (progress: number) => void
@@ -64,11 +69,14 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   currentNodeProgress: null,
   currentNodeStep: null,
   latestPreviewUrl: null,
+  currentNodeStage: null,
+  currentNodeStepLatencyMs: null,
+  currentNodeEtaMs: null,
   taskPanelOpen: false,
   taskIconBadge: 0,
 
   start: (taskId) =>
-    set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null }),
+    set({ isRunning: true, taskId: taskId ?? null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null, currentNodeStage: null, currentNodeStepLatencyMs: null, currentNodeEtaMs: null }),
 
   setProgress: (progress) => set({ progress }),
 
@@ -80,13 +88,13 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     })),
 
   succeed: (result) =>
-    set({ isRunning: false, progress: 100, result, error: null, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null }),
+    set({ isRunning: false, progress: 100, result, error: null, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null, currentNodeStage: null, currentNodeStepLatencyMs: null, currentNodeEtaMs: null }),
 
   fail: (error) =>
-    set({ isRunning: false, error, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null }),
+    set({ isRunning: false, error, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, currentNodeStage: null, currentNodeStepLatencyMs: null, currentNodeEtaMs: null }),
 
   reset: () =>
-    set({ isRunning: false, taskId: null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null }),
+    set({ isRunning: false, taskId: null, progress: 0, error: null, result: null, nodeStates: {}, currentNodeId: null, currentNodeType: null, currentNodeProgress: null, currentNodeStep: null, latestPreviewUrl: null, currentNodeStage: null, currentNodeStepLatencyMs: null, currentNodeEtaMs: null }),
 
   setNodeState: (nodeId, state) =>
     set((s) => ({ nodeStates: { ...s.nodeStates, [nodeId]: state } })),
@@ -138,16 +146,24 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
         }))
       }
       // PR-E2/F2:每步 node_progress 更新「节点内 %」+ latest preview thumbnail。
+      // PR-3b 扩展:接 L3 stage / step_latency_ms / eta_ms(后端 PR-1a/1b/1c/1d 发的字段)。
       if (data.type === 'node_progress') {
         const m = typeof data.detail === 'string' ? /step\s+(\d+)\s*\/\s*(\d+)/.exec(data.detail) : null
+        const stepFromFields = typeof data.step === 'number' && typeof data.total_steps === 'number'
+          ? { done: data.step, total: data.total_steps }
+          : (m ? { done: Number(m[1]), total: Number(m[2]) } : null)
         const percent = typeof data.progress === 'number' ? Math.round(data.progress * 100)
           : (m ? Math.round((Number(m[1]) / Number(m[2])) * 100) : null)
         set((s) => ({
           currentNodeProgress: percent,
-          currentNodeStep: m ? { done: Number(m[1]), total: Number(m[2]) } : s.currentNodeStep,
+          currentNodeStep: stepFromFields ?? s.currentNodeStep,
           latestPreviewUrl: typeof data.preview_url === 'string' && data.preview_url
             ? data.preview_url
             : s.latestPreviewUrl,
+          currentNodeStage: typeof data.stage === 'string' ? data.stage : s.currentNodeStage,
+          currentNodeStepLatencyMs: typeof data.step_latency_ms === 'number'
+            ? data.step_latency_ms : s.currentNodeStepLatencyMs,
+          currentNodeEtaMs: typeof data.eta_ms === 'number' ? data.eta_ms : s.currentNodeEtaMs,
         }))
       }
       if (data.type === 'node_error') {
