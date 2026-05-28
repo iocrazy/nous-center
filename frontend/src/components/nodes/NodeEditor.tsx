@@ -39,8 +39,6 @@ import WorkflowsList from '../../pages/WorkflowsList'
 import UsagePage from '../../pages/UsagePage'
 import ApiKeysList from '../../pages/ApiKeysList'
 import ApiKeyDetail from '../../pages/ApiKeyDetail'
-import QueueProgressOverlay from '../queue/QueueProgressOverlay'
-
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
   const def = NODE_DEFS[nodeType as NodeType]
   if (!def || !handleId) return null
@@ -66,8 +64,6 @@ export default function NodeEditor() {
   const redo = useWorkspaceStore((s) => s.redo)
   const { activePanel, activeOverlay, panelWidth } = usePanelStore()
   const nodeStates = useExecutionStore((s) => s.nodeStates)
-  const taskPanelOpen = useExecutionStore((s) => s.taskPanelOpen)
-  const toggleTaskPanel = useExecutionStore((s) => s.toggleTaskPanel)
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
@@ -364,9 +360,10 @@ export default function NodeEditor() {
       {activeOverlay === 'workflows-list' && <WorkflowsList />}
       {activeOverlay === 'usage' && <UsagePage />}
 
-      {/* 任务进度 overlay(对齐 ComfyUI QueueProgressOverlay,350px 右上角浮动)。
-          三态:hidden / active(running 时自动显紧凑卡)/ expanded(用户 chip 触发显完整列表)。 */}
-      <QueueProgressOverlay open={taskPanelOpen} onClose={toggleTaskPanel} />
+      {/* PR-3g(2026-05-28 任务面板重置收尾):删 QueueProgressOverlay 老画布右上浮窗
+          (PR-170 时代方案)。任务进度统一由 GlobalTopbar 任务下拉 + Active/History
+          dropdown panel 承担(PR-3a-3e)。旧 overlay 文件留着只为兼容 TaskPanel 单测,
+          后续如果完全摘除可再删 QueueProgressOverlay.tsx + TaskMenuButton.tsx。 */}
     </div>
   )
 }

@@ -190,8 +190,13 @@ function summaryMetaLine(task: ExecutionTask, type: TaskType | null): string {
     case 'llm': {
       const { prompt, completion } = getLlmTokens(task)
       const total = (prompt ?? 0) + (completion ?? 0)
+      // 速率 tok/s = completion / duration_s,对齐 mockup `234 tok · 18 tok/s · 13s`。
+      const tps = completion != null && task.duration_ms && task.duration_ms > 0
+        ? Math.round(completion / (task.duration_ms / 1000))
+        : null
       return [
         total > 0 ? `${total} tok` : null,
+        tps != null ? `${tps} tok/s` : null,
         durationLabel(task.duration_ms),
       ].filter(Boolean).join(' · ')
     }
@@ -261,9 +266,24 @@ function ImageExpandedBody({ task }: { task: ExecutionTask }) {
   const prompt = getFirstPrompt(task)
   const openModal = useExecutionStore((s) => s.openDetailModal)
   const onOpen = () => openModal(task.id)
+  // 从 result.meta 找 seed(对齐 mockup exp-meta:seed 6712 · 1024×1024 · 4.4s)。
+  const seed = (() => {
+    const env = task.result && typeof task.result === 'object' ? task.result as Record<string, unknown> : null
+    if (!env) return null
+    for (const v of Object.values(env)) {
+      if (v && typeof v === 'object') {
+        const rec = v as Record<string, unknown>
+        if (typeof rec.seed === 'number') return rec.seed
+        const meta = rec.meta as Record<string, unknown> | undefined
+        if (meta && typeof meta.seed === 'number') return meta.seed
+      }
+    }
+    return null
+  })()
   return (
     <>
       <ExpMeta task={task} segments={[
+        seed != null ? `seed ${seed}` : null,
         task.image_width && task.image_height ? `${task.image_width}×${task.image_height}` : null,
         durationLabel(task.duration_ms),
       ]} />
@@ -324,10 +344,16 @@ function ImageExpandedBody({ task }: { task: ExecutionTask }) {
  * ============================================================ */
 function TtsExpandedBody({ task }: { task: ExecutionTask }) {
   const dur = getAudioDuration(task)
+  // 计算 RT(realtime factor)= audio_duration / synth_duration,对齐 mockup
+  // `15.8s · 22.05kHz · 1×RT`。<1 = 实时,>1 = 比实时快。
+  const rt = dur != null && task.duration_ms && task.duration_ms > 0
+    ? (dur / (task.duration_ms / 1000))
+    : null
   return (
     <>
       <ExpMeta task={task} segments={[
         dur != null ? `${dur.toFixed(1)}s` : null,
+        rt != null ? `${rt.toFixed(1)}×RT` : null,
         durationLabel(task.duration_ms),
       ]} />
       {/* tts-text quote */}
