@@ -116,16 +116,36 @@ def _gpu_processes(pid_map: dict[int, str] | None = None) -> dict[int, list[dict
             # Enrich with process name/command via psutil
             name = ""
             command = ""
+            command_full = ""
+            managed = pid in pid_map
+            model_name = pid_map.get(pid)
             try:
                 p = psutil.Process(pid)
                 name = p.name()
                 cmdline = p.cmdline()
-                command = " ".join(cmdline[:8])[:120] if cmdline else name
+                if cmdline:
+                    command_full = " ".join(cmdline)
+                    # Short version for inline list display(避免溢出);完整版给前端
+                    # 做 hover tooltip,用户能一眼看到这是 nous runner / ComfyUI / 谁。
+                    command = " ".join(cmdline[:8])[:120]
+                else:
+                    command_full = name
+                    command = name
+
+                # multiprocessing.spawn 产生的 child(RunnerSupervisor → child → grandchild)
+                # 让 GPU 进程的 PID **不等于** Supervisor 记录的 PID。向上爬 parent chain,
+                # 任一 ancestor 在 pid_map 就归类为 managed,避免活跃 runner 被误标 orphan。
+                if not managed:
+                    try:
+                        for ancestor in p.parents():
+                            if ancestor.pid in pid_map:
+                                managed = True
+                                model_name = pid_map[ancestor.pid]
+                                break
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-
-            managed = pid in pid_map
-            model_name = pid_map.get(pid)
 
             procs.setdefault(gpu_idx, []).append(
                 {
@@ -134,6 +154,7 @@ def _gpu_processes(pid_map: dict[int, str] | None = None) -> dict[int, list[dict
                     "used_gpu_memory_mb": mem_mb,
                     "name": name,
                     "command": command,
+                    "command_full": command_full,
                     "managed": managed,
                     "model_name": model_name,
                 }
@@ -171,11 +192,26 @@ async def get_system_stats(request: Request):
     # GPU stats via nvidia-smi
     gpus = _gpu_stats_nvidia_smi() or []
 
-    # Get PID map from ModelManager for managed/orphan detection
+    # Get PID map for managed/orphan detection.
+    #
+    # 三类受管子进程都要纳入,否则 ProcRow 会把活跃 runner 误标 orphan(red bg + kill 按钮),
+    # 误导操作员 kill 掉自己的 image runner:
+    # 1. **常驻 LLM**(`model_manager._models[*].adapter.pid`)— vLLM/sgLang inference 进程
+    # 2. **RunnerSupervisor 子进程**(`app.state.runner_supervisors[*].pid`)— image / tts /
+    #    llm-tp 等按 hardware.yaml group spawn 的常驻 runner(本地用户报告的 2501948 = image
+    #    runner subprocess,Pro 6000 上常驻 ~38GB)
+    # 3. **主进程 LLM runner**(`app.state.llm_runner` 当无 hardware.yaml 时)— 进程内对象,
+    #    跟主 backend 共享 PID,这里跳过(主 backend PID 不该出现在 GPU compute-apps 里;
+    #    若出现,也属于 backend 本体)
     pid_map: dict[int, str] = {}
     model_mgr = getattr(request.app.state, "model_manager", None)
     if model_mgr is not None:
-        pid_map = model_mgr.get_pid_map()
+        pid_map.update(model_mgr.get_pid_map())
+    for sup in getattr(request.app.state, "runner_supervisors", []) or []:
+        sup_pid = getattr(sup, "pid", None)
+        if sup_pid is not None:
+            # group_id 形如 "image" / "tts" / "llm-tp" — 当 model_name 展示给 UI。
+            pid_map[sup_pid] = f"runner:{getattr(sup, 'group_id', 'unknown')}"
 
     # Attach per-GPU process info
     if gpus:

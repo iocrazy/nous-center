@@ -12,7 +12,11 @@ export interface GpuProcessInfo {
   gpu: number
   used_gpu_memory_mb: number
   name: string
+  /** Truncated cmdline(前 8 段 / 120 字符)用于行内紧凑显示。 */
   command: string
+  /** PR-10:完整 cmdline,前端 hover tooltip 展示 — 路径太长时行内截断后用户能看全。
+   * 旧后端 payload 没此字段,渲染时降级用 `command`。 */
+  command_full?: string
   managed: boolean
   model_name: string | null
 }
