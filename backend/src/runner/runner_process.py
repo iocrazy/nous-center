@@ -421,6 +421,15 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         except Exception as e:  # noqa: BLE001
             if progress_tasks:
                 await asyncio.gather(*progress_tasks, return_exceptions=True)
+            # PR-5+:写完整 traceback 到 stderr(runner 子进程的 stderr 走 backend_dev.log)。
+            # NodeResult.error 还是简短信息(IPC payload 不塞 huge traceback),但 stderr
+            # 有完整 stack,backend log 里 grep 「runner_process traceback」找。
+            import traceback as _tb  # noqa: PLC0415
+            print(
+                f"[runner_process traceback] task={node.task_id} node={node.node_id} type={node.node_type}\n"
+                + _tb.format_exc(),
+                file=__import__("sys").stderr, flush=True,
+            )
             await ch.send_message(P.NodeResult(
                 task_id=node.task_id, node_id=node.node_id, status="failed",
                 outputs=None, error=f"{type(e).__name__}: {e}",

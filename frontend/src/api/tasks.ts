@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './client'
 import { useLiveChannel } from './useLiveChannel'
+import { useTaskProgressStore } from '../stores/taskProgress'
 
 export interface ExecutionTask {
   id: string
@@ -53,7 +54,36 @@ export function useTasks() {
   const url = `${protocol}//${window.location.host}/ws/tasks`
 
   useLiveChannel(url, {
-    onMessage: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
+    onMessage: (data) => {
+      // PR-6:WS 单一通道复用 — task list 更新 + L3 progress event 同走 /ws/tasks。
+      // 按 event 字段路由:`progress` 进 taskProgressStore;其它(created/updated/deleted)
+      // 触发 react-query invalidate 重拉 task list。
+      if (data && typeof data === 'object' && (data as Record<string, unknown>).event === 'progress') {
+        const ev = data as Record<string, unknown>
+        const taskId = String(ev.task_id ?? '')
+        if (!taskId) return
+        useTaskProgressStore.getState().setProgress(taskId, {
+          stage: typeof ev.stage === 'string' ? ev.stage : null,
+          step: typeof ev.step === 'number' ? ev.step : null,
+          totalSteps: typeof ev.total_steps === 'number' ? ev.total_steps : null,
+          stepLatencyMs: typeof ev.step_latency_ms === 'number' ? ev.step_latency_ms : null,
+          etaMs: typeof ev.eta_ms === 'number' ? ev.eta_ms : null,
+          progress: typeof ev.progress === 'number' ? ev.progress : null,
+        })
+        return
+      }
+      // 默认 task list 翻新 + 终态任务清掉 progress entry
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      if (data && typeof data === 'object') {
+        const ev = data as Record<string, unknown>
+        const task = ev.task as Record<string, unknown> | undefined
+        const status = typeof task?.status === 'string' ? task.status : null
+        const taskId = typeof task?.id === 'string' ? task.id : null
+        if (taskId && status && status !== 'running' && status !== 'queued') {
+          useTaskProgressStore.getState().clear(taskId)
+        }
+      }
+    },
     onReconnect: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
   })
 

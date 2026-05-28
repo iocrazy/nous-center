@@ -17,7 +17,7 @@
  */
 import { Image as ImageIcon, Mic, MessageSquare, Eye, Zap, Activity } from 'lucide-react'
 import type { ExecutionTask } from '../../api/tasks'
-import { useExecutionStore } from '../../stores/execution'
+import { useTaskProgressStore } from '../../stores/taskProgress'
 
 type TaskType = 'image' | 'tts' | 'vision' | 'llm'
 
@@ -74,14 +74,16 @@ export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
   const type = getTaskType(task)
   const isRunning = task.status === 'running'
 
-  const execTaskId = useExecutionStore((s) => s.taskId)
-  const stage = useExecutionStore((s) => s.currentNodeStage)
-  const step = useExecutionStore((s) => s.currentNodeStep)
-  const stepLatencyMs = useExecutionStore((s) => s.currentNodeStepLatencyMs)
-  const etaMs = useExecutionStore((s) => s.currentNodeEtaMs)
+  // PR-6:全局 progress map(/ws/tasks `event: "progress"`)按 task.id 取 L3 数据 ——
+  // 不再依赖 useExecutionStore.taskId 匹配,**多任务并发场景每行都有自己的 callout**。
+  const progress = useTaskProgressStore((s) => s.byTaskId.get(task.id))
+  const stage = progress?.stage ?? null
+  const step = progress?.step != null && progress.totalSteps != null
+    ? { done: progress.step, total: progress.totalSteps } : null
+  const stepLatencyMs = progress?.stepLatencyMs ?? null
+  const etaMs = progress?.etaMs ?? null
 
-  // 仅显示用户当前 Run 的 task 的 L3 callout —— 多任务并发时其他行只显示 meta。
-  const showL3 = isRunning && execTaskId === task.id && stage != null && step != null
+  const showL3 = isRunning && stage != null && step != null
 
   return (
     <div className="relative flex gap-2.5">
