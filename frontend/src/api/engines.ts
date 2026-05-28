@@ -158,10 +158,27 @@ export function useScanModels() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: () =>
-      apiFetch<{ count: number; models: string[] }>('/api/v1/engines/scan', { method: 'POST' }),
+      apiFetch<{
+        count: number
+        local_available?: number
+        not_local?: number
+        models: string[]
+      }>('/api/v1/engines/scan', { method: 'POST' }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['engines'] })
-      useToastStore.getState().add(`扫描完成，共 ${data.count} 个模型`, 'success')
+      // PR-11:旧文案「扫描完成,共 N 个模型」实际是 yaml 配置识别数,会比
+      // 引擎库可见(`/api/v1/engines` 过滤 local_path 后)多出未下载的份额 —
+      // 用户曾报告「扫到 25 实际只能用 16」之误导。后端 PR-11 同时返回
+      // local_available/not_local,有差异时显式拆分提示。
+      // 兼容旧后端 payload(无 local_available 字段时降级为原文案)。
+      const total = data.count
+      const local = data.local_available
+      const missing = data.not_local
+      const msg =
+        local != null && missing != null && missing > 0
+          ? `识别 ${total} 个模型 · 本地可用 ${local} · ${missing} 个未下载`
+          : `扫描完成,共 ${total} 个模型`
+      useToastStore.getState().add(msg, 'success')
     },
     onError: (error: Error) => {
       useToastStore.getState().add(`扫描失败: ${error.message}`, 'error')
