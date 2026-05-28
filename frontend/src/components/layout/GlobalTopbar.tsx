@@ -13,6 +13,7 @@ import { Search, MoreVertical, LogOut, ListTodo, Cpu, Menu, Info } from 'lucide-
 import { useNavigate } from 'react-router-dom'
 import { useAdminLogout, useAdminMe } from '../../api/admin'
 import { useTasks, type ExecutionTask } from '../../api/tasks'
+import { useGpuStats, pickPrimaryGpu, type GpuInfo } from '../../api/gpuStats'
 import { useExecutionStore } from '../../stores/execution'
 import ActiveTaskRow from './ActiveTaskRow'
 import HistoryCard from './HistoryCard'
@@ -264,13 +265,7 @@ function TaskMenu() {
               <CookStat dotColor="var(--status-running)" glow num={counts.running} label="运行" />
               <CookStat dotColor="var(--status-queued)" num={counts.queued} label="排队" />
               <CookStat dotColor="var(--tp-text-dim)" num={counts.done} label="完成" />
-              <span
-                className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-mono"
-                style={{ color: 'var(--tp-text-muted)' }}
-              >
-                <Cpu size={12} style={{ color: 'var(--status-running)' }} />
-                GPU
-              </span>
+              <GpuInfoChip />
             </div>
           </div>
 
@@ -359,6 +354,46 @@ function SbTab({
       </span>
     </button>
   )
+}
+
+/**
+ * GpuInfoChip — cook overview 右侧 GPU 利用率显示(对齐 mockup「⚙️ GPU 1·62%」)。
+ *
+ * 显示主卡(默认 cuda:1)的 utilization_gpu 实时百分比 + 利用率热度色:
+ * - 0-30%   灰(idle)
+ * - 30-70%  绿(working)
+ * - 70-100% 黄→红(saturated)
+ *
+ * 数据来自 useGpuStats(2s 轮询 /api/v1/monitor/stats)。
+ */
+function GpuInfoChip() {
+  const { data: gpus } = useGpuStats()
+  const gpu = pickPrimaryGpu(gpus)
+  return (
+    <span
+      className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-mono"
+      style={{ color: 'var(--tp-text-muted)' }}
+      title={gpu ? `${gpu.name} · mem ${(gpu.memory_used_mb / 1024).toFixed(1)}/${(gpu.memory_total_mb / 1024).toFixed(0)} GiB · ${gpu.temperature}°C · ${gpu.power_draw_w.toFixed(0)}W` : 'GPU stats 加载中...'}
+    >
+      <Cpu size={12} style={{ color: gpuColor(gpu) }} />
+      {gpu ? (
+        <>
+          GPU {gpu.index}·<span style={{ color: 'var(--tp-text)', fontWeight: 600 }}>{gpu.utilization_gpu}%</span>
+        </>
+      ) : (
+        'GPU'
+      )}
+    </span>
+  )
+}
+
+function gpuColor(gpu: GpuInfo | null): string {
+  if (!gpu) return 'var(--tp-text-muted)'
+  const u = gpu.utilization_gpu
+  if (u < 30) return 'var(--tp-text-muted)'
+  if (u < 70) return 'var(--status-running)'
+  if (u < 90) return 'var(--status-queued)'
+  return 'var(--status-failed, #f87171)'
 }
 
 function CookStat({
