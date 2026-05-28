@@ -494,18 +494,21 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   const firstTokenAtRef = useRef<number | null>(null)
   const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Image generation stage state (text_encode → denoise → vae_decode → done).
-  // Backend image adapter doesn't emit per-step events yet; phase advances on
-  // a known time budget driven by the node's `steps` config so the UI doesn't
-  // sit silent for ~50s. V1 will replace the timer with real per-step events
-  // once DiffusersImageBackend.infer_stream lands.
-  const [imageStage, setImageStage] = useState<{
-    phase: 'text_encode' | 'denoise' | 'vae_decode' | 'done'
-    elapsedSec: number
-    cached?: boolean
-  } | null>(null)
-  const imageStageTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
-  const imageStartAtRef = useRef<number | null>(null)
+  // PR-12:**删了旧的 imageStage 3 阶段假进度模拟器**(text_encode 1s →
+  // denoise N×1s → vae_decode 0.5s)。它原本挂在 flux2_vae_decode 节点上,
+  // 但 VAE Decode 在工作流末尾才执行,前面 Load Diffusion Model / KSampler
+  // 跑的时候 VAE 节点根本没 node_start,反过来 VAE 真 node_start 触发后
+  // simulation 从「Text encode...」开始,跟实际状态完全不同步 — 用户报告
+  // 「正在加载模型,焦点跑到 VAE 那里显示 Denoise」就是这个错配。
+  //
+  // 现在 backend 已经按真节点 node_id 发 node_progress(KSampler 的 step
+  // 事件挂在 KSampler 上),不需要 fake 模拟。每个节点的 denoiseProgress
+  // 独立 state,谁收到自己的 step 谁渲染。
+  //
+  // 节点完成耗时只在「真的跑完」时显示(node_complete);loading / running
+  // 的视觉由 BaseNode 通用 status chip(已存在)负责。
+  const [doneElapsedSec, setDoneElapsedSec] = useState<number | null>(null)
+  const nodeStartAtRef = useRef<number | null>(null)
   // PR-3:真采样进度(每步从 backend 经 WS node_progress 事件来)。runner 的
   // P.NodeProgress 用 progress(0-1)+ detail("step N/T")—— parse detail 拿 step/total。
   const [denoiseProgress, setDenoiseProgress] = useState<
@@ -570,31 +573,8 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         setTokenStats(null)
         setDenoiseProgress(null)
         setPreviewUrl(null)
-
-        // Image-only: start the 3-stage simulation. text_encode (~1s) →
-        // denoise (~stepsBudget) → vae_decode (~0.5s). Per-step time
-        // estimate is conservative for cpu_offload single-card; V1 swaps
-        // for real infer_stream events.
-        if (nodeType === 'flux2_vae_decode') {
-          // Cancel any timers from a previous run on this node.
-          for (const t of imageStageTimersRef.current) clearTimeout(t)
-          imageStageTimersRef.current = []
-          imageStartAtRef.current = performance.now()
-
-          const steps = Math.max(1, Number(data.steps ?? 25))
-          const perStepSec = 1.0  // ernie cpu_offload baseline (see PR-8 verify: 10 steps in ~50s)
-          const denoiseSec = steps * perStepSec
-          const textEncodeSec = 1.0
-
-          setImageStage({ phase: 'text_encode', elapsedSec: 0 })
-          imageStageTimersRef.current.push(
-            setTimeout(() => setImageStage({ phase: 'denoise', elapsedSec: textEncodeSec }), textEncodeSec * 1000),
-            setTimeout(
-              () => setImageStage({ phase: 'vae_decode', elapsedSec: textEncodeSec + denoiseSec }),
-              (textEncodeSec + denoiseSec) * 1000,
-            ),
-          )
-        }
+        setDoneElapsedSec(null)
+        nodeStartAtRef.current = performance.now()
       }
       if (data.type === 'node_complete' && data.node_id === id) {
         setDenoiseProgress(null)
@@ -603,20 +583,14 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
           clearTimeout(throttleRef.current)
           throttleRef.current = null
         }
-        // Image-only: stop the simulated stage timers and pin "done" with
-        // the actual elapsed from backend duration_ms (or measured locally).
-        if (nodeType === 'flux2_vae_decode') {
-          for (const t of imageStageTimersRef.current) clearTimeout(t)
-          imageStageTimersRef.current = []
-          const start = imageStartAtRef.current
-          const realElapsed = data.duration_ms
-            ? data.duration_ms / 1000
-            : start
-              ? (performance.now() - start) / 1000
-              : 0
-          setImageStage({ phase: 'done', elapsedSec: realElapsed, cached: !!data.cached })
-          imageStartAtRef.current = null
-        }
+        const start = nodeStartAtRef.current
+        const realElapsed = data.duration_ms
+          ? data.duration_ms / 1000
+          : start
+            ? (performance.now() - start) / 1000
+            : 0
+        setDoneElapsedSec(realElapsed)
+        nodeStartAtRef.current = null
         const usage = data.usage
         const durationMs = data.duration_ms
         const first = firstTokenAtRef.current
@@ -647,8 +621,6 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
     return () => {
       window.removeEventListener('node-progress', handler as any)
       if (throttleRef.current) clearTimeout(throttleRef.current)
-      for (const t of imageStageTimersRef.current) clearTimeout(t)
-      imageStageTimersRef.current = []
     }
   }, [id, nodeType, data.steps, updateStreamingStats])
 
@@ -733,7 +705,13 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
           />
         </div>
       )}
-      {imageStage && (
+      {/* PR-12:节点级实时进度 + 完成耗时 — **挂在真正跑的那个节点上**,不再
+        统一由 VAE Decode 模拟。
+        · denoiseProgress 来自 backend 按 node_id 的 node_progress(KSampler 自己发)
+        · doneElapsedSec 是任何节点的 node_complete 真实 duration_ms
+        · 两者都没有就什么都不渲染,节点保持 BaseNode 默认状态(loading chip 已经
+          在 BaseNode 那边显示) */}
+      {(denoiseProgress || doneElapsedSec != null) && (
         <div style={{ padding: '4px 10px 6px' }}>
           <div
             className="flex items-center gap-1.5"
@@ -741,25 +719,21 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
               fontSize: 9,
               color: 'var(--muted)',
               transition: 'opacity 0.5s',
-              opacity: imageStage.phase === 'done' ? 0.7 : 1,
+              opacity: doneElapsedSec != null && !denoiseProgress ? 0.7 : 1,
             }}
           >
-            {imageStage.phase === 'done' ? (
+            {doneElapsedSec != null && !denoiseProgress ? (
               <Check size={10} style={{ color: 'var(--ok)', flexShrink: 0 }} />
             ) : (
               <ImageIcon size={10} style={{ color: 'var(--info)', flexShrink: 0 }} />
             )}
             <span>
-              {imageStage.phase === 'text_encode' && 'Text encode...'}
-              {imageStage.phase === 'denoise' && (denoiseProgress
-                ? `Denoise · step ${denoiseProgress.step}/${denoiseProgress.total} · ${denoiseProgress.percent}%`
-                : `Denoise (~${Math.max(1, Math.round(Number(data.steps ?? 25)))} steps)...`)}
-              {imageStage.phase === 'vae_decode' && 'VAE decode...'}
-              {imageStage.phase === 'done' && `完成 · ${Math.round(imageStage.elapsedSec * 10) / 10}s${imageStage.cached ? ' (cached)' : ''}`}
+              {denoiseProgress
+                ? `step ${denoiseProgress.step}/${denoiseProgress.total} · ${denoiseProgress.percent}%`
+                : `完成 · ${Math.round((doneElapsedSec ?? 0) * 10) / 10}s`}
             </span>
           </div>
-          {/* 真进度条:denoiseProgress 来自 backend 每步 node_progress 事件 */}
-          {denoiseProgress && imageStage.phase !== 'done' && (
+          {denoiseProgress && (
             <div style={{
               marginTop: 3, height: 2, background: 'var(--border)', borderRadius: 1, overflow: 'hidden',
             }}>
