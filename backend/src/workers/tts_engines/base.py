@@ -29,50 +29,19 @@ class TTSResult(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
 
-def _make_tts_emit(progress_callback: Any) -> Any:
-    """PR-1b:progress_callback 兼容层 —— 新契约 `(done, total, *, stage, progress,
-    detail, step_latency_ms, eta_ms)`;旧 fake 可能只接 (done, total)。先发全量,
-    TypeError 降级到 (done, total)。同 image_modular._make_emit 但 TTS 不带 preview_url。
-    `progress_callback=None` → no-op,简化调用方。"""
-    if progress_callback is None:
-        def _noop(_done: int, _total: int, **_kw: Any) -> None:
-            return None
-        return _noop
-
-    def _emit(done: int, total: int, **extras: Any) -> None:
-        try:
-            progress_callback(done, total, **extras)
-            return
-        except TypeError:
-            pass
-        progress_callback(done, total)
-
-    return _emit
-
-
 async def _tts_progress_ticker(
-    emit: Any, t0: float, est_total_sec: float, est_total_units: int,
+    pt: Any, t0: float, est_total_sec: float,
 ) -> None:
-    """PR-1b:每 ~300ms 估 elapsed/est_total 发 progress 帧。progress 上限 0.95
-    (给 end 帧 1.0 留增长空间,不显示「100% 然后下降」)。step 按 elapsed/sec 取整,
-    eta 按 max(0, est_total_sec - elapsed) 折算 ms。
-    被 cancel 时静默退出(infer 的 finally 负责 await task)。
-    """
+    """PR-4:periodic ticker 改用 ProgressTracker.tick(elapsed, est_total)。
+    300ms 间隔由 sleep 控制;tick 内部估 progress / ETA + throttle 兜底。
+    被 cancel 时静默退出(infer 的 finally 负责 await task)。"""
     import time
 
     try:
         while True:
             await asyncio.sleep(0.3)
             elapsed = time.monotonic() - t0
-            progress = min(0.95, elapsed / est_total_sec)
-            step = min(est_total_units, max(0, int(round(elapsed))))
-            eta_ms = max(0, int((est_total_sec - elapsed) * 1000))
-            emit(
-                step, est_total_units,
-                stage="tts_synth", progress=progress,
-                detail=f"tts_synth {step}/{est_total_units}s",
-                step_latency_ms=300, eta_ms=eta_ms,
-            )
+            pt.tick(elapsed, est_total_sec, stage="tts_synth")
     except asyncio.CancelledError:
         return
 
@@ -135,19 +104,17 @@ class TTSEngine(InferenceAdapter):
             raise TypeError(f"TTSEngine expects AudioRequest, got {type(req).__name__}")
         import time
 
-        # PR-1b:start 帧 —— 让 UI 在长合成里第一时间显示「正在合成」,不黑屏。
-        # total 估计从文本长度推算(后面 ticker / end 会逐步收敛到真值)。
+        # PR-4:用 ProgressTracker(throttle 300ms,对齐 PR-1b ticker 间隔)。
         t0 = time.monotonic()
         # 估秒数:经验值 ~0.08 秒/字符(中文密度;英文略快,折中保守)。
         # 实际值在 end 帧由 result.duration_seconds 回填,中间的 ticker 用这个估值算 ETA。
         est_total_sec = max(1.0, len(req.text) * 0.08)
         est_total_units = max(1, int(round(est_total_sec)))
-        _tts_emit = _make_tts_emit(progress_callback)
-        _tts_emit(
-            0, est_total_units,
-            stage="tts_synth", progress=0.0,
-            detail="tts_synth start", step_latency_ms=None, eta_ms=None,
-        )
+        from src.services.inference.progress_tracker import ProgressTracker  # noqa: PLC0415
+        pt = ProgressTracker(progress_callback, stage="tts_synth", throttle_ms=300)
+        # start 帧:stage(progress=0)— 让 UI 第一时间显示「正在合成」不黑屏。
+        pt.stage("tts_synth", progress=0.0, step=0, total_steps=est_total_units,
+                 detail="tts_synth start")
 
         # spec §4.4 升级:boundary cancel(synthesize 调用前查一次;调用中通过
         # cancel_flag 透传给支持 step-level interrupt 的具体 engine)。这里仅
@@ -155,15 +122,12 @@ class TTSEngine(InferenceAdapter):
         if cancel_flag is not None and cancel_flag.is_set():
             raise asyncio.CancelledError()
 
-        # PR-1b:periodic ticker —— synthesize 在 to_thread 跑,event loop 同时跑
-        # 一个 ticker 每 ~300ms 估算 elapsed/est_total 发 progress 帧。所有 TTS engine
-        # 不需 per-engine streaming 也能有 L3 进度颗粒(前端「合成中 · ETA」立刻有反馈)。
-        # 真值在 end 帧才回填;中间 progress 上限 0.95(给 end 帧留增长空间,不至于
-        # 中间冲到 100% 后又回退 / 显示倒退)。
+        # PR-1b/PR-4:periodic ticker —— synthesize 在 to_thread 跑,event loop 同时跑
+        # 一个 ticker 每 ~300ms 估算 elapsed/est_total 发 progress 帧(pt.tick 内部
+        # 处理 throttle + cap 0.95 + eta)。
         ticker_task = None
         if progress_callback is not None:
-            ticker_task = asyncio.create_task(
-                _tts_progress_ticker(_tts_emit, t0, est_total_sec, est_total_units))
+            ticker_task = asyncio.create_task(_tts_progress_ticker(pt, t0, est_total_sec))
 
         try:
             # synthesize() is sync (blocking torch); offload to thread so the
@@ -190,16 +154,13 @@ class TTSEngine(InferenceAdapter):
 
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        # PR-1b:end 帧 —— 真实 duration_seconds 回填到 total(秒数,1-based 单位),
+        # PR-4:end 帧用 pt.finish() — 真实 duration_seconds 回填 total。
         # detail 给前端展示「✓ N.NN 秒」。step=total → progress=1.0,eta=0。
-        # 把音频秒数当 total_steps 单位(整数化,frontend 显示「3/3 秒」更易读;
-        # spec callout 文字模板「合成 n/N秒 · ETA」就是这个单位)。
+        # 音频秒数当 total_steps 单位(spec callout 「合成 n/N秒 · ETA」就是这个单位)。
         total_units = max(1, int(round(result.duration_seconds)))
-        _tts_emit(
-            total_units, total_units,
-            stage="tts_synth", progress=1.0,
+        pt.finish(
+            total_units,
             detail=f"tts_synth done ({result.duration_seconds:.2f}s)",
-            step_latency_ms=latency_ms, eta_ms=0,
         )
 
         return InferenceResult(

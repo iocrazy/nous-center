@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections import defaultdict, deque
 from typing import Any
 
@@ -55,74 +54,51 @@ class ExecutionError(Exception):
 
 
 class _LlmProgressEmitter:
-    """PR-1c(2026-05-27 任务面板重置):LLM stream token-rate L3 进度发射器。
+    """PR-4 重写:LLM stream token-rate L3 进度发射器 — 委托共享 ProgressTracker。
 
-    职责:
-    - 每 token 累计计数 + 记 latency 滑窗(最近 16 个 token 的均值)
-    - throttle 250ms 节流 node_progress emit(高速 stream 60+ tok/s 时,不节流会把 WS 打爆;
-      节流后用户看到的 callout 每 ~4 fps 刷新,人眼够看)
-    - stream 末尾发 final 帧:`progress=1.0` / `step=真 completion_tokens`(若 usage 给了)
-      / `total_steps=step`(把 step=total 落定,前端不再显示「47/2048」而是「47/47 ✓」)/ `eta_ms=0`
-
-    spec §State model TaskProgress 字段:stage="llm_gen" / step / total_steps /
-    step_latency_ms(per-token 平均) / eta_ms((max - step) * avg_latency)。
+    抽取共享逻辑(latency 滑窗 / ETA / 250ms throttle)到 ProgressTracker(PR-4)。
+    LLM 的 on_progress 是 async(dict-shape WS payload),不能在 ProgressTracker 的 sync
+    callback 里 await — 所以用 `callback=None` 模式:pt.step()/finish() 返 payload,
+    本类再 await on_progress(包装成 node_progress dict)。throttle 跳过时 pt 返 None。
     """
-
-    THROTTLE_MS = 250
-    LATENCY_WINDOW = 16  # 最近 16 个 token 的滑窗均值,平滑掉首 token 冷启动 spike
 
     def __init__(
         self, *,
         node_id: str, max_tokens: int, on_progress: Any,
         stage: str = "llm_gen",
     ) -> None:
+        from src.services.inference.progress_tracker import ProgressTracker  # noqa: PLC0415
+
         self._node_id = node_id
         self._max_tokens = max(1, int(max_tokens))
         self._on_progress = on_progress
-        # PR-1d:stage 可注入 —— 默认 llm_gen(纯文本);多模态(LLMNode 探测 inputs 有图/音)
-        # 由调用方传 stage="vision_inference",前端 callout 据此用紫橙渐变 + Vision 图标。
         self._stage = stage
         self._token_count = 0
-        self._t0 = time.monotonic()
-        self._last_token_t = self._t0
-        self._last_emit_t = 0.0
-        self._latencies: list[float] = []  # 最近 N token 的 ms 间隔
+        # callback=None 模式:pt 不直接 emit,只计算 latency/ETA/throttle 返 payload。
+        self._pt = ProgressTracker(
+            None, stage=stage, throttle_ms=250, latency_window=16,
+        )
+
+    async def _emit_payload(self, payload: dict | None) -> None:
+        """把 pt 算出来的 payload 包装成 node_progress dict 再 await on_progress。
+        payload=None 时(被 throttle 跳过)什么都不做。"""
+        if payload is None or self._on_progress is None:
+            return
+        await self._on_progress({
+            "type": "node_progress",
+            "node_id": self._node_id,
+            "step": payload["done"],
+            "total_steps": payload["total"],
+            **{k: v for k, v in payload.items()
+               if k not in ("done", "total") and v is not None},
+        })
 
     async def on_token(self, _token: str) -> None:
         if self._on_progress is None:
             return
-        now = time.monotonic()
-        delta_ms = (now - self._last_token_t) * 1000
-        self._last_token_t = now
         self._token_count += 1
-        self._latencies.append(delta_ms)
-        if len(self._latencies) > self.LATENCY_WINDOW:
-            self._latencies.pop(0)
-        # throttle:小于阈值不发(末帧由 emit_final 负责回填真值;中间帧 throttle 是为节省 WS)。
-        if (now - self._last_emit_t) * 1000 < self.THROTTLE_MS:
-            return
-        self._last_emit_t = now
-        await self._emit_throttled()
-
-    async def _emit_throttled(self) -> None:
-        avg_latency_ms = (
-            int(sum(self._latencies) / len(self._latencies)) if self._latencies else 0)
-        # ETA:剩余 token 数 × 平均/token。封顶 max_tokens(若超出说明 max_tokens 估错,
-        # eta 不会为负但也别失控,clamp 0)。
-        remaining = max(0, self._max_tokens - self._token_count)
-        eta_ms = remaining * avg_latency_ms
-        progress = min(0.95, self._token_count / self._max_tokens)  # 末帧才到 1.0
-        await self._on_progress({
-            "type": "node_progress",
-            "node_id": self._node_id,
-            "stage": self._stage,
-            "step": self._token_count,
-            "total_steps": self._max_tokens,
-            "step_latency_ms": avg_latency_ms,
-            "eta_ms": eta_ms,
-            "progress": progress,
-            "detail": f"{self._stage} {self._token_count}/{self._max_tokens}",
-        })
+        payload = self._pt.step(self._token_count, self._max_tokens)
+        await self._emit_payload(payload)
 
     async def emit_final(self, *, true_completion: int | None) -> None:
         """stream 完成后发末帧:step / total_steps 回填到 true_completion(usage 给的;
@@ -131,19 +107,8 @@ class _LlmProgressEmitter:
         if self._on_progress is None:
             return
         total = true_completion if true_completion is not None else self._token_count
-        avg_latency_ms = (
-            int(sum(self._latencies) / len(self._latencies)) if self._latencies else 0)
-        await self._on_progress({
-            "type": "node_progress",
-            "node_id": self._node_id,
-            "stage": self._stage,
-            "step": total,
-            "total_steps": total,
-            "step_latency_ms": avg_latency_ms,
-            "eta_ms": 0,
-            "progress": 1.0,
-            "detail": f"{self._stage} done ({total} tokens)",
-        })
+        payload = self._pt.finish(total, detail=f"{self._stage} done ({total} tokens)")
+        await self._emit_payload(payload)
 
 
 class WorkflowExecutor:

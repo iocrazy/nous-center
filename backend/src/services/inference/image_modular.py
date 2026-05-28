@@ -164,37 +164,6 @@ def build_bridged_vae(vae_spec: Any, repo: str, device: str) -> Any:
     return vae.to(device, dtype=torch.bfloat16)
 
 
-def _make_emit(progress_callback: Any) -> Any:
-    """PR-1a:progress_callback 兼容层 —— 新契约 `(done, total, *, preview_url, stage,
-    step_latency_ms, eta_ms)`;旧 fake 可能只接 `(done, total)` 或 `(done, total, *, preview_url)`。
-    `_make_emit` 返一个发射函数,先发全量;TypeError(签名不容)逐级降级到只发 (done, total)。
-    progress_callback=None → no-op,简化调用方,3 个 stage 触点不用重复判 None。"""
-
-    if progress_callback is None:
-        def _noop(_done: int, _total: int, **_kw: Any) -> None:
-            return None
-        return _noop
-
-    def _emit(done: int, total: int, **extras: Any) -> None:
-        # 先发全量(新 fake / 真 runner._on_progress 接 **extras 直收所有 kwargs);
-        # 旧 fake 只接 (done, total) 或 (done, total, preview_url=) → TypeError 降级。
-        try:
-            progress_callback(done, total, **extras)
-            return
-        except TypeError:
-            pass
-        # 降级 1:仅 preview_url(老契约,在 PR-F 之后 / PR-1a 之前)。
-        try:
-            progress_callback(done, total, preview_url=extras.get("preview_url"))
-            return
-        except TypeError:
-            pass
-        # 降级 2:只 (done, total)(最早的 fake)。
-        progress_callback(done, total)
-
-    return _emit
-
-
 def _torch_dtype(dtype_str: str) -> Any:
     """'bfloat16'/'float16'/'float32' → torch.dtype;'default' → None(原生精度)。
     fp8_* → bfloat16(**compute dtype**):fp8 经 torchao weight-only 量化实现(权重 fp8 存储 /
@@ -522,16 +491,14 @@ class ModularImageBackend(InferenceAdapter):
         if req.seed is not None:
             gen = gen.manual_seed(req.seed)
 
-        # PR-1a:text_encode stage(pipe() 内部先做 encode_prompt,这里在 pipe() 调用前发一帧
-        # 让前端 UX 在「dit step 1 出来前」就知道已经进入 text encode 阶段,不黑屏)。
-        # 用 _emit_progress 兜底兼容旧/新 callback signature。
+        # PR-4:共用 ProgressTracker(替换 PR-1a 的 _make_emit + 手算 latency / ETA)。
+        # text_encode stage 在 pipe() 前发一帧 — 让前端 UX 在「dit step 1 出来前」就知道
+        # 进入 text encode 阶段,不黑屏。step/total_steps 传 0/total 让 (done,total) 降级
+        # callback 也能拿到正确 total(老 fake 测试只看 done/total tuple)。
+        from src.services.inference.progress_tracker import ProgressTracker  # noqa: PLC0415
         total_steps = int(req.steps)
-        _emit_progress = _make_emit(progress_callback)
-        _emit_progress(
-            0, total_steps, stage="text_encode", progress=0.0,
-            detail="text_encode", preview_url=None,
-            step_latency_ms=None, eta_ms=None,
-        )
+        pt = ProgressTracker(progress_callback)  # image 真 per-step,不 throttle
+        pt.stage("text_encode", step=0, total_steps=total_steps)
 
         t = time.monotonic()
         cfg = float(req.cfg_scale)
@@ -558,51 +525,32 @@ class ModularImageBackend(InferenceAdapter):
         # 走标准 pipe,callback_on_step_end 内置;modular fallback(ERNIE 等)不支持回调,这里不挂。
         if self.pipeline_class == "Flux2KleinPipeline" and (
                 progress_callback is not None or cancel_flag is not None):
-            # PR-1a:per-step latency 追踪 —— 最近一步耗时 = ETA 估计(等同 ComfyUI 进度条的
-            # 单步均值近似;steps 早期波动几步后收敛,UX 上够稳)。
-            last_step_t = time.monotonic()
-
             def _step_cb(_pipe: Any, i: int, _t: Any, cb_kwargs: dict) -> dict:
-                nonlocal last_step_t
                 # 中止:step 边界检查(ComfyUI 是 op 级 / nous diffusers 这条路只能 step 级,
                 # ~250ms/步已够响应)。raise BaseException(CancelledError)穿出 pipe()。
                 if cancel_flag is not None and cancel_flag.is_set():
                     raise asyncio.CancelledError()
-                # PR-F:latent → 96px JPEG data URI(ComfyUI Latent2RGB 等价,无需 TAESD 权重)。
-                # 失败/不可解 → None,不阻断推理。
+                # PR-F:latent → 96px JPEG data URI(ComfyUI Latent2RGB 等价)。
                 preview_url = None
-                if progress_callback is not None and self.pipeline_class == "Flux2KleinPipeline":
+                if pt.has_callback and self.pipeline_class == "Flux2KleinPipeline":
                     latents = cb_kwargs.get("latents")
                     if latents is not None:
                         from src.services.inference.latent_preview import latent_to_preview_data_uri  # noqa: PLC0415
                         preview_url = latent_to_preview_data_uri(latents)
-                # PR-1a:per-step latency + ETA。done = i+1(1-based,对齐 ComfyUI/fake 契约)。
-                now = time.monotonic()
-                step_latency_ms = int((now - last_step_t) * 1000)
-                last_step_t = now
-                done = i + 1
-                eta_ms = max(0, step_latency_ms * (total_steps - done))
-                _emit_progress(
-                    done, total_steps,
-                    stage="dit_denoise",
-                    progress=done / total_steps if total_steps else 1.0,
-                    detail=f"dit_denoise {done}/{total_steps}",
-                    preview_url=preview_url,
-                    step_latency_ms=step_latency_ms,
-                    eta_ms=eta_ms,
-                )
+                # PR-4:ProgressTracker.step 算 latency 滑窗(16)+ ETA + emit。
+                pt.step(i + 1, total_steps, stage="dit_denoise", preview_url=preview_url)
                 return cb_kwargs
 
             call_kwargs["callback_on_step_end"] = _step_cb
 
         out = pipe(**call_kwargs)
-        # PR-1a:vae_decode stage(pipe() 返回后立即发,语义上「denoise 全完成、进入像素域收尾」)。
-        # Flux2 标准 pipe 里 VAE decode 已在 pipe() 内嵌跑完,这里发的是「post-denoise 收尾」一帧,
-        # 让 UX 上不会在最后一步 dit_denoise → 出图之间留空。
-        _emit_progress(
-            total_steps, total_steps, stage="vae_decode", progress=1.0,
-            detail="vae_decode", preview_url=None,
-            step_latency_ms=None, eta_ms=0,
+        # PR-4:vae_decode 用 stage(progress=1.0) — 不调 finish(避免 _finished=True 阻塞
+        # 测试场景下手动触发 step_cb;production 中 stage 行为等同 finish:progress=1/eta=0)。
+        # Flux2 标准 pipe 里 VAE decode 已在 pipe() 内嵌跑完,这里发的是「post-denoise 收尾」一帧。
+        pt.stage(
+            "vae_decode", progress=1.0,
+            step=total_steps, total_steps=total_steps,
+            detail=f"vae_decode done ({total_steps} steps)",
         )
         latency_ms = int((time.monotonic() - t) * 1000)
 
