@@ -784,6 +784,37 @@ class ModelManager:
         return int(total / (1024 * 1024) * 1.3)
 
     @staticmethod
+    def _explain_image_combo_key(combo_key: tuple) -> dict:
+        """把 combo_key 拆成 readable dict 用于日志/调试,让 cache miss 时一眼看出
+        哪个字段变化导致 derived_id 不同。PR-D5 诊断 cache 命中率用。
+
+        combo_key shape:
+          (pipeline_class, offload, transformer_key, clip_key, vae_key)
+        每个 component_key shape:
+          (file, device, dtype, frozenset[(lora_name, strength), ...])
+        """
+        def _explain_comp(ck: tuple) -> dict:
+            if not isinstance(ck, tuple) or len(ck) < 4:
+                return {"raw": repr(ck)}
+            file, device, dtype, loras = ck
+            return {
+                "file": file,
+                "device": device,
+                "dtype": dtype,
+                "loras": sorted(f"{n}@{s}" for n, s in (loras or set())),
+            }
+        if not isinstance(combo_key, tuple) or len(combo_key) < 5:
+            return {"raw": repr(combo_key)}
+        pclass, offload, t_key, c_key, v_key = combo_key
+        return {
+            "pipeline_class": pclass,
+            "offload": offload,
+            "transformer": _explain_comp(t_key),
+            "clip": _explain_comp(c_key),
+            "vae": _explain_comp(v_key),
+        }
+
+    @staticmethod
     def _derive_image_model_id(combo_key: tuple) -> str:
         """combo_key = (pipeline_class, offload, transformer_key, clip_key, vae_key)
         → 一个稳定可读的 model_id 串,作为 `_models` 字典的键。
@@ -897,10 +928,16 @@ class ModelManager:
             # cache hit → touch LRU + return
             entry = self._models.get(model_id)
             if entry is not None:
+                logger.info("image adapter HIT id=%s (anima)", model_id)
                 entry.touch()
                 for k in ("diffusion_models", "clip", "vae"):
                     await _emit(resolved[k], "loaded")
                 return entry.adapter
+            # cache miss — dump combo_key 字段,方便复盘是哪个字段导致不复用
+            logger.info(
+                "image adapter MISS id=%s (anima) combo=%s",
+                model_id, self._explain_image_combo_key(combo_key),
+            )
 
             for k in ("diffusion_models", "clip", "vae"):
                 await _emit(resolved[k], "loading")
@@ -956,10 +993,16 @@ class ModelManager:
             # cache hit → touch LRU + return adapter from unified _models dict
             entry = self._models.get(model_id)
             if entry is not None:
+                logger.info("image adapter HIT id=%s (modular)", model_id)
                 entry.touch()
                 for k in ("diffusion_models", "clip", "vae"):
                     await _emit(resolved[k], "loaded")
                 return entry.adapter
+            # cache miss — dump combo_key 字段,方便复盘是哪个字段导致不复用
+            logger.info(
+                "image adapter MISS id=%s (modular) combo=%s",
+                model_id, self._explain_image_combo_key(combo_key),
+            )
 
             repo = _modular_repo_from_components(resolved)
             for k in ("diffusion_models", "clip", "vae"):

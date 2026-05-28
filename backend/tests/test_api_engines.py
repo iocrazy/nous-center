@@ -196,6 +196,75 @@ async def test_unload_image_adapters_clears_image_entries(client, app):
     assert "image:AnimaPipeline:bar:44556677" not in fake_models
 
 
+async def test_image_cache_endpoint_lists_image_entries_only(client, app):
+    """GET /api/v1/engines/image-cache 返 image 类 LoadedModel,LLM 不出现。PR-D5
+    诊断 cache miss 用 — 用户从这接口看「同 base 同参跑两次,真有 2 entry 吗」。"""
+    from src.services.inference.base import InferenceAdapter
+    from src.services.inference.registry import ModelSpec
+    from src.services.model_manager import LoadedModel
+
+    class _FakeAdapter(InferenceAdapter):
+        def __init__(self): self._model = object()
+        async def load(self, device): pass
+        async def infer(self, req): raise NotImplementedError
+        def unload(self) -> None: self._model = None
+
+    def _spec(mid, mtype, vram=1000, pclass=None):
+        params = {"pipeline_class": pclass} if pclass else {}
+        return ModelSpec(id=mid, model_type=mtype, adapter_class="x.y.Z",
+                         paths={}, vram_mb=vram, params=params)
+
+    app.state.model_manager._models = {
+        "image:Flux2KleinPipeline:foo:11111111": LoadedModel(
+            spec=_spec("image:Flux2KleinPipeline:foo:11111111", "image",
+                       vram=19000, pclass="Flux2KleinPipeline"),
+            adapter=_FakeAdapter(), gpu_index=1, gpu_indices=[1]),
+        "image:AnimaPipeline:bar:22222222": LoadedModel(
+            spec=_spec("image:AnimaPipeline:bar:22222222", "image",
+                       vram=4000, pclass="AnimaPipeline"),
+            adapter=_FakeAdapter(), gpu_index=2, gpu_indices=[2]),
+        "qwen3-1.7b": LoadedModel(
+            spec=_spec("qwen3-1.7b", "llm", vram=8000),
+            adapter=_FakeAdapter(), gpu_index=0, gpu_indices=[0]),
+    }
+
+    resp = await client.get("/api/v1/engines/image-cache")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 2
+    ids = {e["model_id"] for e in body["entries"]}
+    assert ids == {
+        "image:Flux2KleinPipeline:foo:11111111",
+        "image:AnimaPipeline:bar:22222222",
+    }
+    # 字段完整 — gpu_index / last_used_ago_sec / pipeline_class / vram_mb
+    e0 = next(e for e in body["entries"] if "Flux2" in e["model_id"])
+    assert e0["gpu_index"] == 1
+    assert e0["pipeline_class"] == "Flux2KleinPipeline"
+    assert e0["vram_mb"] == 19000
+    assert e0["last_used_ago_sec"] >= 0
+
+
+def test_explain_image_combo_key_unpacks_all_components():
+    """_explain_image_combo_key:cache miss 日志要把 5 个字段拆开人能读。
+    PR-D5 诊断字段稳定性用 — 直接读 backend log 比 sha256 hash 易诊断 100×。"""
+    from src.services.model_manager import ModelManager
+
+    combo = (
+        "Flux2KleinPipeline",
+        "none",
+        ("/m/flux2.safetensors", "cuda:1", "bfloat16", frozenset()),
+        ("/m/qwen3.safetensors", "cuda:1", "bfloat16", frozenset()),
+        ("/m/vae.safetensors", "cuda:1", "bfloat16", frozenset({("turbo", 0.8)})),
+    )
+    out = ModelManager._explain_image_combo_key(combo)
+    assert out["pipeline_class"] == "Flux2KleinPipeline"
+    assert out["offload"] == "none"
+    assert out["transformer"]["file"] == "/m/flux2.safetensors"
+    assert out["transformer"]["dtype"] == "bfloat16"
+    assert out["vae"]["loras"] == ["turbo@0.8"]
+
+
 async def test_unload_image_adapters_when_none_returns_zero(client, app):
     """空状态下也要 200 + count=0(让前端按钮即使没 image 时不报错)。"""
     app.state.model_manager._models = {}  # 真 dict 替 MagicMock,确保 .items() 走通
