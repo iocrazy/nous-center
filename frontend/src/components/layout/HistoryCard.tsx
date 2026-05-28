@@ -26,6 +26,7 @@
 import {
   Image as ImageIcon, Mic, MessageSquare, Eye,
   Search, RefreshCw, Copy, Download, Play, ChevronRight,
+  AlertTriangle,
 } from 'lucide-react'
 import type { ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
@@ -40,7 +41,28 @@ const DEFAULT_EXPANDED_TYPES = new Set<TaskType>(['image', 'tts'])
 
 function getTaskType(t: ExecutionTask): TaskType | null {
   const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
-  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ? v : null
+  if (v === 'image' || v === 'tts' || v === 'vision' || v === 'llm') return v
+  // failed task 拿不到 task.type(后端 _detect_*_meta 只在 result.outputs 有内容时
+  // 推断)→ 从 workflow_name 关键词兜底,让 chip 至少能显示意图。
+  // 优先 image:多数失败发生在最重的图像工作流上,且 image chip 视觉权重最强。
+  const name = (t.workflow_name || '').toLowerCase()
+  if (/flux|sdxl|sd[-_]|klein|ernie|image|clip|t5|vae|kohya|lora|diff/.test(name)) return 'image'
+  if (/tts|cosy|voxcpm|moss|asr|audio|speech/.test(name)) return 'tts'
+  if (/vl|vision|qwen[-_]?vl|gemma[-_]?vl/.test(name)) return 'vision'
+  if (/llm|chat|gemma|qwen|mistral|llama/.test(name)) return 'llm'
+  return null
+}
+
+/** failed 任务的简短错误摘要:截掉 ANSI / 节点前缀,保留人能读懂的核心句子。 */
+function errorExcerpt(t: ExecutionTask, maxLen: number = 80): string | null {
+  const raw = t.error
+  if (!raw) return null
+  // 后端格式常见:`节点 dec (flux2_vae_decode) 执行失败: RuntimeError: cuda:1 空闲显存不足...`
+  // 截到 `:` 后第二段开始,保留真正的错误描述。
+  const stripped = raw.replace(/^节点\s+\S+\s+\(\S+\)\s+执行失败:\s*/, '')
+    .replace(/^\w+Error:\s*/, '')
+    .trim()
+  return stripped.length > maxLen ? stripped.slice(0, maxLen) + '…' : stripped
 }
 
 function getAudioDuration(t: ExecutionTask): number | null {
@@ -138,8 +160,11 @@ export default function HistoryCard({ task }: { task: ExecutionTask }) {
   const toggle = useExecutionStore((s) => s.toggleHistoryRowExpanded)
 
   // 是否展开:用户显式 toggle 过 → 用 toggle 状态;否则按 type 默认。
+  // failed 任务**强制默认展开** —— 错误根因在 ErrorPane 里,合上看不到等于白报错。
   const userToggled = expandedSet.has(task.id)
-  const defaultExpanded = type != null && DEFAULT_EXPANDED_TYPES.has(type)
+  const defaultExpanded =
+    task.status === 'failed' ||
+    (type != null && DEFAULT_EXPANDED_TYPES.has(type))
   const expanded = userToggled !== defaultExpanded  // XOR:toggle 翻转 default
 
   if (!expanded) {
@@ -155,11 +180,27 @@ function HistoryRowCollapsed({
   task, onExpand,
 }: { task: ExecutionTask; onExpand: () => void }) {
   const type = getTaskType(task)
+  const isFailed = task.status === 'failed'
+  const isCancelled = task.status === 'cancelled'
+  // failed:左红 2px 边 + 微红 bg + meta 行换错误摘要 + STATUS chip 红色;
+  // cancelled:左灰 border;completed:无装饰(对齐原 mockup 干净外观)。
+  const borderLeftColor = isFailed
+    ? 'var(--status-failed, #f87171)'
+    : isCancelled
+      ? 'var(--tp-border-strong)'
+      : 'transparent'
+  const bgTint = isFailed ? 'rgba(248, 113, 113, 0.04)' : undefined
   return (
     <button
       onClick={onExpand}
+      title={isFailed && task.error ? task.error : (task.workflow_name || `#${task.id}`)}
       className="w-full flex items-center gap-2.5 p-2 rounded transition-colors hover:bg-[var(--tp-bg-hover)] text-left"
-      style={{ border: '1px solid transparent', cursor: 'pointer' }}
+      style={{
+        border: '1px solid transparent',
+        borderLeft: `2px solid ${borderLeftColor}`,
+        background: bgTint,
+        cursor: 'pointer',
+      }}
     >
       <MiniThumb task={task} />
       <div className="flex-1 min-w-0 flex flex-col gap-0.5">
@@ -167,16 +208,21 @@ function HistoryRowCollapsed({
           {type && <TypeChip type={type} />}
           <span
             className="text-xs font-mono truncate"
-            style={{ color: 'var(--tp-text)' }}
+            style={{ color: isFailed ? 'var(--tp-text-muted)' : 'var(--tp-text)' }}
             title={task.workflow_name || `#${task.id}`}
           >
             {task.workflow_name || `#${task.id}`}
           </span>
         </div>
-        <div className="text-[10.5px] font-mono" style={{ color: 'var(--tp-text-muted)' }}>
-          {summaryMetaLine(task, type)}
+        <div
+          className="text-[10.5px] font-mono flex items-center gap-1 min-w-0"
+          style={{ color: isFailed ? 'var(--status-failed, #f87171)' : 'var(--tp-text-muted)' }}
+        >
+          {isFailed && <AlertTriangle size={11} style={{ flexShrink: 0 }} />}
+          <span className="truncate">{summaryMetaLine(task, type)}</span>
         </div>
       </div>
+      <StatusChip status={task.status} />
       <span
         className="text-[10px] font-mono shrink-0"
         style={{ color: 'var(--tp-text-faint)' }}
@@ -189,6 +235,14 @@ function HistoryRowCollapsed({
 }
 
 function summaryMetaLine(task: ExecutionTask, type: TaskType | null): string {
+  // failed:meta 行直接展示错误摘要,比 duration 信息密度大几倍;
+  // 用户报告「UI 看不出哪个失败」就是因为这一行原来只显示 duration。
+  if (task.status === 'failed') {
+    return errorExcerpt(task) ?? '执行失败'
+  }
+  if (task.status === 'cancelled') {
+    return '已取消'
+  }
   switch (type) {
     case 'image': {
       const w = task.image_width, h = task.image_height
@@ -271,6 +325,9 @@ function HistoryCardExpanded({
       {type === 'llm' && <LlmExpandedBody task={task} />}
       {type === 'vision' && <VisionExpandedBody task={task} />}
       {!type && <GenericExpandedBody task={task} />}
+
+      {/* failed 任务追加错误窗(任何 type 都显示)。 */}
+      {task.status === 'failed' && <ErrorPane task={task} />}
     </div>
   )
 }
@@ -515,6 +572,29 @@ function VisionExpandedBody({ task }: { task: ExecutionTask }) {
 function GenericExpandedBody({ task }: { task: ExecutionTask }) {
   return (
     <ExpMeta task={task} segments={[task.status, durationLabel(task.duration_ms)]} />
+  )
+}
+
+/** failed 任务 expanded body 通用错误窗:无论 type 是什么都展示完整 error,
+ * 让用户从「点击展开」就能看到根因。在 type-specific body 之后渲染。 */
+function ErrorPane({ task }: { task: ExecutionTask }) {
+  if (!task.error) return null
+  return (
+    <div className="px-3 pb-3">
+      <div
+        className="rounded text-[11px] font-mono whitespace-pre-wrap"
+        style={{
+          padding: '8px 10px',
+          background: 'rgba(248, 113, 113, 0.06)',
+          borderLeft: '2px solid var(--status-failed, #f87171)',
+          color: 'var(--status-failed, #f87171)',
+          maxHeight: 160,
+          overflow: 'auto',
+        }}
+      >
+        {task.error}
+      </div>
+    </div>
   )
 }
 
