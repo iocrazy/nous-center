@@ -41,3 +41,122 @@ def test_monitor_loaded_models_from_model_manager():
     with open(src) as f:
         content = f.read()
     assert "model_scheduler" not in content, "monitor.py 不应再引用 model_scheduler"
+
+
+# ----- PR-10: _gpu_processes managed/orphan detection + command_full -----
+
+
+def test_gpu_processes_emits_command_full_and_short(monkeypatch):
+    """nvidia-smi 列出的进程要带 `command_full`(hover tooltip) + 截断的 `command`。"""
+    import subprocess
+    from src.api.routes import monitor as m
+
+    long_cmdline = [
+        "/media/heygo/Program/projects-code/_playground/nous-center/backend/.venv/bin/python3",
+        "-c", "from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=5, pipe_handle=25)",
+        "--multiprocessing-fork", "extra1", "extra2", "extra3", "extra4", "extra5",
+    ]
+
+    class _FakeProc:
+        def __init__(self, pid): self.pid = pid
+        def name(self): return "python3"
+        def cmdline(self): return long_cmdline
+        def parents(self): return []
+
+    def _fake_run(cmd, **kw):
+        class R:
+            pass
+        r = R()
+        r.returncode = 0
+        # cmd 是 list,元素形如 `--query-compute-apps=gpu_uuid,pid,used_memory` —
+        # 完整匹配 prefix 而不是直接 `in cmd`(list 是 exact-element 比对会全 miss)。
+        if any("--query-compute-apps" in c for c in cmd):
+            r.stdout = "GPU-uuid-1, 999, 1024\n"
+        else:  # --query-gpu=index,uuid
+            r.stdout = "1, GPU-uuid-1\n"
+        return r
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(m.psutil, "Process", _FakeProc)
+
+    result = m._gpu_processes(pid_map={})
+    assert 1 in result
+    proc = result[1][0]
+    assert proc["pid"] == 999
+    assert proc["command_full"] == " ".join(long_cmdline)
+    # short command 截断到 ≤120 字符,且只取前 8 段
+    assert len(proc["command"]) <= 120
+    assert proc["command"].count(" ") <= 7 or proc["command"].endswith(("…", " "))
+
+
+def test_gpu_processes_ancestor_walk_marks_grandchild_as_managed(monkeypatch):
+    """multiprocessing.spawn 的 grandchild PID 不在 pid_map,但 parent 在 → 仍算 managed。
+
+    用户报告:RunnerSupervisor._process.pid = 2501890,实际跑 GPU 任务的 grandchild
+    PID = 2501948,被 UI 误标 orphan(红色 + kill 按钮)。本测试钉住 ancestor walk。
+    """
+    import subprocess
+    from src.api.routes import monitor as m
+
+    class _Parent:
+        pid = 2501890
+
+    class _FakeProc:
+        def __init__(self, pid): self.pid = pid
+        def name(self): return "python3"
+        def cmdline(self): return ["python3", "-c", "spawn_main"]
+        def parents(self): return [_Parent()]
+
+    def _fake_run(cmd, **kw):
+        class R:
+            pass
+        r = R()
+        r.returncode = 0
+        if any("--query-compute-apps" in c for c in cmd):
+            r.stdout = "GPU-uuid-1, 2501948, 38000\n"
+        else:
+            r.stdout = "1, GPU-uuid-1\n"
+        return r
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(m.psutil, "Process", _FakeProc)
+
+    # 只 supervisor PID(parent) 在 pid_map,grandchild 不在
+    result = m._gpu_processes(pid_map={2501890: "runner:image"})
+    proc = result[1][0]
+    assert proc["managed"] is True, "grandchild 应通过 ancestor walk 算 managed"
+    assert proc["model_name"] == "runner:image"
+
+
+def test_gpu_processes_orphan_when_no_ancestor_match(monkeypatch):
+    """无任何 ancestor 在 pid_map → 仍算 orphan(ComfyUI 等外部进程)。"""
+    import subprocess
+    from src.api.routes import monitor as m
+
+    class _UnrelatedParent:
+        pid = 99999
+
+    class _FakeProc:
+        def __init__(self, pid): self.pid = pid
+        def name(self): return "python3"
+        def cmdline(self): return ["/home/x/ComfyUI/.venv/bin/python3", "main.py"]
+        def parents(self): return [_UnrelatedParent()]
+
+    def _fake_run(cmd, **kw):
+        class R:
+            pass
+        r = R()
+        r.returncode = 0
+        if any("--query-compute-apps" in c for c in cmd):
+            r.stdout = "GPU-uuid-1, 2865731, 26000\n"
+        else:
+            r.stdout = "1, GPU-uuid-1\n"
+        return r
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(m.psutil, "Process", _FakeProc)
+
+    result = m._gpu_processes(pid_map={2501890: "runner:image"})
+    proc = result[1][0]
+    assert proc["managed"] is False
+    assert proc["model_name"] is None

@@ -931,12 +931,23 @@ function ProcRow({
       <span style={{ minWidth: 48 }}>{proc.pid}</span>
       <span style={{ minWidth: 44 }}>{memG}G</span>
       <span
+        // PR-10:hover 显示完整 cmdline(`command_full` 优先,旧 payload 没字段时
+        // 降级用 `command`)。managed 进程则把完整 cmdline + model_name 都丢进 tooltip,
+        // 让操作员知道这条 row 既是 model XXX 也是 process YYY,不用切到 `ps`。
+        title={
+          proc.command_full || proc.command
+            ? proc.managed && proc.model_name
+              ? `${proc.model_name}\n${proc.command_full || proc.command}`
+              : (proc.command_full || proc.command)
+            : undefined
+        }
         style={{
           flex: 1,
           color: 'var(--text)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          cursor: 'help',
         }}
       >
         {proc.managed ? proc.model_name : proc.command}
