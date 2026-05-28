@@ -37,10 +37,23 @@ logger = logging.getLogger(__name__)
 
 
 def _outputs_root() -> Path:
-    """~/.gstack/outputs/images by default; override via $NOUS_IMAGE_OUTPUTS."""
+    """Image outputs 落盘根目录。优先级(从高到低):
+
+    1. **`$NOUS_IMAGE_OUTPUTS`** — 显式 override(per-process,测试 / 临时切目录用)
+    2. **`Settings.NAS_OUTPUTS_PATH/images`** — 项目级 .env 配置(跟 `NAS_MODELS_PATH`
+       一对,默认 `/mnt/nas/outputs/images`;本机部署常改 `/media/heygo/Program/.../outputs`)
+    3. **`~/.gstack/outputs/images`** — 最终 fallback(零配置 dev 环境也能跑)
+
+    设计:`.env` 改一处 `NAS_OUTPUTS_PATH`,整个项目所有产物(image/tts 音频/video/
+    vision 输出)都落统一大盘 — 跟 ComfyUI 的 `OUTPUT_DIRECTORY` 配置模式一致。
+    """
     override = os.environ.get("NOUS_IMAGE_OUTPUTS")
     if override:
         return Path(override).expanduser()
+    nas_root = (get_settings().NAS_OUTPUTS_PATH or "").strip()
+    if nas_root:
+        # `/mnt/nas/outputs` → `/mnt/nas/outputs/images`(模式跟 NAS_MODELS_PATH 一致)。
+        return Path(nas_root).expanduser() / "images"
     return Path.home() / ".gstack" / "outputs" / "images"
 
 
