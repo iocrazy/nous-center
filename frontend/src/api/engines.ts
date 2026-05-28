@@ -186,6 +186,29 @@ export function useScanModels() {
   })
 }
 
+/** PR-D4:手动卸载所有 image adapter(走 `_models[derived_id]` 统一字典 + 释放显存)。
+ * 调用后 dashboard / 引擎库自动看到 image adapter 消失。 */
+export function useUnloadImageAdapters() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ unloaded: string[]; count: number }>(
+        '/api/v1/engines/unload-image-adapters', { method: 'POST' },
+      ),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      qc.invalidateQueries({ queryKey: ['monitor-stats'] })
+      const msg = data.count > 0
+        ? `已卸载 ${data.count} 个 image adapter`
+        : '当前无 image adapter,无需卸载'
+      useToastStore.getState().add(msg, 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`卸载失败: ${error.message}`, 'error')
+    },
+  })
+}
+
 export function useRefreshMetadata() {
   const qc = useQueryClient()
   return useMutation({

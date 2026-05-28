@@ -46,12 +46,22 @@ def stubbed(monkeypatch):
     builds = []
     fail = {"on": False}
 
-    class _FakeBackend:
+    # PR-D4(2026-05-28):image adapter 改入 `_models[derived_id]` 统一字典,
+    # `LoadedModel.adapter` pydantic 校验需要真 `InferenceAdapter` 子类。
+    # _FakeBackend 继承 InferenceAdapter 满足 isinstance 检查,but stub 出 abstract
+    # 方法走假实现。
+    from src.services.inference.base import InferenceAdapter as _IA
+
+    class _FakeBackend(_IA):
         def __init__(self, **kw):
             builds.append(kw)
+            self._model = None
 
         async def load(self, dev):
-            pass
+            self._model = object()  # is_loaded → True(after load)
+
+        async def infer(self, req):  # pragma: no cover — fake 不跑 infer
+            raise NotImplementedError
 
         def _ensure_pipe(self):
             if fail["on"]:
