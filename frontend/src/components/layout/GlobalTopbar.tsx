@@ -162,10 +162,20 @@ function TaskMenu() {
     const running = all.filter((t) => t.status === 'running').length
     const queued = all.filter((t) => t.status === 'queued').length
     const done = all.filter((t) => t.status === 'completed').length
+    const failed = all.filter((t) => t.status === 'failed').length
+    const cancelled = all.filter((t) => t.status === 'cancelled').length
     const active = running + queued
     const history = all.length - active
-    return { running, queued, done, active, history }
+    return { running, queued, done, failed, cancelled, active, history }
   }, [tasks])
+
+  // section label:有 failed 时显式拆分,让用户从标题就看到错误数量(PR-9)。
+  const buildHistoryLabel = (visible: number): string => {
+    const parts = [`最近 ${visible} 条`]
+    if (counts.failed > 0) parts.push(`失败 ${counts.failed}`)
+    if (counts.cancelled > 0) parts.push(`取消 ${counts.cancelled}`)
+    return parts.join(' · ')
+  }
 
   const { activeTasks, historyTasks } = useMemo(() => {
     const all = tasks ?? []
@@ -284,7 +294,7 @@ function TaskMenu() {
                   <TaskList
                     tasks={historyTasks.slice(0, 5)}
                     emptyText=""
-                    sectionLabel={`最近完成 · ${Math.min(5, counts.history)} 条`}
+                    sectionLabel={buildHistoryLabel(Math.min(5, counts.history))}
                     mode="history"
                   />
                 )}
@@ -293,7 +303,7 @@ function TaskMenu() {
               <TaskList
                 tasks={historyTasks}
                 emptyText="暂无历史记录"
-                sectionLabel={`最近完成 · ${counts.history} 条`}
+                sectionLabel={buildHistoryLabel(counts.history)}
                 mode="history"
               />
             )}
