@@ -110,3 +110,48 @@ async def test_scheduler_status(client):
     assert "loaded" in data
     assert "references" in data
     assert "last_used" in data
+
+
+# ----- PR-11: scan endpoint 拆分「识别 / 本地可用 / 未下载」-----
+
+
+async def test_scan_endpoint_returns_local_available_split(client, monkeypatch):
+    """yaml 配 3 个 / 本地仅 2 个 → count=3, local_available=2, not_local=1。
+
+    用户报告:scan toast 显示「扫描完成 25 个」但引擎库只显示 16,差异是
+    yaml 配但没下载到磁盘的模型(被 list_all_engines `local_path not in
+    local_dirs` 过滤)。本测试钉死 scan 接口同时返回两个数字。
+    """
+    from src.api.routes import engines as engines_route
+
+    monkeypatch.setattr(engines_route, "scan_models", lambda: {
+        "a": {"name": "a", "type": "llm", "local_path": "llm/a"},
+        "b": {"name": "b", "type": "tts", "local_path": "tts/b"},
+        "c": {"name": "c", "type": "image", "local_path": "image/diffusers/c"},
+    })
+    # 只 a 和 b 实际下载到磁盘了
+    monkeypatch.setattr(engines_route, "scan_local_models", lambda: {"llm/a", "tts/b"})
+
+    resp = await client.post("/api/v1/engines/scan")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 3
+    assert data["local_available"] == 2
+    assert data["not_local"] == 1
+    assert set(data["models"]) == {"a", "b", "c"}
+
+
+async def test_scan_endpoint_no_missing_when_all_local(client, monkeypatch):
+    """全部本地有 → not_local=0,前端 toast 走老的简单文案分支。"""
+    from src.api.routes import engines as engines_route
+
+    monkeypatch.setattr(engines_route, "scan_models", lambda: {
+        "a": {"name": "a", "type": "llm", "local_path": "llm/a"},
+    })
+    monkeypatch.setattr(engines_route, "scan_local_models", lambda: {"llm/a"})
+
+    resp = await client.post("/api/v1/engines/scan")
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["local_available"] == 1
+    assert data["not_local"] == 0

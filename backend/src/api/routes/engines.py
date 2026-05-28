@@ -179,12 +179,29 @@ async def list_all_engines(
 @router.post("/scan", dependencies=[Depends(require_admin)])
 async def scan_models_endpoint():
     """Re-scan models directory for new models. Also drops LoRA arch cache so
-    newly-added LoRAs get architecture-detected on the next /api/v1/engines."""
+    newly-added LoRAs get architecture-detected on the next /api/v1/engines.
+
+    Response shape distinguishes **配置识别** vs **本地可用**:用户报告 toast
+    显示「扫到 25」结果引擎库只有 16,差异在于 yaml 配的 9 个模型本地没下载,
+    被 list_all_engines 在 `local_path not in local_dirs` 过滤。本接口把两个
+    数字一起返回,前端可以拼出「识别 N · 本地可用 K · 未下载 (N-K)」消除误导。
+    """
     configs = scan_models()
+    local_dirs = scan_local_models()
+    # configs 已包含 local_path;在 local_dirs 中即「磁盘上真有目录的模型」。
+    local_available = sum(
+        1 for cfg in configs.values()
+        if cfg.get("local_path") and cfg["local_path"] in local_dirs
+    )
     invalidate("engines")
     from src.services.lora_scanner import invalidate_cache as _inv_lora
     _inv_lora()
-    return {"count": len(configs), "models": list(configs.keys())}
+    return {
+        "count": len(configs),
+        "local_available": local_available,
+        "not_local": len(configs) - local_available,
+        "models": list(configs.keys()),
+    }
 
 
 @router.post("/reload", dependencies=[Depends(require_admin)])
