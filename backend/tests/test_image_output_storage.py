@@ -313,11 +313,31 @@ def test_outputs_root_respects_env_override(monkeypatch, tmp_path):
     assert _outputs_root() == tmp_path / "custom"
 
 
-def test_outputs_root_default_under_home(monkeypatch):
+def test_outputs_root_uses_nas_outputs_path(monkeypatch, tmp_path):
+    """`Settings.NAS_OUTPUTS_PATH` 配置后 → 落 `{NAS_OUTPUTS_PATH}/images`(.env 单一开关)。"""
     monkeypatch.delenv("NOUS_IMAGE_OUTPUTS", raising=False)
+    from src.config import get_settings
+    monkeypatch.setattr(get_settings(), "NAS_OUTPUTS_PATH", str(tmp_path / "nas"))
     from src.services.image_output_storage import _outputs_root
-    root = _outputs_root()
-    assert root == Path.home() / ".gstack" / "outputs" / "images"
+    assert _outputs_root() == tmp_path / "nas" / "images"
+
+
+def test_outputs_root_env_override_beats_nas_path(monkeypatch, tmp_path):
+    """`$NOUS_IMAGE_OUTPUTS` 显式 override 优先于 `NAS_OUTPUTS_PATH`(测试 / 临时切目录)。"""
+    monkeypatch.setenv("NOUS_IMAGE_OUTPUTS", str(tmp_path / "explicit"))
+    from src.config import get_settings
+    monkeypatch.setattr(get_settings(), "NAS_OUTPUTS_PATH", str(tmp_path / "nas"))
+    from src.services.image_output_storage import _outputs_root
+    assert _outputs_root() == tmp_path / "explicit"
+
+
+def test_outputs_root_fallback_to_home_when_nas_empty(monkeypatch):
+    """`NAS_OUTPUTS_PATH=""` + 无 env override → fallback `~/.gstack/outputs/images`。"""
+    monkeypatch.delenv("NOUS_IMAGE_OUTPUTS", raising=False)
+    from src.config import get_settings
+    monkeypatch.setattr(get_settings(), "NAS_OUTPUTS_PATH", "")
+    from src.services.image_output_storage import _outputs_root
+    assert _outputs_root() == Path.home() / ".gstack" / "outputs" / "images"
 
 
 # ----- orphan reaper -----
