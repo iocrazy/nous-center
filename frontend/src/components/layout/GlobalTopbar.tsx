@@ -216,7 +216,7 @@ function TaskMenu() {
           role="menu"
           className="absolute right-0 top-full mt-2 rounded-md overflow-hidden flex flex-col"
           style={{
-            width: 400, maxHeight: 600,
+            width: 400, maxHeight: 720,
             background: 'var(--tp-bg-panel)',
             border: '1px solid var(--tp-border-strong)',
             boxShadow: 'var(--shadow-card, 0 12px 32px rgba(0,0,0,0.5))',
