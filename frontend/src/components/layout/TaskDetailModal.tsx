@@ -45,28 +45,36 @@ function getVisionTokens(t: ExecutionTask): number | null {
     .vision_completion_tokens ?? null
 }
 
-function getResultEnvelope(t: ExecutionTask): Record<string, unknown> | null {
-  if (!t.result || typeof t.result !== 'object') return null
-  return t.result as Record<string, unknown>
+/** PR-5:真实 task.result 形态 `{"outputs": {node_id: envelope}}` 兼容 iter。 */
+function* iterNodeOutputs(t: ExecutionTask): Iterable<Record<string, unknown>> {
+  if (!t.result || typeof t.result !== 'object') return
+  const r = t.result as Record<string, unknown>
+  const outputs = r.outputs as Record<string, unknown> | undefined
+  const source = outputs && typeof outputs === 'object' ? outputs : r
+  for (const v of Object.values(source)) {
+    if (v && typeof v === 'object') yield v as Record<string, unknown>
+  }
 }
 
 function findResultField<T>(t: ExecutionTask, key: string): T | null {
-  const env = getResultEnvelope(t)
-  if (!env) return null
-  for (const v of Object.values(env)) {
-    if (v && typeof v === 'object') {
-      const rec = v as Record<string, unknown>
-      if (key in rec && rec[key] !== undefined) return rec[key] as T
-      const meta = rec.meta as Record<string, unknown> | undefined
-      if (meta && key in meta) return meta[key] as T
-    }
+  for (const v of iterNodeOutputs(t)) {
+    if (key in v && v[key] !== undefined) return v[key] as T
+    const meta = v.meta as Record<string, unknown> | undefined
+    if (meta && key in meta) return meta[key] as T
   }
   return null
 }
 
 function getThumbs(t: ExecutionTask): string[] {
+  // 优先 output_thumbnails(V1.5 Lane I);否则从 result.outputs.{...}.image_url 收。
   const arr = (t as ExecutionTask & { output_thumbnails?: string[] | null }).output_thumbnails
-  return Array.isArray(arr) ? arr : []
+  if (Array.isArray(arr) && arr.length > 0) return arr
+  const urls: string[] = []
+  for (const v of iterNodeOutputs(t)) {
+    const u = v.image_url
+    if (typeof u === 'string' && u) urls.push(u)
+  }
+  return urls
 }
 
 function durationLabel(ms: number | null): string {

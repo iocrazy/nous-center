@@ -60,37 +60,54 @@ function getVisionTokens(t: ExecutionTask): number | null {
     .vision_completion_tokens ?? null
 }
 
+/**
+ * PR-5:真实 task.result 形态是 `{"outputs": {node_id: envelope}}` —— workflow_executor
+ * 包了一层 outputs。本 helper 同时兼容两种 shape:有 outputs 字段时 iter outputs.values();
+ * 否则 iter result.values()(旧 fake / 测试用)。
+ */
+function* iterNodeOutputs(t: ExecutionTask): Iterable<Record<string, unknown>> {
+  if (!t.result || typeof t.result !== 'object') return
+  const r = t.result as Record<string, unknown>
+  const outputs = r.outputs as Record<string, unknown> | undefined
+  const source = outputs && typeof outputs === 'object' ? outputs : r
+  for (const v of Object.values(source)) {
+    if (v && typeof v === 'object') yield v as Record<string, unknown>
+  }
+}
+
 function getFirstThumbnail(t: ExecutionTask): string | null {
-  // output_thumbnails 是 PR-V1.5 Lane I 落盘后端字段;空 → null。
+  // 优先 V1.5 Lane I 后端字段 output_thumbnails(若有);
+  // 否则 fallback 到 result.outputs.{out}.image_url(真实任务输出 URL)。
   const arr = (t as ExecutionTask & { output_thumbnails?: string[] | null }).output_thumbnails
-  return Array.isArray(arr) && arr.length > 0 ? arr[0] : null
+  if (Array.isArray(arr) && arr.length > 0) return arr[0]
+  for (const v of iterNodeOutputs(t)) {
+    const imageUrl = v.image_url
+    if (typeof imageUrl === 'string' && imageUrl) return imageUrl
+  }
+  return null
 }
 
 function getFirstPrompt(t: ExecutionTask): string | null {
-  // 从 result envelope 找 prompt(image_generate / llm node 都常带):
-  if (t.result && typeof t.result === 'object') {
-    const obj = t.result as Record<string, unknown>
-    for (const v of Object.values(obj)) {
-      if (v && typeof v === 'object') {
-        const rec = v as Record<string, unknown>
-        const meta = rec.meta as Record<string, unknown> | undefined
-        const prompt = (rec.prompt ?? meta?.prompt) as string | undefined
-        if (typeof prompt === 'string' && prompt) return prompt
-      }
-    }
+  // 优先找 envelope 上的 prompt 字段(image_generate 输出 / meta.prompt);
+  // 兜底找 text_input / encode_prompt 节点的 text 内容(workflow 第一个文本输入)。
+  for (const v of iterNodeOutputs(t)) {
+    const meta = v.meta as Record<string, unknown> | undefined
+    const prompt = (v.prompt ?? meta?.prompt) as string | undefined
+    if (typeof prompt === 'string' && prompt) return prompt
+  }
+  // 兜底:text_input 节点的 text(workflow 起点常用)
+  for (const v of iterNodeOutputs(t)) {
+    const text = v.text as string | undefined
+    // 跳过 LLM response text(LLM result 有 usage 字段),只取纯 text_input
+    if (typeof text === 'string' && text && !v.usage) return text
   }
   return null
 }
 
 function getLlmText(t: ExecutionTask): string | null {
-  if (t.result && typeof t.result === 'object') {
-    const obj = t.result as Record<string, unknown>
-    for (const v of Object.values(obj)) {
-      if (v && typeof v === 'object') {
-        const rec = v as Record<string, unknown>
-        if (typeof rec.text === 'string' && rec.text) return rec.text
-      }
-    }
+  for (const v of iterNodeOutputs(t)) {
+    // LLM result 一定带 usage,这样区分 text_input / LLM 输出
+    if (typeof v.text === 'string' && v.text && v.usage) return v.text
   }
   return null
 }
@@ -266,17 +283,12 @@ function ImageExpandedBody({ task }: { task: ExecutionTask }) {
   const prompt = getFirstPrompt(task)
   const openModal = useExecutionStore((s) => s.openDetailModal)
   const onOpen = () => openModal(task.id)
-  // 从 result.meta 找 seed(对齐 mockup exp-meta:seed 6712 · 1024×1024 · 4.4s)。
+  // 从 result.outputs.{ksm}.seed / .meta.seed 找(真实任务里 KSampler 节点带 seed)。
   const seed = (() => {
-    const env = task.result && typeof task.result === 'object' ? task.result as Record<string, unknown> : null
-    if (!env) return null
-    for (const v of Object.values(env)) {
-      if (v && typeof v === 'object') {
-        const rec = v as Record<string, unknown>
-        if (typeof rec.seed === 'number') return rec.seed
-        const meta = rec.meta as Record<string, unknown> | undefined
-        if (meta && typeof meta.seed === 'number') return meta.seed
-      }
+    for (const v of iterNodeOutputs(task)) {
+      if (typeof v.seed === 'number') return v.seed
+      const meta = v.meta as Record<string, unknown> | undefined
+      if (meta && typeof meta.seed === 'number') return meta.seed
     }
     return null
   })()
