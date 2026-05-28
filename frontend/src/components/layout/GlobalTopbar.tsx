@@ -274,15 +274,26 @@ function TaskMenu() {
             </div>
           </div>
 
-          {/* sb-body */}
+          {/* sb-body —— PR-5 对齐 mockup:Active tab 同时显示 active + recent,
+              不让用户切 tab 才看到 history。 */}
           <div className="flex-1 overflow-y-auto">
             {tab === 'active' ? (
-              <TaskList
-                tasks={activeTasks}
-                emptyText="当前无活动任务"
-                sectionLabel={`正在跑 · ${counts.active} 个`}
-                mode="active"
-              />
+              <>
+                <TaskList
+                  tasks={activeTasks}
+                  emptyText="当前无活动任务"
+                  sectionLabel={`正在跑 · ${counts.active} 个`}
+                  mode="active"
+                />
+                {historyTasks.length > 0 && (
+                  <TaskList
+                    tasks={historyTasks.slice(0, 5)}
+                    emptyText=""
+                    sectionLabel={`最近完成 · ${Math.min(5, counts.history)} 条`}
+                    mode="history"
+                  />
+                )}
+              </>
             ) : (
               <TaskList
                 tasks={historyTasks}

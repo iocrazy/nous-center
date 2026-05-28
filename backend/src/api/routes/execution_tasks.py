@@ -136,15 +136,28 @@ async def delete_task(
     return {"status": "deleted"}
 
 
+def _iter_node_outputs(result: object):
+    """PR-5:真实 task.result 形态是 `{"outputs": {node_id: envelope, ...}}` —
+    workflow_executor.execute() 包了一层 outputs(spec §3.3)。老的 detect_*_meta
+    在 result.values() 找,只匹配「flat result.{node_id}.envelope」shape(不存在)。
+    本 helper 同时兼容两种 shape:有 outputs 字段时 yield outputs.values();
+    否则 yield result.values() 兜底(旧 fake / 测试用)。"""
+    if not isinstance(result, dict):
+        return
+    outputs = result.get("outputs")
+    if isinstance(outputs, dict):
+        yield from outputs.values()
+        return
+    yield from result.values()
+
+
 def _detect_image_meta(result: object) -> dict:
     """Pluck task_type + size from a workflow result by scanning for the
     image_output envelope shape. Stays None for non-image results so the
     UI can skip the badge entirely.
     """
     out: dict = {"task_type": None, "image_width": None, "image_height": None}
-    if not isinstance(result, dict):
-        return out
-    for v in result.values():
+    for v in _iter_node_outputs(result):
         if not isinstance(v, dict):
             continue
         media_type = v.get("media_type")
@@ -168,9 +181,7 @@ def _detect_vision_meta(result: object) -> dict:
     据此把任务归 type=vision(spec ServiceType / 前端 紫橙渐变 + Vision 图标)。
     返 completion_tokens 供 callout 显示。"""
     out: dict = {"task_type": None, "vision_completion_tokens": None}
-    if not isinstance(result, dict):
-        return out
-    for v in result.values():
+    for v in _iter_node_outputs(result):
         if not isinstance(v, dict):
             continue
         if v.get("multimodal") is True and isinstance(v.get("text"), str):
@@ -190,9 +201,7 @@ def _detect_llm_meta(result: object) -> dict:
         "llm_prompt_tokens": None,
         "llm_completion_tokens": None,
     }
-    if not isinstance(result, dict):
-        return out
-    for v in result.values():
+    for v in _iter_node_outputs(result):
         if not isinstance(v, dict):
             continue
         # LLM 节点返回 {text: str, usage: {...}, duration_ms: int}
@@ -210,9 +219,7 @@ def _detect_tts_meta(result: object) -> dict:
     匹配 ImageBackend 落 image_output_storage 后的形状的 TTS 对应版本(audio_url + duration)。
     返 duration_seconds 供前端音频时长展示。"""
     out: dict = {"task_type": None, "audio_duration_seconds": None}
-    if not isinstance(result, dict):
-        return out
-    for v in result.values():
+    for v in _iter_node_outputs(result):
         if not isinstance(v, dict):
             continue
         media_type = v.get("media_type")

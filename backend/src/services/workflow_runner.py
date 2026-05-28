@@ -33,6 +33,27 @@ async def _broadcast(channel_id: str | None, event: dict) -> None:
             logger.warning("workflow_runner broadcast failed: %s", e)
 
 
+async def _broadcast_task_status(task: ExecutionTask, event: str = "updated") -> None:
+    """PR-5(2026-05-28 任务面板重置 WS 实时更新):task 状态变化时广播全局 `/ws/tasks`。
+
+    `workflow_runner` 是后台 task,跟 routes/execution_tasks.py 的 record/cancel/delete
+    路径平行 —— 那 3 个 endpoint 已在 status 变化时调 broadcast_task_update,
+    但 **run 路径(running/completed/failed)以前没调**,导致前端 useTasks 只能等 60s
+    polling fallback 收到新状态(UX 表现为「点 Run 后等好久任务才出现」+ 「task 跑完
+    UI 隔几十秒才更新」)。
+
+    复用 routes 的 `_task_to_dict` 序列化(含 PR-1a/b/c/d 加的 type / audio_duration_seconds
+    / llm_*_tokens / vision_completion_tokens 字段),保持 WS payload 跟 REST 一致。
+    WS 推送失败静默吞(spec §4.1)。
+    """
+    try:
+        from src.api.routes.execution_tasks import _task_to_dict
+        from src.api.websocket import ws_manager
+        await ws_manager.broadcast_task_update(event, _task_to_dict(task))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("broadcast_task_status failed: %s", e)
+
+
 async def run_workflow_task(
     task_id: int,
     workflow_data: dict,
@@ -64,6 +85,8 @@ async def run_workflow_task(
         task.status = "running"
         await session.commit()
         wf_name = task.workflow_name or ""
+        # PR-5:广播 running 状态到 /ws/tasks(前端 useTasks 立即翻新)
+        await _broadcast_task_status(task, event="updated")
 
     executor = WorkflowExecutor(
         workflow_data,
@@ -90,6 +113,8 @@ async def run_workflow_task(
             task.current_node = None
             await session.commit()
             await _broadcast(channel_id, {"type": "complete", "progress": 100})
+            # PR-5:广播 completed 状态到 /ws/tasks
+            await _broadcast_task_status(task, event="updated")
         except ExecutionError as e:
             elapsed = int((time.monotonic() - start) * 1000)
             # PR-3:HTTP cancel 在另一路径已把 status 写 cancelled —— 不要覆盖成 failed。
@@ -99,6 +124,7 @@ async def run_workflow_task(
                 task.error = str(e)
             task.duration_ms = elapsed
             await session.commit()
+            await _broadcast_task_status(task, event="updated")  # PR-5
             logger.info("workflow %s end: status=%s err=%s", task_id, task.status, e)
         except Exception as e:  # noqa: BLE001 — 后台 task 永不冒泡
             elapsed = int((time.monotonic() - start) * 1000)
@@ -108,4 +134,5 @@ async def run_workflow_task(
                 task.error = str(e)
             task.duration_ms = elapsed
             await session.commit()
+            await _broadcast_task_status(task, event="updated")  # PR-5
             logger.info("workflow %s end: status=%s err=%s", task_id, task.status, e, exc_info=task.status != "cancelled")
