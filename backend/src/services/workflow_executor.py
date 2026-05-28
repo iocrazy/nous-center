@@ -332,6 +332,12 @@ class WorkflowExecutor:
                 if v is not None:
                     event[field_name] = v
             loop.create_task(on_progress_async(event))
+            # PR-6:同时广播到全局 /ws/tasks,带 task_id 路由。前端 GlobalTopbar 单一 WS
+            # 连接收所有 task 的 L3 progress,ActiveTaskRow 按 task.id 匹配 — 多任务并发
+            # 场景每行 callout 都能拿到自己的 stage/step/ETA。
+            if self._task_id is not None:
+                from src.api.websocket import ws_manager  # noqa: PLC0415
+                loop.create_task(ws_manager.broadcast_task_progress(self._task_id, event))
 
         result = await client.run_node(
             spec, on_progress=_forward_progress, workflow_name=self._workflow_name)

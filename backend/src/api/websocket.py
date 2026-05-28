@@ -54,6 +54,29 @@ class ConnectionManager:
         for ws in dead:
             self._global_subscribers.remove(ws)
 
+    async def broadcast_task_progress(self, task_id: int, payload: dict) -> None:
+        """PR-6(2026-05-28 任务面板重置全局 L3 progress):widget 在 ActiveTaskRow 显示
+        「⚡ dit step 27/50 · 240ms · ETA 5.5s」需要的 node_progress payload,带 task_id
+        路由让前端按 task 区分。WS 单一连接收所有 task 的 progress —— 多任务并发场景每个
+        ActiveTaskRow 都能拿到自己的 L3 数据,不需要 per-task WS。
+        Payload 形态:{event: "progress", task_id, ...progress_fields}。
+        progress_fields = node_progress event payload(stage/step/total_steps/eta_ms/...)。"""
+        if not self._global_subscribers:
+            return
+        message = json.dumps({
+            "event": "progress",
+            "task_id": str(task_id),
+            **payload,
+        })
+        dead: list[WebSocket] = []
+        for ws in self._global_subscribers:
+            try:
+                await ws.send_text(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self._global_subscribers.remove(ws)
+
     # --- Model status ---
 
     async def subscribe_models(self, websocket: WebSocket):

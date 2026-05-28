@@ -125,7 +125,13 @@ async def run_workflow_task(
             task.duration_ms = elapsed
             await session.commit()
             await _broadcast_task_status(task, event="updated")  # PR-5
-            logger.info("workflow %s end: status=%s err=%s", task_id, task.status, e)
+            # 用 ERROR 级别 + exc_info=True 输出完整 traceback —— ExecutionError 是顶层包装,
+            # 真实节点错误(RuntimeError/CUDA OOM 等)在 __cause__ 链上,需要 traceback 才能看见。
+            logger.error(
+                "workflow %s end: status=%s err=%s",
+                task_id, task.status, e,
+                exc_info=task.status != "cancelled",
+            )
         except Exception as e:  # noqa: BLE001 — 后台 task 永不冒泡
             elapsed = int((time.monotonic() - start) * 1000)
             await session.refresh(task)
