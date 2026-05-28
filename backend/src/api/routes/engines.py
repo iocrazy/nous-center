@@ -318,6 +318,34 @@ async def unload_engine(name: str, request: Request, force: bool = False):
     return EngineLoadResponse(name=name, status="unloaded")
 
 
+@router.post("/unload-image-adapters", dependencies=[Depends(require_admin)])
+async def unload_all_image_adapters(request: Request):
+    """PR-D4 手动救援:卸载所有 image adapter,释放显存。
+
+    image adapter 由 workflow 节点动态组装(combo_key 唯一)+ 进 `_models[derived_id]`,
+    跟 yaml registry 的常驻 LLM 分开。但 LRU 驱逐只在 OOM 时触发 — 用户改 dtype/LoRA
+    多次 Run 后想主动清空(避免下一次再 OOM)就调这个接口。
+
+    遍历 `_models` 找 `model_type='image'` 的全 unload,顺便 `torch.cuda.empty_cache()`。
+    """
+    model_mgr = request.app.state.model_manager
+    image_ids = [
+        mid for mid, entry in model_mgr._models.items()
+        if entry.spec.model_type == "image"
+    ]
+    for mid in image_ids:
+        await model_mgr.unload_model(mid, force=True)
+    # empty_cache 仅在 torch 可用时;CI mock 环境 try/except 安全跑过。
+    try:
+        import torch  # noqa: PLC0415
+        if torch.cuda.is_available():  # type: ignore[attr-defined]
+            torch.cuda.empty_cache()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    invalidate("engines")
+    return {"unloaded": image_ids, "count": len(image_ids)}
+
+
 _install_states: dict[str, dict[str, str]] = {}  # engine -> {status, detail}
 
 

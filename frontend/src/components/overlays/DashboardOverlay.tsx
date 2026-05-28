@@ -4,7 +4,7 @@ import {
   useSysGpus, useSysStats, useSysProcesses, useKillProcess,
   type SysGpuInfo, type GpuProcessInfo,
 } from '../../api/system'
-import { useEngines } from '../../api/engines'
+import { useEngines, useUnloadImageAdapters } from '../../api/engines'
 import { useDashboardSummary, type AlertItem, type TopServiceRow } from '../../api/dashboard'
 import { useRuntimeMetrics, type RuntimeSnapshot } from '../../api/observability'
 import { useVLLMMetrics, useUpdateLaunchParams } from '../../api/vllm'
@@ -600,7 +600,10 @@ function CollapsibleSystem({
               margin: '4px 0 6px',
             }}
           >
-            已加载模型 ({loadedModels.length})
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ flex: 1 }}>已加载模型 ({loadedModels.length})</span>
+              <UnloadImageAdaptersButton />
+            </div>
           </div>
           {loadedModels.length === 0 && (
             <div style={{ fontSize: 12, color: 'var(--muted)', padding: '4px 0' }}>
@@ -904,6 +907,36 @@ function BarRow({
         {value}
       </span>
     </div>
+  )
+}
+
+/** PR-D4:dashboard「系统状态」面板的「已加载模型」标题旁,
+ * 一键释放所有 image adapter(走 `_models[derived_id]` 统一字典 + `empty_cache`)。
+ *
+ * image adapter 由 workflow 节点动态组装,combo_key 唯一 — 用户改 dtype/LoRA 多次
+ * Run 后会累积多份(72GB 报告就是这样)。LRU 自动驱逐只在 OOM 时触发;用户想主动
+ * 清空 cuda:1 跑下一张时用这按钮。空状态也提示 toast,不报错。 */
+function UnloadImageAdaptersButton() {
+  const unload = useUnloadImageAdapters()
+  return (
+    <button
+      type="button"
+      onClick={() => unload.mutate()}
+      disabled={unload.isPending}
+      style={{
+        fontSize: 10,
+        padding: '2px 8px',
+        borderRadius: 3,
+        background: 'transparent',
+        color: 'var(--warn, #f59e0b)',
+        border: '1px solid var(--warn, #f59e0b)',
+        cursor: unload.isPending ? 'wait' : 'pointer',
+        opacity: unload.isPending ? 0.5 : 1,
+      }}
+      title="释放所有 image adapter 显存"
+    >
+      {unload.isPending ? '释放中…' : '释放 image'}
+    </button>
   )
 }
 

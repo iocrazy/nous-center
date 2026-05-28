@@ -148,10 +148,10 @@ class ModelManager:
         # Forward-ref the ComponentKey type as a tuple alias so the module-top
         # import stays clean (component_spec doesn't import ModelManager).
         from src.services.inference.component_spec import ComponentKey  # noqa: F401
-        # 图像 adapter 缓存(key = pipeline_class + 3 组件 key)。PR-4 删了 legacy 组件
-        # L1 缓存(_components 等);modular 引擎自管组件(ComponentsManager)。
-        self._image_adapters: dict = {}
-        self._image_adapter_locks: dict = {}
+        # PR-D4(2026-05-28):删 `_image_adapters` / `_image_adapter_locks` 双套
+        # 路径。image adapter 走 derived model_id 入 `_models` 统一字典,LRU
+        # 驱逐 / 引用计数 / 状态可见 / pid_map 全部 ModelManager 底层自动覆盖,
+        # 不再单独管 image。derive 规则见 `_derive_image_model_id`。
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -783,8 +783,56 @@ class ModelManager:
         # 1.3x 余量(激活/中间张量);bytes → MB
         return int(total / (1024 * 1024) * 1.3)
 
-    def _image_adapter_lock_for(self, key) -> asyncio.Lock:
-        return self._image_adapter_locks.setdefault(key, asyncio.Lock())
+    @staticmethod
+    def _derive_image_model_id(combo_key: tuple) -> str:
+        """combo_key = (pipeline_class, offload, transformer_key, clip_key, vae_key)
+        → 一个稳定可读的 model_id 串,作为 `_models` 字典的键。
+
+        命名:`image:<pipeline_class>:<transformer_basename>:<short_hash>`
+        - pipeline_class 让人看出引擎家族(Flux2Klein / Anima);
+        - transformer_basename 是单文件名或 HF repo 末段,辨识具体模型;
+        - short_hash 兜底 dtype/offload/LoRA 等剩余差异,**保证 1-1 对应** combo_key。
+
+        derived id 不进 yaml registry — 它只活在 `_models` 运行时字典里,被
+        evict_lru / loaded_model_ids / unload_model / get_pid_map 自动消费。
+        """
+        import hashlib
+        pipeline_class, offload, t_key, *_rest = combo_key
+        # transformer key shape: (file, device, dtype, frozenset(loras))
+        t_file = (t_key[0] if isinstance(t_key, tuple) and t_key else "unknown") or "unknown"
+        # 取文件名末段(/path/to/Flux2-Klein-9B-True-v2-bf16.safetensors → Flux2-...-bf16)
+        from os.path import basename, splitext
+        t_base = splitext(basename(str(t_file)))[0] or "main"
+        # 短 hash 区分 dtype/offload/clip/vae/LoRA 等剩余维度
+        payload = repr(combo_key).encode("utf-8")
+        short_hash = hashlib.sha256(payload).hexdigest()[:8]
+        return f"image:{pipeline_class}:{t_base}:{short_hash}"
+
+    def _synthesize_image_spec(
+        self,
+        model_id: str,
+        adapter_class_path: str,
+        target_device: str,
+        vram_mb: int,
+        pipeline_class: str,
+    ) -> "ModelSpec":
+        """构造 in-flight ModelSpec 给 derived image adapter 用 — 不入 yaml registry,
+        只让 LoadedModel.spec 字段有合规对象,这样 evict_lru / loaded_model_ids
+        都能正常工作(它们都读 entry.spec.resident / entry.spec.id 等字段)。
+
+        resident=False 让 image adapter 默认可 LRU 驱逐;ttl_seconds 设极大值
+        (image adapter 不靠 TTL 释放,靠 LRU + 手动 unload + reference)。
+        """
+        return ModelSpec(
+            id=model_id,
+            model_type="image",
+            adapter_class=adapter_class_path,
+            paths={},  # paths 已被 adapter 内部 build_bridged_* 消化,registry 不再需要
+            vram_mb=vram_mb,
+            params={"pipeline_class": pipeline_class},
+            resident=False,
+            ttl_seconds=10**9,  # 不靠 TTL 回收(LRU + 手动 unload 才是主路径)
+        )
 
     async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline", on_event=None, offload: str = "none"):
         """PR-4 entry for the runner component path. Resolves auto devices,
@@ -844,40 +892,55 @@ class ModelManager:
         """
         from src.services.inference.image_anima import AnimaImageBackend  # noqa: PLC0415
 
-        # combo cache hit → 复用(同 Flux2 路径行为)
-        if combo_key in self._image_adapters:
-            adapter = self._image_adapters[combo_key]
+        model_id = self._derive_image_model_id(combo_key)
+        async with self._lock_for(model_id):
+            # cache hit → touch LRU + return
+            entry = self._models.get(model_id)
+            if entry is not None:
+                entry.touch()
+                for k in ("diffusion_models", "clip", "vae"):
+                    await _emit(resolved[k], "loaded")
+                return entry.adapter
+
+            for k in ("diffusion_models", "clip", "vae"):
+                await _emit(resolved[k], "loading")
+            try:
+                paths = {
+                    "transformer": resolved["diffusion_models"].file,
+                    "text_encoder": resolved["clip"].file,
+                    "vae": resolved["vae"].file,
+                }
+                adapter = AnimaImageBackend(
+                    paths=paths,
+                    device=target,
+                    dtype=resolved["diffusion_models"].dtype,
+                    pipeline_class="AnimaPipeline",
+                    offload=offload,
+                )
+                await adapter.load(target)
+                # 预热在首次 infer 时 lazy(_ensure_pipe);不像 Flux2 在装 adapter 时就构建 pipe
+                # —— anima pipe 装配 = 4.5s 加载,留首次 infer 一起付,UX 不卡 startup。
+            except Exception as e:  # noqa: BLE001
+                for k in ("diffusion_models", "clip", "vae"):
+                    await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
+                raise
+
             for k in ("diffusion_models", "clip", "vae"):
                 await _emit(resolved[k], "loaded")
-            return adapter
-
-        for k in ("diffusion_models", "clip", "vae"):
-            await _emit(resolved[k], "loading")
-        try:
-            paths = {
-                "transformer": resolved["diffusion_models"].file,
-                "text_encoder": resolved["clip"].file,
-                "vae": resolved["vae"].file,
-            }
-            adapter = AnimaImageBackend(
-                paths=paths,
-                device=target,
-                dtype=resolved["diffusion_models"].dtype,
-                pipeline_class="AnimaPipeline",
-                offload=offload,
+            gpu_idx = int(target.split(":")[1]) if target.startswith("cuda:") else 0
+            self._models[model_id] = LoadedModel(
+                spec=self._synthesize_image_spec(
+                    model_id=model_id,
+                    adapter_class_path="src.services.inference.image_anima.AnimaImageBackend",
+                    target_device=target,
+                    vram_mb=self._estimate_image_vram_mb(resolved) or 0,
+                    pipeline_class="AnimaPipeline",
+                ),
+                adapter=adapter,
+                gpu_index=gpu_idx,
+                gpu_indices=[gpu_idx],
             )
-            await adapter.load(target)
-            # 预热在首次 infer 时 lazy(_ensure_pipe);不像 Flux2 在装 adapter 时就构建 pipe
-            # —— anima pipe 装配 = 4.5s 加载,留首次 infer 一起付,UX 不卡 startup。
-        except Exception as e:  # noqa: BLE001
-            for k in ("diffusion_models", "clip", "vae"):
-                await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
-            raise
-
-        for k in ("diffusion_models", "clip", "vae"):
-            await _emit(resolved[k], "loaded")
-        self._image_adapters[combo_key] = adapter
-        return adapter
+            return adapter
 
     async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none"):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
@@ -888,12 +951,15 @@ class ModelManager:
         """
         from src.services.inference.image_modular import ModularImageBackend
 
-        async with self._image_adapter_lock_for(combo_key):
-            cached = self._image_adapters.get(combo_key)
-            if cached is not None:
+        model_id = self._derive_image_model_id(combo_key)
+        async with self._lock_for(model_id):
+            # cache hit → touch LRU + return adapter from unified _models dict
+            entry = self._models.get(model_id)
+            if entry is not None:
+                entry.touch()
                 for k in ("diffusion_models", "clip", "vae"):
                     await _emit(resolved[k], "loaded")
-                return cached
+                return entry.adapter
 
             repo = _modular_repo_from_components(resolved)
             for k in ("diffusion_models", "clip", "vae"):
@@ -926,23 +992,69 @@ class ModelManager:
                 if _is_standalone_single_file(resolved["vae"]):
                     v_ov = await asyncio.to_thread(
                         build_bridged_vae, resolved["vae"], repo, load_device)
-                adapter = ModularImageBackend(
-                    repo=repo,
-                    device=target,
-                    dtype=resolved["diffusion_models"].dtype,
-                    pipeline_class=pipeline_class,
-                    offload=offload,
-                    transformer_override=t_ov,
-                    text_encoder_override=c_ov,
-                    vae_override=v_ov,
-                )
-                await adapter.load(target)
-                await asyncio.to_thread(adapter._ensure_pipe)  # 预热(blocking load 进线程)
+                def _build_adapter():
+                    return ModularImageBackend(
+                        repo=repo,
+                        device=target,
+                        dtype=resolved["diffusion_models"].dtype,
+                        pipeline_class=pipeline_class,
+                        offload=offload,
+                        transformer_override=t_ov,
+                        text_encoder_override=c_ov,
+                        vae_override=v_ov,
+                    )
+
+                # PR-D4 OOM 重试一次:加载 / _ensure_pipe 抛 CUDA OOM →
+                # evict 同卡 LRU(可能是上次跑剩下的旧 image adapter)→ 重试。
+                # 跟 get_or_load(L429-L438)的 retry 套路一致,但作用于 image。
+                gpu_idx_target = int(target.split(":")[1]) if target.startswith("cuda:") else None
+                try:
+                    adapter = _build_adapter()
+                    await adapter.load(target)
+                    await asyncio.to_thread(adapter._ensure_pipe)
+                except Exception as e:  # noqa: BLE001
+                    if self._is_oom(e) and gpu_idx_target is not None:
+                        evicted = await self.evict_lru(gpu_index=gpu_idx_target)
+                        if evicted is not None:
+                            logger.info(
+                                "image adapter %r: OOM on first load, evicted %r on gpu %s, retrying",
+                                model_id, evicted, gpu_idx_target,
+                            )
+                            try:
+                                adapter = _build_adapter()
+                                await adapter.load(target)
+                                await asyncio.to_thread(adapter._ensure_pipe)
+                            except Exception as e2:  # noqa: BLE001
+                                for k in ("diffusion_models", "clip", "vae"):
+                                    await _emit(resolved[k], "failed", f"{type(e2).__name__}: {e2}")
+                                raise
+                        else:
+                            for k in ("diffusion_models", "clip", "vae"):
+                                await _emit(resolved[k], "failed", f"OOM and nothing evictable: {e}")
+                            raise
+                    else:
+                        for k in ("diffusion_models", "clip", "vae"):
+                            await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
+                        raise
             except Exception as e:  # noqa: BLE001
+                # 桥接 build_bridged_* / 其它非 OOM 路径 — 兜底 emit failed 再抛。
+                # 内层 OOM 重试块已经发了 emit failed,这里只 cover 它没覆盖的路径。
                 for k in ("diffusion_models", "clip", "vae"):
                     await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
                 raise
             for k in ("diffusion_models", "clip", "vae"):
                 await _emit(resolved[k], "loaded")
-            self._image_adapters[combo_key] = adapter
+            gpu_idx = int(target.split(":")[1]) if target.startswith("cuda:") else 0
+            self._models[model_id] = LoadedModel(
+                spec=self._synthesize_image_spec(
+                    model_id=model_id,
+                    adapter_class_path="src.services.inference.image_modular.ModularImageBackend",
+                    target_device=target,
+                    vram_mb=self._estimate_image_vram_mb(resolved) or 0,
+                    pipeline_class=pipeline_class,
+                ),
+                adapter=adapter,
+                gpu_index=gpu_idx,
+                gpu_indices=[gpu_idx],
+            )
             return adapter

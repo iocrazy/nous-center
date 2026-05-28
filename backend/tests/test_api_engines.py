@@ -141,6 +141,69 @@ async def test_scan_endpoint_returns_local_available_split(client, monkeypatch):
     assert set(data["models"]) == {"a", "b", "c"}
 
 
+# ----- PR-D4: 手动 unload-image-adapters 端点(image adapter 入 _models 统一字典后路径)-----
+
+
+async def test_unload_image_adapters_clears_image_entries(client, app):
+    """POST /api/v1/engines/unload-image-adapters 清掉 `_models` 里所有 model_type=image
+    的 derived adapter,留 LLM/TTS 不动。PR-D4 用户从「系统状态」点「释放 image adapter」
+    走这条路径。conftest 给 app.state.model_manager 默认是 MagicMock,本测试用真 dict
+    + 真 unload_model 替换 mock,模拟 ModelManager 接口。"""
+    from src.services.inference.base import InferenceAdapter
+    from src.services.inference.registry import ModelSpec
+    from src.services.model_manager import LoadedModel
+
+    mm = app.state.model_manager
+
+    class _FakeAdapter(InferenceAdapter):
+        def __init__(self): self._model = object()
+        async def load(self, device): pass
+        async def infer(self, req): raise NotImplementedError
+        def unload(self) -> None: self._model = None
+
+    def _spec(mid, mtype):
+        return ModelSpec(id=mid, model_type=mtype, adapter_class="x.y.Z",
+                         paths={}, vram_mb=1000)
+
+    # 用真 dict 替换 MagicMock 的 `_models` 属性,让 .items() 真正 iter
+    fake_models = {
+        "image:Flux2KleinPipeline:foo:00112233": LoadedModel(
+            spec=_spec("image:Flux2KleinPipeline:foo:00112233", "image"),
+            adapter=_FakeAdapter(), gpu_index=1, gpu_indices=[1]),
+        "image:AnimaPipeline:bar:44556677": LoadedModel(
+            spec=_spec("image:AnimaPipeline:bar:44556677", "image"),
+            adapter=_FakeAdapter(), gpu_index=2, gpu_indices=[2]),
+        "qwen3-1.7b": LoadedModel(
+            spec=_spec("qwen3-1.7b", "llm"),
+            adapter=_FakeAdapter(), gpu_index=0, gpu_indices=[0]),
+    }
+    mm._models = fake_models
+
+    async def _fake_unload(mid, force=False):
+        fake_models.pop(mid, None)
+    mm.unload_model = _fake_unload
+
+    resp = await client.post("/api/v1/engines/unload-image-adapters")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 2
+    assert set(body["unloaded"]) == {
+        "image:Flux2KleinPipeline:foo:00112233",
+        "image:AnimaPipeline:bar:44556677",
+    }
+    assert "qwen3-1.7b" in fake_models
+    assert "image:Flux2KleinPipeline:foo:00112233" not in fake_models
+    assert "image:AnimaPipeline:bar:44556677" not in fake_models
+
+
+async def test_unload_image_adapters_when_none_returns_zero(client, app):
+    """空状态下也要 200 + count=0(让前端按钮即使没 image 时不报错)。"""
+    app.state.model_manager._models = {}  # 真 dict 替 MagicMock,确保 .items() 走通
+    resp = await client.post("/api/v1/engines/unload-image-adapters")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 0
+
+
 async def test_scan_endpoint_no_missing_when_all_local(client, monkeypatch):
     """全部本地有 → not_local=0,前端 toast 走老的简单文案分支。"""
     from src.api.routes import engines as engines_route
