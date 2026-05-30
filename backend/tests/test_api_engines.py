@@ -196,53 +196,53 @@ async def test_unload_image_adapters_clears_image_entries(client, app):
     assert "image:AnimaPipeline:bar:44556677" not in fake_models
 
 
+class _FakeSup:
+    """模拟 RunnerSupervisor:只暴露 group_id + loaded_models(Pong 上报的快照)。"""
+    def __init__(self, group_id, loaded_models):
+        self.group_id = group_id
+        self.loaded_models = loaded_models
+
+
 async def test_image_cache_endpoint_lists_image_entries_only(client, app):
-    """GET /api/v1/engines/image-cache 返 image 类 LoadedModel,LLM 不出现。PR-D5
-    诊断 cache miss 用 — 用户从这接口看「同 base 同参跑两次,真有 2 entry 吗」。"""
-    from src.services.inference.base import InferenceAdapter
-    from src.services.inference.registry import ModelSpec
-    from src.services.model_manager import LoadedModel
+    """GET /api/v1/engines/image-cache 返 image 类已加载 adapter,LLM 不出现。
 
-    class _FakeAdapter(InferenceAdapter):
-        def __init__(self): self._model = object()
-        async def load(self, device): pass
-        async def infer(self, req): raise NotImplementedError
-        def unload(self) -> None: self._model = None
-
-    def _spec(mid, mtype, vram=1000, pclass=None):
-        params = {"pipeline_class": pclass} if pclass else {}
-        return ModelSpec(id=mid, model_type=mtype, adapter_class="x.y.Z",
-                         paths={}, vram_mb=vram, params=params)
-
-    app.state.model_manager._models = {
-        "image:Flux2KleinPipeline:foo:11111111": LoadedModel(
-            spec=_spec("image:Flux2KleinPipeline:foo:11111111", "image",
-                       vram=19000, pclass="Flux2KleinPipeline"),
-            adapter=_FakeAdapter(), gpu_index=1, gpu_indices=[1]),
-        "image:AnimaPipeline:bar:22222222": LoadedModel(
-            spec=_spec("image:AnimaPipeline:bar:22222222", "image",
-                       vram=4000, pclass="AnimaPipeline"),
-            adapter=_FakeAdapter(), gpu_index=2, gpu_indices=[2]),
-        "qwen3-1.7b": LoadedModel(
-            spec=_spec("qwen3-1.7b", "llm", vram=8000),
-            adapter=_FakeAdapter(), gpu_index=0, gpu_indices=[0]),
-    }
+    #198 修正:image adapter 真加载在 runner 子进程,主进程 _models 恒空 —— 端点改读
+    runner 经 Pong 上报、聚合到各 supervisor.loaded_models 的快照。本测试用 _FakeSup
+    模拟该上报,断言只有 image 类出现、字段完整。"""
+    app.state.runner_supervisors = [
+        _FakeSup("image", [
+            {"model_id": "image:Flux2KleinPipeline:foo:11111111", "model_type": "image",
+             "gpu_index": 1, "gpu_indices": [1], "vram_mb": 19000,
+             "pipeline_class": "Flux2KleinPipeline",
+             "source_files": ["/m/Flux2-Klein-9B.safetensors", "/m/qwen3.safetensors", "/m/vae.safetensors"],
+             "last_used_ago_sec": 3.2},
+            {"model_id": "image:AnimaPipeline:bar:22222222", "model_type": "image",
+             "gpu_index": 2, "gpu_indices": [2], "vram_mb": 4000,
+             "pipeline_class": "AnimaPipeline", "source_files": [], "last_used_ago_sec": 1.0},
+        ]),
+        _FakeSup("tts", [
+            {"model_id": "qwen-tts", "model_type": "tts", "gpu_index": 0,
+             "gpu_indices": [0], "vram_mb": 5000, "pipeline_class": None,
+             "source_files": [], "last_used_ago_sec": 0.5},
+        ]),
+    ]
 
     resp = await client.get("/api/v1/engines/image-cache")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["count"] == 2
+    assert body["count"] == 2  # tts 不算
     ids = {e["model_id"] for e in body["entries"]}
     assert ids == {
         "image:Flux2KleinPipeline:foo:11111111",
         "image:AnimaPipeline:bar:22222222",
     }
-    # 字段完整 — gpu_index / last_used_ago_sec / pipeline_class / vram_mb
+    # 字段完整 — gpu_index / pipeline_class / vram_mb / source_files / group_id
     e0 = next(e for e in body["entries"] if "Flux2" in e["model_id"])
     assert e0["gpu_index"] == 1
     assert e0["pipeline_class"] == "Flux2KleinPipeline"
     assert e0["vram_mb"] == 19000
-    assert e0["last_used_ago_sec"] >= 0
+    assert e0["group_id"] == "image"
+    assert "/m/Flux2-Klein-9B.safetensors" in e0["source_files"]
 
 
 def test_explain_image_combo_key_unpacks_all_components():

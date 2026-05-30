@@ -129,7 +129,12 @@ class ModelEvent:
 @dataclass(frozen=True)
 class Pong:
     runner_id: str
-    loaded_models: list[str] = field(default_factory=list)
+    # 结构化已加载 adapter 快照(ModelManager.loaded_models_snapshot()):每条 dict =
+    # {model_id, model_type, gpu_index, gpu_indices, vram_mb, pipeline_class,
+    #  source_files, last_used_ago_sec}。image/tts adapter 真加载在 runner 自己的
+    # _models,主进程靠这份快照(supervisor watchdog 每 ping 一次对账)还原「已加载」
+    # 视图。历史上是 list[str](仅 id);改 dict 向后兼容(decode 不校验元素类型)。
+    loaded_models: list[dict] = field(default_factory=list)
     kind: Literal["pong"] = "pong"
 
 

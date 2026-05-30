@@ -50,6 +50,40 @@ async def test_start_spawns_runner_and_handshakes():
 
 
 @pytest.mark.asyncio
+async def test_supervisor_stores_loaded_snapshot_from_pong():
+    """Bug 3:runner 子进程加载的模型,主进程靠 Pong 上报的结构化快照可见。
+    load_model 后对账一次 → sup.loaded_models 反映 runner 里的 _models。"""
+    sup = _make_supervisor()
+    try:
+        await sup.start()
+        assert sup.loaded_models == []  # start 时 runner 还没 load 任何模型
+        await sup.client.load_model("fake-img-a", config={})
+        await sup._reconcile_loaded()  # ping → Pong(loaded_models snapshot)
+        ids = {e["model_id"] for e in sup.loaded_models}
+        assert "fake-img-a" in ids
+        e = next(e for e in sup.loaded_models if e["model_id"] == "fake-img-a")
+        assert "model_type" in e and "gpu_index" in e and "source_files" in e
+    finally:
+        await sup.stop()
+
+
+@pytest.mark.asyncio
+async def test_restart_clears_loaded_snapshot():
+    """crash 重启 → 旧 runner 的已加载快照随进程没了,sup.loaded_models 清空。"""
+    sup = _make_supervisor()
+    try:
+        await sup.start()
+        await sup.client.load_model("fake-img-a", config={})
+        await sup._reconcile_loaded()
+        assert sup.loaded_models  # 非空
+        sup._process.terminate()
+        await asyncio.wait_for(sup.wait_restarted(count=1), timeout=15.0)
+        assert sup.loaded_models == []  # 重启后(还没新 ping)已清空
+    finally:
+        await sup.stop()
+
+
+@pytest.mark.asyncio
 async def test_watchdog_detects_crash_and_restarts():
     """杀掉 runner 子进程 → watchdog ping 超时 → 自动重启 → 新 runner 可用。"""
     sup = _make_supervisor()
