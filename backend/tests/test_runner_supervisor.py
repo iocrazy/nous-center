@@ -50,6 +50,45 @@ async def test_start_spawns_runner_and_handshakes():
 
 
 @pytest.mark.asyncio
+async def test_busy_runner_alive_not_killed_on_ping_timeout(monkeypatch):
+    """根治 ping-timeout 误杀:长 dispatch 阻塞事件循环 → ping 超时,但进程活着 = 忙,
+    绝不能 kill(这正是 anima/长 denoise 被误杀的根因)。"""
+    sup = _make_supervisor(max_unresponsive_seconds=300.0)
+    try:
+        await sup.start()
+        assert sup._process.is_alive()
+
+        async def _slow_ping():  # 模拟事件循环被占住,Pong 永远不来(但进程活着)
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(sup.client, "ping", _slow_ping)
+        # 跑几个 watchdog 周期(ping_interval=0.3 + ping_timeout=0.5)
+        await asyncio.sleep(1.6)
+        assert sup.restart_count == 0  # 忙 runner 没被误杀
+        assert sup.is_running
+    finally:
+        await sup.stop()
+
+
+@pytest.mark.asyncio
+async def test_alive_but_unresponsive_too_long_restarts(monkeypatch):
+    """死锁兜底:进程活着但持续无响应超过 max_unresponsive_seconds(疑死锁)→ 重启。
+    没有图/音生成要这么久,所以阈值高于任何正常 dispatch 即安全。"""
+    sup = _make_supervisor(max_unresponsive_seconds=0.5)
+    try:
+        await sup.start()
+
+        async def _slow_ping():
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(sup.client, "ping", _slow_ping)
+        await asyncio.wait_for(sup.wait_restarted(count=1), timeout=15.0)
+        assert sup.restart_count >= 1  # 持续无响应 → 兜底重启
+    finally:
+        await sup.stop()
+
+
+@pytest.mark.asyncio
 async def test_supervisor_stores_loaded_snapshot_from_pong():
     """Bug 3:runner 子进程加载的模型,主进程靠 Pong 上报的结构化快照可见。
     load_model 后对账一次 → sup.loaded_models 反映 runner 里的 _models。"""
