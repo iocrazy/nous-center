@@ -108,3 +108,33 @@ async def test_progress_redirected_to_stage_node():
     starts = [e["node_id"] for e in captured if e["type"] == "node_start"]
     assert "ld" in starts  # 加载阶段高亮 Load Diffusion Model(而非 VAE)
     assert "ksm" in starts
+
+
+@pytest.mark.asyncio
+async def test_model_load_stage_broadcast_before_denoise(monkeypatch):
+    """Bug 2:dispatch 前广播 stage=model_load 任务进度,任务面板加载阶段显示「加载模型中…」;
+    且在第一个 denoise 进度之前。"""
+    broadcasts: list[tuple] = []
+    from src.api import websocket as ws_mod
+
+    async def _fake_broadcast(task_id, ev):
+        broadcasts.append((task_id, ev))
+
+    monkeypatch.setattr(ws_mod.ws_manager, "broadcast_task_progress", _fake_broadcast)
+
+    async def on_progress(_ev):
+        pass
+
+    ex = WorkflowExecutor(_chain_workflow(), on_progress=on_progress,
+                          runner_clients={"image": _StagedClient()}, task_id=9)
+    await ex.execute()
+    await asyncio.sleep(0.05)
+
+    stages = [ev.get("stage") for _t, ev in broadcasts]
+    assert "model_load" in stages  # 加载阶段有任务级反馈
+    ml_idx = next(i for i, (_t, ev) in enumerate(broadcasts) if ev.get("stage") == "model_load")
+    dn_idx = next(i for i, (_t, ev) in enumerate(broadcasts) if ev.get("stage") == "dit_denoise")
+    assert ml_idx < dn_idx  # model_load 在 denoise 之前
+    # 不造假百分比:model_load 不带 step
+    ml_ev = broadcasts[ml_idx][1]
+    assert "step" not in ml_ev or ml_ev.get("step") is None

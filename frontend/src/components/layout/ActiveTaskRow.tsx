@@ -26,6 +26,7 @@ const TYPE_LABEL: Record<TaskType, string> = {
 }
 
 const STAGE_LABEL: Record<string, string> = {
+  model_load: '加载模型',
   text_encode: 'text encode',
   dit_denoise: 'dit denoise',
   vae_decode: 'vae decode',
@@ -83,7 +84,10 @@ export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
   const stepLatencyMs = progress?.stepLatencyMs ?? null
   const etaMs = progress?.etaMs ?? null
 
-  const showL3 = isRunning && stage != null && step != null
+  // Bug 2:model_load 是不定态阶段(加载模型,无 step / 不造假百分比)—— 也要显示 callout
+  // (「加载模型中…」),否则加载期间 RUNNING 卡一片空白。其余阶段仍要求 step 才显示。
+  const isIndeterminate = stage === 'model_load'
+  const showL3 = isRunning && stage != null && (step != null || isIndeterminate)
 
   return (
     <div className="relative flex gap-2.5">
@@ -195,12 +199,13 @@ export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
                 className="font-semibold"
                 style={{ color: 'var(--status-running-strong, #86efac)' }}
               >
-                {STAGE_LABEL[stage!] ?? stage} · step {step!.done}/{step!.total}
+                {STAGE_LABEL[stage!] ?? stage}
+                {step ? ` · step ${step.done}/${step.total}` : ' …'}
               </span>
-              {stepLatencyMs != null && stepLatencyMs > 0 && (
+              {step && stepLatencyMs != null && stepLatencyMs > 0 && (
                 <> · {formatMs(stepLatencyMs)}/step</>
               )}
-              {etaMs != null && etaMs > 0 && (
+              {step && etaMs != null && etaMs > 0 && (
                 <> · ETA {formatMs(etaMs)}</>
               )}
             </span>
