@@ -29,11 +29,16 @@ class GPUAllocator:
         self,
         poll_fn: Callable[[], list[dict]] | None = None,
         hardware_config: dict | None = None,
+        preferred_gpus: list[int] | None = None,
     ):
         if poll_fn is None:
             from src.services.gpu_monitor import poll_gpu_stats
             poll_fn = poll_gpu_stats
         self._poll = poll_fn
+        # runner 子进程的 group 卡(gpus=[N])。get_best_gpu 优先在这些卡里选 ——
+        # 否则 image runner「分配 gpu0」却把模型装到全局最空的 gpu1(撞常驻 LLM 那张卡),
+        # 破坏 per-group 隔离。None = 不约束(主进程 allocator / 测试)。
+        self._preferred_gpus = list(preferred_gpus) if preferred_gpus else None
 
         if hardware_config is None:
             from src.config import load_hardware_config
@@ -127,14 +132,35 @@ class GPUAllocator:
     # ------------------------------------------------------------------
 
     def get_best_gpu(self, required_vram_mb: float) -> int:
+        """装得下的卡里选最空的。preferred_gpus(runner group 卡)优先 —— 先在 group
+        内找装得下的;group 内都装不下才 fallback 到全局(spill 出 group,打 warning),
+        既守 per-group 隔离又不让大模型因卡太小而无处可装。"""
         stats = self._poll()
         if not stats:
             return -1
-        candidates = [(s["index"], s["free_mb"]) for s in stats if s["free_mb"] >= required_vram_mb]
-        if not candidates:
-            return -1
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        return candidates[0][0]
+
+        def _pick(pool: list[dict]) -> int:
+            cands = [(s["index"], s["free_mb"]) for s in pool if s["free_mb"] >= required_vram_mb]
+            if not cands:
+                return -1
+            cands.sort(key=lambda x: x[1], reverse=True)
+            return cands[0][0]
+
+        if self._preferred_gpus is not None:
+            in_group = [s for s in stats if s["index"] in self._preferred_gpus]
+            pick = _pick(in_group)
+            if pick >= 0:
+                return pick
+            # group 内装不下 → spill 到全局(明确告警,这是隔离被打破的信号)。
+            pick = _pick(stats)
+            if pick >= 0:
+                logger.warning(
+                    "get_best_gpu: group %s 内无卡可装 %.0fMB,spill 到 gpu %d(隔离被打破)",
+                    self._preferred_gpus, required_vram_mb, pick,
+                )
+            return pick
+
+        return _pick(stats)
 
     def get_free_mb(self, gpu_index: int) -> int:
         stats = self._poll()

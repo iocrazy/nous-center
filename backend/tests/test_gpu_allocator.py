@@ -18,6 +18,25 @@ def test_pick_gpu_no_gpus():
     alloc = GPUAllocator(poll_fn=lambda: [])
     assert alloc.get_best_gpu(required_vram_mb=1000) == -1
 
+
+def test_preferred_gpus_picks_within_group_even_if_not_globally_freest():
+    """runner group 卡优先:gpu0 装得下就选 gpu0,哪怕 gpu1 更空 —— 守 per-group 隔离。"""
+    alloc = GPUAllocator(poll_fn=_fake_stats, preferred_gpus=[0])
+    assert alloc.get_best_gpu(required_vram_mb=4000) == 0  # 不再被 gpu1(20000) 抢走
+
+
+def test_preferred_gpus_spill_when_group_cant_fit():
+    """group 内装不下 → spill 到全局装得下的卡(大模型不会因 group 卡太小而无处可装)。"""
+    alloc = GPUAllocator(poll_fn=_fake_stats, preferred_gpus=[0])
+    # gpu0 只有 8000 装不下 12000,spill 到 gpu1(20000)
+    assert alloc.get_best_gpu(required_vram_mb=12000) == 1
+
+
+def test_preferred_none_keeps_global_best():
+    """preferred=None(主进程/测试)→ 旧行为不变,全局最空。"""
+    alloc = GPUAllocator(poll_fn=_fake_stats, preferred_gpus=None)
+    assert alloc.get_best_gpu(required_vram_mb=4000) == 1
+
 def test_get_free_mb():
     alloc = GPUAllocator(poll_fn=_fake_stats)
     assert alloc.get_free_mb(0) == 8000
