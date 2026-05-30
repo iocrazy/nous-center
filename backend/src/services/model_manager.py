@@ -139,6 +139,9 @@ class ModelManager:
         self._models: dict[str, LoadedModel] = {}
         self._references: dict[str, set[str]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # device=auto 粘性放置(#199):device-independent combo identity → 上次落的 gpu_index。
+        # 同一工作流二次跑 auto 解析回同一张卡,避免 combo_key 翻卡 → cache miss → 重载。
+        self._image_stick: dict[tuple, int] = {}
         # Per-model load failures (set by background preload tasks or prior
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
@@ -916,6 +919,16 @@ class ModelManager:
                 await on_event(component_state_key(spec), state, error)
 
         resolved = {k: self._resolve_component_device(s) for k, s in components.items()}
+        # device=auto 粘性放置(#199 根治):同一工作流(同 file/dtype/loras)二次跑,把
+        # diffusion_models 的 auto 解析粘回上次落的卡 —— 否则 get_best_gpu 按「此刻最空」
+        # 会翻卡(run1 占了 A,run2 落 B)→ combo_key 变 → cache miss → 同模型重载(70G 累积)。
+        # clip/vae 随 target(下方强制),所以只粘 diffusion_models 即可。
+        stick_key = self._image_stick_identity(components, pipeline_class, offload)
+        sticky = (components["diffusion_models"].device == "auto"
+                  and stick_key in self._image_stick)
+        if sticky:
+            resolved["diffusion_models"] = resolved["diffusion_models"].model_copy(
+                update={"device": f"cuda:{self._image_stick[stick_key]}"})
         # 整模型单卡不变式(spec 2026-05-21 rev 2):device=auto 会让三组件各自 resolve
         # 到不同卡 —— 以 unet 解析出的卡为准,强制 clip/vae 落同一张卡。
         target = resolved["diffusion_models"].device
@@ -924,7 +937,9 @@ class ModelManager:
                 resolved[k] = resolved[k].model_copy(update={"device": target})
         # LLM 卡保护:目标卡空闲显存不足(常驻 LLM 占着)→ 装载前清晰报错,不静默 OOM。
         # PR-D:offload=cpu 时跳过这检查 — accelerate hooks 会按需挪 CPU,峰值 VRAM 远低于估算。
-        if offload == "none":
+        # 粘性命中(sticky):预期 cache hit、不需新显存 —— 跳过守卫,否则「卡已被自己占满」
+        # 会误判 OOM。真需重载(被 evict 过)时下游 OOM-retry 兜底。
+        if offload == "none" and not sticky:
             free_mb = self._free_vram_mb(target)
             need_mb = self._estimate_image_vram_mb(resolved)
             if free_mb is not None and need_mb is not None and free_mb < need_mb:
@@ -940,10 +955,28 @@ class ModelManager:
         # PR-anima-6 engine 集成:pipeline_class="AnimaPipeline" → 走 AnimaImageBackend
         # (Anima 是 2B 自定义 DiT,跟 Flux2KleinPipeline 走不同路径)。
         if pipeline_class == "AnimaPipeline":
-            return await self._get_or_load_anima_adapter(
+            adapter = await self._get_or_load_anima_adapter(
                 resolved, combo_key, target, _emit, offload)
-        return await self._get_or_load_modular_adapter(
-            resolved, combo_key, pipeline_class, target, _emit, offload)
+        else:
+            adapter = await self._get_or_load_modular_adapter(
+                resolved, combo_key, pipeline_class, target, _emit, offload)
+        # 记住这工作流落的卡 —— 下次 auto 粘回来(load 与 cache hit 都刷新,target 即当前卡)。
+        if target.startswith("cuda:"):
+            self._image_stick[stick_key] = int(target.split(":", 1)[1])
+        return adapter
+
+    @staticmethod
+    def _image_stick_identity(components: dict, pipeline_class: str, offload: str) -> tuple:
+        """device-independent combo identity:同一工作流(同 file/dtype/loras/pipeline/offload)
+        无论解析到哪张卡都同一 identity。用作 _image_stick 的 key,让 device=auto 二次跑粘回
+        同卡 → combo_key 稳定 → cache hit。"""
+        parts = []
+        for k in ("diffusion_models", "clip", "vae"):
+            s = components[k]
+            loras = frozenset(
+                (lo.name, float(lo.strength)) for lo in (getattr(s, "loras", None) or []))
+            parts.append((s.file, s.dtype, loras))
+        return (pipeline_class, offload, tuple(parts))
 
     async def _get_or_load_anima_adapter(self, resolved, combo_key, target, _emit, offload: str):
         """Anima(2B 自定义 DiT)adapter 装配 —— spec 2026-05-26-anima-port,PR-anima-6 集成。
