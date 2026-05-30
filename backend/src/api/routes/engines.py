@@ -341,6 +341,40 @@ async def list_image_adapter_cache(request: Request):
     return {"count": len(entries), "entries": entries}
 
 
+@router.get("/loaded-adapters", dependencies=[Depends(require_admin)])
+async def list_loaded_adapters(request: Request):
+    """Bug 3 PR-2c:列所有 runner 子进程加载的 combo adapter 实体(image/tts),供引擎库
+    「已加载」tab 渲染。
+
+    它们是工作流动态组装的单文件 combo(unet+clip+vae,model_id 是哈希)—— 不对应
+    注册卡片,所以不能靠 engines 列表的 status='loaded' 显示。前端在「已加载」tab 把这些
+    作为独立实体卡渲染(源文件 basename + GPU + VRAM + pipeline_class)。
+
+    只返 runner 上报的(group_id != 'main');主进程内模型(LLM)本就以注册卡形式出现在
+    engines 列表,不在此重复。
+    """
+    from src.services.runner_models import aggregate_runner_loaded
+    import os
+    entries = []
+    for e in aggregate_runner_loaded(request.app.state):
+        if e.get("group_id") == "main":
+            continue
+        srcs = e.get("source_files") or []
+        entries.append({
+            "model_id": e.get("model_id"),
+            "model_type": e.get("model_type"),
+            "group_id": e.get("group_id"),
+            "gpu_index": e.get("gpu_index"),
+            "vram_mb": e.get("vram_mb"),
+            "pipeline_class": e.get("pipeline_class"),
+            "source_files": srcs,
+            # 人读名:取 diffusion_models(首个源文件)basename;无则退回 model_id。
+            "display_name": os.path.basename(srcs[0]) if srcs else e.get("model_id"),
+            "last_used_ago_sec": e.get("last_used_ago_sec"),
+        })
+    return {"count": len(entries), "entries": entries}
+
+
 @router.post("/unload-image-adapters", dependencies=[Depends(require_admin)])
 async def unload_all_image_adapters(request: Request):
     """手动救援:卸载所有 image adapter,释放显存。

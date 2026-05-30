@@ -3,7 +3,8 @@ import { Copy, Check } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
-  type EngineInfo,
+  useLoadedAdapters,
+  type EngineInfo, type LoadedAdapter,
 } from '../../api/engines'
 import { apiFetch } from '../../api/client'
 import { useToastStore } from '../../stores/toast'
@@ -48,6 +49,7 @@ interface ContextMenuState {
 
 export default function ModelsOverlay() {
   const { data: engines, isLoading, isError } = useEngines()
+  const { data: loadedAdaptersData } = useLoadedAdapters()
   const loadEngine = useLoadEngine()
   const unloadEngine = useUnloadEngine()
   const syncMeta = useSyncMetadata()
@@ -179,7 +181,10 @@ export default function ModelsOverlay() {
   // Compute tab counts (m11 style — single flat grid filtered by tab,
   // not the per-type sectioned rendering of the previous IA).
   const allEngines = engines ?? []
-  const loadedCount = allEngines.filter((e) => e.status === 'loaded').length
+  // Bug 3 PR-2c:runner 里加载的 combo adapter 实体(image/tts),不在 engines 注册卡里。
+  const loadedAdapters = loadedAdaptersData?.entries ?? []
+  const loadedCount =
+    allEngines.filter((e) => e.status === 'loaded').length + loadedAdapters.length
   const typeCounts: Record<string, number> = {}
   for (const e of allEngines) typeCounts[e.type] = (typeCounts[e.type] ?? 0) + 1
 
@@ -334,9 +339,14 @@ export default function ModelsOverlay() {
               onToggleResident={(name, resident) => setResident.mutate({ name, resident })}
             />
           ))}
+          {/* Bug 3 PR-2c:「已加载」tab 额外列出 runner 里加载的 combo adapter 实体 ——
+              工作流动态组装的单文件 combo,不对应注册卡片,故独立渲染。 */}
+          {activeTab === 'loaded' &&
+            loadedAdapters.map((a) => <AdapterCard key={a.model_id} adapter={a} />)}
         </div>
 
-        {visibleEngines.length === 0 && !isLoading && (
+        {visibleEngines.length === 0 &&
+          !(activeTab === 'loaded' && loadedAdapters.length > 0) && !isLoading && (
           <div style={{ fontSize: 11, color: 'var(--muted)', padding: 24, textAlign: 'center' }}>
             该类目没有模型 · 试试别的 tab
           </div>
@@ -346,6 +356,51 @@ export default function ModelsOverlay() {
       {ctxMenu.visible && ctxMenu.model && (
         <ContextMenu items={menuItems} position={ctxMenu.position} onClose={closeMenu} />
       )}
+    </div>
+  )
+}
+
+/** Bug 3 PR-2c:runner 里加载的 combo adapter 实体卡(image/tts)。区别于注册卡 ModelCard
+ * —— 它是工作流动态组装的单文件 combo,无 load/resident 操作(临时态,卸载走系统状态的
+ * 「释放 image」按钮)。绿色左边框标识已加载。 */
+function AdapterCard({ adapter }: { adapter: LoadedAdapter }) {
+  const vramGb = adapter.vram_mb != null ? (adapter.vram_mb / 1024).toFixed(1) : null
+  const gpuLabel = adapter.gpu_index != null ? `GPU ${adapter.gpu_index}` : null
+  return (
+    <div
+      className="rounded-md"
+      title={adapter.source_files.join('\n') || adapter.model_id}
+      style={{
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        borderLeft: '3px solid var(--accent-2)',
+        padding: '10px 12px 10px 10px',
+        transition: 'border-color 0.15s ease',
+      }}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <span
+          style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}
+          className="truncate flex-1"
+        >
+          {adapter.display_name}
+        </span>
+        <span style={{ fontSize: 9, color: 'var(--ok)', flexShrink: 0 }}>running</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5" style={{ fontSize: 9, color: 'var(--muted)' }}>
+        <Tag
+          color={TYPE_TAG_STYLE[adapter.model_type]?.color ?? 'var(--accent-2)'}
+          bg={TYPE_TAG_STYLE[adapter.model_type]?.bg ?? 'var(--accent-2-subtle)'}
+        >
+          {TYPE_LABELS[adapter.model_type]?.split(' ')[0] ?? adapter.model_type}
+        </Tag>
+        {adapter.pipeline_class && <Tag>{adapter.pipeline_class}</Tag>}
+        {gpuLabel && <span>{gpuLabel}</span>}
+        {vramGb && <span>· {vramGb} GB</span>}
+        {adapter.last_used_ago_sec != null && (
+          <span>· 上次用 {Math.round(adapter.last_used_ago_sec)}s 前</span>
+        )}
+      </div>
     </div>
   )
 }

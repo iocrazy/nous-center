@@ -218,6 +218,36 @@ export function useRefreshMetadata() {
   })
 }
 
+/** Bug 3 PR-2c:runner 子进程里加载的 combo adapter 实体(image/tts)。它们是工作流
+ * 动态组装的单文件 combo,不对应注册卡片,所以独立于 EngineInfo,在引擎库「已加载」
+ * tab 单独渲染。数据来自 /api/v1/engines/loaded-adapters(聚合各 runner 的 Pong 快照)。 */
+export interface LoadedAdapter {
+  model_id: string
+  model_type: string
+  group_id: string
+  gpu_index: number | null
+  vram_mb: number | null
+  pipeline_class: string | null
+  source_files: string[]
+  display_name: string
+  last_used_ago_sec: number | null
+}
+
+export function useLoadedAdapters() {
+  return useQuery({
+    queryKey: ['loaded-adapters'],
+    queryFn: () =>
+      apiFetch<{ count: number; entries: LoadedAdapter[] }>(
+        '/api/v1/engines/loaded-adapters',
+      ),
+    // 后端快照由 runner 节点完成时即时 reconcile(PR-2b);这里 8s 兜底轮询。
+    refetchInterval: 8000,
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 4000,
+  })
+}
+
 export interface GpuDevice {
   index: number
   name: string

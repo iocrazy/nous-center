@@ -228,6 +228,32 @@ async def test_image_cache_endpoint_lists_image_entries_only(client, app):
     assert "/m/Flux2-Klein-9B.safetensors" in e0["source_files"]
 
 
+async def test_loaded_adapters_endpoint_lists_runner_combo_entities(client, app):
+    """Bug 3 PR-2c:GET /loaded-adapters 列 runner 里的 combo adapter 实体(image+tts),
+    带 display_name(源文件 basename);group='main' 不进(那以注册卡形式在 engines 列表)。"""
+    app.state.runner_supervisors = [
+        _FakeSup("image", [
+            {"model_id": "image:foo:1", "model_type": "image", "gpu_index": 1,
+             "vram_mb": 19000, "pipeline_class": "Flux2KleinPipeline",
+             "source_files": ["/m/Flux2-Klein-9B.safetensors", "/m/clip.safetensors"],
+             "last_used_ago_sec": 3.4},
+        ]),
+        _FakeSup("tts", [
+            {"model_id": "tts:bar:2", "model_type": "tts", "gpu_index": 2,
+             "vram_mb": 5000, "pipeline_class": None, "source_files": [],
+             "last_used_ago_sec": 1.0},
+        ]),
+    ]
+    resp = await client.get("/api/v1/engines/loaded-adapters")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 2
+    by_id = {e["model_id"]: e for e in body["entries"]}
+    assert by_id["image:foo:1"]["display_name"] == "Flux2-Klein-9B.safetensors"
+    assert by_id["image:foo:1"]["group_id"] == "image"
+    assert by_id["tts:bar:2"]["display_name"] == "tts:bar:2"  # 无 source → 退回 model_id
+
+
 def test_explain_image_combo_key_unpacks_all_components():
     """_explain_image_combo_key:cache miss 日志要把 5 个字段拆开人能读。
     PR-D5 诊断字段稳定性用 — 直接读 backend log 比 sha256 hash 易诊断 100×。"""
