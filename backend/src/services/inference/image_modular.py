@@ -497,7 +497,30 @@ class ModularImageBackend(InferenceAdapter):
         # callback 也能拿到正确 total(老 fake 测试只看 done/total tuple)。
         from src.services.inference.progress_tracker import ProgressTracker  # noqa: PLC0415
         total_steps = int(req.steps)
-        pt = ProgressTracker(progress_callback)  # image 真 per-step,不 throttle
+        # 进度桥接:pipe() 下方丢进 to_thread(见 out=... 处),callback_on_step_end 在工作线程
+        # 触发 —— runner 的 _on_progress 做 loop.create_task,工作线程无 running loop 会崩。
+        # 捕获 loop + call_soon_threadsafe 把回调调度回事件循环(对齐 anima #208)。
+        loop = asyncio.get_running_loop()
+
+        def _emit(*a: Any, **kw: Any) -> None:
+            # ProgressTracker 原本同步调 cb 并 catch TypeError 降级老签名;桥接把调用 defer
+            # 到 loop 后 TypeError 在异步里抛、catch 不到 —— 在 loop 回调里复刻三级降级
+            # (新 (done,total,**extras) → (done,total,preview_url) → (done,total))。
+            if progress_callback is None:
+                return
+
+            def _deferred() -> None:
+                try:
+                    progress_callback(*a, **kw)
+                except TypeError:
+                    try:
+                        progress_callback(a[0], a[1], preview_url=kw.get("preview_url"))
+                    except TypeError:
+                        progress_callback(a[0], a[1])
+
+            loop.call_soon_threadsafe(_deferred)
+
+        pt = ProgressTracker(_emit if progress_callback is not None else None)  # 真 per-step,不 throttle
         pt.stage("text_encode", step=0, total_steps=total_steps)
 
         t = time.monotonic()
@@ -543,7 +566,12 @@ class ModularImageBackend(InferenceAdapter):
 
             call_kwargs["callback_on_step_end"] = _step_cb
 
-        out = pipe(**call_kwargs)
+        # 关键(flux2 默认引擎 to_thread,同 anima #206):pipe() 的 denoise(1024 ~20-30s)
+        # 是阻塞 CUDA 调用。在 runner coroutine 里同步跑会占住事件循环 → ① _step_cb 发的
+        # 进度 task 全卡到 pipe() 返回才 flush(逐步进度不实时)② pipe-reader 读不到 Abort
+        # → cancel_flag 永不置位、中途取消失效 ③ 慢卡长 denoise >ping_timeout 触发 watchdog
+        # 介入。丢 to_thread 让事件循环空闲:进度实时 flush、Abort 可读、cancel 生效。
+        out = await asyncio.to_thread(lambda: pipe(**call_kwargs))
         # PR-4:vae_decode 用 stage(progress=1.0) — 不调 finish(避免 _finished=True 阻塞
         # 测试场景下手动触发 step_cb;production 中 stage 行为等同 finish:progress=1/eta=0)。
         # Flux2 标准 pipe 里 VAE decode 已在 pipe() 内嵌跑完,这里发的是「post-denoise 收尾」一帧。

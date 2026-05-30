@@ -7,6 +7,7 @@ PR「true-cfg 修复」后:Flux2 comfy 单文件走**标准** `Flux2KleinPipelin
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -188,6 +189,8 @@ async def test_callback_on_step_end_forwards_progress(monkeypatch):
     cb(pipe, 0, None, {})
     cb(pipe, 1, None, {})
     cb(pipe, 2, None, {})
+    # #PR flux2 to_thread:进度回调改 loop.call_soon_threadsafe 异步调度 → flush 一拍再断言。
+    await asyncio.sleep(0)
 
     # pipe() 前 text_encode + pipe() 后 vae_decode + 3 个 dit_denoise = 5 个 event
     stages = [e["stage"] for e in events]
@@ -220,6 +223,7 @@ async def test_callback_legacy_done_total_signature_backcompat(monkeypatch):
     cb(pipe, 0, None, {})
     cb(pipe, 1, None, {})
     cb(pipe, 2, None, {})
+    await asyncio.sleep(0)  # call_soon_threadsafe 异步调度,flush 再断言
 
     # text_encode (0,3) + vae_decode (3,3) + 三步 dit_denoise (1,3)/(2,3)/(3,3)
     assert calls == [(0, 3), (3, 3), (1, 3), (2, 3), (3, 3)]
