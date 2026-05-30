@@ -16,10 +16,29 @@
  * type icon 映射:image → Image、tts → Mic、llm → MessageSquare、vision → Eye。
  */
 import { Image as ImageIcon, Mic, MessageSquare, Eye, Zap, Activity } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import type { ExecutionTask } from '../../api/tasks'
 import { useTaskProgressStore } from '../../stores/taskProgress'
 
 type TaskType = 'image' | 'tts' | 'vision' | 'llm'
+
+/** RUNNING 任务卡实时运行计时:active 时每秒 tick 一次 Date.now() 触发 re-render。
+ * 非 active 不起 interval(完成后停在终值,由 duration_ms 接管展示)。 */
+function useNowTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [active])
+  return now
+}
+
+/** elapsed ms → 人读:<60s 「8s」;≥60s 「1m23s」。tabular-nums 防跳动。 */
+function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+}
 
 const TYPE_LABEL: Record<TaskType, string> = {
   image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM',
@@ -74,6 +93,11 @@ function getMetaLine(t: ExecutionTask): string {
 export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
   const type = getTaskType(task)
   const isRunning = task.status === 'running'
+
+  // 实时运行计时(用户要的「边跑边显示已用时」)。created_at 为起点 —— 单用户即时跑
+  // 时 ≈ 开始时刻(含排队的极短间隔)。完成后停 interval,duration_ms 接管最终耗时。
+  const now = useNowTick(isRunning)
+  const elapsedMs = isRunning ? now - new Date(task.created_at).getTime() : null
 
   // PR-6:全局 progress map(/ws/tasks `event: "progress"`)按 task.id 取 L3 数据 ——
   // 不再依赖 useExecutionStore.taskId 匹配,**多任务并发场景每行都有自己的 callout**。
@@ -147,6 +171,15 @@ export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
               {task.workflow_name || `#${task.id}`}
             </span>
           </div>
+          {elapsedMs != null && (
+            <span
+              className="text-[10px] font-mono tabular-nums shrink-0"
+              style={{ color: 'var(--tp-text-muted)' }}
+              title="已运行时长"
+            >
+              {formatElapsed(elapsedMs)}
+            </span>
+          )}
           <span
             className="text-[10px] font-semibold tracking-wider uppercase inline-flex items-center gap-1 shrink-0 rounded"
             style={{
