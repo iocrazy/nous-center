@@ -44,9 +44,8 @@ def build_runner_model_manager(
     Parameters
     ----------
     group_id / gpus:
-        本 runner 负责的 GPU group —— 目前 ModelManager / GPUAllocator 不按 group
-        切分（Lane A 的 NVLink-aware allocator 才做），这里仅记 log，为 Lane A/G
-        留接口。
+        本 runner 负责的 GPU group。gpus 作为 GPUAllocator 的 preferred_gpus —— device=auto
+        解析优先落在本 runner 的卡里(装不下才 spill,见 get_best_gpu),守住 per-group 隔离。
     models_yaml_path:
         models.yaml 路径。None → NOUS_MODELS_YAML 环境变量 → config/models.yaml。
     fake_adapter:
@@ -54,7 +53,9 @@ def build_runner_model_manager(
     """
     yaml_path = models_yaml_path or _DEFAULT_MODELS_YAML
     registry = ModelRegistry(yaml_path)
-    allocator = GPUAllocator()
+    # gpus = 本 runner group 的卡 → preferred_gpus,让 device=auto 优先落本 group
+    # (装不下才 spill),修「runner 分配 gpu0 却把模型装到全局最空的 gpu1」隔离漏洞。
+    allocator = GPUAllocator(preferred_gpus=gpus or None)
     mm = ModelManager(registry=registry, allocator=allocator)
     logger.info(
         "runner ModelManager built: group=%s gpus=%s yaml=%s fake=%s "
