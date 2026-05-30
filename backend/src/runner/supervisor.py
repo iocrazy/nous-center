@@ -82,6 +82,7 @@ class RunnerSupervisor:
         # /image-cache、系统状态「已加载模型」、引擎库 loaded 视图聚合这份 —— image/tts
         # adapter 真加载在 runner 进程,主进程 _models 看不到,这是唯一可见窗口。
         self.loaded_models: list[dict] = []
+        self._reconcile_inflight = False  # PR-2b:去重并发 node-done reconcile
         self._inflight: set[int] = set()
         self._last_spawn_at = 0.0
         self._watchdog_task: asyncio.Task | None = None
@@ -150,16 +151,29 @@ class RunnerSupervisor:
         # 立即对账一次,别让 UI 等满第一个 ping_interval(默认 30s)才看到已加载模型。
         await self._reconcile_loaded()
 
+    def _schedule_reconcile(self) -> None:
+        """on_node_done 同步回调 —— 调度一次异步 reconcile,不阻塞 demux。去重:已有
+        一次在飞就不再排(快连多个节点不堆 ping)。无 running loop(测试)静默跳过。"""
+        if self._stopping or self._reconcile_inflight:
+            return
+        try:
+            asyncio.get_running_loop().create_task(self._reconcile_loaded())
+        except RuntimeError:
+            pass
+
     async def _reconcile_loaded(self) -> None:
         """ping 一次,把 runner 上报的已加载 adapter 快照存进 self.loaded_models。
         best-effort —— ping 失败/超时不抛(crash 检测是 watchdog 的职责,这里只刷状态)。"""
         if self.client is None or not self._connected_for_reconcile():
             return
+        self._reconcile_inflight = True
         try:
             pong = await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
             self.loaded_models = list(pong.loaded_models or [])
         except Exception:  # noqa: BLE001 — 状态刷新失败不影响监管主流程
             pass
+        finally:
+            self._reconcile_inflight = False
 
     def _connected_for_reconcile(self) -> bool:
         return self.client is not None and self.client.is_connected
@@ -181,6 +195,8 @@ class RunnerSupervisor:
         child_conn.close()  # 主进程侧不用 child 端
         self._process = proc
         self.client = RunnerClient(parent_conn, runner_id=f"runner-{self.group_id}")
+        # Bug 3 PR-2b:节点跑完即时刷新已加载快照(新 adapter 已进 runner _models)。
+        self.client.on_node_done = self._schedule_reconcile
         await self.client.start()  # 等 Ready 握手
         self._last_spawn_at = time.monotonic()
         logger.info(
