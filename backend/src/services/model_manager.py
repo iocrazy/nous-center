@@ -142,6 +142,9 @@ class ModelManager:
         # device=auto 粘性放置(#199):device-independent combo identity → 上次落的 gpu_index。
         # 同一工作流二次跑 auto 解析回同一张卡,避免 combo_key 翻卡 → cache miss → 重载。
         self._image_stick: dict[tuple, int] = {}
+        # 反向:model_id → stick identity。unload/evict 时据此清 _image_stick,避免 stale
+        # stick 指向已卸载/已满的卡 + 绕过 VRAM 守卫 → 反复 OOM(#210 回归修复)。
+        self._image_stick_keys: dict[str, tuple] = {}
         # Per-model load failures (set by background preload tasks or prior
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
@@ -576,6 +579,11 @@ class ModelManager:
 
             entry.adapter.unload()
             del self._models[model_id]
+            # 清 device=auto 粘性(#210 回归):adapter 没了,stick 不能再指向它的卡并跳 VRAM
+            # 守卫 —— 否则下次同工作流粘回已卸载/可能已满的卡反复 OOM。
+            sk = self._image_stick_keys.pop(model_id, None)
+            if sk is not None:
+                self._image_stick.pop(sk, None)
             logger.info("Unloaded model %r", model_id)
 
     @property
@@ -963,6 +971,8 @@ class ModelManager:
         # 记住这工作流落的卡 —— 下次 auto 粘回来(load 与 cache hit 都刷新,target 即当前卡)。
         if target.startswith("cuda:"):
             self._image_stick[stick_key] = int(target.split(":", 1)[1])
+            # 反向登记,unload/evict 时据此清 stick(防 stale)。
+            self._image_stick_keys[self._derive_image_model_id(combo_key)] = stick_key
         return adapter
 
     @staticmethod
