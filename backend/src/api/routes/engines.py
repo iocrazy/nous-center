@@ -318,6 +318,32 @@ async def unload_engine(name: str, request: Request, force: bool = False):
     return EngineLoadResponse(name=name, status="unloaded")
 
 
+@router.get("/image-cache", dependencies=[Depends(require_admin)])
+async def list_image_adapter_cache(request: Request):
+    """PR-D5 诊断:列当前 `_models` 里所有 image adapter 的 derived_id + GPU + 上次用。
+
+    返回:`[{model_id, gpu_index, last_used_ago_sec, pipeline_class, vram_mb}]`。
+    用户报告「跑两次同工作流应复用却 OOM」时,从这接口看 list 是否真有 2+ entry
+    (同一个 base 的不同 combo)。再对照 backend 日志 `image adapter HIT/MISS`
+    那行 combo dump,找出哪个字段不稳。
+    """
+    import time
+    model_mgr = request.app.state.model_manager
+    now = time.monotonic()
+    entries = []
+    for mid, entry in model_mgr._models.items():
+        if entry.spec.model_type != "image":
+            continue
+        entries.append({
+            "model_id": mid,
+            "gpu_index": entry.gpu_index,
+            "last_used_ago_sec": round(now - entry.last_used, 2),
+            "pipeline_class": entry.spec.params.get("pipeline_class"),
+            "vram_mb": entry.spec.vram_mb,
+        })
+    return {"count": len(entries), "entries": entries}
+
+
 @router.post("/unload-image-adapters", dependencies=[Depends(require_admin)])
 async def unload_all_image_adapters(request: Request):
     """PR-D4 手动救援:卸载所有 image adapter,释放显存。
