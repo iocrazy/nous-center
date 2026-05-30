@@ -426,6 +426,19 @@ class WorkflowExecutor:
                 from src.api.websocket import ws_manager  # noqa: PLC0415
                 loop.create_task(ws_manager.broadcast_task_progress(self._task_id, event))
 
+        # Bug 2(RUNNING 无运行进度):模型加载阶段在 denoise 前,无 step 可报 —— 任务面板
+        # RUNNING 卡此期间一片空白(用户截图就是 Flux2 加载阶段)。dispatch 前先发一个
+        # stage=model_load 的不定态任务进度,让 ActiveTaskRow 立刻显示「加载模型中…」。
+        # 无 step/不造假百分比(见 #196 删假进度教训);真 step 进度一来即被 denoise 覆盖。
+        if self._task_id is not None and self._cur_stage_walk is not None:
+            from src.api.websocket import ws_manager  # noqa: PLC0415
+            await ws_manager.broadcast_task_progress(self._task_id, {
+                "type": "node_progress",
+                "node_id": self._cur_stage_walk["initial"],
+                "stage": "model_load",
+                "progress": 0.0,
+            })
+
         result = await client.run_node(
             spec, on_progress=_forward_progress, workflow_name=self._workflow_name)
         # 真 RunnerClient 返回 P.NodeResult dataclass;Lane S FakeRunnerClient
