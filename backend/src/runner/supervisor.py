@@ -30,6 +30,9 @@ DEFAULT_PING_INTERVAL = 30.0
 DEFAULT_PING_TIMEOUT = 10.0
 DEFAULT_RESTART_BACKOFF = [5.0, 15.0, 60.0, 300.0]  # 封顶 5 min
 DEFAULT_STABLE_SECONDS = 30 * 60  # 跑满 30min 视为稳定，reset crash count
+# ping 超时但进程仍活 = 事件循环被长 dispatch 阻塞(忙),不是 crash —— 容忍。仅当
+# 持续无响应超过此阈值(疑死锁;没有图/音生成要 5min)才兜底重启。见 _watchdog。
+DEFAULT_MAX_UNRESPONSIVE_SECONDS = 300.0
 
 _SPAWN = mp.get_context("spawn")  # CUDA 子进程惯例：spawn 不 fork
 
@@ -57,6 +60,7 @@ class RunnerSupervisor:
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
         restart_backoff: list[float] | None = None,
         stable_seconds: float = DEFAULT_STABLE_SECONDS,
+        max_unresponsive_seconds: float = DEFAULT_MAX_UNRESPONSIVE_SECONDS,
         gpu_free_probe: Callable[[list[int]], bool] | None = None,
         gpu_free_poll_interval: float = 2.0,
         on_task_failed: Callable[[int, str], None] | None = None,
@@ -71,6 +75,10 @@ class RunnerSupervisor:
         self.ping_timeout = ping_timeout
         self.restart_backoff = restart_backoff or DEFAULT_RESTART_BACKOFF
         self.stable_seconds = stable_seconds
+        self.max_unresponsive_seconds = max_unresponsive_seconds
+        # ping 超时但进程活着时,记首次无响应的时刻;持续超 max_unresponsive_seconds 才重启。
+        # 成功 ping(或重启)清零。
+        self._unresponsive_since: float | None = None
         self._gpu_free_probe = gpu_free_probe or _default_gpu_free_probe
         self._gpu_free_poll_interval = gpu_free_poll_interval
         self._on_task_failed = on_task_failed
@@ -247,11 +255,44 @@ class RunnerSupervisor:
                 pong = await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
                 # 顺手对账已加载快照(ping 本就为存活检测,Pong 带回了状态,别丢)。
                 self.loaded_models = list(pong.loaded_models or [])
-            except (asyncio.TimeoutError, ConnectionError):
+                self._unresponsive_since = None  # 答上了 → 恢复
+            except ConnectionError:
+                # pipe EOF —— 子进程真死了(crash/OOM kill/segfault),立刻重启。
                 if self._stopping:
                     return
-                logger.warning("runner %s ping failed -> restarting", self.group_id)
+                logger.warning("runner %s pipe EOF (crashed) -> restarting", self.group_id)
+                self._unresponsive_since = None
                 await self._restart()
+            except asyncio.TimeoutError:
+                # ping 超时 ——「忙」还是「死」?子进程里 pipe-reader 与 node-executor 同一
+                # 事件循环,长 dispatch(adapter.infer 阻塞)会让 pipe-reader 答不上 ping。
+                # 进程还活着 = 忙,不是 crash —— **绝不能 kill 一个正在出图的 runner**
+                # (这正是 anima/长 denoise 被误杀的根因)。只有进程真死、或持续无响应过久
+                # (疑死锁,没有图/音生成要 5min)才重启。
+                if self._stopping:
+                    return
+                alive = self._process is not None and self._process.is_alive()
+                if not alive:
+                    logger.warning("runner %s ping timeout + process dead -> restarting", self.group_id)
+                    self._unresponsive_since = None
+                    await self._restart()
+                    continue
+                now = time.monotonic()
+                if self._unresponsive_since is None:
+                    self._unresponsive_since = now
+                stuck_for = now - self._unresponsive_since
+                if stuck_for >= self.max_unresponsive_seconds:
+                    logger.warning(
+                        "runner %s unresponsive %.0fs while alive (疑死锁) -> restarting",
+                        self.group_id, stuck_for,
+                    )
+                    self._unresponsive_since = None
+                    await self._restart()
+                else:
+                    logger.debug(
+                        "runner %s ping timeout but process alive (busy dispatch, %.0fs) — tolerating",
+                        self.group_id, stuck_for,
+                    )
 
     async def _restart(self) -> None:
         """spec §4.2 crash 检测 + 重启 6 步。"""
@@ -262,6 +303,7 @@ class RunnerSupervisor:
         # 旧 runner 的已加载 adapter 随进程一起没了,清空快照(respawn 后 _spawn 末尾
         # 不会自动 reconcile —— 等下一个 watchdog ping 重新填,期间显示为空是正确的)。
         self.loaded_models = []
+        self._unresponsive_since = None
 
         # 2. inflight task 全标 failed (runner_crashed)，不重试
         for task_id in list(self._inflight):
