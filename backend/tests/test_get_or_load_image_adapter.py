@@ -98,6 +98,27 @@ async def test_loaded_models_snapshot_carries_source_files(stubbed):
 
 
 @pytest.mark.asyncio
+async def test_stick_cleared_on_unload(stubbed, monkeypatch):
+    """#210 回归修复:unload/evict 后清 _image_stick —— 否则 stale stick 把同工作流粘回
+    已卸载/可能已满的卡 + 跳 VRAM 守卫 → 反复 OOM。清后再跑可按 get_best_gpu 重新解析。"""
+    mm, builds, _ = stubbed
+    cards = iter([1, 2])
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda v: next(cards))
+
+    await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")
+    assert builds[0]["device"] == "cuda:1"
+    assert mm._image_stick and mm._image_stick_keys  # stick 已登记
+
+    mid = next(iter(mm._models))
+    await mm.unload_model(mid, force=True)
+    assert mm._image_stick == {} and mm._image_stick_keys == {}  # 清空
+
+    # 再跑:stick 没了 → 不强制粘 cuda:1,按 get_best_gpu=2 落 cuda:2 重建
+    await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")
+    assert builds[1]["device"] == "cuda:2"
+
+
+@pytest.mark.asyncio
 async def test_auto_device_resolved(stubbed, monkeypatch):
     mm, builds, _ = stubbed
     monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram: 2)
