@@ -15,6 +15,7 @@ tokenizer 6.7M 暂不 bundle):
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import time
@@ -116,20 +117,29 @@ class AnimaImageBackend(InferenceAdapter):
         if not isinstance(req, ImageRequest):
             raise TypeError(f"AnimaImageBackend 只接受 ImageRequest,收到 {type(req).__name__}")
 
-        pipe = self._ensure_pipe()
         cfg = float(req.cfg_scale)
         neg = (getattr(req, "negative_prompt", "") or "").strip()
 
+        # 关键(anima-runner crash 修复):_ensure_pipe(首次 ~5s 模型构建)+ pipe()(denoise,
+        # 1024 在 3090 上可达 20s)是阻塞 CUDA 调用。runner 子进程里 pipe-reader 与
+        # node-executor 同处一个事件循环 —— 若在 coroutine 里同步跑这 ~12-25s,事件循环被
+        # 占住答不上 supervisor 的 Ping(ping_timeout=10s)→ 被误判 crash kill(pipe EOF)。
+        # 必须丢进 to_thread,让事件循环空闲答 ping。这正是 runner_process.py:11
+        # 「真 adapter 的扩散循环在 to_thread 里跑」的契约。
+        def _run() -> Any:
+            pipe = self._ensure_pipe()
+            return pipe(
+                prompt=req.prompt,
+                negative_prompt=neg,
+                num_inference_steps=req.steps,
+                width=req.width,
+                height=req.height,
+                seed=req.seed,
+                guidance_scale=cfg,
+            )
+
         t = time.monotonic()
-        img = pipe(
-            prompt=req.prompt,
-            negative_prompt=neg,
-            num_inference_steps=req.steps,
-            width=req.width,
-            height=req.height,
-            seed=req.seed,
-            guidance_scale=cfg,
-        )
+        img = await asyncio.to_thread(_run)
         latency_ms = int((time.monotonic() - t) * 1000)
 
         buf = io.BytesIO()
