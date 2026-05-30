@@ -136,6 +136,13 @@ class WorkflowExecutor:
         # supervisor.health_snapshot.current_task 才能正确显示「在跑哪个 task」。
         self._task_id = task_id
         self._workflow_name = workflow_name
+        # Bug 1(节点高亮错位):flux2_vae_decode 是 dispatch 终端,整条 Load→Encode→
+        # KSampler→VAE 链的 GPU 活(加载/denoise/vae)都在它内部跑 —— 若按 node_start
+        # 一律高亮 dispatch 节点,蓝边就永远糊在 VAE Decode 上(用户:"在 load 模型却聚焦
+        # 到 vae")。改成按 runner 回传的 stage 把高亮"走链"到对应画布节点。这两个字段
+        # 在一次 dispatch 期间记录 stage→节点映射 + 当前点亮的节点。
+        self._cur_stage_walk: dict | None = None
+        self._active_stage_node: str | None = None
 
     def _topological_sort(self) -> list[str]:
         if not self.nodes:
@@ -191,11 +198,18 @@ class WorkflowExecutor:
             node = self._node_map[node_id]
             inputs = self._get_inputs(node_id)
 
+            # Bug 1:image dispatch 节点高亮"走链" —— node_start 落到加载节点(而非一律
+            # 落 VAE dispatch 终端);后续按 stage 在 _forward_progress 里迁移。
+            stage_walk = self._compute_image_stage_walk(node)
+            self._cur_stage_walk = stage_walk
+            self._active_stage_node = stage_walk["initial"] if stage_walk else None
+
             if self._on_progress:
+                start_node_id = stage_walk["initial"] if stage_walk else node_id
                 await self._on_progress({
                     "type": "node_start",
-                    "node_id": node_id,
-                    "node_type": node["type"],
+                    "node_id": start_node_id,
+                    "node_type": self._node_map.get(start_node_id, {}).get("type", node["type"]),
                     "step": i + 1,
                     "total": total,
                     "progress": round((i / total) * 100),
@@ -204,7 +218,15 @@ class WorkflowExecutor:
             try:
                 output = await self._run_node_routed(node, inputs)
                 self._outputs[node_id] = output
+                # stage-walk:dispatch 收尾时 active 可能停在非 VAE 节点(如末 stage 没发
+                # vae_decode)→ 补完成它;VAE dispatch 节点由下方通用 node_complete 收口。
+                if stage_walk and self._active_stage_node and self._active_stage_node != node_id and self._on_progress:
+                    await self._on_progress({"type": "node_complete", "node_id": self._active_stage_node})
+                self._cur_stage_walk = None
+                self._active_stage_node = None
             except Exception as e:
+                self._cur_stage_walk = None
+                self._active_stage_node = None
                 if self._on_progress:
                     await self._on_progress({
                         "type": "node_error",
@@ -241,6 +263,53 @@ class WorkflowExecutor:
                 await self._on_progress(complete_event)
 
         return {"outputs": self._outputs}
+
+    def _ancestors(self, node_id: str) -> set[str]:
+        """node_id 的全部上游祖先节点 id(沿 edges 反向 BFS)。用于把 stage 映射到
+        *这条链上* 的 encode/ksampler/load 节点,不误选别的链。"""
+        rev: dict[str, list[str]] = defaultdict(list)
+        for e in self.edges:
+            rev[e["target"]].append(e["source"])
+        seen: set[str] = set()
+        stack = list(rev.get(node_id, []))
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            stack.extend(rev.get(n, []))
+        return seen
+
+    def _compute_image_stage_walk(self, node: dict) -> dict | None:
+        """Bug 1:对 flux2_vae_decode dispatch 节点,算出 stage→画布节点 id 的高亮映射。
+
+        runner 回传的 NodeProgress.stage ∈ {text_encode, dit_denoise, vae_decode};把它们
+        分别映射回链上的 Encode Prompt / KSampler / VAE Decode 节点,加载阶段(无 stage 事件)
+        先点亮 Load Diffusion Model 节点。找不到某节点则回退到 dispatch 节点本身(行为同旧版,
+        高亮落 VAE,不崩)。非 flux2_vae_decode(tts/llm/inline)返 None —— 不改其行为。"""
+        if node.get("type") != "flux2_vae_decode":
+            return None
+        anc = self._ancestors(node["id"])
+
+        def _find(types: set[str]) -> str | None:
+            for nid in anc:
+                if self._node_map.get(nid, {}).get("type") in types:
+                    return nid
+            return None
+
+        vae = node["id"]
+        load_node = _find({"flux2_load_diffusion_model", "flux2_load_checkpoint"})
+        enc_node = _find({"flux2_encode_prompt"})
+        ks_node = _find({"flux2_ksampler"})
+        return {
+            "targets": {
+                "text_encode": enc_node or vae,
+                "dit_denoise": ks_node or vae,
+                "vae_decode": vae,
+            },
+            "initial": load_node or enc_node or vae,  # 加载阶段先点亮的节点
+            "vae": vae,
+        }
 
     async def _run_node_routed(self, node: dict, inputs: dict) -> dict[str, Any]:
         """按节点类型分流：inline 节点主进程内 await，dispatch 节点投 RunnerClient。
@@ -314,9 +383,27 @@ class WorkflowExecutor:
         def _forward_progress(pmsg: "P.NodeProgress") -> None:
             if on_progress_async is None:
                 return
+            # Bug 1:按 stage 把高亮 + 进度重定向到链上对应画布节点(text_encode→Encode
+            # Prompt / dit_denoise→KSampler / vae_decode→VAE Decode),而非一律糊在 dispatch
+            # 终端。stage 切换时 complete 上一个、start 当前,蓝边随真实执行阶段"走链"。
+            target_node_id = pmsg.node_id
+            sw = self._cur_stage_walk
+            stage = getattr(pmsg, "stage", None)
+            if sw is not None and stage in sw["targets"]:
+                target_node_id = sw["targets"][stage]
+                if target_node_id != self._active_stage_node:
+                    prev = self._active_stage_node
+                    if prev is not None and prev != target_node_id:
+                        loop.create_task(on_progress_async(
+                            {"type": "node_complete", "node_id": prev}))
+                    loop.create_task(on_progress_async({
+                        "type": "node_start", "node_id": target_node_id,
+                        "node_type": self._node_map.get(target_node_id, {}).get("type"),
+                    }))
+                    self._active_stage_node = target_node_id
             event: dict[str, Any] = {
                 "type": "node_progress",
-                "node_id": pmsg.node_id,
+                "node_id": target_node_id,
                 "progress": pmsg.progress,
                 "detail": pmsg.detail,
             }
