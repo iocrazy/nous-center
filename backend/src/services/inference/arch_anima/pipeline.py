@@ -18,7 +18,7 @@ Anima 是单帧图像 → T=1,latent (B, 16, 1, H/8, W/8)。
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 from PIL import Image
@@ -127,12 +127,17 @@ class AnimaPipeline:
         height: int = DEFAULT_SIZE,
         seed: Optional[int] = None,
         guidance_scale: float = DEFAULT_CFG,
+        step_callback: Optional[Callable[[int], None]] = None,
     ) -> Image.Image:
         """文本 → 图像(单帧)。
 
         - guidance_scale > 1 + negative_prompt → classifier-free guidance(true-CFG):
           双 forward(cond + uncond),noise_pred = uncond + scale * (cond - uncond)
         - guidance_scale == 1 或 negative_prompt 空 → cond-only(快一半)
+
+        step_callback(done_1based):每个 denoise step 完成后调用(done = 1..num_inference_steps)。
+        给 nous adapter 透传逐步进度(对齐 Flux2 的 callback_on_step_end);回调内可 raise
+        中止 denoise。standalone 用不传(默认 None,行为不变)。
         """
         if self.vae is None:
             raise RuntimeError("AnimaPipeline.__call__ requires vae; init with vae_weights")
@@ -164,7 +169,7 @@ class AnimaPipeline:
         self.scheduler.set_timesteps(num_inference_steps, device=self.device)
 
         # 4) Denoise loop(CFG = 双 forward)
-        for t in self.scheduler.timesteps:
+        for i, t in enumerate(self.scheduler.timesteps):
             t_in = t.unsqueeze(0).to(self.device, dtype=self.dtype)
             cond_pred = self.transformer(
                 latents, t_in, cond_ctx,
@@ -179,6 +184,8 @@ class AnimaPipeline:
             else:
                 noise_pred = cond_pred
             latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            if step_callback is not None:
+                step_callback(i + 1)  # done(1-based);total = total_steps
 
         # 5) VAE decode(latents 是 (1, 16, 1, h, w) — Qwen-Image VAE 接 5D)
         # 反归一化(若 config 有 latents_mean/std,做 inv-normalize)

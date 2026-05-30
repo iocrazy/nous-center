@@ -106,26 +106,45 @@ class AnimaImageBackend(InferenceAdapter):
         self,
         req: InferenceRequest,
         *,
-        progress_callback: Any | None = None,  # noqa: ARG002 — 留 PR future(callback_on_step_end)
-        cancel_flag: Any | None = None,  # noqa: ARG002 — 留 future
+        progress_callback: Any | None = None,
+        cancel_flag: Any | None = None,
     ) -> InferenceResult:
         """对齐 ModularImageBackend.infer 契约 — ImageRequest → InferenceResult(image/png)。
 
-        TODO(future):progress_callback / cancel_flag 跟 AnimaPipeline 内置 denoise loop
-        集成(像 Flux2 callback_on_step_end);当前先简单实现。
+        progress_callback:每 denoise step 发 dit_denoise 进度(+ 前后 text_encode/vae_decode
+        stage),对齐 Flux2 的 ProgressTracker。cancel_flag(threading.Event):step 边界查置位 →
+        raise CancelledError 中断 denoise。
         """
         if not isinstance(req, ImageRequest):
             raise TypeError(f"AnimaImageBackend 只接受 ImageRequest,收到 {type(req).__name__}")
 
         cfg = float(req.cfg_scale)
         neg = (getattr(req, "negative_prompt", "") or "").strip()
+        total_steps = int(req.steps)
 
-        # 关键(anima-runner crash 修复):_ensure_pipe(首次 ~5s 模型构建)+ pipe()(denoise,
-        # 1024 在 3090 上可达 20s)是阻塞 CUDA 调用。runner 子进程里 pipe-reader 与
-        # node-executor 同处一个事件循环 —— 若在 coroutine 里同步跑这 ~12-25s,事件循环被
-        # 占住答不上 supervisor 的 Ping(ping_timeout=10s)→ 被误判 crash kill(pipe EOF)。
-        # 必须丢进 to_thread,让事件循环空闲答 ping。这正是 runner_process.py:11
-        # 「真 adapter 的扩散循环在 to_thread 里跑」的契约。
+        # 进度桥接:#206 起 denoise 跑在 to_thread 工作线程 —— 回调不能直接 create_task
+        # (工作线程无 running loop)。捕获事件循环,用 call_soon_threadsafe 把回调调度回 loop
+        # (runner _on_progress 在 loop 上 create_task 发 NodeProgress)。runner_process.py:354
+        # 正预见此「真 adapter callback 在 to_thread 工作线程」需 threadsafe 调度。
+        from src.services.inference.progress_tracker import ProgressTracker  # noqa: PLC0415
+        loop = asyncio.get_running_loop()
+
+        def _emit(*a: Any, **kw: Any) -> None:
+            if progress_callback is not None:
+                loop.call_soon_threadsafe(lambda: progress_callback(*a, **kw))
+
+        pt = ProgressTracker(_emit)  # throttle_ms=0 → 真 per-step
+        pt.stage("text_encode", step=0, total_steps=total_steps)
+
+        def _step(done: int) -> None:
+            # denoise step 边界(工作线程):cancel 检查 + 发 dit_denoise 进度。
+            if cancel_flag is not None and cancel_flag.is_set():
+                raise asyncio.CancelledError()
+            pt.step(done, total_steps, stage="dit_denoise")
+
+        # _ensure_pipe(首次 ~5s 构建)+ pipe()(denoise,1024 在 3090 ~20s)是阻塞 CUDA。
+        # 丢 to_thread 让 runner 事件循环空闲答 supervisor ping(否则 >10s 被误判 crash kill,
+        # 见 #206 + runner_process.py:11 契约)。
         def _run() -> Any:
             pipe = self._ensure_pipe()
             return pipe(
@@ -136,11 +155,13 @@ class AnimaImageBackend(InferenceAdapter):
                 height=req.height,
                 seed=req.seed,
                 guidance_scale=cfg,
+                step_callback=_step,
             )
 
         t = time.monotonic()
         img = await asyncio.to_thread(_run)
         latency_ms = int((time.monotonic() - t) * 1000)
+        pt.stage("vae_decode", progress=1.0, step=total_steps, total_steps=total_steps)
 
         buf = io.BytesIO()
         img.save(buf, format="PNG")
