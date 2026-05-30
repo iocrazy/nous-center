@@ -88,6 +88,33 @@ async def test_auto_device_resolved(stubbed, monkeypatch):
     assert builds[0]["device"] == "cuda:2"  # auto → cuda:2
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="假设 #1(cache-miss trace,2026-05-30):device='auto' 的 combo_key 绑了"
+    " 当下解析出的物理卡 —— get_best_gpu 按『此刻最空』选卡,首次装满后第二次跑会落到"
+    " 另一张卡,combo_key 翻卡 → MISS → 同模型在多卡叠加(70G 累积根因)。fix 方向见"
+    " project memory:auto 粘性放置 / model_id 不绑 device / 已缓存 adapter 跨卡复用。"
+    " fix 落地后本测试 XPASS,strict 会逼着移除此 marker。",
+)
+@pytest.mark.asyncio
+async def test_auto_device_flip_should_reuse_adapter(stubbed, monkeypatch):
+    """同工作流、同组件,仅因 device='auto' 在两次 Run 之间解析到不同卡(allocator 模拟
+    首张卡被首次加载占满后第二次落到下一张),不应重建 adapter —— cache 身份必须稳定。
+
+    现状:combo_key 含 resolved device,翻卡即 MISS、builds==2(本测试 xfail 记录之)。
+    期望:adapter 复用,builds==1。
+    """
+    mm, builds, _ = stubbed
+    cards = iter([1, 2])  # 第一次跑落 cuda:1,第二次(1 被占)落 cuda:2
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram: next(cards))
+
+    a1 = await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")
+    a2 = await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")
+
+    assert a1 is a2, "同工作流二次 Run 应复用同一 adapter,而非因 auto 翻卡重载"
+    assert len(builds) == 1, f"应只 build 一次,实际 {len(builds)} 次(翻卡导致 cache miss)"
+
+
 @pytest.mark.asyncio
 async def test_emits_component_events(stubbed):
     from src.services.inference.component_spec import component_state_key
