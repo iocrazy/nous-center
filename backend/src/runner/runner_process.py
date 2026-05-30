@@ -166,9 +166,11 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
         elif isinstance(msg, P.UnloadModel):
             await _handle_unload_model(state, ch, msg)
         elif isinstance(msg, P.Ping):
+            # 结构化快照(不只 id):带 source_files/gpu/vram,让主进程把 runner 里的
+            # adapter 映射回引擎卡 + 还原系统状态「已加载模型」。
             await ch.send_message(P.Pong(
                 runner_id=state.runner_id,
-                loaded_models=list(state.mm.loaded_model_ids),
+                loaded_models=state.mm.loaded_models_snapshot(),
             ))
         # 其余消息类型（runner→主进程方向的）不应收到，忽略
 

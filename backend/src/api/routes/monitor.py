@@ -256,6 +256,27 @@ async def get_system_stats(request: Request):
                         "vram_gb": cfg.get("vram_gb", 0),
                     })
 
+    # runner 子进程里加载的 image/tts adapter —— 主进程 _models 看不到它们,从各
+    # supervisor 经 Pong 上报的快照聚合补进 GPU 的 loaded_models(否则系统状态恒「0」)。
+    # 名字取源组件文件 basename(adapter 是 combo hash id,对用户没意义)。
+    from src.services.runner_models import aggregate_runner_loaded
+    import os as _os
+    for entry in aggregate_runner_loaded(request.app.state):
+        if entry.get("group_id") == "main":
+            continue  # 主进程模型已在上面 loaded_model_ids 那轮覆盖
+        gpu_idx = entry.get("gpu_index")
+        if not isinstance(gpu_idx, int):
+            continue
+        srcs = entry.get("source_files") or []
+        name = _os.path.basename(srcs[0]) if srcs else entry.get("model_id", "?")
+        for g in gpus:
+            if g["index"] == gpu_idx:
+                g.setdefault("loaded_models", []).append({
+                    "name": name,
+                    "type": entry.get("model_type", ""),
+                    "vram_gb": round((entry.get("vram_mb") or 0) / 1024, 1),
+                })
+
     # CPU stats
     cpu_pct = psutil.cpu_percent(interval=0.1)
     cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)

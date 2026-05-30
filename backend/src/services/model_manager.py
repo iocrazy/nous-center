@@ -846,6 +846,7 @@ class ModelManager:
         target_device: str,
         vram_mb: int,
         pipeline_class: str,
+        source_files: list[str] | None = None,
     ) -> "ModelSpec":
         """构造 in-flight ModelSpec 给 derived image adapter 用 — 不入 yaml registry,
         只让 LoadedModel.spec 字段有合规对象,这样 evict_lru / loaded_model_ids
@@ -853,6 +854,11 @@ class ModelManager:
 
         resident=False 让 image adapter 默认可 LRU 驱逐;ttl_seconds 设极大值
         (image adapter 不靠 TTL 释放,靠 LRU + 手动 unload + reference)。
+
+        source_files:组装该 adapter 的源组件文件(unet/clip/vae)。image adapter
+        加载在 runner 子进程,主进程靠 `loaded_models_snapshot()` → Pong 上报后,
+        要用这些文件把 runner 里的 adapter 映射回引擎库卡片(card 是文件,adapter
+        是 combo hash id)。存进 params 随 snapshot 一起过进程边界。
         """
         return ModelSpec(
             id=model_id,
@@ -860,10 +866,35 @@ class ModelManager:
             adapter_class=adapter_class_path,
             paths={},  # paths 已被 adapter 内部 build_bridged_* 消化,registry 不再需要
             vram_mb=vram_mb,
-            params={"pipeline_class": pipeline_class},
+            params={"pipeline_class": pipeline_class, "source_files": source_files or []},
             resident=False,
             ttl_seconds=10**9,  # 不靠 TTL 回收(LRU + 手动 unload 才是主路径)
         )
+
+    def loaded_models_snapshot(self) -> list[dict]:
+        """当前已加载模型的结构化快照,用于跨进程上报(runner 子进程 → 主进程,
+        经 Pong)。image/tts adapter 真加载在 runner 自己的 ModelManager._models 里,
+        主进程的 _models 看不到 —— runner 每次 Pong 带上这份快照,主进程聚合后供
+        `/image-cache`、系统状态「已加载模型」、引擎库 loaded 视图读(单一真相来源)。
+
+        每条字段都为「过进程边界 + 还原 UI」够用:model_id(combo hash)、model_type、
+        gpu、vram、pipeline_class、source_files(映射回引擎卡)、last_used_ago_sec。
+        """
+        now = time.monotonic()
+        out: list[dict] = []
+        for mid, entry in self._models.items():
+            params = entry.spec.params or {}
+            out.append({
+                "model_id": mid,
+                "model_type": entry.spec.model_type,
+                "gpu_index": entry.gpu_index,
+                "gpu_indices": list(entry.gpu_indices),
+                "vram_mb": entry.spec.vram_mb,
+                "pipeline_class": params.get("pipeline_class"),
+                "source_files": list(params.get("source_files") or []),
+                "last_used_ago_sec": round(now - entry.last_used, 2),
+            })
+        return out
 
     async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline", on_event=None, offload: str = "none"):
         """PR-4 entry for the runner component path. Resolves auto devices,
@@ -972,6 +1003,7 @@ class ModelManager:
                     target_device=target,
                     vram_mb=self._estimate_image_vram_mb(resolved) or 0,
                     pipeline_class="AnimaPipeline",
+                    source_files=[resolved[k].file for k in ("diffusion_models", "clip", "vae")],
                 ),
                 adapter=adapter,
                 gpu_index=gpu_idx,
@@ -1095,6 +1127,7 @@ class ModelManager:
                     target_device=target,
                     vram_mb=self._estimate_image_vram_mb(resolved) or 0,
                     pipeline_class=pipeline_class,
+                    source_files=[resolved[k].file for k in ("diffusion_models", "clip", "vae")],
                 ),
                 adapter=adapter,
                 gpu_index=gpu_idx,

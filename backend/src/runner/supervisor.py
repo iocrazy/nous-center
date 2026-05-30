@@ -78,6 +78,10 @@ class RunnerSupervisor:
         self._process: mp.Process | None = None
         self.client: RunnerClient | None = None
         self.restart_count = 0
+        # runner 子进程上报的已加载 adapter 快照(每个 ping 对账一次)。主进程的
+        # /image-cache、系统状态「已加载模型」、引擎库 loaded 视图聚合这份 —— image/tts
+        # adapter 真加载在 runner 进程,主进程 _models 看不到,这是唯一可见窗口。
+        self.loaded_models: list[dict] = []
         self._inflight: set[int] = set()
         self._last_spawn_at = 0.0
         self._watchdog_task: asyncio.Task | None = None
@@ -143,6 +147,22 @@ class RunnerSupervisor:
         self._watchdog_task = asyncio.create_task(
             self._watchdog(), name=f"watchdog-{self.group_id}"
         )
+        # 立即对账一次,别让 UI 等满第一个 ping_interval(默认 30s)才看到已加载模型。
+        await self._reconcile_loaded()
+
+    async def _reconcile_loaded(self) -> None:
+        """ping 一次,把 runner 上报的已加载 adapter 快照存进 self.loaded_models。
+        best-effort —— ping 失败/超时不抛(crash 检测是 watchdog 的职责,这里只刷状态)。"""
+        if self.client is None or not self._connected_for_reconcile():
+            return
+        try:
+            pong = await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
+            self.loaded_models = list(pong.loaded_models or [])
+        except Exception:  # noqa: BLE001 — 状态刷新失败不影响监管主流程
+            pass
+
+    def _connected_for_reconcile(self) -> bool:
+        return self.client is not None and self.client.is_connected
 
     async def _spawn(self) -> None:
         """fork runner 子进程 + 建 client + 等 Ready。"""
@@ -208,7 +228,9 @@ class RunnerSupervisor:
             if self._stopping:
                 return
             try:
-                await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
+                pong = await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
+                # 顺手对账已加载快照(ping 本就为存活检测,Pong 带回了状态,别丢)。
+                self.loaded_models = list(pong.loaded_models or [])
             except (asyncio.TimeoutError, ConnectionError):
                 if self._stopping:
                     return
@@ -221,6 +243,9 @@ class RunnerSupervisor:
         await self._terminate_process()
         if self.client is not None:
             await self.client.close()
+        # 旧 runner 的已加载 adapter 随进程一起没了,清空快照(respawn 后 _spawn 末尾
+        # 不会自动 reconcile —— 等下一个 watchdog ping 重新填,期间显示为空是正确的)。
+        self.loaded_models = []
 
         # 2. inflight task 全标 failed (runner_crashed)，不重试
         for task_id in list(self._inflight):

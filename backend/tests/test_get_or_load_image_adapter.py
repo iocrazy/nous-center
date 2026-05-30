@@ -81,6 +81,23 @@ async def test_same_combo_cache_hit(stubbed):
 
 
 @pytest.mark.asyncio
+async def test_loaded_models_snapshot_carries_source_files(stubbed):
+    """loaded_models_snapshot()(runner→主进程 Pong 上报用)要带 source_files,
+    主进程才能把 runner 里的 combo-hash adapter 映射回引擎库卡片。Bug 3 修复基础。"""
+    mm, _builds, _ = stubbed
+    await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline")
+    snap = mm.loaded_models_snapshot()
+    assert len(snap) == 1
+    e = snap[0]
+    assert e["model_type"] == "image"
+    assert e["pipeline_class"] == "Flux2KleinPipeline"
+    # 源组件文件(unet/clip/vae)随快照过进程边界 —— 用于映射回引擎卡
+    assert set(e["source_files"]) == {"/m/u.safe", "/m/c.safe", "/m/v.safe"}
+    assert e["last_used_ago_sec"] >= 0
+    assert isinstance(e["gpu_index"], int)
+
+
+@pytest.mark.asyncio
 async def test_auto_device_resolved(stubbed, monkeypatch):
     mm, builds, _ = stubbed
     monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram: 2)
