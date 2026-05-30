@@ -45,11 +45,21 @@ class RunnerClient:
         self._progress_cbs: dict[int, Callable[[P.NodeProgress], None]] = {}
         # model_key -> Future[bool]（ModelEvent loaded/load_failed）
         self._model_futures: dict[str, asyncio.Future] = {}
-        # 单个待回 Pong 的 Future（ping 是串行的，watchdog 一次一个）
+        # 单个待回 Pong 的 Future（ping 是串行的，watchdog 一次一个）。
+        # Bug 3 PR-2b 起 reconcile 也会 ping → 与 watchdog 可能并发,共享单个
+        # _pong_future 会串线(一个 Pong 解错 future)→ 另一个 wait_for 超时 →
+        # watchdog 误判 crash 重启。_ping_lock 串行化所有 ping,杜绝该 race。
         self._pong_future: asyncio.Future | None = None
+        self._ping_lock = asyncio.Lock()
 
         # PR-5a §5: ComponentEvent 回调 —— 主进程订阅组件加载状态迁移
         self.on_component_event: Callable[[P.ComponentEvent], None] | None = None
+
+        # Bug 3 PR-2b:每个 NodeResult(节点跑完)后触发 —— supervisor 用它在 image/tts
+        # 节点完成后立刻 reconcile 已加载快照(此时新 adapter 已写进 runner _models,
+        # 比等满 30s watchdog ping 快)。注意:不能在 ComponentEvent(loaded) 时刷 ——
+        # 那发生在 adapter 注册进 _models 之前(model_manager.py:1088 早于 1091)会漏。
+        self.on_node_done: Callable[[], None] | None = None
 
         self._demux_task: asyncio.Task | None = None
 
@@ -148,6 +158,10 @@ class RunnerClient:
                 self._dispatches.pop(msg.task_id, None)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
+                # Bug 3 PR-2b:节点跑完(新 adapter 已注册进 runner _models)→ 触发
+                # supervisor reconcile,让已加载快照即时反映,不等 30s ping。
+                if self.on_node_done is not None:
+                    self.on_node_done()
             elif isinstance(msg, P.ComponentEvent):
                 cb = self.on_component_event
                 if cb is not None:
@@ -240,10 +254,14 @@ class RunnerClient:
         await self._ch.send_message(P.Abort(task_id=task_id, node_id=node_id))
 
     async def ping(self) -> P.Pong:
-        """发 Ping，await Pong。supervisor 的 watchdog 用。"""
+        """发 Ping，await Pong。supervisor 的 watchdog + PR-2b reconcile 都用 —— 用
+        _ping_lock 串行化,避免并发 ping 共享 _pong_future 串线(详见 __init__ 注释)。"""
         if not self._connected:
             raise ConnectionError("runner disconnected")
-        loop = asyncio.get_running_loop()
-        self._pong_future = loop.create_future()
-        await self._ch.send_message(P.Ping())
-        return await self._pong_future
+        async with self._ping_lock:
+            if not self._connected:
+                raise ConnectionError("runner disconnected")
+            loop = asyncio.get_running_loop()
+            self._pong_future = loop.create_future()
+            await self._ch.send_message(P.Ping())
+            return await self._pong_future
