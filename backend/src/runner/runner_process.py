@@ -126,6 +126,13 @@ async def _handle_load_model(state: _RunnerState, ch: PipeChannel, msg: P.LoadMo
 
 async def _handle_unload_model(state: _RunnerState, ch: PipeChannel, msg: P.UnloadModel) -> None:
     await state.mm.unload_model(msg.model_key, force=True)
+    # 显存就在这个 runner 进程持有的卡上 —— empty_cache 必须在这里跑(主进程跑无效)。
+    try:
+        import torch  # noqa: PLC0415
+        if torch.cuda.is_available():  # type: ignore[attr-defined]
+            torch.cuda.empty_cache()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — CI mock torch / 无 GPU 安全跳过
+        pass
     await ch.send_message(P.ModelEvent(event="unloaded", model_key=msg.model_key, error=None))
 
 

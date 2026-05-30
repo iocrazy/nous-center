@@ -144,56 +144,39 @@ async def test_scan_endpoint_returns_local_available_split(client, monkeypatch):
 # ----- PR-D4: 手动 unload-image-adapters 端点(image adapter 入 _models 统一字典后路径)-----
 
 
-async def test_unload_image_adapters_clears_image_entries(client, app):
-    """POST /api/v1/engines/unload-image-adapters 清掉 `_models` 里所有 model_type=image
-    的 derived adapter,留 LLM/TTS 不动。PR-D4 用户从「系统状态」点「释放 image adapter」
-    走这条路径。conftest 给 app.state.model_manager 默认是 MagicMock,本测试用真 dict
-    + 真 unload_model 替换 mock,模拟 ModelManager 接口。"""
-    from src.services.inference.base import InferenceAdapter
-    from src.services.inference.registry import ModelSpec
-    from src.services.model_manager import LoadedModel
+class _FakeMainMM:
+    """模拟主进程 ModelManager 的 loaded_models_snapshot + unload_model(非 MagicMock,
+    让 aggregate 真能 iter)。用于测 image 落在主进程(group='main')的兜底卸载路径。"""
+    def __init__(self, snapshot):
+        self._snapshot = snapshot
+        self.unloaded: list[str] = []
 
-    mm = app.state.model_manager
+    def loaded_models_snapshot(self):
+        return self._snapshot
 
-    class _FakeAdapter(InferenceAdapter):
-        def __init__(self): self._model = object()
-        async def load(self, device): pass
-        async def infer(self, req): raise NotImplementedError
-        def unload(self) -> None: self._model = None
+    async def unload_model(self, mid, force=False):
+        self.unloaded.append(mid)
+        self._snapshot = [e for e in self._snapshot if e["model_id"] != mid]
 
-    def _spec(mid, mtype):
-        return ModelSpec(id=mid, model_type=mtype, adapter_class="x.y.Z",
-                         paths={}, vram_mb=1000)
 
-    # 用真 dict 替换 MagicMock 的 `_models` 属性,让 .items() 真正 iter
-    fake_models = {
-        "image:Flux2KleinPipeline:foo:00112233": LoadedModel(
-            spec=_spec("image:Flux2KleinPipeline:foo:00112233", "image"),
-            adapter=_FakeAdapter(), gpu_index=1, gpu_indices=[1]),
-        "image:AnimaPipeline:bar:44556677": LoadedModel(
-            spec=_spec("image:AnimaPipeline:bar:44556677", "image"),
-            adapter=_FakeAdapter(), gpu_index=2, gpu_indices=[2]),
-        "qwen3-1.7b": LoadedModel(
-            spec=_spec("qwen3-1.7b", "llm"),
-            adapter=_FakeAdapter(), gpu_index=0, gpu_indices=[0]),
-    }
-    mm._models = fake_models
-
-    async def _fake_unload(mid, force=False):
-        fake_models.pop(mid, None)
-    mm.unload_model = _fake_unload
+async def test_unload_image_adapters_main_fallback_unloads_locally(client, app):
+    """image 落在主进程(group='main',极少)时,unload 走主进程 model_manager.unload_model,
+    留 LLM/TTS 不动。runner 路径见 test_unload_image_adapters_dispatches_to_runner。"""
+    app.state.runner_supervisors = []
+    mm = _FakeMainMM([
+        {"model_id": "image:foo:1", "model_type": "image", "gpu_index": 1, "source_files": []},
+        {"model_id": "image:bar:2", "model_type": "image", "gpu_index": 2, "source_files": []},
+        {"model_id": "qwen3-1.7b", "model_type": "llm", "gpu_index": 0, "source_files": []},
+    ])
+    app.state.model_manager = mm
 
     resp = await client.post("/api/v1/engines/unload-image-adapters")
     assert resp.status_code == 200
     body = resp.json()
     assert body["count"] == 2
-    assert set(body["unloaded"]) == {
-        "image:Flux2KleinPipeline:foo:00112233",
-        "image:AnimaPipeline:bar:44556677",
-    }
-    assert "qwen3-1.7b" in fake_models
-    assert "image:Flux2KleinPipeline:foo:00112233" not in fake_models
-    assert "image:AnimaPipeline:bar:44556677" not in fake_models
+    assert set(body["unloaded"]) == {"image:foo:1", "image:bar:2"}
+    assert set(mm.unloaded) == {"image:foo:1", "image:bar:2"}  # LLM 没被动
+    assert "qwen3-1.7b" not in mm.unloaded
 
 
 class _FakeSup:
@@ -267,10 +250,45 @@ def test_explain_image_combo_key_unpacks_all_components():
 
 async def test_unload_image_adapters_when_none_returns_zero(client, app):
     """空状态下也要 200 + count=0(让前端按钮即使没 image 时不报错)。"""
-    app.state.model_manager._models = {}  # 真 dict 替 MagicMock,确保 .items() 走通
+    app.state.runner_supervisors = []
+    app.state.model_manager._models = {}
     resp = await client.post("/api/v1/engines/unload-image-adapters")
     assert resp.status_code == 200
     assert resp.json()["count"] == 0
+
+
+class _FakeClient:
+    def __init__(self):
+        self.unloaded: list[str] = []
+
+    async def unload_model(self, mid):
+        self.unloaded.append(mid)
+
+
+class _FakeSupWithClient:
+    def __init__(self, group_id, loaded_models):
+        self.group_id = group_id
+        self.loaded_models = loaded_models
+        self.client = _FakeClient()
+
+    async def _reconcile_loaded(self):
+        self.loaded_models = []  # 模拟 runner 卸载后快照清空
+
+
+async def test_unload_image_adapters_dispatches_to_runner(client, app):
+    """Bug 3 PR-2a:image adapter 在 runner 子进程,unload 必须派 UnloadModel 给 runner
+    (非 no-op),并卸载后 reconcile 快照。"""
+    sup = _FakeSupWithClient("image", [
+        {"model_id": "image:foo:1", "model_type": "image", "gpu_index": 1, "source_files": []},
+        {"model_id": "image:bar:2", "model_type": "image", "gpu_index": 2, "source_files": []},
+    ])
+    app.state.runner_supervisors = [sup]
+    resp = await client.post("/api/v1/engines/unload-image-adapters")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 2
+    assert set(sup.client.unloaded) == {"image:foo:1", "image:bar:2"}  # 真派给 runner
+    assert sup.loaded_models == []  # reconcile 被调用 → 快照刷新
 
 
 async def test_scan_endpoint_no_missing_when_all_local(client, monkeypatch):

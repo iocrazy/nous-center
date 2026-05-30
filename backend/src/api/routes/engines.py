@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from src.services.model_metadata_service import (
 from src.api.websocket import ws_manager
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
+logger = logging.getLogger(__name__)
 
 # In-memory loading state tracker: model_id -> {"status": "loading"|"failed", "detail": str}
 _loading_states: dict[str, dict[str, str]] = {}
@@ -341,30 +343,48 @@ async def list_image_adapter_cache(request: Request):
 
 @router.post("/unload-image-adapters", dependencies=[Depends(require_admin)])
 async def unload_all_image_adapters(request: Request):
-    """PR-D4 手动救援:卸载所有 image adapter,释放显存。
+    """手动救援:卸载所有 image adapter,释放显存。
 
-    image adapter 由 workflow 节点动态组装(combo_key 唯一)+ 进 `_models[derived_id]`,
-    跟 yaml registry 的常驻 LLM 分开。但 LRU 驱逐只在 OOM 时触发 — 用户改 dtype/LoRA
-    多次 Run 后想主动清空(避免下一次再 OOM)就调这个接口。
+    **Bug 3 PR-2a 修正**:image adapter 真加载在 **runner 子进程**,主进程 `_models`
+    恒空 —— 老实现遍历主进程字典 = no-op,「释放 image」按钮按了显存掉不下来。现改向
+    持有该 adapter 的 runner 派 `UnloadModel`(runner 内 `mm.unload_model` + `empty_cache`,
+    显存就在那张卡上),再 reconcile 快照(pipe FIFO:UnloadModel 先于随后的 Ping 被处理,
+    Pong 必反映卸载后状态)。
 
-    遍历 `_models` 找 `model_type='image'` 的全 unload,顺便 `torch.cuda.empty_cache()`。
+    用户改 dtype/LoRA 多次 Run 后想主动清空(避免下一次 OOM)调这个接口。
     """
-    model_mgr = request.app.state.model_manager
-    image_ids = [
-        mid for mid, entry in model_mgr._models.items()
-        if entry.spec.model_type == "image"
+    from src.services.runner_models import aggregate_runner_loaded
+    state = request.app.state
+    sups_by_group = {
+        getattr(s, "group_id", None): s
+        for s in (getattr(state, "runner_supervisors", None) or [])
+    }
+    image_entries = [
+        e for e in aggregate_runner_loaded(state) if e.get("model_type") == "image"
     ]
-    for mid in image_ids:
-        await model_mgr.unload_model(mid, force=True)
-    # empty_cache 仅在 torch 可用时;CI mock 环境 try/except 安全跑过。
-    try:
-        import torch  # noqa: PLC0415
-        if torch.cuda.is_available():  # type: ignore[attr-defined]
-            torch.cuda.empty_cache()  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
-        pass
+    unloaded: list[str] = []
+    touched_groups: set[str] = set()
+    for e in image_entries:
+        gid, mid = e.get("group_id"), e.get("model_id")
+        sup = sups_by_group.get(gid)
+        if sup is not None and getattr(sup, "client", None) is not None:
+            try:
+                await sup.client.unload_model(mid)
+                unloaded.append(mid)
+                touched_groups.add(gid)
+            except Exception as ex:  # noqa: BLE001 — 单个失败不挡其余
+                logger.warning("unload image adapter %s on runner %s failed: %s", mid, gid, ex)
+        elif gid == "main":
+            # 主进程内的 image(极少;留兜底路径)。
+            await state.model_manager.unload_model(mid, force=True)
+            unloaded.append(mid)
+    # 卸载后立刻对账,让响应 + UI 反映真实剩余(FIFO 保证 Pong 在 UnloadModel 之后)。
+    for gid in touched_groups:
+        sup = sups_by_group.get(gid)
+        if sup is not None and hasattr(sup, "_reconcile_loaded"):
+            await sup._reconcile_loaded()
     invalidate("engines")
-    return {"unloaded": image_ids, "count": len(image_ids)}
+    return {"unloaded": unloaded, "count": len(unloaded)}
 
 
 _install_states: dict[str, dict[str, str]] = {}  # engine -> {status, detail}
