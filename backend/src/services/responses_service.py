@@ -84,11 +84,18 @@ def approx_tokens(messages: list[dict]) -> int:
             total += len(c) // 2 + 4
         elif isinstance(c, list):
             for item in c:
-                t = item.get("text", "")
-                if isinstance(t, str):
-                    total += len(t) // 2 + 4
+                # round4:① 裸 str / 非 dict item 不能 .get(否则 AttributeError 崩 500)。
+                if not isinstance(item, dict):
+                    total += 4
+                    continue
+                # ② image part 没有 "text" 键。早先 `get("text","")` 兜底成空串 → 命中
+                #    str 分支只记 4,`else: 200` 成死代码 → 多模态请求严重低估、不触发
+                #    压缩 → vLLM context_length_exceeded。用无默认 get 区分真有文本 vs 图。
+                txt = item.get("text")
+                if isinstance(txt, str):
+                    total += len(txt) // 2 + 4
                 else:
-                    total += 200  # image / other placeholder
+                    total += 200  # image / 其它非文本 part
     return total
 
 

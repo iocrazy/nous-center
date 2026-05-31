@@ -88,3 +88,35 @@ async def test_compress_preserves_instruction_system_position():
     i_instr = contents.index("INSTR")
     # 旧逻辑(system 全提前)会让 INSTR 跑到 KEEP1 前 → i_keep1 < i_instr 失败
     assert i_keep1 < i_instr, "历史 KEEP1 应在 instructions 之前(顺序保持)"
+
+
+def test_approx_tokens_image_part_estimated_high_not_4():
+    """round4 BUG1:image content part(无 'text' 键)应估 ~200,不是 4(否则多模态
+    请求严重低估、不触发压缩 → vLLM context 溢出)。"""
+    from src.services.context.gzip_compact import _approx_tokens
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "hi"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+    ]}]
+    total = _approx_tokens(msgs)
+    # text 'hi' ~5 + image 200 → 远大于 4
+    assert total >= 200
+
+
+def test_approx_tokens_bare_string_item_does_not_crash():
+    """round4 BUG2:content list 含裸 str item 不应 AttributeError 崩。"""
+    from src.services.context.gzip_compact import _approx_tokens
+    msgs = [{"role": "user", "content": ["plain string", {"type": "text", "text": "x"}]}]
+    total = _approx_tokens(msgs)  # 不抛
+    assert total > 0
+
+
+def test_responses_service_approx_tokens_matches():
+    """两份副本(gzip_compact / responses_service)行为一致。"""
+    from src.services.context.gzip_compact import _approx_tokens as a
+    from src.services.responses_service import approx_tokens as b
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "hello"},
+        {"type": "image_url", "image_url": {"url": "data:..."}},
+    ]}]
+    assert a(msgs) == b(msgs) >= 200
