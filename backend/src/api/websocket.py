@@ -27,7 +27,7 @@ class ConnectionManager:
     async def send_update(self, task_id: str, data: dict):
         if task_id in self.active_connections:
             message = json.dumps(data)
-            for ws in self.active_connections[task_id]:
+            for ws in list(self.active_connections[task_id]):
                 await ws.send_text(message)
 
     # --- Global task list ---
@@ -46,7 +46,7 @@ class ConnectionManager:
             return
         message = json.dumps({"event": event, "task": task_data})
         dead: list[WebSocket] = []
-        for ws in self._global_subscribers:
+        for ws in list(self._global_subscribers):
             try:
                 await ws.send_text(message)
             except Exception:
@@ -69,7 +69,7 @@ class ConnectionManager:
             **payload,
         })
         dead: list[WebSocket] = []
-        for ws in self._global_subscribers:
+        for ws in list(self._global_subscribers):
             try:
                 await ws.send_text(message)
             except Exception:
@@ -98,7 +98,7 @@ class ConnectionManager:
             "detail": detail,
         })
         dead: list[WebSocket] = []
-        for ws in self._model_subscribers:
+        for ws in list(self._model_subscribers):
             try:
                 await ws.send_text(message)
             except Exception:
@@ -117,7 +117,7 @@ class ConnectionManager:
             "error": error,
         })
         dead: list[WebSocket] = []
-        for ws in self._model_subscribers:
+        for ws in list(self._model_subscribers):
             try:
                 await ws.send_text(message)
             except Exception:
