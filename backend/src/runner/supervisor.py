@@ -205,7 +205,16 @@ class RunnerSupervisor:
         self.client = RunnerClient(parent_conn, runner_id=f"runner-{self.group_id}")
         # Bug 3 PR-2b:节点跑完即时刷新已加载快照(新 adapter 已进 runner _models)。
         self.client.on_node_done = self._schedule_reconcile
-        await self.client.start()  # 等 Ready 握手
+        try:
+            await self.client.start()  # 等 Ready 握手
+        except BaseException:
+            # round10:握手失败/取消 —— 子进程已 fork(line 上 proc.start()),占着 GPU。
+            # 初始 start() 路径此时 watchdog 还没建(start() line 156 在 _spawn 之后),
+            # 没人回收 → orphan runner 永久泄漏显存。_restart 路径虽下轮会 _terminate,但
+            # 让 _spawn 自己清更稳。主动终结进程 + 关 client channel 再抛。
+            await self._terminate_process()
+            await self.client.close()
+            raise
         self._last_spawn_at = time.monotonic()
         logger.info(
             "runner %s spawned (pid=%s, gpus=%s)", self.group_id, proc.pid, self.gpus
