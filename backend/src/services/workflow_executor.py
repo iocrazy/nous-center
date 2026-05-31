@@ -379,6 +379,11 @@ class WorkflowExecutor:
         # 每步发一个 NodeProgress;前端 DeclarativeNode 按 node_id 渲染进度条)。
         loop = asyncio.get_running_loop()
         on_progress_async = self._on_progress
+        # _forward_progress(demux 同步回调)里 create_task 排发的进度/高亮事件全收进这里,
+        # run_node 返回后统一 gather —— 否则 fire-and-forget 的 task 可能排在 execute() 已
+        # await 的 node_complete/complete 之后(高亮乱序),且 workflow 收尾时 pending 触发
+        # "Task destroyed but pending" 告警 + 丢帧(#3 修复)。
+        progress_tasks: list[asyncio.Task] = []
 
         def _forward_progress(pmsg: "P.NodeProgress") -> None:
             if on_progress_async is None:
@@ -394,12 +399,12 @@ class WorkflowExecutor:
                 if target_node_id != self._active_stage_node:
                     prev = self._active_stage_node
                     if prev is not None and prev != target_node_id:
-                        loop.create_task(on_progress_async(
-                            {"type": "node_complete", "node_id": prev}))
-                    loop.create_task(on_progress_async({
+                        progress_tasks.append(loop.create_task(on_progress_async(
+                            {"type": "node_complete", "node_id": prev})))
+                    progress_tasks.append(loop.create_task(on_progress_async({
                         "type": "node_start", "node_id": target_node_id,
                         "node_type": self._node_map.get(target_node_id, {}).get("type"),
-                    }))
+                    })))
                     self._active_stage_node = target_node_id
             event: dict[str, Any] = {
                 "type": "node_progress",
@@ -418,13 +423,14 @@ class WorkflowExecutor:
                 v = getattr(pmsg, field_name, None)
                 if v is not None:
                     event[field_name] = v
-            loop.create_task(on_progress_async(event))
+            progress_tasks.append(loop.create_task(on_progress_async(event)))
             # PR-6:同时广播到全局 /ws/tasks,带 task_id 路由。前端 GlobalTopbar 单一 WS
             # 连接收所有 task 的 L3 progress,ActiveTaskRow 按 task.id 匹配 — 多任务并发
             # 场景每行 callout 都能拿到自己的 stage/step/ETA。
             if self._task_id is not None:
                 from src.api.websocket import ws_manager  # noqa: PLC0415
-                loop.create_task(ws_manager.broadcast_task_progress(self._task_id, event))
+                progress_tasks.append(
+                    loop.create_task(ws_manager.broadcast_task_progress(self._task_id, event)))
 
         # Bug 2(RUNNING 无运行进度):模型加载阶段在 denoise 前,无 step 可报 —— 任务面板
         # RUNNING 卡此期间一片空白(用户截图就是 Flux2 加载阶段)。dispatch 前先发一个
@@ -441,6 +447,11 @@ class WorkflowExecutor:
 
         result = await client.run_node(
             spec, on_progress=_forward_progress, workflow_name=self._workflow_name)
+        # 排空进度/高亮事件 —— 保证它们先于 execute() 随后 await 的 node_complete 到达
+        # (高亮不乱序),且不留 pending task 到 workflow 收尾(#3 修复)。run_node 已返回
+        # = 所有 NodeProgress 已投递,这些 task 都已创建。
+        if progress_tasks:
+            await asyncio.gather(*progress_tasks, return_exceptions=True)
         # 真 RunnerClient 返回 P.NodeResult dataclass;Lane S FakeRunnerClient
         # 直接返回 outputs dict(stub 简化)。统一在这里 unwrap —— executor 上层
         # 把结果当 dict 走(_outputs 索引、下游 _get_inputs 迭代),不 unwrap 就

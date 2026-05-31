@@ -389,7 +389,11 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
 
         # in-use 守卫:infer 期间标记 adapter 正在用,unload/evict 绝不卸载它(否则 denoise
         # 在 to_thread 工作线程撞已释放的 CUDA 权重 → segfault)。finally 兜所有退出路径。
-        state.mm.mark_adapter_in_use(adapter)
+        # getattr 兜底:可选安全 hook —— 极简 fake ModelManager(测试 double)可不实现。
+        _mark = getattr(state.mm, "mark_adapter_in_use", None)
+        _release = getattr(state.mm, "release_adapter", None)
+        if _mark is not None:
+            _mark(adapter)
         try:
             # PR-1b(2026-05-27 任务面板重置):**统一**用 signature 探测决定是否传
             # progress_callback / cancel_flag。spec §4.4「TTS = boundary-cancel only」
@@ -451,7 +455,8 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             continue
         finally:
             # infer 结束(成功/异常/取消):清正在用标记 —— 后续输出处理不碰 adapter CUDA,释放安全。
-            state.mm.release_adapter(adapter)
+            if _release is not None:
+                _release(adapter)
 
         # 排空 progress 发送 —— 保证「所有 NodeProgress 先到、NodeResult 后到」
         if progress_tasks:
