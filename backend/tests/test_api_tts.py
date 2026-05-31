@@ -113,3 +113,26 @@ async def test_stream_validates_request(client):
         "speed": 999,
     })
     assert resp.status_code == 400
+
+
+async def test_batch_rejects_duplicate_round_id(db_client):
+    """round7:重复 round_id → 400(早先静默塌缩、报多派少)。"""
+    resp = await db_client.post("/api/v1/tts/batch", json={
+        "rounds": [
+            {"round_id": 1, "voice_preset": "test", "text": "a"},
+            {"round_id": 1, "voice_preset": "test", "text": "b"},
+        ]
+    })
+    assert resp.status_code == 400
+
+
+def test_batch_store_is_bounded():
+    """round7:_batch_store FIFO 上限,超限淘汰最旧。"""
+    from src.api.routes import tts as tts_mod
+    tts_mod._batch_store.clear()
+    for i in range(tts_mod._BATCH_STORE_CAP + 50):
+        tts_mod._store_batch(f"b{i}", {"rounds": {}, "total": 0})
+    assert len(tts_mod._batch_store) == tts_mod._BATCH_STORE_CAP
+    assert "b0" not in tts_mod._batch_store          # 最旧被淘汰
+    assert f"b{tts_mod._BATCH_STORE_CAP + 49}" in tts_mod._batch_store  # 最新还在
+    tts_mod._batch_store.clear()

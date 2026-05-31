@@ -3,6 +3,7 @@ import base64
 import json as json_module
 import time
 import uuid
+from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -180,8 +181,18 @@ async def tts_stream(req: StreamRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-# In-memory batch state (production would use Redis)
-_batch_store: dict[str, dict] = {}
+# In-memory batch state (production would use Redis).
+# round7:有界 —— 早先裸 dict 永不过期/不淘汰,每个 batch 永久驻留 = 进程内存单调增长。
+# 用 OrderedDict + FIFO 上限,超限淘汰最旧。
+_BATCH_STORE_CAP = 200
+_batch_store: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _store_batch(batch_id: str, data: dict) -> None:
+    _batch_store[batch_id] = data
+    _batch_store.move_to_end(batch_id)
+    while len(_batch_store) > _BATCH_STORE_CAP:
+        _batch_store.popitem(last=False)  # 淘汰最旧
 
 
 async def _resolve_preset(name: str, session: AsyncSession) -> dict | None:
@@ -203,6 +214,12 @@ async def tts_batch(
     """Dispatch batch TTS with round model. Progress pushed via /ws/tts."""
     batch_id = f"batch_{uuid.uuid4().hex[:12]}"
 
+    # round7:round_id 是 rounds_state 的 dict key,重复会互相覆盖 → 只派一个 Celery 任务
+    # 却报 total=len(req.rounds)(报多派少)。显式拒重复,避免静默塌缩。
+    seen_ids = [r.round_id for r in req.rounds]
+    if len(seen_ids) != len(set(seen_ids)):
+        raise HTTPException(400, detail="duplicate round_id in batch")
+
     rounds_state = {}
     for r in req.rounds:
         preset = await _resolve_preset(r.voice_preset, session)
@@ -217,7 +234,7 @@ async def tts_batch(
             "task_id": None,
         }
 
-    _batch_store[batch_id] = {"rounds": rounds_state, "total": len(req.rounds)}
+    _store_batch(batch_id, {"rounds": rounds_state, "total": len(rounds_state)})
 
     # Dispatch each round as a Celery task
     for round_id, state in rounds_state.items():
