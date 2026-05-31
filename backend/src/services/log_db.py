@@ -75,6 +75,11 @@ def _get_conn(db_path: str | None = None) -> sqlite3.Connection:
     if conn is None or db_path is not None:
         conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
+        # round4 #13:WAL 下读可并发但写仍互斥,默认 busy_timeout=0 → 高并发请求/审计
+        # 写 + 每小时 cleanup_logs 大删并发时立刻抛 `database is locked`,而 middleware
+        # 的 `except Exception: pass` 会静默吞 → 请求/审计日志丢失、审计 trail 空洞。
+        # 设 5s 重试窗口让写冲突自动退避等待而非立即失败。
+        conn.execute("PRAGMA busy_timeout=5000")
         if db_path is None:
             _local.conn = conn
     return conn
