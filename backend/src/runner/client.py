@@ -107,6 +107,11 @@ class RunnerClient:
                 await self._demux_task
             except asyncio.CancelledError:
                 pass
+        # 关键(修任务永久挂起):cancel demux 后,EOF 可能还没被 demux 读到、_fail_all_inflight
+        # 没跑过 —— 此时 supervisor._restart 走 ping-timeout 路径调 close(),正等 run_node 的
+        # 协程会永久挂起(无超时)。close 主动 fail 所有 inflight future,保证关闭即报错。
+        # 已 done 的 future 由 _fail_all_inflight 内部 `if not done` 跳过,不重复置异常。
+        self._fail_all_inflight(ConnectionError("runner client closed"))
         self._ch.close()
 
     def _fail_all_inflight(self, exc: Exception) -> None:

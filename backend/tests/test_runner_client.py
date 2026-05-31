@@ -116,3 +116,24 @@ async def test_recv_eof_marks_client_disconnected():
         assert not client.is_connected
     finally:
         await _teardown(proc, client)
+
+
+@pytest.mark.asyncio
+async def test_close_fails_pending_inflight_futures():
+    """修任务永久挂起:close() 主动 fail 所有 inflight future。否则 supervisor._restart 走
+    ping-timeout 路径 cancel demux 后(EOF 还没被读到),正等 run_node 的协程会永久挂起。"""
+    from unittest.mock import MagicMock
+    client = RunnerClient(MagicMock(), runner_id="r")
+    loop = asyncio.get_running_loop()
+    node_fut = loop.create_future()
+    model_fut = loop.create_future()
+    client._node_futures[42] = node_fut
+    client._model_futures["m"] = model_fut
+
+    await client.close()  # 没起 demux → 仅靠 close 主动 fail
+
+    assert node_fut.done() and model_fut.done()
+    with pytest.raises(ConnectionError):
+        node_fut.result()
+    with pytest.raises(ConnectionError):
+        model_fut.result()
