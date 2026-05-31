@@ -3,6 +3,18 @@ import { apiFetch } from './client'
 import { useToastStore } from '../stores/toast'
 import { useLiveChannel } from './useLiveChannel'
 
+// round3 #5:useEngines 在 Dashboard / Models / CreateServiceDialog 等多处同时挂载,
+// 每个 consumer 的 onMessage 都会跑 → 同一条 model_status 事件弹多条相同 toast。
+// 用模块级签名去重:相同 (model:status:detail) 在 1.5s 内只弹一次(invalidate 仍每个跑,
+// 那是幂等的)。
+let _lastEngineToast = { sig: '', at: 0 }
+function _engineToastOnce(sig: string, msg: string, kind: 'success' | 'error') {
+  const now = Date.now()
+  if (sig === _lastEngineToast.sig && now - _lastEngineToast.at < 1500) return
+  _lastEngineToast = { sig, at: now }
+  useToastStore.getState().add(msg, kind)
+}
+
 export interface EngineInfo {
   name: string
   display_name: string
@@ -72,14 +84,15 @@ export function useEngines() {
     onMessage: (data) => {
       if (data.event !== 'model_status') return
       qc.invalidateQueries({ queryKey: ['engines'] })
+      const sig = `${data.model}:${data.status}:${data.detail ?? ''}`
       if (data.status === 'loaded') {
-        useToastStore.getState().add(`${data.model} ${data.detail || '加载完成'}`, 'success')
+        _engineToastOnce(sig, `${data.model} ${data.detail || '加载完成'}`, 'success')
       } else if (data.status === 'failed') {
-        useToastStore.getState().add(`${data.model} 加载失败: ${data.detail}`, 'error')
+        _engineToastOnce(sig, `${data.model} 加载失败: ${data.detail}`, 'error')
       } else if (data.status === 'installed') {
-        useToastStore.getState().add(`${data.model} 依赖安装完成`, 'success')
+        _engineToastOnce(sig, `${data.model} 依赖安装完成`, 'success')
       } else if (data.status === 'install_failed') {
-        useToastStore.getState().add(`${data.model} 依赖安装失败: ${data.detail}`, 'error')
+        _engineToastOnce(sig, `${data.model} 依赖安装失败: ${data.detail}`, 'error')
       }
     },
     onReconnect: () => qc.invalidateQueries({ queryKey: ['engines'] }),
