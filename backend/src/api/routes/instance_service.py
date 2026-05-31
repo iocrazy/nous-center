@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_auth import verify_instance_key
@@ -69,10 +70,17 @@ async def instance_synthesize(
     elapsed = time.monotonic() - start
     rtf = round(elapsed / max(result.duration_seconds, 0.01), 4)
 
-    # Update usage counters
-    api_key.usage_calls += 1
-    api_key.usage_chars += len(req.text)
-    api_key.last_used_at = datetime.now(timezone.utc)
+    # Update usage counters — 原子自增(SQL 端 column+N),避免并发请求共用
+    # 同一 key 时 read-modify-write 丢更新(round2 低)。
+    await session.execute(
+        update(InstanceApiKey)
+        .where(InstanceApiKey.id == api_key.id)
+        .values(
+            usage_calls=InstanceApiKey.usage_calls + 1,
+            usage_chars=InstanceApiKey.usage_chars + len(req.text),
+            last_used_at=datetime.now(timezone.utc),
+        )
+    )
     await session.commit()
 
     audio_b64 = base64.b64encode(result.audio_bytes).decode()
@@ -134,9 +142,15 @@ async def instance_run(
     await session.commit()
     await session.refresh(task)
 
-    # 用量计数：入队即计一次调用（异步契约下无法等执行完）
-    api_key.usage_calls += 1
-    api_key.last_used_at = datetime.now(timezone.utc)
+    # 用量计数：入队即计一次调用（异步契约下无法等执行完）。原子自增避免并发丢更新。
+    await session.execute(
+        update(InstanceApiKey)
+        .where(InstanceApiKey.id == api_key.id)
+        .values(
+            usage_calls=InstanceApiKey.usage_calls + 1,
+            last_used_at=datetime.now(timezone.utc),
+        )
+    )
     await session.commit()
 
     # WS channel 仍用 instance.id（上游订阅 /ws/workflow/{instance_id} 的老约定不变），
