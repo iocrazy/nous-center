@@ -40,6 +40,31 @@ async def test_load_connects_to_existing_vllm(adapter):
     assert not adapter._managed  # didn't spawn subprocess
 
 
+async def test_load_backfills_configured_max_model_len_on_reconnect(tmp_path):
+    """重连存活 vLLM 时,yaml 配的 max_model_len 必须回填到 self.max_model_len —— 否则
+    _clamp_max_tokens 退回 4096 砍长输出(bug hunt round2 #2)。"""
+    a = VLLMAdapter(paths={"main": str(tmp_path)}, device="cpu", vllm_port=19999,
+                    max_model_len=131072)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json = MagicMock(return_value={"data": [{"max_model_len": 200000}]})
+    with patch.object(a._client, "get", new_callable=AsyncMock, return_value=mock_resp):
+        await a.load("cpu")
+    assert a.max_model_len == 131072  # yaml 配的优先,不退 4096
+    assert a._clamp_max_tokens(100000) > 4096  # clamp 用真值
+
+
+async def test_load_fetches_remote_max_model_len_when_unconfigured(tmp_path):
+    """yaml 没配时,从运行中 vLLM 的 /v1/models 读 max_model_len(而非退 4096)。"""
+    a = VLLMAdapter(paths={"main": str(tmp_path)}, device="cpu", vllm_port=19999)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json = MagicMock(return_value={"data": [{"max_model_len": 200000}]})
+    with patch.object(a._client, "get", new_callable=AsyncMock, return_value=mock_resp):
+        await a.load("cpu")
+    assert a.max_model_len == 200000  # 从 /v1/models 读到
+
+
 async def test_load_fails_if_no_vllm_and_bad_model(adapter):
     """If vLLM is not running and model path is invalid, load() raises RuntimeError."""
     auto_result = {

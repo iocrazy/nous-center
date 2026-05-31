@@ -172,6 +172,10 @@ class SGLangAdapter(InferenceAdapter):
         """Start SGLang subprocess or connect to existing instance."""
         if self._base_url and await self._health_check():
             self._model = True
+            # 回填 max_model_len(同 vLLM):快速返回路径不设 → _clamp_max_tokens 退 4096
+            # → 重连后长输出被砍。优先 yaml 配的,否则从 /v1/models 读。
+            self.max_model_len = (
+                self._max_model_len or await self._fetch_remote_max_model_len() or 4096)
             if self._adopt_pid:
                 self._managed = True
                 self._adopted_pid = self._adopt_pid
@@ -328,6 +332,20 @@ class SGLangAdapter(InferenceAdapter):
             return resp.status_code == 200
         except Exception:
             return False
+
+    async def _fetch_remote_max_model_len(self) -> int | None:
+        """从运行中 SGLang 的 /v1/models 读 max_model_len(重连/adopt 时 yaml 没配的兜底)。"""
+        try:
+            resp = await self._client.get(f"{self._base_url}/v1/models", timeout=3)
+            if resp.status_code != 200:
+                return None
+            for m in (resp.json().get("data") or []):
+                v = m.get("max_model_len")
+                if isinstance(v, int) and v > 0:
+                    return v
+        except Exception:  # noqa: BLE001
+            return None
+        return None
 
     def _validate_base_url(self) -> None:
         parsed = urllib.parse.urlparse(self._base_url or "")
