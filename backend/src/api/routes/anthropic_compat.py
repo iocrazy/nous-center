@@ -150,6 +150,9 @@ async def anthropic_messages(
             raise NotFoundError(str(e), code="model_not_found")
         if instance.status != "active":
             raise HTTPException(403, detail="Instance is inactive")
+        # M:N key 在 auth 层没限流,解析出 instance 后补占坑(与 openai_compat 一致)。
+        from src.api.deps_auth import enforce_instance_rate_limit
+        await enforce_instance_rate_limit(instance)
         await session.refresh(
             instance,
             attribute_names=["workflow_snapshot", "exposed_inputs", "exposed_outputs"],

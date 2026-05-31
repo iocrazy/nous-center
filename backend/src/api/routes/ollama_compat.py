@@ -57,15 +57,20 @@ async def _resolve_model_instance(
 ) -> ServiceInstance:
     """Shared resolver: legacy binding wins, else M:N via model name."""
     if instance is not None:
+        # legacy 1:1 key —— 已在 verify_bearer_token_any 准入时占过坑。
         if instance.status != "active":
             raise HTTPException(403, detail="Instance is inactive")
         return instance
     try:
-        return await resolve_target_service(
+        resolved = await resolve_target_service(
             session, api_key=api_key, requested_model=requested_model,
         )
     except ModelNotFound as e:
         raise NotFoundError(str(e), code="model_not_found")
+    # M:N key 在 auth 层没限流,解析出 instance 后补占坑(与 openai/anthropic 一致)。
+    from src.api.deps_auth import enforce_instance_rate_limit
+    await enforce_instance_rate_limit(resolved)
+    return resolved
 
 
 def _get_adapter(request: Request, instance: ServiceInstance):
