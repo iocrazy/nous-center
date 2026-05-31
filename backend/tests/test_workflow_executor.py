@@ -69,6 +69,24 @@ def test_empty_workflow():
         executor._topological_sort()
 
 
+def test_dangling_edge_reports_missing_node_not_cycle():
+    """round5:边指向已删节点(前端删节点没清 edge)→ 报「不存在的节点」,
+    而非误报「循环依赖」(老 bug:幽灵节点进 order 使 len 不等)。"""
+    wf = {
+        "nodes": [
+            {"id": "a", "type": "text_input", "data": {}, "position": {"x": 0, "y": 0}},
+            {"id": "b", "type": "output", "data": {}, "position": {"x": 0, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "a", "sourceHandle": "text", "target": "b", "targetHandle": "text"},
+            {"id": "e2", "source": "b", "sourceHandle": "out", "target": "ghost", "targetHandle": "in"},
+        ],
+    }
+    executor = WorkflowExecutor(wf)
+    with pytest.raises(ExecutionError, match="不存在的节点"):
+        executor._topological_sort()
+
+
 @pytest.mark.asyncio
 async def test_execute_text_passthrough():
     wf = _simple_workflow()

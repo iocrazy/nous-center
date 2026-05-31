@@ -150,8 +150,8 @@ def _build_request(data: dict, inputs: dict, *, stream: bool) -> TextRequest:
         request_id=str(uuid.uuid4()),
         messages=_build_messages(data, inputs),
         model=data.get("model", ""),
-        max_tokens=int(data.get("max_tokens", 2048)),
-        temperature=float(data.get("temperature", 0.7)),
+        max_tokens=int(data.get("max_tokens") or 2048),  # round5:空串 widget → 默认
+        temperature=float(data.get("temperature") or 0.7),
         stream=stream,
         enable_thinking=enable_thinking,
         api_key=data.get("api_key"),

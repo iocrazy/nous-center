@@ -146,8 +146,9 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
     seed = int(raw_seed) if raw_seed not in (None, "") else None
     return {"latent": {
         "_type": "flux2_latent", "model": model, "conditioning": cond,
-        "width": int(data.get("width", 1024)), "height": int(data.get("height", 1024)),
-        "steps": int(data.get("steps", 25)), "cfg_scale": float(data.get("cfg_scale", 4.0)),
+        # round5:空串 widget(default: "")→ 默认值,不 int("")/float("") 崩
+        "width": int(data.get("width") or 1024), "height": int(data.get("height") or 1024),
+        "steps": int(data.get("steps") or 25), "cfg_scale": float(data.get("cfg_scale") or 4.0),
         "sampler_name": data.get("sampler_name") or "euler",
         "scheduler": data.get("scheduler") or "normal",
         "seed": seed,
