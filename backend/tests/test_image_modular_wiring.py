@@ -471,3 +471,14 @@ def test_apply_loras_deletes_stale_on_switch():
     be._apply_loras([_lora('A')])
     pipe.delete_adapters.assert_called_once_with(['B'])
     assert be._loaded_loras == {'A'}
+
+
+def test_unload_resets_sched_key():
+    """round5:unload 复位 _sched_key,否则同实例 rebuild 后 _apply_scheduler 缓存早退
+    会漏装实际 scheduler。"""
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    be._sched_key = ("heun", "karras")  # 模拟上一轮装了非默认 scheduler
+    be._pipe = MagicMock(name="pipe")
+    be._model = be._pipe
+    be.unload()
+    assert be._sched_key == ("euler", "normal")

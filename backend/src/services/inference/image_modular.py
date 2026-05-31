@@ -327,6 +327,11 @@ class ModularImageBackend(InferenceAdapter):
         self._pipe = None
         self._model = None
         self._loaded_loras.clear()
+        # round5:复位 scheduler 缓存键。_apply_scheduler 用 _sched_key 做缓存早退不重装;
+        # unload 后同实例 rebuild 出的新 pipe 是参考库默认(normal sigmas),若 _sched_key
+        # 还停在上轮值,请求同 key 时会漏装实际 scheduler → 静默用错 sigma 调度出错图。
+        # 复位回 __init__ 的默认,使缓存键与新 pipe 的真实默认重新同步。
+        self._sched_key = ("euler", "normal")
         if pipe is not None:
             # 先卸 LoRA(peft adapter 也占显存);失败不该挡卸载主流程。
             try:
