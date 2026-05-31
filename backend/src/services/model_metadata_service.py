@@ -1,10 +1,12 @@
 """Fetch and cache model metadata from ModelScope / HuggingFace."""
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings, load_model_configs
@@ -108,16 +110,51 @@ async def fetch_and_store(session: AsyncSession, engine_key: str, cfg: dict) -> 
             meta = await _fetch_huggingface(client, hf_id)
 
     if meta is None:
+        # round9 BUG2:远端非 200 / 网络抖动返 None —— 不动 DB。
+        # 旧实现里 refresh_metadata 已先把好行删了再走到这,一次抖动 = 永久丢元数据。
+        # 现在 fetch 失败直接放手保留旧行(refresh 也不再预删)。
         return None
 
-    row = ModelMetadata(
-        engine_key=engine_key,
-        modelscope_id=ms_id,
-        hf_id=hf_id,
+    fields = {
+        "modelscope_id": ms_id,
+        "hf_id": hf_id,
+        "fetched_at": datetime.now(timezone.utc),
         **meta,
-    )
+    }
+    # round9 BUG3 upsert:fetch_and_store 旧实现恒 add(无 select-before-insert),
+    # 两个并发 /sync-metadata 都 add 同 engine_key → 第二个撞 unique → IntegrityError 500。
+    # 改 select→update,缺则 insert;insert 撞并发 unique 时 rollback 回退为 update。
+    existing = (
+        await session.execute(
+            select(ModelMetadata).where(ModelMetadata.engine_key == engine_key)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        for k, v in fields.items():
+            setattr(existing, k, v)
+        await session.commit()
+        await session.refresh(existing)
+        return existing
+
+    row = ModelMetadata(engine_key=engine_key, **fields)
     session.add(row)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 并发 insert 抢先了同 engine_key —— 回退取它再覆盖更新。
+        await session.rollback()
+        existing = (
+            await session.execute(
+                select(ModelMetadata).where(ModelMetadata.engine_key == engine_key)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        for k, v in fields.items():
+            setattr(existing, k, v)
+        await session.commit()
+        await session.refresh(existing)
+        return existing
     await session.refresh(row)
     return row
 
@@ -146,14 +183,8 @@ async def refresh_metadata(session: AsyncSession, engine_key: str) -> ModelMetad
     cfg = configs.get(engine_key)
     if not cfg:
         return None
-    # Delete existing
-    result = await session.execute(
-        select(ModelMetadata).where(ModelMetadata.engine_key == engine_key)
-    )
-    old = result.scalar_one_or_none()
-    if old:
-        await session.delete(old)
-        await session.commit()
+    # round9 BUG2:不再「先删后 fetch」—— fetch_and_store 现在是 upsert,
+    # fetch 成功才覆盖、失败返 None 保留旧行。网络抖动不会再清掉缓存。
     return await fetch_and_store(session, engine_key, cfg)
 
 
