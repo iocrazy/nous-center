@@ -155,8 +155,15 @@ class WorkflowExecutor:
             in_degree.setdefault(node["id"], 0)
 
         for edge in self.edges:
-            adj[edge["source"]].append(edge["target"])
-            in_degree[edge["target"]] += 1
+            s, t = edge["source"], edge["target"]
+            # round5:校验两端都在 node_map。早先对任意 target 都 in_degree += 1,即使该 id
+            # 不在 nodes(前端删节点没清对应 edge = 常见)→ 幽灵节点进 order 使 len(order)
+            # > len(nodes) → 末尾 `len(order) != len(nodes)` **误报「循环依赖」**(实为悬空边),
+            # 或 execute() 里 _node_map[ghost] KeyError。显式报可定位的错。
+            if s not in self._node_map or t not in self._node_map:
+                raise ExecutionError(f"边引用了不存在的节点: {s} → {t}(删节点后未清理连线?)")
+            adj[s].append(t)
+            in_degree[t] += 1
 
         queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
         order: list[str] = []
@@ -234,12 +241,16 @@ class WorkflowExecutor:
                 self._cur_stage_walk = None
                 self._active_stage_node = None
             except Exception as e:
+                # round5:dispatch 失败时优先把错落到真正失败的 stage 节点(如 text_encode/
+                # KSampler),而非 dispatch 终端(VAE Decode)—— 与第四轮修的「高亮走链」一致,
+                # 否则蓝边高亮在 Encode、红错却落 VAE。在重置 _active_stage_node 前捕获它。
+                err_node_id = self._active_stage_node or node_id
                 self._cur_stage_walk = None
                 self._active_stage_node = None
                 if self._on_progress:
                     await self._on_progress({
                         "type": "node_error",
-                        "node_id": node_id,
+                        "node_id": err_node_id,
                         "error": str(e),
                     })
                 raise ExecutionError(
@@ -530,7 +541,7 @@ class WorkflowExecutor:
             # PR-1d(vision lane):node_type=llm 且 inputs 含图/音 → stage="vision_inference"
             # (vllm OpenAI 兼容接口下,vision encode + 生成在 server 端不可分,所以共享 LLM
             # 路径,只换 stage 标识让前端 callout 用 vision 配色 + Vision 图标渲染)。
-            max_tokens = int(data.get("max_tokens", 2048))
+            max_tokens = int(data.get("max_tokens") or 2048)  # round5:空串 widget → 默认,不 int("") 崩
             from src.services.nodes.llm import _has_multimodal_input  # PR-1d:同模块的多模态探测
             stage = ("vision_inference"
                      if node_type == "llm" and _has_multimodal_input(inputs)
