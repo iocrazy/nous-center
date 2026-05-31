@@ -160,7 +160,18 @@ export default function NodeEditor() {
       }),
     )
   }, [rfNodes, setNodes])
-  useEffect(() => { setEdges(rfEdges) }, [rfEdges, setEdges])
+  // round5:跟节点同理(#237 修过节点、边漏了)——`setEdges(rfEdges)` 全量覆盖会把
+  // 用户单击高亮的边(onEdgeClick 写的 selected/accent style)在任意 store 更新(改字段
+  // → updateNode → rfEdges 重算)后冲回 muted 默认,边高亮「闪一下就没」。保留 selected/style。
+  useEffect(() => {
+    setEdges((prev) =>
+      rfEdges.map((rfe) => {
+        const existing = prev.find((p) => p.id === rfe.id)
+        if (!existing) return rfe
+        return { ...rfe, selected: existing.selected, ...(existing.style ? { style: existing.style } : {}) }
+      }),
+    )
+  }, [rfEdges, setEdges])
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -201,6 +212,9 @@ export default function NodeEditor() {
 
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
+      // round5:挡自连(自环)——拖到节点自己的同类型输入会建自环边,要等执行时
+      // topoSort 才报「循环依赖」;backend 执行路径前端更无守卫。提前挡掉。
+      if (connection.source === connection.target) return false
       const currentNodes = nodesRef.current
       const sourceNode = currentNodes.find((n) => n.id === connection.source)
       const targetNode = currentNodes.find((n) => n.id === connection.target)
