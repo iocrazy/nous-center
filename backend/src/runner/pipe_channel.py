@@ -26,6 +26,8 @@ from src.runner import protocol as P
 DEFAULT_WRITE_TIMEOUT = 5.0
 # 4-byte 长度前缀
 _LEN_PREFIX = struct.Struct(">I")
+# round6:单帧上限,防损坏长度前缀(如 0xFFFFFFFF=4GB)让 _buf 无界 buffer。
+_MAX_FRAME = 256 * 1024 * 1024
 
 
 class PipeWriteTimeout(Exception):
@@ -46,6 +48,13 @@ class _LengthPrefixedProtocol(asyncio.Protocol):
         self._buf.extend(data)
         while len(self._buf) >= _LEN_PREFIX.size:
             (body_len,) = _LEN_PREFIX.unpack_from(self._buf, 0)
+            if body_len > _MAX_FRAME:
+                # round6:损坏的长度前缀 → 当协议错误上报并停止解析(避免无界 buffer),
+                # 上层据此判 crash。
+                self._queue.put_nowait(_DecodeFailure(
+                    P.ProtocolError(f"frame size {body_len} > max {_MAX_FRAME}")))
+                self._buf.clear()
+                return
             if len(self._buf) < _LEN_PREFIX.size + body_len:
                 break  # frame 还没收全
             start = _LEN_PREFIX.size
@@ -168,6 +177,21 @@ class PipeChannel:
         while True:
             item = self._write_queue.get()
             if item is None:  # close 信号
+                # round6:收 None 后把队列里残余 frame 全部 fail+done.set 再退出。
+                # 否则 send_message 在「检查 _closed 通过」到「put frame」之间若 close()
+                # 抢先 put None,writer 取 None 直接 return → 那条 frame 永没人处理、
+                # done 永不 set → send_message 的 done.wait 卡满 write_timeout(5s)拖慢
+                # restart/stop。drain 让它们立刻拿到 ConnectionError。
+                while True:
+                    try:
+                        rest = self._write_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if rest is None:
+                        continue
+                    _b, rdone, rerr = rest
+                    rerr[0] = ConnectionError("channel closed")
+                    rdone.set()
                 return
             body, done, err_box = item
             try:

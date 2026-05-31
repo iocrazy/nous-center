@@ -88,3 +88,19 @@ async def test_concurrent_sends_are_serialized():
     finally:
         ch_a.close()
         ch_b.close()
+
+
+def test_length_prefixed_protocol_rejects_oversized_frame():
+    """round6:损坏/超大长度前缀 → 上报 _DecodeFailure 并停止解析,不无界 buffer。"""
+    import asyncio as _a
+    import struct
+    from src.runner.pipe_channel import _LengthPrefixedProtocol, _MAX_FRAME, _DecodeFailure
+
+    q: _a.Queue = _a.Queue()
+    proto = _LengthPrefixedProtocol(q, fmt="msgpack")
+    # 前缀声称比 _MAX_FRAME 大
+    proto.data_received(struct.pack(">I", _MAX_FRAME + 1))
+    assert q.qsize() == 1
+    assert isinstance(q.get_nowait(), _DecodeFailure)
+    # buffer 被清空,不残留
+    assert len(proto._buf) == 0
