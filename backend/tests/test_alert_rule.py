@@ -130,6 +130,22 @@ async def test_aggregate_rule_across_packs(db_session):
 
 
 @pytest.mark.asyncio
+async def test_aggregate_excludes_expired_packs(db_session):
+    """round3 #19:过期 pack 不计入聚合百分比(与 consume/peek 口径一致)。"""
+    grant, _ = await _seed(db_session, total=1000, used=100)  # 当前包 10%
+    # 过期大包:90% used,但已过期 → 不该被算进聚合(算了就是 (100+900)/2000=50%)。
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    db_session.add(ResourcePack(
+        grant_id=grant.id, name="expired", total_units=1000, used_units=900,
+        expires_at=past,
+    ))
+    db_session.add(AlertRule(grant_id=grant.id, threshold_percent=50))
+    await db_session.commit()
+    # 只算当前包 → 10% < 50% → 不 fire。误算过期包则会 fire。
+    assert await check_and_fire(db_session, grant_id=grant.id) == []
+
+
+@pytest.mark.asyncio
 async def test_no_packs_no_events(db_session):
     inst = ServiceInstance(
         source_type="model", source_name="x", name="svc", type="llm",
