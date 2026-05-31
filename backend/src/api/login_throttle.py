@@ -22,15 +22,29 @@ _STATE: dict[str, tuple[int, float, float]] = {}
 _MUTEX = threading.Lock()
 
 
+# 可信前置(cloudflared 跑在本机回环,经它进来的请求 socket peer 必是 loopback)。
+_TRUSTED_PEERS = {"127.0.0.1", "::1", "localhost"}
+
+
 def _client_ip(request) -> str:
-    h = request.headers
-    cf = h.get("cf-connecting-ip")
-    if cf:
-        return cf.strip()
-    xff = h.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """限流 IP:**只有当直连 socket peer 是可信前置**(cloudflared@loopback)时才采信
+    CF-Connecting-IP / X-Forwarded-For;否则用真实 peer。
+
+    round6 安全:早先无条件信转发头 → 直连 :8000(LAN/同机一定可达,且 systemd 默认
+    --host 0.0.0.0 无防火墙)的攻击者每请求带随机 CF-Connecting-IP,失败计数永远到不了
+    阈值、锁定形同虚设 → TOTP 6 位可无限爆破 = root。只在可信前置才信头,堵住该旁路。
+    (根因修法另含部署侧:backend 绑回 127.0.0.1 让 cloudflared 走 loopback,或加防火墙。)
+    """
+    peer = request.client.host if request.client else None
+    if peer in _TRUSTED_PEERS:
+        h = request.headers
+        cf = h.get("cf-connecting-ip")
+        if cf:
+            return cf.strip()
+        xff = h.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip()
+    return peer or "unknown"
 
 
 def _gc(now: float) -> None:
