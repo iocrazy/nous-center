@@ -25,6 +25,7 @@ import {
   type ExecutionTask,
 } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
+import { useTaskProgressStore } from '../../stores/taskProgress'
 import {
   ALL_TASK_STATUSES,
   usePanelStore,
@@ -492,11 +493,20 @@ function ClearQueueButton({ tasks }: { tasks: ExecutionTask[] }) {
 
 function RunningTaskCard({ task, now: _now }: { task: ExecutionTask; now: number }) {
   const cancel = useCancelTask()
-  // PR-E2/F2:对齐 ComfyUI「全部:N% / 节点:M%」+ live preview thumbnail。
-  const nodeProgress = useExecutionStore((s) => s.currentNodeProgress)
-  const nodeStep = useExecutionStore((s) => s.currentNodeStep)
-  const nodeType = useExecutionStore((s) => s.currentNodeType)
-  const previewUrl = useExecutionStore((s) => s.latestPreviewUrl)
+  // round3 #4:节点进度按 **task.id** 从 useTaskProgressStore 取(/ws/tasks `event:
+  // "progress"` 按 task 广播),不再读全局 useExecutionStore.currentNode* —— 后者只跟
+  // 用户最近一次 Run 挂钩,多任务并发时所有卡会显示同一进度(串台)。对齐 ActiveTaskRow。
+  const prog = useTaskProgressStore((s) => s.byTaskId.get(task.id))
+  const nodeProgress = prog?.progress ?? null
+  const nodeStep = prog?.step != null && prog.totalSteps != null
+    ? { done: prog.step, total: prog.totalSteps } : null
+  const nodeType = prog?.stage ?? null
+  // live preview 后端仍只全局广播(没按 task)→ 只在「这张卡就是 execution store 正在
+  // 跟踪的 task」时显示,避免把别的任务的预览图贴到所有卡上。后端按 task 广播 preview 后
+  // 可改为 per-task(见 round3 备注)。
+  const executionTaskId = useExecutionStore((s) => s.taskId)
+  const globalPreviewUrl = useExecutionStore((s) => s.latestPreviewUrl)
+  const previewUrl = executionTaskId === task.id ? globalPreviewUrl : null
 
   const isCancelled = task.status === 'cancelled'
   const elapsed = tickElapsed(task.created_at)
