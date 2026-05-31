@@ -126,7 +126,13 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     set({ nodeStates: {}, currentNodeId: null, currentNodeType: null }),
 
   toggleTaskPanel: () =>
-    set((s) => ({ taskPanelOpen: !s.taskPanelOpen })),
+    // round3 #6:打开面板时一并清掉「N 个新任务」徽章。早先只有 IconRail 入口清,
+    // topbar chip / 任务菜单 / queue overlay「查看全部」都只 toggle、不清 → 看了任务
+    // 徽章仍残留。收进 toggle → 所有入口统一受益(IconRail 旧的清除变冗余但无害)。
+    set((s) => ({
+      taskPanelOpen: !s.taskPanelOpen,
+      taskIconBadge: !s.taskPanelOpen ? 0 : s.taskIconBadge,
+    })),
 
   bumpTaskBadge: () => set((s) => ({ taskIconBadge: s.taskIconBadge + 1 })),
 

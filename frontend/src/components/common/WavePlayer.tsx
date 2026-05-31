@@ -94,11 +94,14 @@ export default function WavePlayer({ audioBase64, sampleRate, duration }: Props)
     const audio = audioRef.current
     if (!audio) return
     const handler = () => setCurrentTime(audio.currentTime)
+    // round3 #7:add/remove 必须同一函数引用,否则 removeEventListener 是 no-op
+    // (早先 'ended' 用了两个不同的内联箭头 → 实际没解绑)。
+    const onEnded = () => setPlaying(false)
     audio.addEventListener('timeupdate', handler)
-    audio.addEventListener('ended', () => setPlaying(false))
+    audio.addEventListener('ended', onEnded)
     return () => {
       audio.removeEventListener('timeupdate', handler)
-      audio.removeEventListener('ended', () => setPlaying(false))
+      audio.removeEventListener('ended', onEnded)
     }
   }, [])
 
