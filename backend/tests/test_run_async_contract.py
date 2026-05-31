@@ -144,6 +144,53 @@ async def test_execute_workflow_direct_enqueue_poll_result(async_client_with_db)
     assert final["nodes_done"] == 1
 
 
+@pytest.fixture
+async def snapshot_workflow_instance(async_client_with_db):
+    """v3 服务:执行图存在 deferred 列 workflow_snapshot(不是 legacy params_override)。
+    修复前 /run 读 params_override(空)→ 400;修复后读 snapshot → 202。"""
+    from src.models.instance_api_key import InstanceApiKey
+    from src.models.service_instance import ServiceInstance
+
+    session_factory = async_client_with_db.session_factory
+    raw = f"sk-snap-{_secrets.token_hex(8)}"
+    async with session_factory() as s:
+        inst = ServiceInstance(
+            source_type="workflow", source_name="snap-wf", name="v3 snapshot",
+            type="workflow", status="active",
+            params_override={},  # v3 不写这个
+            workflow_snapshot={
+                "nodes": [{"id": "t1", "type": "text_input",
+                           "data": {"text": "hi"}, "position": {"x": 0, "y": 0}}],
+                "edges": [],
+            },
+        )
+        s.add(inst)
+        await s.commit()
+        await s.refresh(inst)
+        key = InstanceApiKey(
+            instance_id=inst.id, label="t",
+            key_hash=bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode(),
+            key_prefix=raw[:10], is_active=True)
+        s.add(key)
+        await s.commit()
+    w = type("_W", (), {})()
+    w.instance_id = inst.id
+    w.raw_key = raw
+    return w
+
+
+@pytest.mark.asyncio
+async def test_instance_run_reads_workflow_snapshot(async_client_with_db, snapshot_workflow_instance):
+    """v3 服务(图在 workflow_snapshot)/run 应 202 —— 旧代码读 params_override 会 400(回归守卫)。"""
+    client = async_client_with_db
+    swi = snapshot_workflow_instance
+    resp = await client.post(
+        f"/v1/instances/{swi.instance_id}/run", json={"inputs": {}},
+        headers={"Authorization": f"Bearer {swi.raw_key}"})
+    assert resp.status_code == 202, resp.text
+    assert "task_id" in resp.json()
+
+
 @pytest.mark.asyncio
 async def test_instance_run_returns_202(async_client_with_db, published_workflow_instance):
     """POST /v1/instances/{id}/run → 202 + task_id。"""
