@@ -1,5 +1,6 @@
 """External instance service endpoints (Bearer Token auth required)."""
 
+import asyncio
 import base64
 import time
 from datetime import datetime, timezone
@@ -66,7 +67,9 @@ async def instance_synthesize(
 
     # Synthesize
     start = time.monotonic()
-    result = engine.synthesize(**kwargs)
+    # to_thread:engine.synthesize 是同步阻塞 CUDA 调用(in-process 引擎),直接 await
+    # 会卡死整个事件循环 —— 期间所有请求 / WS / runner ping 全停(round2 低)。
+    result = await asyncio.to_thread(engine.synthesize, **kwargs)
     elapsed = time.monotonic() - start
     rtf = round(elapsed / max(result.duration_seconds, 0.01), 4)
 
@@ -110,8 +113,6 @@ async def instance_run(
     返回 202 + task_id。客户端轮询 GET /api/v1/tasks/{task_id} 或订阅
     WS /ws/workflow/{instance_id} 拿结果。迁移指引见 docs/run-async-migration.md。
     """
-    import asyncio
-
     from src.models.execution_task import ExecutionTask
     from src.services.workflow_runner import run_workflow_task
 

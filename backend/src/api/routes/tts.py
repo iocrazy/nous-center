@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json as json_module
 import time
@@ -103,7 +104,8 @@ async def tts_synthesize(req: SynthesizeRequest):
     if req.emotion is not None:
         kwargs["emotion"] = req.emotion
 
-    result = engine.synthesize(**kwargs)
+    # to_thread:同步阻塞 CUDA 调用,直接 await 卡死事件循环(round2 低)。
+    result = await asyncio.to_thread(engine.synthesize, **kwargs)
     elapsed = time.monotonic() - start
     rtf = round(elapsed / max(result.duration_seconds, 0.01), 4)
     audio_b64 = base64.b64encode(result.audio_bytes).decode()
@@ -156,7 +158,8 @@ async def tts_stream(req: StreamRequest):
             if req.emotion is not None:
                 kwargs["emotion"] = req.emotion
 
-            result = engine.synthesize(**kwargs)
+            # to_thread:同步阻塞 CUDA 调用,直接 await 卡死事件循环(round2 低)。
+            result = await asyncio.to_thread(engine.synthesize, **kwargs)
             elapsed = time.monotonic() - start
             rtf = round(elapsed / max(result.duration_seconds, 0.01), 4)
 

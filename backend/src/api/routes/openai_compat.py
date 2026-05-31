@@ -425,7 +425,9 @@ async def create_speech(
         )
 
     try:
-        result = engine.synthesize(
+        # to_thread:同步阻塞 CUDA 调用,直接 await 卡死事件循环(round2 低)。
+        result = await asyncio.to_thread(
+            engine.synthesize,
             text=req.input,
             voice=req.voice,
             speed=req.speed,

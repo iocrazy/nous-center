@@ -1,5 +1,6 @@
 """WebSocket TTS session handler with connection-level reuse."""
 
+import asyncio
 import base64
 import json
 import time
@@ -66,7 +67,10 @@ async def handle_tts_websocket(websocket: WebSocket):
                     config = getattr(websocket.state, "session_config", {})
                     start = time.monotonic()
 
-                    result = engine.synthesize(
+                    # to_thread:同步阻塞 CUDA 调用,直接 await 卡死事件循环 → 这条 WS
+                    # 连接乃至全进程的所有请求/心跳全停(round2 低)。
+                    result = await asyncio.to_thread(
+                        engine.synthesize,
                         text=text,
                         voice=config.get("voice", "default"),
                         speed=config.get("speed", 1.0),
