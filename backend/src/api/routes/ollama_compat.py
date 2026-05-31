@@ -67,6 +67,12 @@ async def _resolve_model_instance(
         )
     except ModelNotFound as e:
         raise NotFoundError(str(e), code="model_not_found")
+    # round9:补 status 检查 —— resolve_target_service 只过滤 grant.status==active、不查
+    # ServiceInstance.status。openai_compat/anthropic_compat resolve 后都补了这个 403,
+    # ollama M:N 分支早先漏了 → admin 停用(inactive)某 service 但 grant 仍 active 时,
+    # M:N key 经 ollama 仍能命中出 token、经另两个表面则 403(授权/状态绕过不一致)。
+    if resolved.status != "active":
+        raise HTTPException(403, detail="Instance is inactive")
     # M:N key 在 auth 层没限流,解析出 instance 后补占坑(与 openai/anthropic 一致)。
     from src.api.deps_auth import enforce_instance_rate_limit
     await enforce_instance_rate_limit(resolved)

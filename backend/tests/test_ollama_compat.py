@@ -145,6 +145,24 @@ async def test_api_chat_unknown_model_returns_404_for_mn_key(
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_api_chat_inactive_service_403_for_mn_key(api_client, mock_vllm):
+    """round9:M:N key 命中 inactive service → 403(与 openai/anthropic 一致,早先 ollama 漏检查)。"""
+    sf = api_client.app.state.async_session_factory
+    raw_key, inst_id = await _make_mn_key(sf, instance_name="paused-svc")
+    # 把 service 置 inactive(grant 仍 active)
+    from sqlalchemy import update
+    async with sf() as s:
+        await s.execute(update(ServiceInstance).where(ServiceInstance.id == inst_id).values(status="inactive"))
+        await s.commit()
+    resp = await api_client.post(
+        "/api/chat",
+        json={"model": "paused-svc", "messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 403
+
+
 # ---------- /api/generate ----------
 
 
