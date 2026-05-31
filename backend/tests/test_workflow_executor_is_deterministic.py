@@ -47,3 +47,21 @@ async def test_empty_seed_not_deterministic():
     ex, client = _exec({"seed": ""})
     await ex._dispatch_node(ex._node_map["g"], {"seed": ""})
     assert client.spec.is_deterministic is False
+
+
+@pytest.mark.asyncio
+async def test_seed_nested_in_latent_sets_deterministic():
+    """round5:真实细粒度图形态 —— flux2_vae_decode 只有 vae+latent,seed 在
+    嵌套 latent["seed"](KSampler 塞的)。早先只看顶层 seed → L2 缓存永久失效。"""
+    ex, client = _exec({})
+    inputs = {"vae": "v", "latent": {"_type": "flux2_latent", "seed": 42, "steps": 25}}
+    await ex._dispatch_node(ex._node_map["g"], inputs)
+    assert client.spec.is_deterministic is True
+
+
+@pytest.mark.asyncio
+async def test_latent_without_seed_not_deterministic():
+    ex, client = _exec({})
+    inputs = {"vae": "v", "latent": {"_type": "flux2_latent", "steps": 25}}
+    await ex._dispatch_node(ex._node_map["g"], inputs)
+    assert client.spec.is_deterministic is False

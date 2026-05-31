@@ -374,7 +374,15 @@ class WorkflowExecutor:
         # 25/1024,但 loras / cfg_scale / seed 全丢。
         merged_inputs = {**{k: v for k, v in data.items() if not k.startswith("_")}, **inputs}
         # spec §3.3: seed 非空 ⇒ 确定性,runner / L2 cache 据此决定可缓存。
-        is_deterministic = merged_inputs.get("seed") not in (None, "")
+        # round5:细粒度图终端 flux2_vae_decode 只有 vae+latent 口,**没有顶层 seed** ——
+        # seed 是 KSampler widget、被 exec_ksampler 塞进嵌套 latent["seed"]。只看顶层
+        # 会让带固定 seed 的出图恒非确定性 → L2 输出缓存对唯一图像路径永久失效。两处都认。
+        def _has_seed(d: dict[str, Any]) -> bool:
+            if d.get("seed") not in (None, ""):
+                return True
+            latent = d.get("latent")
+            return isinstance(latent, dict) and latent.get("seed") not in (None, "")
+        is_deterministic = _has_seed(merged_inputs)
 
         spec = P.RunNode(
             task_id=task_id,
