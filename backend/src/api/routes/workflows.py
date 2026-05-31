@@ -1,5 +1,6 @@
 """Workflow CRUD routes."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -16,6 +17,9 @@ from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
+
+# round7:持有 fire-and-forget 后台执行 task 的强引用直到完成(防 GC,见 execute_workflow_direct)。
+_bg_tasks: set[asyncio.Task] = set()
 
 
 @router.post("", response_model=WorkflowOut, status_code=201, dependencies=[Depends(require_admin)])
@@ -176,9 +180,13 @@ async def execute_workflow_direct(
     runner_client = getattr(request.app.state, "runner_client", None)
     runner_clients = getattr(request.app.state, "runner_clients", None)
 
-    asyncio.create_task(run_workflow_task(
+    # round7:持强引用直到完成 —— CPython event loop 只持 task 弱引用,裸 create_task
+    # 的长任务可能在执行中途被 GC 静默丢弃(工作流卡 queued、无 WS complete)。同 #236。
+    _t = asyncio.create_task(run_workflow_task(
         task.id, {"nodes": nodes, "edges": edges},
         runner_client=runner_client, runner_clients=runner_clients,
         channel_id=channel_id,
     ))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
     return {"task_id": str(task.id), "status": "queued", "channel_id": channel_id}
