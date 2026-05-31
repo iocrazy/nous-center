@@ -121,6 +121,16 @@ async def run_workflow_task(
         try:
             result = await executor.execute()
             elapsed = int((time.monotonic() - start) * 1000)
+            # round2 #cancel-race:HTTP cancel 路径可能在 execute() 期间把 status 写成
+            # cancelled。executor 没感知取消而正常跑完时,success 路径若直接覆盖成
+            # completed 会丢掉用户的取消意图(跟下面 except 路径的 PR-3 guard 对称)。
+            await session.refresh(task)
+            if task.status == "cancelled":
+                task.duration_ms = elapsed
+                await session.commit()
+                logger.info("workflow %s completed after cancel — honoring cancelled", task_id)
+                await _broadcast_task_status(task, event="updated")
+                return
             task.status = "completed"
             task.result = result
             task.duration_ms = elapsed
