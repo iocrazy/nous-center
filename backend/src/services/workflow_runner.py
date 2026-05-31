@@ -26,11 +26,26 @@ async def _broadcast(channel_id: str | None, event: dict) -> None:
         return
     from src.api.main import _ws_connections
 
-    for ws in list(_ws_connections.get(channel_id, [])):
+    sockets = _ws_connections.get(channel_id)
+    if not sockets:
+        return
+    # 非干净断开(网络 reset / 进程杀)的客户端不抛 WebSocketDisconnect,endpoint 的 remove
+    # 不执行 → 死连接永久驻留,每次广播重试 + 刷 warning(round2 #6)。send 失败即剔除,
+    # 桶空删 key,防连接对象 + channel_id 双重泄漏。
+    dead = []
+    for ws in list(sockets):
         try:
             await ws.send_json(event)
         except Exception as e:  # noqa: BLE001 — WS 推送失败静默吞（spec §4.1）
-            logger.warning("workflow_runner broadcast failed: %s", e)
+            logger.warning("workflow_runner broadcast failed,剔除死连接: %s", e)
+            dead.append(ws)
+    for ws in dead:
+        try:
+            sockets.remove(ws)
+        except ValueError:
+            pass
+    if not sockets:
+        _ws_connections.pop(channel_id, None)
 
 
 async def _broadcast_task_status(task: ExecutionTask, event: str = "updated") -> None:
