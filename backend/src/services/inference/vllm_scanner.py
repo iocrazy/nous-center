@@ -56,7 +56,11 @@ def scan_running_vllm() -> list[dict]:
     for c in candidates:
         healthy = False
         try:
-            resp = httpx.get(f"http://localhost:{c['port']}/v1/models", timeout=3)
+            # trust_env=False:localhost 探活别经本机代理(round3 #2;否则代理拦截 →
+            # 每个在跑的实例都被误判 unhealthy,orphan adopt/reconnect 永不匹配)。
+            resp = httpx.get(
+                f"http://localhost:{c['port']}/v1/models", timeout=3, trust_env=False
+            )
             healthy = resp.status_code == 200
         except Exception:
             pass

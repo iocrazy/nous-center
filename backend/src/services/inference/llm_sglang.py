@@ -11,8 +11,10 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
+from collections import deque
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -70,8 +72,15 @@ class SGLangAdapter(InferenceAdapter):
         self._process: subprocess.Popen | None = None
         self._adopt_pid = adopt_pid
         self._adopted_pid: int | None = None
-        self._client = httpx.AsyncClient(timeout=120, limits=httpx.Limits(max_connections=10), proxy=None)
+        # trust_env=False:只连本地 SGLang 子进程;proxy=None 不够(env proxy 在请求期
+        # 解析),trust_env=False 才彻底绕开本机代理(round3 #2,与 vLLM adapter 取齐)。
+        self._client = httpx.AsyncClient(
+            timeout=120, limits=httpx.Limits(max_connections=10), trust_env=False
+        )
         self._managed = True
+        # round3 #1:后台抽干 stdout 防 PIPE 填满死锁(同 vLLM adapter)。
+        self._stdout_tail: deque[str] = deque(maxlen=200)
+        self._drain_thread: threading.Thread | None = None
 
     def _auto_configure(self, device: str | None) -> dict:
         """Auto-calculate SGLang launch parameters based on model and GPU state."""
@@ -246,6 +255,12 @@ class SGLangAdapter(InferenceAdapter):
             start_new_session=True,
         )
         self._managed = True
+        # 启动后台抽干线程(daemon),防 stdout PIPE 填满死锁。
+        self._stdout_tail.clear()
+        self._drain_thread = threading.Thread(
+            target=self._drain_stdout, name=f"sglang-stdout-{self._port}", daemon=True
+        )
+        self._drain_thread.start()
 
         # Wait for SGLang to become healthy
         start = time.monotonic()
@@ -254,7 +269,10 @@ class SGLangAdapter(InferenceAdapter):
         try:
             while time.monotonic() - start < timeout:
                 if self._process.poll() is not None:
-                    output = self._process.stdout.read() if self._process.stdout else ""
+                    # 等抽干线程收尾后取尾部日志(stdout 已被 drain 线程消费)。
+                    if self._drain_thread is not None:
+                        self._drain_thread.join(timeout=1.0)
+                    output = "".join(self._stdout_tail)
                     logger.error("SGLang process exited with code %d", self._process.returncode)
                     logger.error("SGLang output (last 500 chars): %s", output[-500:])
                     self._kill_process()
@@ -289,6 +307,17 @@ class SGLangAdapter(InferenceAdapter):
         else:
             logger.info("Disconnecting from external SGLang at %s", self._base_url)
         self._model = None
+
+    def _drain_stdout(self) -> None:
+        """后台线程:持续读子进程 stdout 进有界 deque,防 PIPE 填满阻塞(同 vLLM adapter)。"""
+        proc = self._process
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            for line in proc.stdout:
+                self._stdout_tail.append(line)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _kill_process(self) -> None:
         import signal
