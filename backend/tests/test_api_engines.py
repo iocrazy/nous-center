@@ -84,6 +84,22 @@ async def test_unload_non_loaded_engine(client):
     assert resp.status_code == 200
 
 
+async def test_unload_clears_stale_failed_state(client):
+    """round9 BUG4:load 失败残留的 'failed' 状态,unload 后必须清掉,
+    否则 _build_engine_info 里它优先级高于 loaded/unloaded → GET /engines 永远显 failed。"""
+    from src.api.routes import engines as engines_route
+
+    mock_mgr = client._transport.app.state.model_manager
+    mock_mgr.unload_model = AsyncMock()
+    engines_route._loading_states["qwen3_tts_base"] = {
+        "status": "failed", "detail": "boom",
+    }
+
+    resp = await client.post("/api/v1/engines/qwen3_tts_base/unload")
+    assert resp.status_code == 200
+    assert "qwen3_tts_base" not in engines_route._loading_states
+
+
 async def test_load_rejects_engine_without_adapter(client, monkeypatch):
     """Auto-detected diffusers (no adapter) must 422 with a config hint
     instead of starting a background task that ValueErrors. Pre-fix the

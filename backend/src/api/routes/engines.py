@@ -316,6 +316,12 @@ async def unload_engine(name: str, request: Request, force: bool = False):
     model_mgr = request.app.state.model_manager
     await model_mgr.unload_model(name, force=force)
 
+    # round9 BUG4:清掉残留的 loading/failed 状态。_build_engine_info 里
+    # _loading_states 优先级高于 loaded/unloaded —— load 失败写了 {"status":"failed"}
+    # 后从不被清(unload 旧实现不 pop),GET /engines 会永远显示 "failed",哪怕重新
+    # unload 也甩不掉。卸载即代表该 engine 回到干净 unloaded 态,这里 pop 掉。
+    _loading_states.pop(name, None)
+
     invalidate("engines")
     return EngineLoadResponse(name=name, status="unloaded")
 
