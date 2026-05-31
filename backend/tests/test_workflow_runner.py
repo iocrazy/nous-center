@@ -13,7 +13,7 @@ async def test_run_workflow_task_marks_completed(db_session, monkeypatch):
     from sqlalchemy.ext.asyncio import async_sessionmaker
     bind = db_session.bind
     test_factory = async_sessionmaker(bind, expire_on_commit=False)
-    monkeypatch.setattr(workflow_runner, "create_session_factory",
+    monkeypatch.setattr(workflow_runner, "get_session_factory",
                         lambda: test_factory)
 
     task = ExecutionTask(workflow_name="t", status="queued", nodes_total=1)
@@ -43,7 +43,7 @@ async def test_run_workflow_task_marks_failed_on_error(db_session, monkeypatch):
     from sqlalchemy.ext.asyncio import async_sessionmaker
     bind = db_session.bind
     test_factory = async_sessionmaker(bind, expire_on_commit=False)
-    monkeypatch.setattr(workflow_runner, "create_session_factory",
+    monkeypatch.setattr(workflow_runner, "get_session_factory",
                         lambda: test_factory)
 
     task = ExecutionTask(workflow_name="t", status="queued", nodes_total=1)

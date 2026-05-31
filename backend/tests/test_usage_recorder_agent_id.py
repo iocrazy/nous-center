@@ -25,7 +25,7 @@ async def _setup_engine(tmp_path):
 
 async def test_record_llm_usage_writes_agent_id(tmp_path, monkeypatch):
     engine, sf = await _setup_engine(tmp_path)
-    monkeypatch.setattr(usage_service, "create_session_factory", lambda: sf)
+    monkeypatch.setattr(usage_service, "get_session_factory", lambda: sf)
     try:
         await record_llm_usage(
             model="qwen3.5",
@@ -43,7 +43,7 @@ async def test_record_llm_usage_writes_agent_id(tmp_path, monkeypatch):
 async def test_record_llm_usage_agent_id_optional(tmp_path, monkeypatch):
     """Omitting agent_id should write NULL."""
     engine, sf = await _setup_engine(tmp_path)
-    monkeypatch.setattr(usage_service, "create_session_factory", lambda: sf)
+    monkeypatch.setattr(usage_service, "get_session_factory", lambda: sf)
     try:
         await record_llm_usage(
             model="qwen3.5",

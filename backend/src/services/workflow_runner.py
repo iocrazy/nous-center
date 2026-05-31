@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any
 
-from src.models.database import create_session_factory
+from src.models.database import get_session_factory
 from src.models.execution_task import ExecutionTask
 from src.services.workflow_executor import ExecutionError, WorkflowExecutor
 
@@ -91,7 +91,7 @@ async def run_workflow_task(
         await _broadcast(channel_id, event)
 
     # 先取 workflow_name 给 executor → RunnerClient.run_node 用做 current_task 显示。
-    session_factory = create_session_factory()
+    session_factory = get_session_factory()
     async with session_factory() as session:
         task = await session.get(ExecutionTask, task_id)
         if task is None:
