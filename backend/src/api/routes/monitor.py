@@ -246,8 +246,10 @@ async def get_system_stats(request: Request):
                     gpu_idx = None
         if isinstance(gpu_idx, int):
             # Find the GPU in our list and add the model
+            matched = False
             for g in gpus:
                 if g["index"] == gpu_idx:
+                    matched = True
                     if "loaded_models" not in g:
                         g["loaded_models"] = []
                     g["loaded_models"].append({
@@ -255,6 +257,13 @@ async def get_system_stats(request: Request):
                         "type": cfg.get("type", ""),
                         "vram_gb": cfg.get("vram_gb", 0),
                     })
+            if not matched:
+                # gpu_idx 越界(如 yaml 写 cuda:3 但只有 0/1/2)—— 旧逻辑静默丢,模型从
+                # 系统状态「已加载」凭空消失。改成 warning(不再静默),便于发现配置错。
+                logger.warning(
+                    "monitor: 已加载模型 %r 的 gpu=%s 不在检测到的 GPU 列表 → 系统状态漏显示(查 yaml/配置)",
+                    model_key, gpu_idx,
+                )
 
     # runner 子进程里加载的 image/tts adapter —— 主进程 _models 看不到它们,从各
     # supervisor 经 Pong 上报的快照聚合补进 GPU 的 loaded_models(否则系统状态恒「0」)。
