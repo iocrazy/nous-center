@@ -39,8 +39,9 @@ class VoxCPM2Engine(TTSEngine):
         logger.info("VoxCPM2 loaded (sample_rate=%d)", self._voxcpm.tts_model.sample_rate)
 
     def unload(self) -> None:
+        # round8:模型在 _voxcpm,先清它再走 base.unload 拿 gc + empty_cache(真释放显存)。
         self._voxcpm = None
-        self._model = None
+        super().unload()
 
     def synthesize(
         self,
