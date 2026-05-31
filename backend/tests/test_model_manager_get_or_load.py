@@ -115,6 +115,38 @@ async def test_get_or_load_oom_evicts_then_retries_once():
 
 
 @pytest.mark.asyncio
+async def test_oom_evicts_auto_selected_card_not_global_lru():
+    """round3 #2:自动分配(spec.gpu=None)OOM 时,驱逐 load_model 实际落的那张卡,
+    而不是退成 evict_lru(None) 驱全局 LRU(可能驱了另一张没满的卡)。"""
+    class _AllocTo2:
+        def get_best_gpu(self, vram_mb):
+            return 2  # 自动分配落 cuda:2
+
+    reg = _StubRegistry([
+        ModelSpec(id="v0", model_type="image",
+                  adapter_class="tests.test_model_manager_get_or_load._StubAdapter",
+                  paths={"main": "/fake/v0"}, vram_mb=1024, gpu=0),
+        ModelSpec(id="v2", model_type="image",
+                  adapter_class="tests.test_model_manager_get_or_load._StubAdapter",
+                  paths={"main": "/fake/v2"}, vram_mb=1024, gpu=2),
+        _spec("newm"),  # gpu=None → 自动分配
+    ])
+    mm = ModelManager(registry=reg, allocator=_AllocTo2())
+    # v0 落 cuda:0(全局最老 LRU),v2 落 cuda:2
+    await mm.load_model("v0", adapter_factory=lambda s: _StubAdapter(paths=s.paths))
+    await mm.load_model("v2", adapter_factory=lambda s: _StubAdapter(paths=s.paths))
+
+    # newm 自动落 cuda:2、首次 OOM → 应驱逐 cuda:2 上的 v2(同卡),不动 cuda:0 的 v0。
+    newm = _StubAdapter(paths={"main": "/fake/newm"}, oom_loads=1)
+    await mm.get_or_load("newm", adapter_factory=lambda s: newm)
+
+    assert "v2" not in mm.loaded_model_ids   # 与 OOM 同卡 → 被驱逐
+    assert "v0" in mm.loaded_model_ids        # 另一张卡 → 不受影响(老 bug 会误驱它)
+    assert "newm" in mm.loaded_model_ids
+    assert mm._last_attempt_gpu["newm"] == 2
+
+
+@pytest.mark.asyncio
 async def test_get_or_load_second_oom_records_load_failure():
     """evict 后重试仍 OOM → 落 _load_failures + raise ModelLoadError。"""
     mm = _mm([_spec("m3")])
