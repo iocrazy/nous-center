@@ -420,3 +420,29 @@ def test_wants_fp8_detects_fp8_dtypes():
     assert not image_modular._wants_fp8("float16")
     assert not image_modular._wants_fp8("")
     assert not image_modular._wants_fp8(None)
+
+
+def test_unload_clears_pipe_and_loras():
+    """round3 #3:unload 必须拆 _pipe/_model + 清 lora,否则换模型时 GPU 显存不降。"""
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    pipe = MagicMock(name="pipe")
+    be._pipe = pipe
+    be._model = pipe
+    be._loaded_loras.add("some-lora")
+    assert be.is_loaded
+
+    be.unload()
+
+    assert be._pipe is None
+    assert be._model is None
+    assert not be.is_loaded  # _model is None
+    assert be._loaded_loras == set()
+    pipe.unload_lora_weights.assert_called_once()
+
+
+def test_unload_is_idempotent_and_safe_when_never_loaded():
+    """从没 _ensure_pipe 过(_pipe=None)时 unload 不该崩。"""
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    be.unload()  # no raise
+    be.unload()  # 再次也安全
+    assert be._pipe is None

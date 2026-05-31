@@ -62,6 +62,22 @@ class AnimaImageBackend(InferenceAdapter):
         """对齐 ABC;实际 pipeline 构建在首次 infer 时 lazy(_ensure_pipe)。"""
         self.device = device
 
+    def unload(self) -> None:
+        """释放 GPU pipeline —— 见 ModularImageBackend.unload 注释(round3 #3)。
+
+        base.unload 只 `_model=None`,但 anima 还把 `_model=_pipe` 互引用、`_pipe`
+        持 DiT+Qwen+VAE(1024 出图 9.4 GiB),不显式拆 + empty_cache 显存不降。
+        """
+        self._pipe = None
+        self._model = None
+        try:
+            import gc  # noqa: PLC0415
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
     def _ensure_pipe(self) -> Any:
         if self._pipe is not None:
             return self._pipe
