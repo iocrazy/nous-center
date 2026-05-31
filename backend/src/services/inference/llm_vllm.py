@@ -210,6 +210,11 @@ class VLLMAdapter(InferenceAdapter):
         # First check if vLLM is already running on this port
         if self._base_url and await self._health_check():
             self._model = True
+            # 回填 max_model_len(关键):快速返回路径(重连存活 vLLM / adopt orphan)若不设,
+            # _clamp_max_tokens 退回 4096 → backend 重启重连后长输出被静默砍到 ~3.5k。优先用
+            # yaml 配的 _max_model_len,否则从运行中 vLLM 的 /v1/models 读。
+            self.max_model_len = (
+                self._max_model_len or await self._fetch_remote_max_model_len() or 4096)
             if self._adopt_pid:
                 # Adopt orphan process — we manage its lifecycle
                 self._managed = True
@@ -397,6 +402,21 @@ class VLLMAdapter(InferenceAdapter):
             return resp.status_code == 200
         except Exception:
             return False
+
+    async def _fetch_remote_max_model_len(self) -> int | None:
+        """从运行中 vLLM 的 /v1/models 读 max_model_len(model card 暴露)。重连/adopt 时
+        yaml 没配 _max_model_len 的兜底来源。失败/字段缺 → None(再退 4096)。"""
+        try:
+            resp = await self._client.get(f"{self._base_url}/v1/models", timeout=3)
+            if resp.status_code != 200:
+                return None
+            for m in (resp.json().get("data") or []):
+                v = m.get("max_model_len")
+                if isinstance(v, int) and v > 0:
+                    return v
+        except Exception:  # noqa: BLE001 — best-effort
+            return None
+        return None
 
     def _validate_base_url(self) -> None:
         """vLLM only on localhost (defense-in-depth — admin-controlled config)."""
