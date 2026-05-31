@@ -447,6 +447,17 @@ class ModularImageBackend(InferenceAdapter):
                 raise ValueError(
                     f"LoRA {spec.name!r} 零匹配(键不符 {type(pipe).__name__})—— 用对架构的 LoRA")
             self._loaded_loras.add(spec.name)
+        # round3 #6:删掉本次请求里不再包含的旧 LoRA。set_adapters 只是停用、不释放权重 →
+        # 一个 adapter 生命周期内,用户每换一个 LoRA 旧的都常驻 pipe(显存累积)。这里把
+        # 已装但本次没要的删掉,使 pipe 的 LoRA 集合收敛到当前请求。
+        requested = {s.name for s in loras}
+        stale = self._loaded_loras - requested
+        if stale and hasattr(pipe, "delete_adapters"):
+            try:
+                pipe.delete_adapters(list(stale))
+            except Exception:  # noqa: BLE001 — 删 LoRA 失败不该挡出图
+                pass
+            self._loaded_loras -= stale
         pipe.set_adapters([s.name for s in loras], adapter_weights=[s.strength for s in loras])
 
     def _apply_scheduler(self, pipe: Any, sampler_name: str, scheduler: str) -> None:

@@ -446,3 +446,28 @@ def test_unload_is_idempotent_and_safe_when_never_loaded():
     be.unload()  # no raise
     be.unload()  # 再次也安全
     assert be._pipe is None
+
+
+def test_apply_loras_deletes_stale_on_switch():
+    """round3 #6:切换 LoRA 时删掉不再请求的旧 LoRA(set_adapters 只停用、不释放)。"""
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+    pipe = MagicMock(name="pipe")
+    pipe.get_active_adapters.return_value = ['A', 'B']
+    pipe.peft_config = {}
+    be._pipe = pipe
+
+    def _lora(name):
+        s = MagicMock()
+        s.name = name
+        s.path = f"/l/{name}.bin"  # 非 .safetensors → 跳过 comfy convert 分支
+        s.strength = 1.0
+        return s
+
+    be._apply_loras([_lora('A'), _lora('B')])
+    assert be._loaded_loras == {'A', 'B'}
+    pipe.delete_adapters.assert_not_called()  # 首次无 stale
+
+    # 只请求 A → B 应被删除
+    be._apply_loras([_lora('A')])
+    pipe.delete_adapters.assert_called_once_with(['B'])
+    assert be._loaded_loras == {'A'}
