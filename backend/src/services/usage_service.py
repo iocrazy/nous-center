@@ -12,6 +12,14 @@ from src.models.database import get_session_factory
 logger = logging.getLogger(__name__)
 
 
+def _iso_bucket(b) -> str | None:
+    """时间分桶 → ISO 字符串。PG date_trunc 返 datetime(.isoformat());SQLite strftime
+    返字符串(原样返回)。None-safe(round4 #4)。"""
+    if b is None:
+        return None
+    return b.isoformat() if hasattr(b, "isoformat") else str(b)
+
+
 async def record_llm_usage(
     model: str,
     prompt_tokens: int,
@@ -180,10 +188,15 @@ async def get_inference_usage(
         raise ValueError("group_by must be Model|Instance|ApiKey")
     gcol = group_col_map[group_by]
 
-    bucket = func.date_trunc(interval, LLMUsage.created_at).label("bucket")
-
     sf = get_session_factory()
     async with sf() as session:
+        # round4 #4:按方言选时间分桶 —— 早先无条件 date_trunc(PG-only),SQLite 部署/测试
+        # 调本接口直接 500。对齐 routes/usage.py 的 _is_postgres 分支。
+        if session.bind.dialect.name == "postgresql":  # type: ignore[union-attr]
+            bucket = func.date_trunc(interval, LLMUsage.created_at).label("bucket")
+        else:
+            _fmt = "%Y-%m-%d" if interval == "day" else "%Y-%m-%d %H:00:00"
+            bucket = func.strftime(_fmt, LLMUsage.created_at).label("bucket")
         stmt = (
             select(
                 bucket,
@@ -217,7 +230,7 @@ async def get_inference_usage(
             ],
             "Data": [
                 [
-                    r.bucket.isoformat() if r.bucket else None,
+                    _iso_bucket(r.bucket),
                     str(r.group_key) if r.group_key is not None else None,
                     int(r.input_tokens),
                     int(r.output_tokens),
@@ -234,7 +247,7 @@ async def get_inference_usage(
         "end": end.isoformat(),
         "data": [
             {
-                time_field.lower(): r.bucket.isoformat() if r.bucket else None,
+                time_field.lower(): _iso_bucket(r.bucket),
                 group_field.lower(): r.group_key,
                 "input_tokens": int(r.input_tokens),
                 "output_tokens": int(r.output_tokens),
