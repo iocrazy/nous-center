@@ -39,6 +39,11 @@ def image_l2_key(node, req) -> str:
         "h": req.height,
         "cfg": req.cfg_scale,
         "seed": req.seed,
+        # round6:sampler_name(scheduler 类)/ scheduler(sigma 调度)经 _apply_scheduler
+        # 改去噪轨迹 → 出不同像素,但早先漏进 key → 只改采样器二跑会**错命中**上次采样器的
+        # 旧图(silent wrong-hit)。采样控制 arc(PR-2)引入这两字段后没同步进 L2 key 的回归。
+        "sampler": getattr(req, "sampler_name", "euler"),
+        "scheduler": getattr(req, "scheduler", "normal"),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
