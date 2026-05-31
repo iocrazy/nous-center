@@ -12,6 +12,9 @@ CPU 跑约 5-10s(小配置,1 block)。CI 跑不了真 forward(conftest mock torc
 """
 from __future__ import annotations
 
+
+import os
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")  # standalone:cuda:1=Pro 6000,对齐 nvidia-smi(torch 默认 FASTEST_FIRST 会翻卡)
 import sys
 from pathlib import Path
 
