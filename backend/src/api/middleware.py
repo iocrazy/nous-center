@@ -70,11 +70,19 @@ class AuditMiddleware(BaseHTTPMiddleware):
     """Captures admin operations for audit trail."""
 
     async def dispatch(self, request: Request, call_next):
-        # Only audit requests with admin token
-        has_admin_token = "authorization" in request.headers or "x-admin-token" in request.headers
+        # 审计判定:bearer/x-admin-token header **或** 浏览器 admin session cookie。
+        # 旧逻辑只看 header → 生产里 admin 走 nous_admin_session cookie 登录,所有经 Web UI
+        # 的变更操作(load/unload engine、create/delete workflow、publish、删 key 等)全不进
+        # 审计,只剩 CLI/bearer 调用,与「admin operations audit trail」意图矛盾(round2 #5)。
+        from src.api.admin_session import request_is_authed  # noqa: PLC0415
+        is_admin_request = (
+            "authorization" in request.headers
+            or "x-admin-token" in request.headers
+            or request_is_authed(request)
+        )
         path = request.url.path
 
-        if has_admin_token and not path.startswith("/api/v1/logs/"):
+        if is_admin_request and not path.startswith("/api/v1/logs/"):
             # Read body for detail (cache it for downstream)
             body = b""
             try:
