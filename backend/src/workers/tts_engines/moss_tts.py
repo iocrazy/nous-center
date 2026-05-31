@@ -72,6 +72,12 @@ class MOSSTTSEngine(TTSEngine):
             attn_impl, self._processor.model_config.sampling_rate,
         )
 
+    def unload(self) -> None:
+        # round8:_processor.audio_tokenizer 也在 GPU(load_sync .to(device)),base unload
+        # 只清 _model 会漏它。先清 _processor 再 super().unload()(拿 gc + empty_cache)。
+        self._processor = None
+        super().unload()
+
     def synthesize(
         self,
         text: str,

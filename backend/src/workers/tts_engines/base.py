@@ -178,7 +178,19 @@ class TTSEngine(InferenceAdapter):
         )
 
     def unload(self) -> None:
+        # round8:同 #234(image adapter)—— 只置 _model=None 不够,CUDA caching allocator
+        # 仍持 GPU 块、监控显示占用、同卡再装可能 OOM。显式 gc + empty_cache 让显存真降。
+        # 有额外 GPU 属性的引擎(moss _processor / voxcpm _voxcpm)override 先清自己的再 super。
         self._model = None
+        try:
+            import gc  # noqa: PLC0415
+
+            import torch  # noqa: PLC0415
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 — 清缓存 best-effort,不可因它崩卸载
+            pass
 
     @property
     @abstractmethod
