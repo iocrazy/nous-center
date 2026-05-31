@@ -22,7 +22,9 @@ class InstanceApiKey(Base):
     )
     label = Column(String(100), nullable=False)
     key_hash = Column(String(200), nullable=False)
-    key_prefix = Column(String(20), nullable=False)
+    # round4 #5:加索引 —— 全局 bearer 鉴权(verify_bearer_token/_any)按 key_prefix
+    # 查、不带 instance_id 过滤,无索引则每次 API 调用全表扫 + Python bcrypt 循环。
+    key_prefix = Column(String(20), nullable=False, index=True)
     # m10: always-visible mode (Aliyun Bailian style). Stored alongside
     # key_hash so existing bcrypt verification still works for keys with no
     # plaintext (legacy or rotated). UI gates "view" on its presence.

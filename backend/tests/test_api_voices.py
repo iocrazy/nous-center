@@ -60,3 +60,12 @@ async def test_create_and_list_groups(db_client):
     # Delete
     resp = await client.delete(f"/api/v1/voices/groups/{group_id}")
     assert resp.status_code == 204
+
+
+async def test_create_duplicate_preset_name_returns_409(db_client):
+    """round4 #7:重名 voice preset → 409(name unique 冲突),不是未捕获 500。"""
+    body = {"name": "dup-voice", "engine": "cosyvoice2", "params": {"voice": "default"}}
+    r1 = await db_client.post("/api/v1/voices", json=body)
+    assert r1.status_code == 201
+    r2 = await db_client.post("/api/v1/voices", json=body)
+    assert r2.status_code == 409

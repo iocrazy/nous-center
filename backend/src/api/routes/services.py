@@ -23,6 +23,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_serializer, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
@@ -275,7 +276,13 @@ async def quick_provision(
     await session.flush()
 
     workflow.generated_for_service_id = svc.id
-    await session.commit()
+    # round4 #6:名字唯一性预检(上面 line 224)是 TOCTOU —— 并发同名两个请求都过预检,
+    # 第二个 commit 抛 IntegrityError。早先无 try/except → 500。捕获 → 409,与预检口径一致。
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, detail=f"service name '{body.name}' already exists")
     # Force-load deferred columns before serializing — pydantic from_attributes
     # would otherwise trigger sync lazy load inside an async context.
     await session.refresh(
