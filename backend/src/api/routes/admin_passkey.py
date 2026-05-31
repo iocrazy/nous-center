@@ -26,6 +26,7 @@ Other deliberate departures:
 from __future__ import annotations
 
 import base64
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -59,6 +60,7 @@ from src.models.admin_credentials import WebauthnCredential
 from src.models.database import get_async_session
 
 router = APIRouter(prefix="/sys/admin/passkey", tags=["admin-passkey"])
+logger = logging.getLogger(__name__)
 
 # Single-admin user handle. Stable across all passkey registrations so platform
 # authenticators (iCloud Keychain, 1Password) treat them as ONE user with
@@ -227,7 +229,9 @@ async def register_finish(
             require_user_verification=False,
         )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"verification failed: {exc}") from exc
+        # round6:别把内部异常串回给调用方;固定文案 + 服务端 log。
+        logger.warning("passkey register verification failed: %s", exc)
+        raise HTTPException(status_code=400, detail="verification failed") from exc
 
     transports = body.credential.get("response", {}).get("transports") or []
     cred = WebauthnCredential(
@@ -323,7 +327,9 @@ async def login_finish(
             require_user_verification=False,
         )
     except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"verification failed: {exc}") from exc
+        # round6:login/finish 是 open 端点 —— 别把库异常串回匿名调用方;固定文案 + log。
+        logger.warning("passkey login verification failed: %s", exc)
+        raise HTTPException(status_code=401, detail="verification failed") from exc
 
     # Replay defense: only update sign_count if it advanced (or is 0 — some
     # platform authenticators always return 0 by spec).
