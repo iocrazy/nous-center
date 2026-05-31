@@ -41,12 +41,23 @@ def test_per_ip_independent():
 
 
 def test_keys_on_real_client_ip_behind_tunnel():
-    """cloudflared 后:按 CF-Connecting-IP(真实攻击者)计数,不是隧道 IP。"""
+    """cloudflared(本机回环 peer)后:按 CF-Connecting-IP(真实攻击者)计数,不是隧道 IP。"""
     _fresh()
-    attacker = _Req("tunnel-ip", headers={"cf-connecting-ip": "6.6.6.6"})
+    attacker = _Req("127.0.0.1", headers={"cf-connecting-ip": "6.6.6.6"})
     for _ in range(lt._MAX_FAILS):
         lt.record_failure(attacker)
-    # 同隧道 IP、不同真实 IP 的合法用户不被连带锁
-    legit = _Req("tunnel-ip", headers={"cf-connecting-ip": "7.7.7.7"})
+    # 同隧道(loopback peer)、不同真实 IP 的合法用户不被连带锁
+    legit = _Req("127.0.0.1", headers={"cf-connecting-ip": "7.7.7.7"})
     assert lt.remaining_lock_seconds(attacker) > 0
     assert lt.remaining_lock_seconds(legit) == 0
+
+
+def test_direct_connect_forged_cf_header_ignored():
+    """round6 安全:直连(peer 非 loopback)时无视伪造的 CF-Connecting-IP,按真实 peer 计数 ——
+    否则每请求换一个伪造头就永远锁不上、暴破旁路。"""
+    _fresh()
+    # 攻击者直连 :8000(peer=5.5.5.5),每次带不同伪造 cf-connecting-ip
+    for i in range(lt._MAX_FAILS):
+        lt.record_failure(_Req("5.5.5.5", headers={"cf-connecting-ip": f"9.9.9.{i}"}))
+    # 伪造头被无视 → 全记在真实 peer 5.5.5.5 上 → 已锁
+    assert lt.remaining_lock_seconds(_Req("5.5.5.5", headers={"cf-connecting-ip": "1.1.1.1"})) > 0
