@@ -372,3 +372,45 @@ def test_nvfp4mixed_loader_priority_over_mxfp8():
                      if m(ComponentSpec(kind="diffusion_models", file="x-mxfp8mixed.safetensors",
                                         device="cpu", dtype="bfloat16")))
     assert nvfp4_idx < mxfp8_idx
+
+
+def _make_comfy_mixed_missing_scale(tmp_path: Path, name: str, fmt: str) -> Path:
+    """comfy 单文件:某张量标了 fmt(fp8/nvfp4)但**缺 scale companion**(模拟截断/转换器漏写)。
+
+    匹配 dequant_comfy_mixed 的键派生:weight=block.0.weight,marker=block.0.comfy_quant,
+    scale(故意省略)=block.0.weight_scale。
+    """
+    import json as _json
+    if fmt == "float8_e4m3fn":
+        weight = torch.randn(4, 4).to(torch.float8_e4m3fn)
+    else:  # nvfp4 packed uint8
+        weight = torch.randint(0, 255, (4, 2), dtype=torch.uint8)
+    cq = _json.dumps({"format": fmt}).encode("utf-8")
+    sd = {
+        "block.0.weight": weight,
+        "block.0.comfy_quant": torch.tensor(list(cq), dtype=torch.uint8),
+        # 故意不写 block.0.weight_scale / weight_scale_2
+        "block.1.weight": torch.randn(4, 4, dtype=torch.bfloat16),  # plain 兜底
+    }
+    path = tmp_path / f"{name}.safetensors"
+    save_file(sd, str(path))
+    return path
+
+
+def test_dequant_comfy_mixed_fp8_missing_scale_degrades_not_keyerror(tmp_path):
+    """round3 #5:fp8 缺 weight_scale → 降级 cast(不抛裸 KeyError)。"""
+    from src.services.inference.quant_loaders import dequant_comfy_mixed
+    sf = _make_comfy_mixed_missing_scale(tmp_path, "te_fp8", "float8_e4m3fn")
+    spec = ComponentSpec(kind="clip", file=str(sf), device="cpu", dtype="bfloat16")
+    sd = dequant_comfy_mixed(spec)  # 不抛
+    assert sd["block.0.weight"].dtype == torch.bfloat16
+    assert sd["block.1.weight"].dtype == torch.bfloat16
+
+
+def test_dequant_comfy_mixed_nvfp4_missing_scale_raises_diagnosable(tmp_path):
+    """round3 #5:nvfp4 缺 scale 无法解码 → fail-loud UnsupportedQuantError(指名张量)。"""
+    from src.services.inference.quant_loaders import dequant_comfy_mixed
+    sf = _make_comfy_mixed_missing_scale(tmp_path, "te_nvfp4", "nvfp4")
+    spec = ComponentSpec(kind="clip", file=str(sf), device="cpu", dtype="bfloat16")
+    with pytest.raises(UnsupportedQuantError, match="nvfp4"):
+        dequant_comfy_mixed(spec)

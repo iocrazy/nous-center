@@ -388,12 +388,33 @@ def dequant_comfy_mixed(spec: ComponentSpec) -> StateDict:
         base = key[: -len(".weight")] if key.endswith(".weight") else None
         fmt = _fmt(base) if base else None
         if fmt == "float8_e4m3fn":
-            scale = raw[base + ".weight_scale"].to(torch.float32)
+            # round3 #5:用 .get 守卫(对齐 load_fp8mixed)—— 残缺/截断单文件可能丢
+            # weight_scale companion。fp8 缺 scale 降级按 fp8 cast(幅度不对但不崩,
+            # 与兄弟 loader 一致),不抛裸 KeyError。
+            scale_t = raw.get(base + ".weight_scale")
+            if scale_t is None:
+                logger.warning(
+                    "dequant_comfy_mixed: %s 标 fp8 但缺 %s.weight_scale,降级 cast",
+                    key, base)
+                clean[key] = t.to(target)
+                n_fp8 += 1
+                continue
+            scale = scale_t.to(torch.float32)
             clean[key] = (t.to(torch.float32) * scale).to(target)
             n_fp8 += 1
         elif fmt == "nvfp4":
-            bs = raw[base + ".weight_scale"].to(torch.float32)       # [out, in/16]
-            gs = raw[base + ".weight_scale_2"].to(torch.float32)     # fp32 标量
+            # nvfp4 是 packed uint8,缺 block/global scale 无法解码(plain-cast 是垃圾)
+            # → fail-loud 指名张量,别静默出错图(round3 #5)。
+            bs_t = raw.get(base + ".weight_scale")
+            gs_t = raw.get(base + ".weight_scale_2")
+            if bs_t is None or gs_t is None:
+                raise UnsupportedQuantError(
+                    f"nvfp4 张量 {key} 缺 scale("
+                    f"weight_scale={'有' if bs_t is not None else '缺'}/"
+                    f"weight_scale_2={'有' if gs_t is not None else '缺'})"
+                    f" —— 单文件可能截断/转换器漏写")
+            bs = bs_t.to(torch.float32)       # [out, in/16]
+            gs = gs_t.to(torch.float32)     # fp32 标量
             out = t.shape[0]
             low = (t & 0x0F).to(torch.long)
             high = ((t >> 4) & 0x0F).to(torch.long)
