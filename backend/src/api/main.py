@@ -394,6 +394,10 @@ async def lifespan(app: FastAPI):
     cache_cleanup_task = None
     response_cleanup_task = None
     partial_worker = None
+    # round4 #8/#9:常驻后台 loop 早先用裸 asyncio.create_task,既不持引用(Py3.11+
+    # event loop 只持弱引用 → _load_wf_deps 这种起手无 sleep 护栏的可能被 GC 丢弃),
+    # shutdown 也不 cancel(留半完成 subprocess)。收进 list 持引用 + finally 统一 cancel。
+    bg_tasks: list = []
 
     if not _bg_tasks_disabled:
         # Load workflow dependencies in background (non-blocking)
@@ -405,7 +409,7 @@ async def lifespan(app: FastAPI):
                     logger.warning("Failed to load model %s for workflow %s: %s", dep["key"], dep["wf_id"], e)
 
         if wf_model_deps:
-            asyncio.create_task(_load_wf_deps())
+            bg_tasks.append(asyncio.create_task(_load_wf_deps()))
 
         # Resident models marked resident: preload in the background, ordered
         # by preload_order ascending (spec 4.2). The ~120s diffusers compose
@@ -436,8 +440,8 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning("Idle model check failed: %s", e)
 
-        asyncio.create_task(idle_checker())
-        asyncio.create_task(memory_guard_loop(model_mgr, reserved_gb=4.0))
+        bg_tasks.append(asyncio.create_task(idle_checker()))
+        bg_tasks.append(asyncio.create_task(memory_guard_loop(model_mgr, reserved_gb=4.0)))
 
         async def log_cleanup_loop():
             while True:
@@ -451,7 +455,7 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning("Log cleanup failed: %s", e)
 
-        asyncio.create_task(log_cleanup_loop())
+        bg_tasks.append(asyncio.create_task(log_cleanup_loop()))
 
         # Image output orphan reaper. PR-6's signed-URL TTL is 1h by
         # default; once a URL expires the file is unreachable but stays
@@ -473,7 +477,7 @@ async def lifespan(app: FastAPI):
                 except asyncio.CancelledError:
                     break
 
-        asyncio.create_task(image_orphan_reap_loop())
+        bg_tasks.append(asyncio.create_task(image_orphan_reap_loop()))
 
         async def context_cache_cleanup_loop(interval_seconds: int = 3600):
             from src.services.context_cache_service import cleanup_expired
@@ -532,6 +536,16 @@ async def lifespan(app: FastAPI):
             try:
                 await t
             except asyncio.CancelledError:
+                pass
+        # round4 #9:cancel + await 常驻后台 loop(idle/memory_guard/log_cleanup/
+        # orphan_reap/_load_wf_deps),否则它们随 loop 关闭被硬杀,可能在
+        # check_idle_models / nvidia-smi poll 中途留半完成状态。
+        for t in bg_tasks:
+            t.cancel()
+        for t in bg_tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         # Drain partial-write worker
         if partial_worker is not None:
@@ -754,7 +768,18 @@ def create_app() -> FastAPI:
             while True:
                 await websocket.receive_text()
         except WebSocketDisconnect:
-            _ws_connections[instance_id].remove(websocket)
+            pass
+        finally:
+            # round4 #12:workflow_runner._broadcast 推送失败时会先 remove 本连接、桶空再
+            # pop 掉整个 key。竞态下若本连接已被它剔除、key 已删,这里裸 `[instance_id].remove`
+            # 会抛 KeyError/ValueError(从 except 逃逸成未处理 task 异常)。且非干净断开
+            # (网络 reset 不抛 WebSocketDisconnect)早先完全不清理 → 连接 + key 永久泄漏。
+            # 改 finally + 守卫:存在才 remove,空了再 pop。
+            socks = _ws_connections.get(instance_id)
+            if socks and websocket in socks:
+                socks.remove(websocket)
+                if not socks:
+                    _ws_connections.pop(instance_id, None)
 
     _mount_frontend(app)
     _register_error_handlers(app)
