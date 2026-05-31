@@ -139,6 +139,30 @@ async def test_patch_key_label_and_disable(db_client, two_services):
 
 
 @pytest.mark.asyncio
+async def test_patch_key_clears_expires_with_explicit_null(db_client, two_services):
+    """显式传 expires_at=null 应把过期清成 NULL(改为永不过期),而不是被忽略。"""
+    a, _ = two_services
+    expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    created = (await db_client.post(
+        "/api/v1/keys",
+        json={"label": "p1", "service_ids": [a.id], "expires_at": expires},
+    )).json()
+    assert created["expires_at"] is not None
+    # 显式 null 清除
+    r = await db_client.patch(
+        f"/api/v1/keys/{created['id']}", json={"expires_at": None},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["expires_at"] is None
+    # 不传则保持不变(确认没误清)—— 先重设过期再 patch 别的字段
+    await db_client.patch(f"/api/v1/keys/{created['id']}", json={"expires_at": expires})
+    r2 = await db_client.patch(
+        f"/api/v1/keys/{created['id']}", json={"label": "x"},
+    )
+    assert r2.json()["expires_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_delete_key_cascades_grants(db_client, two_services, db_session):
     a, _ = two_services
     created = (await db_client.post(
