@@ -111,6 +111,8 @@ class PGMemoryProvider(MemoryProvider):
         limit: int = 10,
         context_key: str | None = None,
     ) -> list[StoredMemoryEntry]:
+        # round6:provider 是契约边界,别只靠 route 约束 —— 兜底 clamp 防直接调用方传大值。
+        limit = max(1, min(int(limit), 100))
         try:
             async with self._sf() as s:
                 stmt = select(MemoryEntryModel).where(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from src.api.deps_auth import verify_bearer_token
@@ -57,7 +57,9 @@ async def memory_sync(
 async def memory_prefetch(
     request: Request,
     q: str = "",
-    limit: int = 10,
+    # round6:limit 加上界 —— 早先无约束直透 SQL LIMIT,`?limit=999999999` 拉整张
+    # instance memory_entries 表(内存膨胀/慢查/响应体 DoS)。
+    limit: int = Query(10, ge=1, le=100),
     context_key: str | None = None,
     auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
 ):
