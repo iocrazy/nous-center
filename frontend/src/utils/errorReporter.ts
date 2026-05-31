@@ -32,7 +32,12 @@ export function installErrorReporter() {
       const resp = await originalFetch(...args)
       if (!resp.ok && resp.status >= 500) {
         const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url
-        report('network', `${resp.status} ${resp.statusText} — ${url}`, window.location.pathname)
+        // round3 #3:5xx 分支也要排除日志端点自身。否则 report() 的 fallback fetch
+        // (sendBeacon 不可用时)打到 /logs/、若该端点返回 500 → 再 report → 再 fetch
+        // → 无限循环狂刷后端。catch 分支早有此守卫,5xx 分支漏了。
+        if (!url.includes('/api/v1/logs/')) {
+          report('network', `${resp.status} ${resp.statusText} — ${url}`, window.location.pathname)
+        }
       }
       return resp
     } catch (err: any) {
