@@ -35,6 +35,10 @@ async def upload_audio(file: UploadFile = File(...)):
 
 @router.get("/{audio_id}")
 async def get_audio_info(audio_id: str):
+    # round7:audio_id 直接拼进 glob 模式,`../..` 可向上穿越(探测上级文件存在 +
+    # 回显绝对路径)。上传 id 是 uuid4 hex —— 校验只含 [0-9a-f-],拒穿越字符。
+    if not audio_id or not all(c in "0123456789abcdef-" for c in audio_id.lower()):
+        raise HTTPException(400, detail="invalid audio id")
     upload_dir = _get_upload_dir()
     matches = list(upload_dir.glob(f"{audio_id}.*"))
     if not matches:

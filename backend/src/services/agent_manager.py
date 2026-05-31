@@ -108,7 +108,7 @@ def get_prompt(name: str, filename: str) -> str:
     if not agent_dir.exists():
         raise FileNotFoundError(f"Agent '{name}' not found")
     target = (agent_dir / filename).resolve()
-    if not str(target).startswith(str(agent_dir.resolve())):
+    if not target.is_relative_to(agent_dir.resolve()):  # round7:prefix-startswith 缺陷 → is_relative_to
         raise ValueError(f"Invalid filename: {filename}")
     if not target.exists():
         raise FileNotFoundError(f"Prompt file '{filename}' not found")
@@ -121,6 +121,6 @@ def save_prompt(name: str, filename: str, content: str) -> None:
     if not agent_dir.exists():
         raise FileNotFoundError(f"Agent '{name}' not found")
     target = (agent_dir / filename).resolve()
-    if not str(target).startswith(str(agent_dir.resolve())):
+    if not target.is_relative_to(agent_dir.resolve()):  # round7:prefix-startswith 缺陷 → is_relative_to
         raise ValueError(f"Invalid filename: {filename}")
     target.write_text(content, encoding="utf-8")
