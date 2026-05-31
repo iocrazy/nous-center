@@ -26,12 +26,21 @@ def _key_expired(key: InstanceApiKey) -> bool:
     return exp < datetime.now(timezone.utc)
 
 
-async def _enforce_instance_limits(instance: ServiceInstance) -> None:
-    await get_rate_limiter().check(
+async def enforce_instance_rate_limit(instance: ServiceInstance) -> None:
+    """准入即占坑 —— 鉴权通过(或 M:N key 解析出目标 instance)后立刻调一次。
+
+    M:N key 走 `verify_bearer_token_any` 返回 (None, key),限流必须由调用方在解析出
+    instance 之后补调本函数(openai/anthropic/ollama compat),否则那条路径不限流。
+    """
+    await get_rate_limiter().reserve(
         instance.id,
         getattr(instance, "rate_limit_rpm", None),
         getattr(instance, "rate_limit_tpm", None),
     )
+
+
+# 兼容内部旧名(本模块的 3 个 verify_* 准入点仍用它)。
+_enforce_instance_limits = enforce_instance_rate_limit
 
 
 async def verify_instance_key(

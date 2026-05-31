@@ -170,6 +170,10 @@ async def chat_completions(
             raise NotFoundError(str(e), code="model_not_found")
         if instance.status != "active":
             raise HTTPException(403, detail="Instance is inactive")
+        # M:N key 在 auth 层(verify_bearer_token_any 返回 None instance)没限流,
+        # 解析出目标 instance 后必须补占坑,否则 M:N key 完全绕过 RPM/TPM。
+        from src.api.deps_auth import enforce_instance_rate_limit
+        await enforce_instance_rate_limit(instance)
         # v3: dispatch needs the snapshot if the service is workflow-backed.
         # Force-load deferred columns now so handlers below see real data
         # (covered by test_services_dispatch.py SQL counter assertion).
