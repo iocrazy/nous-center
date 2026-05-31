@@ -508,6 +508,13 @@ class VLLMAdapter(InferenceAdapter):
             raise RuntimeError(f"vLLM API error ({resp.status_code}): {detail}")
 
         body = resp.json()
+        # round9:vLLM 偶发 200-但-body-级-error(OpenAI 错误体 {"object":"error",...}),
+        # 只判 status_code 会当成功 → 下游 llm.py 拿不到 choices、静默吐空回复。显式检查。
+        if isinstance(body, dict) and (body.get("object") == "error" or body.get("error")):
+            err = body.get("message") or body.get("error") or "unknown error"
+            if isinstance(err, dict):
+                err = err.get("message") or str(err)
+            raise RuntimeError(f"vLLM API error (200 body): {err}")
         usage_dict = body.get("usage") or {}
         usage = UsageMeter(
             input_tokens=usage_dict.get("prompt_tokens"),
@@ -529,7 +536,12 @@ class VLLMAdapter(InferenceAdapter):
 
         payload = self._build_payload(req)
         payload["stream"] = True
-        payload.setdefault("stream_options", {"include_usage": True})
+        # round9:_build_payload 展开 **req.extra,调用方在 extra 里塞 stream_options
+        # 会盖掉这里 —— setdefault 又不会纠正,导致 include_usage 缺失 → 服务端不发 usage
+        # chunk → 计费拿空。强制合并 include_usage=True,保留调用方其它 stream_options 键。
+        _so = dict(payload.get("stream_options") or {})
+        _so["include_usage"] = True
+        payload["stream_options"] = _so
 
         last_usage: dict[str, Any] | None = None
         async with self._client.stream(
