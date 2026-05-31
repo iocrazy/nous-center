@@ -289,12 +289,16 @@ async def patch_key(
     key = await session.get(InstanceApiKey, key_id)
     if not key:
         raise HTTPException(404, detail="api key not found")
-    if body.label is not None:
+    # `is not None` 无法区分「没传」和「显式传 null」—— expires_at/note 这种可空字段
+    # 用它判断时,一旦设过值就永远清不掉(传 null 被当成「没传」忽略)。改用
+    # model_fields_set:只看请求里实际出现的字段,显式 null 才能把列清成 NULL(round2 低)。
+    fields = body.model_fields_set
+    if body.label is not None:  # label 有 min_length=1,不允许清空,保持 is-not-None
         key.label = body.label
-    if body.note is not None:
-        key.note = body.note
-    if body.expires_at is not None:
-        key.expires_at = body.expires_at
+    if "note" in fields:
+        key.note = body.note  # 显式传 null 可清除备注
+    if "expires_at" in fields:
+        key.expires_at = body.expires_at  # 显式传 null = 改为永不过期
     if body.is_active is not None:
         key.is_active = body.is_active
     await session.commit()
