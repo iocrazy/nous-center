@@ -230,3 +230,25 @@ async def test_gpu_free_gate_blocks_restart_until_clear():
         assert sup.restart_count == 1
     finally:
         await sup.stop()
+
+
+@pytest.mark.asyncio
+async def test_spawn_handshake_failure_terminates_orphan(monkeypatch):
+    """round10:_spawn 的握手(client.start)失败时,已 fork 的子进程必须被终结。
+
+    否则初始 start() 路径(watchdog 还没建)会留下 orphan runner 永久占着 GPU 显存,
+    没人回收。"""
+    import src.runner.supervisor as sup_mod
+
+    async def _boom(self):
+        raise asyncio.TimeoutError("ready handshake timeout")
+
+    monkeypatch.setattr(sup_mod.RunnerClient, "start", _boom)
+
+    sup = _make_supervisor()
+    with pytest.raises(asyncio.TimeoutError):
+        await sup._spawn()
+
+    # 子进程已被 _spawn 主动终结,没泄漏
+    assert sup._process is not None
+    assert not sup._process.is_alive()
