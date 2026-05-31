@@ -90,15 +90,12 @@ def _build_messages(data: dict, inputs: dict) -> list[Message]:
     if isinstance(supplied, list) and supplied:
         return [Message.model_validate(m) if isinstance(m, dict) else m for m in supplied]
 
-    prompt = inputs.get("prompt") or inputs.get("text", "")
-    if not prompt:
-        raise _LLMExecutionError("LLM 节点缺少 prompt 输入")
+    # prompt 优先级:连入 prompt > 连入 text > 节点静态 data.prompt。
+    prompt = inputs.get("prompt") or inputs.get("text") or data.get("prompt") or ""
 
-    msgs: list[Message] = []
-    system_msg = data.get("system")
-    if system_msg:
-        msgs.append(Message(role="system", content=system_msg))
-
+    # 先探测多模态媒体 —— 纯图/音(无文字)是合法的 caption 用例,不能因缺 prompt 就报错。
+    # (#224 把 _get_inputs 改成精确 handle 路由后,只接 image handle 的边不再顺带把
+    # 上游值 spread 到 text/prompt;此前正是那个 spread 巧合喂了 prompt 才没报错。)
     images = inputs.get("images") or []
     if not images:
         single = inputs.get("image") or ""
@@ -108,8 +105,19 @@ def _build_messages(data: dict, inputs: dict) -> list[Message]:
     audio = inputs.get("audio") or ""
     has_media = bool(images) or (audio and audio.startswith("data:"))
 
+    # 既无文字 prompt 又无媒体才是真的没输入。
+    if not prompt and not has_media:
+        raise _LLMExecutionError("LLM 节点缺少 prompt 输入")
+
+    msgs: list[Message] = []
+    system_msg = data.get("system")
+    if system_msg:
+        msgs.append(Message(role="system", content=system_msg))
+
     if has_media:
-        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content: list[dict[str, Any]] = []
+        if prompt:  # 纯 caption(prompt 为空)就只发媒体,不塞空 text part
+            content.append({"type": "text", "text": prompt})
         for img in images:
             if img and img.startswith("data:"):
                 content.append({"type": "image_url", "image_url": {"url": img}})
