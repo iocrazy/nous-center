@@ -1,20 +1,30 @@
-"""PR-1 T4 — 引擎 A/B 受控对比(D6:查清 6.4s vs 27s)。standalone,需 GPU。
+"""引擎正确性 smoke —— modular 出图的 golden 回归比对。standalone,需 GPU。
 
-**单引擎单进程**(避免两引擎模型同卡共存 OOM):每次跑一个引擎,存 ab_<engine>.png +
-打印 load/infer 耗时。两次跑完(legacy + modular,完全相同输入)再单独算 SSIM。
+历史:本来是 legacy(自写 ImageSampler)vs modular(Modular Diffusers)的 A/B(D6 查
+6.4s vs 27s)。**legacy 引擎已在 #128-132 删除**,现在只剩 modular 一套。所以这脚本现
+在的用途 = 跑当前 modular 出图,跟保存的 golden 图做 SSIM(≥0.97 即引擎无回归),作为改
+`image_modular.py` / 升 diffusers 前的正确性闸门(CLAUDE.md「图像引擎」)。
 
-用法(落 cuda:1 Pro 6000):
+用法(落 Pro 6000;真模型 1024/20step ~6.5s infer):
     cd backend
-    SMOKE_ENGINE=legacy  SMOKE_DEVICE=cuda:1 uv run python tests/manual/smoke_image_ab.py
     SMOKE_ENGINE=modular SMOKE_DEVICE=cuda:1 uv run python tests/manual/smoke_image_ab.py
-    # 再比:
+    # 出图存 _smoke_out/ab_modular.png(先把已知好的那张备份成 golden 再比)
     SMOKE_SSIM=1 uv run python tests/manual/smoke_image_ab.py   # 比 ab_legacy.png vs ab_modular.png
+
+注:`_smoke_out/` 在 .gitignore 里,golden 只在本地。改 image_modular 前先 cp 一份当前好图
+当 golden,改后重生成再 SSIM 对比。
 """
 from __future__ import annotations
 
+import os
+
+# standalone 必须在 import torch 前固定 PCI_BUS_ID —— 否则 torch 默认 FASTEST_FIRST 把
+# Pro 6000 排到 cuda:0、cuda:1 反而是 24G 的 3090,SMOKE_DEVICE=cuda:1 直接 OOM。生产走
+# src/api/main.py 已 setdefault,但本脚本不经它、且 uv 不 load .env,得自己设。
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
 import asyncio
 import glob
-import os
 import sys
 import time
 from pathlib import Path
@@ -25,7 +35,7 @@ MODEL_ROOT = Path(os.environ.get(
     "SMOKE_MODEL", "/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B"))
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 DTYPE = os.environ.get("SMOKE_DTYPE", "bfloat16")  # 强制 bf16(对齐 spike,避免 default→fp32 OOM)
-ENGINE = os.environ.get("SMOKE_ENGINE", "legacy")
+ENGINE = os.environ.get("SMOKE_ENGINE", "modular")  # legacy 已删,只剩 modular
 PROMPT = os.environ.get("SMOKE_PROMPT", "a photo of a red fox sitting in autumn leaves, sharp focus, detailed")
 OUT_DIR = Path(__file__).parent / "_smoke_out"
 SEED, STEPS, SIZE = 42, 20, 1024

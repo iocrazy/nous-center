@@ -22,6 +22,9 @@ _node_executor 的真实路径:get_or_load_image_adapter(整模型→单卡)→ 
 """
 from __future__ import annotations
 
+
+import os
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")  # standalone:cuda:1=Pro 6000,对齐 nvidia-smi(torch 默认 FASTEST_FIRST 会翻卡)
 import asyncio
 import glob
 import os

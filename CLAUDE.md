@@ -43,15 +43,21 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 
 ## 图像引擎 (image engine)
 
-- 迁移中:`NOUS_IMAGE_ENGINE=modular|legacy`(默认 `legacy`)。`legacy` = 自写
-  `ImageSampler`(`image_diffusers.py`);`modular` = `ModularImageBackend`
-  (`image_modular.py`,Modular Diffusers)。spec
+- 引擎只剩一套 = `ModularImageBackend`(`image_modular.py`,Modular Diffusers)。
+  迁移已完成,**legacy 自写 `ImageSampler`/`image_diffusers.py`/`image_sampler.py` 已删**
+  (#128-132);`NOUS_IMAGE_ENGINE` 环境变量已无 legacy 选项。Anima 自定义 DiT 走
+  `image_anima.py`。spec
   `docs/superpowers/specs/2026-05-22-image-engine-modular-diffusers-design.md`。
 - **Modular Diffusers 是 experimental**;`diffusers` 在 `pyproject.toml` **钉死 commit**。
-  改 `image_modular.py` / `image_sampler.py` **或升 diffusers 前,必须跑**
+  改 `image_modular.py` **或升 diffusers 前,必须跑**
   `tests/manual/smoke_image_ab.py`(真模型/GPU,非 CI)并确认 SSIM ≥ 0.97 + 出图正确,
   再 bump commit。CI 跑不了真模型(conftest mock torch + 无 GPU),引擎正确性只靠这个
-  standalone smoke。
+  standalone smoke。该 smoke 现在是 **golden 回归比对**(legacy 没了,不再是 legacy/modular
+  A/B):重生成 modular 出图 → SSIM 比保存的 golden 图。
+- **standalone smoke 必须在 import torch 前设 `CUDA_DEVICE_ORDER=PCI_BUS_ID`**(脚本顶部
+  `os.environ.setdefault` 或命令前缀)。否则 torch 默认 FASTEST_FIRST 把 Pro 6000 排到
+  `cuda:0`、`cuda:1` 变成 24G 的 3090 → `SMOKE_DEVICE=cuda:1` 装 9B 模型直接 OOM。生产
+  经 `src/api/main.py` 已 setdefault,但 standalone 脚本不经它、且 `uv` 不 load `.env`。
 - `diffusers.modular*` 的 import **只允许在 `image_modular.py`**(`_import_modular()`
   一处)——experimental API 变更时 blast radius 限一文件。
 
