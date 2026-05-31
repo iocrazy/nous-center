@@ -314,6 +314,37 @@ class ModularImageBackend(InferenceAdapter):
         """对齐 ABC;实际 pipeline 构建在首次 infer 时 lazy(_ensure_pipe)。"""
         self.device = device
 
+    def unload(self) -> None:
+        """真正释放 GPU pipeline —— base.unload 只置 `_model=None`,远远不够。
+
+        round3 #3(70G 累积真根因):`_pipe` 持着 transformer(~18GB)+ vae +
+        text_encoder + 已装 LoRA,base.unload 不 teardown 它,且全工程零
+        `torch.cuda.empty_cache()` → adapter 被换出/驱逐后 `is_loaded` 翻 False
+        (manager 以为卡空了、往同卡再装),但 CUDA caching allocator 仍持旧 pipe
+        的块 → 显存只增不减。这里显式拆 pipe + 清缓存,让换模型时显存真降。
+        """
+        pipe = self._pipe
+        self._pipe = None
+        self._model = None
+        self._loaded_loras.clear()
+        if pipe is not None:
+            # 先卸 LoRA(peft adapter 也占显存);失败不该挡卸载主流程。
+            try:
+                if hasattr(pipe, "unload_lora_weights"):
+                    pipe.unload_lora_weights()
+            except Exception:  # noqa: BLE001
+                pass
+        del pipe
+        try:
+            import gc  # noqa: PLC0415
+
+            import torch  # noqa: PLC0415
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 — 清缓存 best-effort,不可因它崩卸载
+            pass
+
     def _ensure_pipe(self) -> Any:
         if self._pipe is not None:
             return self._pipe
