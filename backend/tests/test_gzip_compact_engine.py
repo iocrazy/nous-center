@@ -65,3 +65,26 @@ def test_should_compress_threshold():
 
 def test_engine_name():
     assert GzipCompactContextEngine().name == "gzip-compact"
+
+
+@pytest.mark.asyncio
+async def test_compress_preserves_instruction_system_position():
+    """round2 #9:压缩时保持原始顺序 —— instructions(system,刻意放历史之后)不被提到 agent
+    提示前。survivor 历史须仍在 instructions 之前。"""
+    engine = GzipCompactContextEngine()
+    msgs = [
+        {"role": "system", "content": "AGENT"},
+        {"role": "user", "content": "x" * 4000},      # OLD,会被丢
+        {"role": "assistant", "content": "oldA"},      # OLD,会被丢
+        {"role": "user", "content": "KEEP1"},          # 应保留
+        {"role": "system", "content": "INSTR"},        # 应仍在 KEEP1 之后
+        {"role": "user", "content": "RECENT"},
+    ]
+    result, truncated = await engine.compress(messages=msgs, max_tokens=300)
+    assert truncated
+    contents = [m["content"] for m in result]
+    assert "AGENT" in contents and "INSTR" in contents and "RECENT" in contents
+    i_keep1 = contents.index("KEEP1")
+    i_instr = contents.index("INSTR")
+    # 旧逻辑(system 全提前)会让 INSTR 跑到 KEEP1 前 → i_keep1 < i_instr 失败
+    assert i_keep1 < i_instr, "历史 KEEP1 应在 instructions 之前(顺序保持)"

@@ -50,28 +50,34 @@ class GzipCompactContextEngine(ContextEngine):
         if _approx_tokens(messages) <= max_tokens:
             return messages, False
 
-        system_msgs = [m for m in messages if m.get("role") == "system"]
-        rest = [m for m in messages if m.get("role") != "system"]
-        original_rest_len = len(rest)
-
-        # Identify the last user message — this is the minimum we must preserve.
-        last_user_idx = None
-        for i in range(len(rest) - 1, -1, -1):
-            if rest[i].get("role") == "user":
-                last_user_idx = i
+        n = len(messages)
+        # 最后一个 user 的位置 —— 最小必须保留,绝不丢。
+        last_user_pos = None
+        for i in range(n - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                last_user_pos = i
                 break
 
-        # Pop oldest until it fits, but never drop the last user message.
-        while rest and _approx_tokens(system_msgs + rest) > max_tokens:
-            if last_user_idx is not None and last_user_idx == 0:
-                # About to drop the last user turn — stop and raise below.
-                break
-            rest.pop(0)
-            if last_user_idx is not None:
-                last_user_idx -= 1
+        # round2 #9:**保持原始相对顺序**丢最旧的非 system 消息,而非把所有 system 提到最前。
+        # 旧逻辑 `system_msgs + rest` 会把 responses 路由刻意放在历史之后的 instructions
+        # (system role)拉到 agent 提示词前,丢失「instructions 覆盖历史」语义。system 不可丢;
+        # 从最旧的非 system 往后丢(跳过最后一个 user),survivor 按原顺序保留。
+        droppable = [
+            i for i in range(n)
+            if messages[i].get("role") != "system" and i != last_user_pos
+        ]
+        dropped_idxs: set[int] = set()
 
-        compacted = system_msgs + rest
-        dropped = original_rest_len - len(rest)
+        def _surviving() -> list:
+            return [m for i, m in enumerate(messages) if i not in dropped_idxs]
+
+        di = 0
+        while _approx_tokens(_surviving()) > max_tokens and di < len(droppable):
+            dropped_idxs.add(droppable[di])
+            di += 1
+
+        compacted = _surviving()
+        dropped = len(dropped_idxs)
 
         # 进程内累计 — 给 m04 dashboard 看 compaction 平均丢了多少 turn。
         try:
@@ -80,19 +86,12 @@ class GzipCompactContextEngine(ContextEngine):
             record_compaction = None
 
         if _approx_tokens(compacted) > max_tokens:
+            # 能丢的都丢了仍超 → 最后一轮(+system)本身就超预算。
             if record_compaction:
                 record_compaction(dropped, truncated=True)
             raise ContextOverflowError(
                 f"context still exceeds max_tokens={max_tokens} "
                 f"after compression (est={_approx_tokens(compacted)})"
-            )
-
-        if not rest:
-            # 所有非 system 全被砍光了 — 说明最后一轮本身就超，raise
-            if record_compaction:
-                record_compaction(dropped, truncated=True)
-            raise ContextOverflowError(
-                "last turn alone exceeds max_tokens"
             )
 
         if record_compaction:
