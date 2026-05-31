@@ -62,6 +62,28 @@ async def test_publish_assigns_snapshot_hash_and_version(
 
 
 @pytest.mark.asyncio
+async def test_publish_flips_workflow_status_to_published(
+    db_client, db_session, workflow_with_two_nodes,
+):
+    """publish 必须把 wf.status 翻成 published —— 否则 main.py 启动只对 published 工作流
+    re-register 模型引用,重启后已发布服务掉引用、模型可被卸载(bug hunt round2 #4)。"""
+    r = await db_client.post(
+        f"/api/v1/workflows/{workflow_with_two_nodes.id}/publish",
+        headers=_admin_headers(),
+        json={
+            "name": "status-svc", "label": "S", "category": "app", "meter_dim": "calls",
+            "exposed_inputs": [{"node_id": "in_1", "key": "text", "input_name": "v",
+                                "type": "string", "required": True}],
+            "exposed_outputs": [{"node_id": "out_1", "key": "echo", "input_name": "v",
+                                 "type": "string"}],
+        },
+    )
+    assert r.status_code == 201, r.text
+    await db_session.refresh(workflow_with_two_nodes)
+    assert workflow_with_two_nodes.status == "published"
+
+
+@pytest.mark.asyncio
 async def test_publish_rejects_unknown_exposed_node_id(
     db_client, workflow_with_two_nodes, monkeypatch,
 ):

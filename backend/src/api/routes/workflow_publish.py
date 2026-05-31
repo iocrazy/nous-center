@@ -248,6 +248,10 @@ async def publish_workflow(
         version=1,
     )
     session.add(svc)
+    # 真的把 wf.status 翻成 "published"(注释一直说会翻、代码漏了)。main.py 启动时只对
+    # status="published" 的 workflow re-register 模型引用 —— 不翻则重启后已发布服务掉引用、
+    # 模型可被 idle/LRU 卸载(bug hunt round2 #4)。与 unpublish 写回 "draft" 形成完整状态机。
+    wf.status = "published"
     await session.commit()
     await session.refresh(
         svc,
