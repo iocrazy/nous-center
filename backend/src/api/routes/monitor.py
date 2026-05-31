@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import signal
@@ -357,9 +358,10 @@ async def kill_gpu_process(req: KillProcessRequest, request: Request):
     try:
         os.kill(pid, signal.SIGTERM)
         logger.info("Sent SIGTERM to GPU process %d", pid)
-        # Wait for process to exit
+        # Wait for process to exit — await(非 time.sleep),否则最多 5s 阻塞整个
+        # 事件循环,期间所有请求 / WS 心跳 / runner ping 全卡(round2 低)。
         for _ in range(10):
-            time.sleep(0.5)
+            await asyncio.sleep(0.5)
             try:
                 os.kill(pid, 0)  # Check if still alive
             except ProcessLookupError:
