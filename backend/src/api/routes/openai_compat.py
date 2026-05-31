@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["openai-compat"])
 
+# round3 #1:持有 fire-and-forget 结算 task 的强引用直到完成。CPython 事件循环只持 task
+# 弱引用,未被引用的 task 可能在跑完前被 GC → 结算(记账+扣配额)协程中途消失。
+# done_callback 在完成时移除引用,避免 set 无界增长。
+_settle_tasks: set[asyncio.Task] = set()
+
 
 async def sse_with_error_envelope(inner):
     """Wrap an SSE async generator so any NousError/Exception is emitted as an
@@ -357,7 +362,10 @@ async def chat_completions(
                         except Exception as e:  # noqa: BLE001 — 结算失败不该崩流
                             logger.warning("stream billing settle failed: %s", e)
 
-                    asyncio.create_task(_settle())
+                    # 持强引用直到完成,否则正常跑完的流式也可能被 GC 掉结算 task(round3 #1)。
+                    _t = asyncio.create_task(_settle())
+                    _settle_tasks.add(_t)
+                    _t.add_done_callback(_settle_tasks.discard)
 
         return StreamingResponse(
             sse_with_error_envelope(_stream_proxy()),
