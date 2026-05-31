@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.database import get_async_session
@@ -28,7 +29,11 @@ async def create_preset(
 ):
     preset = VoicePreset(**data.model_dump())
     session.add(preset)
-    await session.commit()
+    try:
+        await session.commit()  # round4 #7:name unique 冲突 → 409 而非未捕获 500
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, detail=f"voice preset '{data.name}' already exists")
     await session.refresh(preset)
     return preset
 
@@ -49,7 +54,11 @@ async def create_group(
 ):
     group = VoicePresetGroup(**data.model_dump())
     session.add(group)
-    await session.commit()
+    try:
+        await session.commit()  # round4 #7:name unique 冲突 → 409 而非未捕获 500
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, detail=f"voice preset group '{data.name}' already exists")
     await session.refresh(group)
     return group
 

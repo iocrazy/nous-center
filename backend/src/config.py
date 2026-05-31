@@ -78,6 +78,11 @@ def _load_settings_yaml() -> dict:
     try:
         with open(SETTINGS_YAML_PATH) as f:
             data = yaml.safe_load(f) or {}
+        # round4 #5(config):手改成 YAML 列表/标量时 safe_load 返回非 dict(truthy 不被
+        # `or {}` 兜),get_settings 的 `Settings(**data)` 会 TypeError 崩。对齐
+        # load_hardware_config 的 isinstance 守卫,非 mapping 降级空 dict。
+        if not isinstance(data, dict):
+            return {}
         return data
     except Exception:
         return {}

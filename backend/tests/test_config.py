@@ -32,3 +32,18 @@ def test_load_model_configs_from_any_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     configs = load_model_configs()
     assert isinstance(configs, dict)
+
+
+def test_load_settings_yaml_non_dict_returns_empty(tmp_path, monkeypatch):
+    """round4 #5:settings.yaml 手改成 YAML 列表/标量 → 降级空 dict,不让 Settings(**) 崩。"""
+    import src.config as cfg
+    p = tmp_path / "settings.yaml"
+    p.write_text("- a\n- b\n")  # YAML 列表
+    monkeypatch.setattr(cfg, "SETTINGS_YAML_PATH", p)
+    assert cfg._load_settings_yaml() == {}
+    # 标量
+    p.write_text("just a string\n")
+    assert cfg._load_settings_yaml() == {}
+    # 正常 dict 仍工作
+    p.write_text("FOO: bar\n")
+    assert cfg._load_settings_yaml() == {"FOO": "bar"}
