@@ -57,10 +57,7 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
   const { setNodes } = useReactFlow()
   const execState = useExecutionStore((s) => (nodeId ? s.nodeStates[nodeId] : undefined))
   const stateOutline = execState ? STATE_OUTLINE[execState] : undefined
-  // DIAG: temporarily log to verify the subscription wakes on every state change
-  useEffect(() => {
-    if (execState) console.log('[BaseNode]', nodeId, '→', execState)
-  }, [execState, nodeId])
+  // round5:删掉遗留的 DIAG console.log(每节点状态翻转打,工作流跑起来刷屏 console)。
 
   // When collapsing: clear node height so wrapper auto-sizes
   // When expanding: restore height so resize works
