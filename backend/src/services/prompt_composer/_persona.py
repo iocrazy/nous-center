@@ -35,12 +35,24 @@ def _agents_root() -> Path:
     return Path(get_settings().NOUS_CENTER_HOME).expanduser() / "agents"
 
 
+# persona bundle 由这 4 个文件构成 —— 缓存 key 必须覆盖全部,不能只看 config.json。
+_PERSONA_FILES = ("config.json", "IDENTITY.md", "SOUL.md", "AGENT.md")
+
+
 def _config_mtime(agent_dir: Path) -> float:
-    """Return config.json mtime as cache-busting key component."""
-    try:
-        return (agent_dir / "config.json").stat().st_mtime
-    except OSError:
-        return 0.0
+    """缓存失效 key = persona 全部文件的 max mtime。
+
+    round7:早先只取 config.json mtime,但 save_prompt 写 IDENTITY/SOUL/AGENT.md 时
+    不动 config.json → mtime 不变 → _load_cached 命中旧 bundle,改了 persona 文本不生效。
+    取 4 文件 max mtime,任一变更都换 key 失效缓存(与 docstring「any file change」对齐)。
+    """
+    mt = 0.0
+    for name in _PERSONA_FILES:
+        try:
+            mt = max(mt, (agent_dir / name).stat().st_mtime)
+        except OSError:
+            continue
+    return mt
 
 
 def load_persona(agent_id: str) -> PersonaBundle:
