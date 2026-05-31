@@ -5,7 +5,14 @@ import { uid } from '../utils/uid'
 import { apiFetch } from '../api/client'
 import type { WorkflowFull } from '../api/workflows'
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null
+// round3 #1:autosave 防抖定时器**按 tab 各自**保存。早先是单个模块级 saveTimer,
+// 每次 markDirty 都 clearTimeout 它 —— 编辑 tab A 后 2s 内切到 tab B 编辑,B 的
+// markDirty 取消了 A 的 pending save,A 的草稿永远不落库(静默丢)。改 Map<tabId,timer>。
+const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+// getActiveWorkflow 在 activeTabId 失配(rehydrate 边界 / removeTab 竞态)时的稳定兜底,
+// 避免在 zustand selector 路径上抛 → 画布白屏(round3 #2)。常量复用保证引用稳定。
+const EMPTY_WORKFLOW: Workflow = { id: '', name: '', nodes: [], edges: [] }
 
 const HISTORY_LIMIT = 50
 
@@ -160,7 +167,10 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
   getActiveWorkflow: () => {
     const { tabs, activeTabId } = get()
-    return tabs.find((t) => t.id === activeTabId)!.workflow
+    // activeTabId 失配时 .find() 返回 undefined —— 早先的 `!.workflow` 会崩
+    // (Cannot read 'workflow' of undefined),且这是 selector、每次 render 都跑 →
+    // 整个画布白屏。降级到首个 tab 或稳定空工作流,绝不抛(round3 #2)。
+    return tabs.find((t) => t.id === activeTabId)?.workflow ?? tabs[0]?.workflow ?? EMPTY_WORKFLOW
   },
 
   setWorkflow: (wf) =>
@@ -318,12 +328,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     const activeTabId = tabId ?? get().activeTabId
     set((s) => ({
       tabs: s.tabs.map((t) =>
-        t.id === s.activeTabId ? { ...t, isDirty: true } : t
+        t.id === activeTabId ? { ...t, isDirty: true } : t
       ),
     }))
 
-    if (saveTimer) clearTimeout(saveTimer)
-    saveTimer = setTimeout(async () => {
+    // 按 tabId 各自防抖 —— 只 clear/重排**这个 tab** 的定时器,不动其它 tab 的 pending save。
+    const existing = saveTimers.get(activeTabId)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(async () => {
+      saveTimers.delete(activeTabId)
       const current = get().tabs.find((t) => t.id === activeTabId)
       if (!current?.workflow) return
 
@@ -359,6 +372,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         console.error('Auto-save failed', err)
       }
     }, 2000)
+    saveTimers.set(activeTabId, timer)
   },
     }),
     {
