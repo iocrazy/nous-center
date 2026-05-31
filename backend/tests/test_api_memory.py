@@ -147,6 +147,16 @@ async def test_prefetch_endpoint_returns_entries(api_client, bearer_headers):
 
 
 @pytest.mark.asyncio
+async def test_prefetch_limit_over_cap_rejected(api_client, bearer_headers):
+    """round6:limit 超上界(>100)→ 校验拒绝(本项目自定义 handler 返 400),不再无界拉整张表。"""
+    resp = await api_client.get(
+        "/api/v1/memory/prefetch?q=&limit=999999999",
+        headers=bearer_headers,
+    )
+    assert resp.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
 async def test_sync_over_100_entries_returns_400(api_client, bearer_headers):
     entries = [{"category": "fact", "content": "x", "context_key": None}] * 101
     resp = await api_client.post(
