@@ -421,6 +421,12 @@ class SGLangAdapter(InferenceAdapter):
             raise RuntimeError(f"SGLang API error ({resp.status_code}): {detail}")
 
         body = resp.json()
+        # round9:200-但-body-级-error(OpenAI 错误体)同 vLLM —— 只判 status 会静默吐空。
+        if isinstance(body, dict) and (body.get("object") == "error" or body.get("error")):
+            err = body.get("message") or body.get("error") or "unknown error"
+            if isinstance(err, dict):
+                err = err.get("message") or str(err)
+            raise RuntimeError(f"SGLang API error (200 body): {err}")
         usage_dict = body.get("usage") or {}
         usage = UsageMeter(
             input_tokens=usage_dict.get("prompt_tokens"),
@@ -441,7 +447,11 @@ class SGLangAdapter(InferenceAdapter):
 
         payload = self._build_payload(req)
         payload["stream"] = True
-        payload.setdefault("stream_options", {"include_usage": True})
+        # round9:**req.extra 可塞 stream_options 盖掉这里,setdefault 不纠正 → usage 丢、
+        # 计费拿空。强制合并 include_usage=True,保留调用方其它键(与 vLLM 一致)。
+        _so = dict(payload.get("stream_options") or {})
+        _so["include_usage"] = True
+        payload["stream_options"] = _so
 
         last_usage: dict[str, Any] | None = None
         async with self._client.stream(
