@@ -153,6 +153,11 @@ class ModelManager:
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
         self._load_failures: dict[str, str] = {}
+        # round3 #2:load_model 自动选卡(spec.gpu is None → get_best_gpu)后,实际落卡
+        # index 是局部变量;OOM 时 load_model raise、还没写进 _models → get_or_load 拿不到
+        # 真正 OOM 的卡,退成 evict_lru(None) 驱全局 LRU(可能驱了另一张没满的卡,OOM 的卡
+        # 仍满 → 重试再 OOM → 永久毒化)。这里记每个 model 上次尝试的落卡,OOM 时据它精确驱逐。
+        self._last_attempt_gpu: dict[str, int] = {}
         # PR-1 Task 6: component-level cache (parallel to _models). Old yaml-driven
         # adapters keep using _models; PR-2's ImageSampler will use _components.
         # Forward-ref the ComponentKey type as a tuple alias so the module-top
@@ -437,7 +442,12 @@ class ModelManager:
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 if self._is_oom(e) and attempt == 0:
-                    gpu = spec.gpu if isinstance(spec.gpu, int) else None
+                    # 配置固定卡用 spec.gpu;自动分配用 load_model 记下的实际落卡
+                    # (round3 #2)—— 否则 evict_lru(None) 驱全局、放跑了真正 OOM 的卡。
+                    if isinstance(spec.gpu, int):
+                        gpu = spec.gpu
+                    else:
+                        gpu = self._last_attempt_gpu.get(model_id)
                     evicted = await self.evict_lru(gpu_index=gpu)
                     logger.warning(
                         "get_or_load(%r): OOM on first load, evicted %r, retrying",
@@ -532,6 +542,10 @@ class ModelManager:
                 detect_after_load = True
 
             device = f"cuda:{gpu_index}" if gpu_index >= 0 else "cpu"
+            # round3 #2:记录本次实际落卡,供 get_or_load 在 OOM 时精确驱逐该卡
+            # (detect_after_load 的外部服务 gpu_index 是占位 0,记了也无害)。
+            if gpu_index >= 0:
+                self._last_attempt_gpu[model_id] = gpu_index
 
             # Build adapter
             if adapter_factory is not None:
