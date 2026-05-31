@@ -776,7 +776,17 @@ class ModelManager:
         (model_copy keeps validators) so the original descriptor is untouched."""
         if spec.device != "auto":
             return spec
-        idx = self._allocator.get_best_gpu(self._VRAM_EST_MB.get(spec.kind, 8000))
+        # 优先用真实文件大小(×1.3)估需求 —— 比固定 _VRAM_EST_MB 表准:anima 2B(~10GB)≠
+        # Flux2 9B(18GB),套固定表会把 anima 当 18GB 误拦/落错卡。拿不到文件则回退表。
+        need = self._VRAM_EST_MB.get(spec.kind, 8000)
+        try:
+            import os
+            sz_mb = int(os.path.getsize(spec.file) / (1024 * 1024) * 1.3)
+            if sz_mb > 0:
+                need = sz_mb
+        except (OSError, AttributeError, TypeError):
+            pass
+        idx = self._allocator.get_best_gpu(need)
         resolved = f"cuda:{idx}" if idx >= 0 else "cpu"
         return spec.model_copy(update={"device": resolved})
 
@@ -822,7 +832,16 @@ class ModelManager:
             if k in ("diffusion_models", "clip") and (resolved[k].dtype or "").lower().startswith("fp8"):
                 sz //= 2
             total += sz
-        # 1.3x 余量(激活/中间张量);bytes → MB
+        # LoRA 权重注入 transformer → 真占显存,旧估算漏了(守卫会低估 → 放过实际会 OOM 的装载)。
+        # path 有且文件在才加(name-only / 不存在的不计)。
+        for lora in (getattr(resolved["diffusion_models"], "loras", None) or []):
+            lp = getattr(lora, "path", None)
+            if lp:
+                try:
+                    total += os.path.getsize(lp)
+                except OSError:
+                    pass
+        # 1.3x 余量(激活/中间张量;含 VAE decode 峰值的粗略 headroom);bytes → MB
         return int(total / (1024 * 1024) * 1.3)
 
     @staticmethod
