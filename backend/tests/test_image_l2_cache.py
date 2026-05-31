@@ -28,6 +28,17 @@ def test_key_stable_and_sensitive():
     assert k1 != image_l2_key(_node(), _req_components(prompt="a dog"))
 
 
+def test_key_sensitive_to_sampler_and_scheduler():
+    """round6:改 sampler_name / scheduler → key 必须变(否则错命中上次采样器的旧图)。"""
+    base = _req_components(seed=42)
+    k = image_l2_key(_node(), base)
+    base.sampler_name = "heun"
+    assert image_l2_key(_node(), base) != k
+    base2 = _req_components(seed=42)
+    base2.scheduler = "karras"
+    assert image_l2_key(_node(), base2) != k
+
+
 def test_key_legacy_model_key_path():
     req = ImageRequest(request_id="r", prompt="x", seed=1, loras=[LoRASpec(name="s", strength=0.8)])
     assert image_l2_key(_node(model_key="flux2-klein-9b"), req) != image_l2_key(_node(model_key="other"), req)
