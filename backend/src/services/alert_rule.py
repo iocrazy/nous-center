@@ -77,7 +77,14 @@ async def check_and_fire(
         return []
 
     # Pull packs once per grant; rules will filter in Python.
-    pstmt = select(ResourcePack).where(ResourcePack.grant_id == grant_id)
+    # round3 #19:排除已过期 pack —— consume()/peek_remaining() 都跳过 expires_at<=now,
+    # 但聚合告警(pack_id=None)早先把过期包的 used/total 也算进百分比 → 告警口径与实际
+    # 可消费余额 / dashboard 的 peek 对不上(过期大包稀释/抬高 observed%,误放/误漏告警)。
+    # 这里用同一条过期过滤,三处口径统一。
+    pstmt = select(ResourcePack).where(
+        ResourcePack.grant_id == grant_id,
+        (ResourcePack.expires_at.is_(None)) | (ResourcePack.expires_at > now),
+    )
     packs = {p.id: p for p in (await session.execute(pstmt)).scalars().all()}
 
     events: list[AlertEvent] = []
