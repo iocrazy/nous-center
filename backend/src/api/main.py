@@ -444,7 +444,10 @@ async def lifespan(app: FastAPI):
                 await asyncio.sleep(3600)  # Every hour
                 try:
                     from src.services.log_db import cleanup_logs
-                    cleanup_logs()
+                    # round4 #3:cleanup_logs 是同步 SQLite,对 4 表各跑最多 10 万行的
+                    # NOT IN 子查询删除。直接调会在事件循环线程同步阻塞数秒 → 期间所有
+                    # HTTP/WS 心跳/广播全停(WS 客户端可能因心跳超时被判死)。丢 to_thread。
+                    await asyncio.to_thread(cleanup_logs)
                 except Exception as e:
                     logger.warning("Log cleanup failed: %s", e)
 
@@ -459,7 +462,10 @@ async def lifespan(app: FastAPI):
             from src.services.image_output_storage import reap_orphans
             while True:
                 try:
-                    reap_orphans(older_than_seconds=24 * 3600)
+                    # round4 #6:reap_orphans 是同步 iterdir/stat/unlink 全盘遍历;
+                    # 早先 loop 体先 reap 再 sleep → 首次迭代在事件循环线程同步走盘一次。
+                    # 输出目录大时卡住事件循环。丢 to_thread。
+                    await asyncio.to_thread(reap_orphans, older_than_seconds=24 * 3600)
                 except Exception:
                     logger.exception("image orphan reap error")
                 try:
