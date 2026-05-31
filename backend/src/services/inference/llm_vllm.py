@@ -7,8 +7,10 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
+from collections import deque
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -79,8 +81,18 @@ class VLLMAdapter(InferenceAdapter):
         self._process: subprocess.Popen | None = None
         self._adopt_pid = adopt_pid  # PID of an orphan process to adopt
         self._adopted_pid: int | None = None  # Set in load() when adopting
-        self._client = httpx.AsyncClient(timeout=120, limits=httpx.Limits(max_connections=10))
+        # trust_env=False:本 client 只连本地 vLLM 子进程(localhost:port)。默认
+        # trust_env=True 会让 httpx 在请求时套用 HTTP_PROXY/ALL_PROXY env(本机 socks
+        # 代理),把 localhost 调用经代理转发 → health/infer 失败或变慢(round3 #2;
+        # 注:proxy=None 不够,env proxy 在请求期解析,只有 trust_env=False 彻底绕开)。
+        self._client = httpx.AsyncClient(
+            timeout=120, limits=httpx.Limits(max_connections=10), trust_env=False
+        )
         self._managed = True  # True = we control the subprocess
+        # round3 #1:vLLM 运行期持续往 stdout 打日志,Popen 的 PIPE(~64KB)填满后
+        # 子进程 write 阻塞 = 推理服务冻结。后台 daemon 线程持续抽干进有界 deque。
+        self._stdout_tail: deque[str] = deque(maxlen=200)
+        self._drain_thread: threading.Thread | None = None
 
     def _auto_configure(self, device: str | None) -> dict:
         """Auto-calculate vLLM launch parameters based on model and GPU state."""
@@ -308,6 +320,13 @@ class VLLMAdapter(InferenceAdapter):
             start_new_session=True,  # Create process group for clean kill
         )
         self._managed = True
+        # 启动后台抽干线程(daemon),持续读 stdout 进 deque 防 PIPE 填满死锁。
+        # 进程退出 → stdout EOF → 线程自然结束。
+        self._stdout_tail.clear()
+        self._drain_thread = threading.Thread(
+            target=self._drain_stdout, name=f"vllm-stdout-{self._port}", daemon=True
+        )
+        self._drain_thread.start()
 
         # Wait for vLLM to become healthy (up to 10 minutes for first-time CUDA kernel compilation)
         start = time.monotonic()
@@ -316,8 +335,11 @@ class VLLMAdapter(InferenceAdapter):
         try:
             while time.monotonic() - start < timeout:
                 if self._process.poll() is not None:
-                    # Process exited
-                    output = self._process.stdout.read() if self._process.stdout else ""
+                    # Process exited — 等抽干线程收尾后取尾部日志做诊断(不再直接 read,
+                    # stdout 已被 drain 线程消费)。
+                    if self._drain_thread is not None:
+                        self._drain_thread.join(timeout=1.0)
+                    output = "".join(self._stdout_tail)
                     logger.error("vLLM process exited with code %d", self._process.returncode)
                     logger.error("vLLM output (last 500 chars): %s", output[-500:])
                     self._kill_process()
@@ -355,6 +377,21 @@ class VLLMAdapter(InferenceAdapter):
         else:
             logger.info("Disconnecting from external vLLM at %s", self._base_url)
         self._model = None
+
+    def _drain_stdout(self) -> None:
+        """后台线程:持续读子进程 stdout 进有界 deque,防 PIPE 填满阻塞子进程。
+
+        阻塞迭代到 stdout EOF(进程退出时关闭)→ 线程自然结束。读异常静默吞
+        (进程被 kill 时 stdout 可能突然关闭)。
+        """
+        proc = self._process
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            for line in proc.stdout:
+                self._stdout_tail.append(line)
+        except Exception:  # noqa: BLE001 — 抽干线程任何异常都不该冒泡
+            pass
 
     def _kill_process(self) -> None:
         import signal
