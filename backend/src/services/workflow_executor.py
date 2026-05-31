@@ -175,15 +175,24 @@ class WorkflowExecutor:
         return order
 
     def _get_inputs(self, node_id: str) -> dict[str, Any]:
-        """Collect inputs for a node from upstream outputs via edges."""
+        """Collect inputs for a node from upstream outputs via edges.
+
+        round2 #8:有显式 sourceHandle 的边只精确路由该 handle → targetHandle,**不再**额外把
+        上游全部输出键 spread 进来 —— 旧逻辑每条边无条件 spread,导致多入边同名键互相覆盖
+        (先到先得)+ 精确连线被无关键污染。无 handle 的老连线仍保留 spread fallback(向后兼容)。
+        """
         inputs: dict[str, Any] = {}
         for edge in self.edges:
-            if edge["target"] == node_id:
-                source_output = self._outputs.get(edge["source"], {})
-                source_handle = edge.get("sourceHandle", "")
-                target_handle = edge.get("targetHandle", "")
-                if source_handle in source_output:
-                    inputs[target_handle] = source_output[source_handle]
+            if edge["target"] != node_id:
+                continue
+            source_output = self._outputs.get(edge["source"], {})
+            source_handle = edge.get("sourceHandle", "")
+            target_handle = edge.get("targetHandle", "")
+            if source_handle and source_handle in source_output:
+                # 显式 handle:精确路由,不 spread(避免污染 + 同名覆盖)
+                inputs[target_handle] = source_output[source_handle]
+            else:
+                # 无 handle 的边:fallback 把上游全部输出灌进来(兼容老 handle-less 连线)
                 for key, value in source_output.items():
                     if key not in inputs:
                         inputs[key] = value
