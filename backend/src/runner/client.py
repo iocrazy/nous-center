@@ -15,11 +15,14 @@ ConnectionError 异常。
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Callable
 
 from src.runner import protocol as P
 from src.runner.pipe_channel import PipeChannel
+
+logger = logging.getLogger(__name__)
 
 
 class RunnerClient:
@@ -155,7 +158,13 @@ class RunnerClient:
                     d["detail"] = msg.detail
                 cb = self._progress_cbs.get(msg.task_id)
                 if cb is not None:
-                    cb(msg)
+                    # round6:用户回调异常绝不能逃出 demux loop —— 否则杀 loop,后续所有
+                    # NodeResult 没人路由、in-flight + 新 run_node future 永不 resolve、
+                    # _connected 仍 True、ping 不 resolve → 拖到 5min 兜底重启才恢复。
+                    try:
+                        cb(msg)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("progress callback failed (task %s)", msg.task_id)
             elif isinstance(msg, P.NodeResult):
                 fut = self._node_futures.pop(msg.task_id, None)
                 self._progress_cbs.pop(msg.task_id, None)
@@ -166,11 +175,17 @@ class RunnerClient:
                 # Bug 3 PR-2b:节点跑完(新 adapter 已注册进 runner _models)→ 触发
                 # supervisor reconcile,让已加载快照即时反映,不等 30s ping。
                 if self.on_node_done is not None:
-                    self.on_node_done()
+                    try:
+                        self.on_node_done()
+                    except Exception:  # noqa: BLE001 — 回调异常不杀 demux(见上)
+                        logger.exception("on_node_done callback failed")
             elif isinstance(msg, P.ComponentEvent):
                 cb = self.on_component_event
                 if cb is not None:
-                    cb(msg)
+                    try:
+                        cb(msg)
+                    except Exception:  # noqa: BLE001 — 回调异常不杀 demux(见上)
+                        logger.exception("on_component_event callback failed (%s)", msg.component_key)
             elif isinstance(msg, P.ModelEvent):
                 fut = self._model_futures.pop(msg.model_key, None)
                 if fut is not None and not fut.done():

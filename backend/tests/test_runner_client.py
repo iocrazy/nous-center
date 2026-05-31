@@ -88,6 +88,34 @@ async def test_run_node_resolves_with_node_result():
 
 
 @pytest.mark.asyncio
+async def test_progress_callback_exception_does_not_kill_demux():
+    """round6:进度回调抛异常不该杀死 demux loop —— run_node 仍能正常完成,
+    且之后还能再跑一次(证明 demux 存活)。"""
+    proc, client = await _make_client()
+    try:
+        await client.load_model("fake-img-a", config={})
+
+        def _boom(_pr):
+            raise RuntimeError("callback blew up")
+
+        r1 = await client.run_node(
+            P.RunNode(task_id=21, node_id="s", node_type="image",
+                      model_key="fake-img-a", inputs={"steps": 4}),
+            on_progress=_boom,
+        )
+        assert r1.status == "completed"  # 回调炸了但 NodeResult 仍 resolve
+        # demux 还活着:再跑一次能正常完成
+        r2 = await client.run_node(
+            P.RunNode(task_id=22, node_id="s", node_type="image",
+                      model_key="fake-img-a", inputs={"steps": 2}),
+            on_progress=lambda pr: None,
+        )
+        assert r2.status == "completed"
+    finally:
+        await _teardown(proc, client)
+
+
+@pytest.mark.asyncio
 async def test_ping_returns_pong():
     proc, client = await _make_client()
     try:

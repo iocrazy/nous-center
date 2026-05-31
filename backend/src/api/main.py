@@ -34,7 +34,12 @@ def _make_component_event_handler(registry, ws):
     """Build the sync callback RunnerClient.on_component_event uses: update the
     backend mirror + fan out a WS push. WS broadcast is async → scheduled."""
     def _handler(evt) -> None:
-        registry.update(evt.component_key, evt.state, evt.error)
+        # round6:registry.update 早先在 try 外,抛异常会逃进 RunnerClient demux loop 杀掉它
+        # (后续 run_node 全挂 5min)。client 侧已加回调守卫,这里再各自 try 兜底纵深。
+        try:
+            registry.update(evt.component_key, evt.state, evt.error)
+        except Exception:  # noqa: BLE001
+            logger.exception("component registry.update failed (%s)", evt.component_key)
         try:
             asyncio.get_running_loop().create_task(
                 ws.broadcast_component_state(evt.component_key, evt.state, evt.error))
