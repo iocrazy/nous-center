@@ -82,7 +82,7 @@ interface WorkspaceState {
   removeNode: (nodeId: string) => void
   addEdge: (edge: WorkflowEdge) => void
   removeEdge: (edgeId: string) => void
-  markDirty: () => void
+  markDirty: (tabId?: string) => void
 
   // Undo / redo (structural changes only — add/remove node + edge)
   undo: () => void
