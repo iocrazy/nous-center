@@ -126,7 +126,13 @@ async def install_package_git(repo_url: str = Form(...), name: str | None = Form
             "git", "clone", "--depth", "1", repo_url, str(clone_dir),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
-        rc = await proc.wait()
+        # round8:加超时 —— 早先裸 `await proc.wait()` 无上限,慢/挂的 repo 会无限阻塞
+        # 请求(占住 event loop worker)。300s 上限,超时 kill 进程组并报错。
+        try:
+            rc = await asyncio.wait_for(proc.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(408, detail="git clone timed out (>300s)")
         if rc != 0:
             out = (await proc.stdout.read()).decode(errors="replace") if proc.stdout else ""
             raise HTTPException(400, detail=f"git clone failed: {out[-300:]}")
