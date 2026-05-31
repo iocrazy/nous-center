@@ -298,48 +298,62 @@ async def chat_completions(
 
         async def _stream_proxy():
             usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            async with httpx.AsyncClient(timeout=300, proxy=None) as client:
-                async with client.stream(
-                    "POST", f"{base_url.rstrip('/')}/v1/chat/completions", json=body
-                ) as resp:
-                    if resp.status_code != 200:
-                        error_text = (await resp.aread()).decode(errors="replace")
-                        # Map upstream status to a NousError so the wrapper
-                        # formats it uniformly.
-                        if resp.status_code == 404:
-                            raise NotFoundError(error_text[:500], code="upstream_not_found")
-                        if 400 <= resp.status_code < 500:
-                            raise InvalidRequestError(error_text[:500], code="upstream_bad_request")
-                        raise APIError("Upstream LLM error", code="upstream_error")
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        yield line + "\n"
-                        # Extract usage from final chunk
-                        if line.startswith("data: ") and line[6:] != "[DONE]":
-                            try:
-                                chunk = json.loads(line[6:])
-                                if "usage" in chunk and chunk["usage"]:
-                                    usage = chunk["usage"]
-                            except Exception:
-                                pass
-                    yield "\n"
+            try:
+                async with httpx.AsyncClient(timeout=300, proxy=None) as client:
+                    async with client.stream(
+                        "POST", f"{base_url.rstrip('/')}/v1/chat/completions", json=body
+                    ) as resp:
+                        if resp.status_code != 200:
+                            error_text = (await resp.aread()).decode(errors="replace")
+                            # Map upstream status to a NousError so the wrapper
+                            # formats it uniformly.
+                            if resp.status_code == 404:
+                                raise NotFoundError(error_text[:500], code="upstream_not_found")
+                            if 400 <= resp.status_code < 500:
+                                raise InvalidRequestError(error_text[:500], code="upstream_bad_request")
+                            raise APIError("Upstream LLM error", code="upstream_error")
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            yield line + "\n"
+                            # Extract usage from final chunk
+                            if line.startswith("data: ") and line[6:] != "[DONE]":
+                                try:
+                                    chunk = json.loads(line[6:])
+                                    if "usage" in chunk and chunk["usage"]:
+                                        usage = chunk["usage"]
+                                except Exception:
+                                    pass
+                        yield "\n"
+            finally:
+                # round2 #7:记账/扣配额放 finally —— 否则客户端中途断连(generator 被取消)
+                # 时,流后的结算代码不执行 = 已生成的 token 不记账、不扣配额(漏收入)。用
+                # create_task 把结算跟 generator 取消解耦(record/consume 各自开 session);只在
+                # 拿到 usage(含 token 数的末帧已到)时结算 —— 纯错误/早断连无计数,跳过免噪音。
+                tok = usage.get("total_tokens", 0) or usage.get("completion_tokens", 0)
+                if tok > 0:
+                    duration = int((time.monotonic() - start_ms) * 1000)
+                    _u = dict(usage)
 
-            # Record usage after stream completes
-            duration = int((time.monotonic() - start_ms) * 1000)
-            from src.services.usage_service import record_llm_usage
-            await record_llm_usage(
-                model=engine_name,
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                duration_ms=duration,
-                instance_id=instance.id,
-                api_key_id=api_key.id,
-                agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
-            )
-            await _post_consume_quota(
-                api_key.id, instance.id, usage.get("total_tokens", 0),
-            )
+                    async def _settle() -> None:
+                        try:
+                            from src.services.usage_service import record_llm_usage
+                            await record_llm_usage(
+                                model=engine_name,
+                                prompt_tokens=_u.get("prompt_tokens", 0),
+                                completion_tokens=_u.get("completion_tokens", 0),
+                                duration_ms=duration,
+                                instance_id=instance.id,
+                                api_key_id=api_key.id,
+                                agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
+                            )
+                            await _post_consume_quota(
+                                api_key.id, instance.id, _u.get("total_tokens", 0),
+                            )
+                        except Exception as e:  # noqa: BLE001 — 结算失败不该崩流
+                            logger.warning("stream billing settle failed: %s", e)
+
+                    asyncio.create_task(_settle())
 
         return StreamingResponse(
             sse_with_error_envelope(_stream_proxy()),
