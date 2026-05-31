@@ -130,6 +130,11 @@ class RunnerClient:
         self._node_futures.clear()
         self._model_futures.clear()
         self._dispatches.clear()
+        # round10:断连时 _progress_cbs 也要清。否则 run_node 的 await fut 被置异常返回,
+        # 但对应的 on_progress 回调只在 NodeResult 到达时(line 170)才 pop —— 断连路径
+        # 没有 NodeResult → 回调永久残留在 _progress_cbs。每次 runner crash/重启都漏掉
+        # 当时 in-flight 任务的回调,长跑进程缓慢累积(闭包还可能持图节点引用)。
+        self._progress_cbs.clear()
 
     # ------------------------------------------------------------------
     # demux
@@ -234,6 +239,10 @@ class RunnerClient:
             # 兜底:_fail_all_inflight / NodeResult 都会移除,但异常路径(send_message 抛、
             # 取消)也保证不残留。
             self._dispatches.pop(spec.task_id, None)
+            # round10:同理 pop on_progress 回调 —— send_message 抛 / 协程被取消时
+            # NodeResult 永不到达,不在这清就会残留(_node_futures 已由 fail-path 兜底,
+            # _progress_cbs 之前没有兜底)。
+            self._progress_cbs.pop(spec.task_id, None)
 
     async def load_model(self, model_key: str, *, config: dict | None = None) -> bool:
         """发 LoadModel，await ModelEvent。返回是否加载成功。"""

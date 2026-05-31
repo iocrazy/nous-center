@@ -165,3 +165,18 @@ async def test_close_fails_pending_inflight_futures():
         node_fut.result()
     with pytest.raises(ConnectionError):
         model_fut.result()
+
+
+@pytest.mark.asyncio
+async def test_close_clears_progress_callbacks():
+    """round10:断连(_fail_all_inflight)必须清 _progress_cbs。断连路径无 NodeResult,
+    回调原本只在 NodeResult 到达时 pop → 每次 runner crash 漏掉当时 in-flight 的回调。"""
+    from unittest.mock import MagicMock
+    client = RunnerClient(MagicMock(), runner_id="r")
+    loop = asyncio.get_running_loop()
+    client._node_futures[7] = loop.create_future()
+    client._progress_cbs[7] = lambda pr: None
+
+    await client.close()
+
+    assert client._progress_cbs == {}
