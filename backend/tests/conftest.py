@@ -103,6 +103,17 @@ if _ci_memory_db:
     _asyncio.run(_init_ci_test_schema())
 
 
+@pytest.fixture(autouse=True)
+def _reset_memoized_session_factory():
+    """round4 #1:database.get_session_factory() 进程级 memoize 共享工厂(修生产 engine
+    泄漏)。测试间必须重置,否则一个测试首次调用绑定的工厂会泄漏到后续测试(尤其各
+    test 用自己的临时 DB / monkeypatch 时)。每个 test 前后清掉全局。"""
+    import src.models.database as _db
+    _db._session_factory = None
+    yield
+    _db._session_factory = None
+
+
 def _mock_model_manager():
     """Create a mock ModelManager for tests."""
     mgr = MagicMock()

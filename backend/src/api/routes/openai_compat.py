@@ -97,11 +97,11 @@ async def _post_consume_quota(api_key_id: int, service_id: int, units: int) -> N
     """
     if units <= 0:
         return
-    from src.models.database import create_session_factory
+    from src.models.database import get_session_factory
     from src.services.quota_gate import NoActiveGrant, consume_for_request
     from src.services.resource_pack import QuotaExhausted
 
-    sf = create_session_factory()
+    sf = get_session_factory()
     async with sf() as s:
         try:
             await consume_for_request(
@@ -263,7 +263,7 @@ async def chat_completions(
             body.pop("extra_body", None)
 
     if context_id:
-        from src.models.database import create_session_factory as _csf
+        from src.models.database import get_session_factory as _csf
         from src.services.context_cache_service import (
             increment_hit_and_extend as _ihe,
             resolve_for_request,

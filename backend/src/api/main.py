@@ -72,11 +72,12 @@ async def lifespan(app: FastAPI):
     import asyncio as _asyncio
     last_err = None
     for attempt in range(6):
+        # round4 #2:engine 用 try/finally dispose —— begin() 在 postgres 还没起来时会抛,
+        # 早先 dispose 在 success 之后,失败路径跳过它 → 每次重试泄漏一个连接池。
+        engine = create_engine()
         try:
-            engine = create_engine()
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-            await engine.dispose()
             logger.info("Database tables ensured%s", f" (after {attempt} retries)" if attempt else "")
             break
         except Exception as e:
@@ -87,6 +88,8 @@ async def lifespan(app: FastAPI):
                 attempt + 1, type(e).__name__, wait_s,
             )
             await _asyncio.sleep(wait_s)
+        finally:
+            await engine.dispose()
     else:
         logger.error("DB connect failed after 6 retries; last error: %s", last_err)
         raise last_err
@@ -119,22 +122,24 @@ async def lifespan(app: FastAPI):
     logger.info("Application log collector installed (db + stdout)")
 
     # Auto-sync model metadata for any new engines
-    from src.models.database import create_session_factory
+    from src.models.database import get_session_factory
     from src.services.model_metadata_service import sync_metadata
+
+    # round4 #1/#2:共享 memoized 工厂(别每处新建 engine);round4 #2(config#1):sf 在
+    # try 外取 —— get_session_factory() 只返回工厂、不碰 DB,放 try 外才不会在 sync_metadata
+    # 失败被吞后让下面 152 行的 `async with sf()` 撞 NameError(早先 sf 在 try 内)。
+    sf = get_session_factory()
 
     # Wave 1 MemoryProvider: init PGMemoryProvider + expose via app.state
     from src.services.memory.pg_provider import PGMemoryProvider
     try:
-        app.state.memory_provider = PGMemoryProvider(
-            session_factory=create_session_factory()
-        )
+        app.state.memory_provider = PGMemoryProvider(session_factory=sf)
         await app.state.memory_provider.initialize()
         logger.info("MemoryProvider initialized (pg)")
     except Exception as e:
         logger.warning("MemoryProvider init failed (non-fatal): %s", e)
 
     try:
-        sf = create_session_factory()
         async with sf() as session:
             await sync_metadata(session)
         logger.info("Model metadata synced")
@@ -466,7 +471,7 @@ async def lifespan(app: FastAPI):
 
         async def context_cache_cleanup_loop(interval_seconds: int = 3600):
             from src.services.context_cache_service import cleanup_expired
-            from src.models.database import create_session_factory as _csf
+            from src.models.database import get_session_factory as _csf
             sf = _csf()
             while True:
                 try:
@@ -486,7 +491,7 @@ async def lifespan(app: FastAPI):
         # Step 4: expired-session cleanup + partial-write background worker
         async def response_cleanup_loop(interval_seconds: int = 3600):
             from src.services.responses_service import cleanup_expired_sessions
-            from src.models.database import create_session_factory as _csf
+            from src.models.database import get_session_factory as _csf
             sf = _csf()
             while True:
                 try:
@@ -594,9 +599,9 @@ def create_app() -> FastAPI:
 
         # Check database
         try:
-            from src.models.database import create_session_factory
+            from src.models.database import get_session_factory
             from sqlalchemy import text
-            _sf = create_session_factory()
+            _sf = get_session_factory()
             async with _sf() as session:
                 await session.execute(text("SELECT 1"))
             checks["database"] = "ok"

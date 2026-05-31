@@ -22,10 +22,21 @@ def create_session_factory(engine=None):
 _session_factory = None
 
 
-async def get_async_session():
-    """FastAPI dependency for async DB sessions."""
+def get_session_factory():
+    """进程内**共享**的 async session factory(memoized)。
+
+    round4 #1:别再到处裸调 `create_session_factory()` —— 那每次都 `create_async_engine`
+    新建一个 engine + 连接池且从不 dispose。usage_service(每次推理)、计费、workflow_runner
+    等热/后台路径都这么调 → 连接池泄漏 + 无池化收益。这里 memoize 一个工厂复用同一 engine。
+    需要独立 engine 的(测试 fixture)仍可显式 create_session_factory(engine=...)。
+    """
     global _session_factory
     if _session_factory is None:
         _session_factory = create_session_factory()
-    async with _session_factory() as session:
+    return _session_factory
+
+
+async def get_async_session():
+    """FastAPI dependency for async DB sessions。"""
+    async with get_session_factory()() as session:
         yield session

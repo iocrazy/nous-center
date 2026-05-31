@@ -41,7 +41,7 @@ async def async_client_with_db(tmp_path, monkeypatch):
 
     # Pin workflow_runner's session factory to the test DB.
     from src.services import workflow_runner as _runner
-    monkeypatch.setattr(_runner, "create_session_factory",
+    monkeypatch.setattr(_runner, "get_session_factory",
                         lambda: session_factory)
 
     transport = ASGITransport(app=test_app)

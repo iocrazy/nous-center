@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 
 from src.models.llm_usage import LLMUsage
 from src.models.tts_usage import TTSUsage
-from src.models.database import create_session_factory
+from src.models.database import get_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ async def record_llm_usage(
     agent_id: str | None = None,
 ) -> None:
     """Record an LLM inference event."""
-    sf = create_session_factory()
+    sf = get_session_factory()
     async with sf() as session:
         usage = LLMUsage(
             model=model,
@@ -51,7 +51,7 @@ async def record_tts_usage(
     cached: bool = False,
 ) -> None:
     """Record a TTS synthesis event."""
-    sf = create_session_factory()
+    sf = get_session_factory()
     async with sf() as session:
         usage = TTSUsage(
             engine=engine,
@@ -69,7 +69,7 @@ async def get_usage_summary(since: datetime | None = None) -> dict:
     if since is None:
         since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
-    sf = create_session_factory()
+    sf = get_session_factory()
     async with sf() as session:
         # LLM usage
         llm_result = await session.execute(
@@ -122,7 +122,7 @@ async def get_usage_by_model(since: datetime | None = None) -> list[dict]:
     if since is None:
         since = datetime.now(timezone.utc) - timedelta(days=7)
 
-    sf = create_session_factory()
+    sf = get_session_factory()
     async with sf() as session:
         result = await session.execute(
             select(
@@ -182,7 +182,7 @@ async def get_inference_usage(
 
     bucket = func.date_trunc(interval, LLMUsage.created_at).label("bucket")
 
-    sf = create_session_factory()
+    sf = get_session_factory()
     async with sf() as session:
         stmt = (
             select(
