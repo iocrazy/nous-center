@@ -47,10 +47,18 @@ async def login(payload: LoginPayload, request: Request, response: Response) -> 
         # work the same in both environments.
         return LoginOk()
 
+    # 限流(防在线暴力,bug hunt round2 #3):锁定期内直接 429。
+    from src.api import login_throttle  # noqa: PLC0415
+    locked = login_throttle.remaining_lock_seconds(request)
+    if locked > 0:
+        raise HTTPException(status_code=429, detail=f"登录尝试过多,请 {int(locked) + 1}s 后重试")
+
     expected = settings.ADMIN_PASSWORD.encode("utf-8")
     given = payload.password.encode("utf-8")
     if not hmac.compare_digest(given, expected):
+        login_throttle.record_failure(request)
         raise HTTPException(status_code=401, detail="invalid password")
+    login_throttle.record_success(request)
 
     token, max_age = issue_token()
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"

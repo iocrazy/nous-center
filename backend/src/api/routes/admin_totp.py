@@ -144,6 +144,12 @@ async def totp_login(
     if not is_login_required():
         raise HTTPException(status_code=400, detail="admin login is disabled")
 
+    # 限流(防 TOTP 6 位码在线暴力,bug hunt round2 #3 —— 本端点最关键)。
+    from src.api import login_throttle  # noqa: PLC0415
+    locked = login_throttle.remaining_lock_seconds(request)
+    if locked > 0:
+        raise HTTPException(status_code=429, detail=f"登录尝试过多,请 {int(locked) + 1}s 后重试")
+
     rows = (
         await session.execute(
             select(TotpSecret).where(TotpSecret.verified_at.is_not(None))
@@ -158,7 +164,9 @@ async def totp_login(
             matched = r
             break
     if matched is None:
+        login_throttle.record_failure(request)
         raise HTTPException(status_code=401, detail="invalid code")
+    login_throttle.record_success(request)
 
     matched.last_used_at = datetime.now(timezone.utc)
     await session.commit()
