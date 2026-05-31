@@ -17,6 +17,17 @@ _last_poll: float = 0
 _stats_lock = threading.Lock()  # protects _gpu_stats and _last_poll
 
 
+def _smi_int(s: str, default: int = 0) -> int:
+    """nvidia-smi 字段 → int,`[N/A]`/空/非数字降级 default(round5)。"""
+    s = (s or "").strip()
+    if not s or s == "[N/A]":
+        return default
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return default
+
+
 def poll_gpu_stats() -> list[dict]:
     """Query nvidia-smi for current GPU memory usage."""
     global _gpu_stats, _last_poll
@@ -45,20 +56,28 @@ def poll_gpu_stats() -> list[dict]:
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) < 6:
                     continue
-                stats.append(
-                    {
-                        "index": int(parts[0]),
-                        "used_mb": int(parts[1]),
-                        "total_mb": int(parts[2]),
-                        "free_mb": int(parts[3]),
-                        "utilization_pct": int(parts[4]),
-                        "temperature": int(parts[5]),
-                    }
-                )
+                # round5:util/temp 可能报 `[N/A]` → int 崩、整个 poll 抛 → _gpu_stats 留
+                # 陈旧值且 _last_poll 不更新(无负缓存,每次都重跑 nvidia-smi)→ check_and_evict
+                # / allocator 用错 free_mb。_smi_int 守卫 + per-line try。
+                try:
+                    stats.append(
+                        {
+                            "index": _smi_int(parts[0]),
+                            "used_mb": _smi_int(parts[1]),
+                            "total_mb": _smi_int(parts[2]),
+                            "free_mb": _smi_int(parts[3]),
+                            "utilization_pct": _smi_int(parts[4]),
+                            "temperature": _smi_int(parts[5]),
+                        }
+                    )
+                except Exception:  # noqa: BLE001 — 单卡坏行不清空整表
+                    continue
             _gpu_stats = stats
             _last_poll = now
         except Exception as e:
             logger.warning("nvidia-smi poll failed: %s", e)
+            # 失败也吃 2s 负缓存,避免持续失败时每次重跑 subprocess + 5s timeout 风暴。
+            _last_poll = now
 
         return list(_gpu_stats)
 

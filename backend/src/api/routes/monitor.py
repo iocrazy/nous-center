@@ -20,6 +20,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/monitor", tags=["monitor"])
 
 
+def _smi_int(s: str, default: int = 0) -> int:
+    """nvidia-smi 字段 → int,`[N/A]`/空/非数字降级 default(round5,防全卡消失)。"""
+    s = (s or "").strip()
+    if not s or s == "[N/A]":
+        return default
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return default
+
+
+def _smi_float(s: str, default: float = 0.0) -> float:
+    s = (s or "").strip()
+    if not s or s == "[N/A]":
+        return default
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
 def _gpu_stats_nvidia_smi() -> list[dict] | None:
     """Query nvidia-smi for GPU stats. Returns None on failure."""
     try:
@@ -41,27 +62,34 @@ def _gpu_stats_nvidia_smi() -> list[dict] | None:
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 9:
                 continue
-            idx = int(parts[0])
-            mem_used = int(parts[2])
-            mem_total = int(parts[3])
-            gpus.append(
-                {
-                    "index": idx,
-                    "name": parts[1],
-                    "utilization_gpu": int(parts[4]),
-                    "utilization_memory": round(mem_used / mem_total * 100, 1)
-                    if mem_total > 0
-                    else 0,
-                    "temperature": int(parts[5]),
-                    "fan_speed": int(parts[6]) if parts[6] != "[N/A]" else 0,
-                    "power_draw_w": float(parts[7]) if parts[7] != "[N/A]" else 0,
-                    "power_limit_w": float(parts[8]) if parts[8] != "[N/A]" else 0,
-                    "memory_used_mb": mem_used,
-                    "memory_total_mb": mem_total,
-                    "memory_free_mb": mem_total - mem_used,
-                    "processes": [],
-                }
-            )
+            # round5:util/temp/mem 早先无条件 int() —— 某卡 util/temp 报 `[N/A]`
+            # (被动散热卡/特定驱动状态)时 int("[N/A]") ValueError,而整循环包在外层单个
+            # try 里 → 不是丢一张卡,而是 gpus 整体变 []、所有 GPU 从面板消失。用 _smi_int
+            # 守卫(对齐 fan/power 已有的 != "[N/A]"),并 per-line try:坏行 continue。
+            try:
+                mem_used = _smi_int(parts[2])
+                mem_total = _smi_int(parts[3])
+                gpus.append(
+                    {
+                        "index": _smi_int(parts[0]),
+                        "name": parts[1],
+                        "utilization_gpu": _smi_int(parts[4]),
+                        "utilization_memory": round(mem_used / mem_total * 100, 1)
+                        if mem_total > 0
+                        else 0,
+                        "temperature": _smi_int(parts[5]),
+                        "fan_speed": _smi_int(parts[6]),
+                        "power_draw_w": _smi_float(parts[7]),
+                        "power_limit_w": _smi_float(parts[8]),
+                        "memory_used_mb": mem_used,
+                        "memory_total_mb": mem_total,
+                        "memory_free_mb": mem_total - mem_used,
+                        "processes": [],
+                    }
+                )
+            except Exception:  # noqa: BLE001 — 单卡坏行不该清空整张表
+                logger.warning("nvidia-smi 行解析失败,跳过: %r", line)
+                continue
         return gpus
     except Exception:
         return None
