@@ -119,6 +119,36 @@ async def test_stick_cleared_on_unload(stubbed, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_in_use_adapter_not_unloaded_even_force(stubbed):
+    """in-use 守卫:正在 infer 的 adapter,unload 即使 force=True 也拒绝(否则 mid-CUDA 卸载 segfault)。
+    释放后才可卸载。修「释放 image 按钮 + 正在跑 → runner segfault」。"""
+    mm, _builds, _ = stubbed
+    adapter = await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline")
+    mid = next(iter(mm._models))
+
+    mm.mark_adapter_in_use(adapter)
+    assert mid in mm._in_use
+    await mm.unload_model(mid, force=True)
+    assert mid in mm._models  # in-use → 拒绝卸载
+
+    mm.release_adapter(adapter)
+    assert mid not in mm._in_use
+    await mm.unload_model(mid, force=True)
+    assert mid not in mm._models  # 释放后可卸载
+
+
+@pytest.mark.asyncio
+async def test_evict_lru_skips_in_use(stubbed):
+    """evict_lru 不驱逐正在 infer 的 adapter(否则正用的被踢 → segfault / 重载)。"""
+    mm, _builds, _ = stubbed
+    adapter = await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline")
+    mid = next(iter(mm._models))
+    mm.mark_adapter_in_use(adapter)
+    assert await mm.evict_lru() is None  # 唯一候选在 in-use → 不驱逐
+    assert mid in mm._models
+
+
+@pytest.mark.asyncio
 async def test_auto_device_resolved(stubbed, monkeypatch):
     mm, builds, _ = stubbed
     monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram: 2)

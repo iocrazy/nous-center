@@ -145,6 +145,10 @@ class ModelManager:
         # 反向:model_id → stick identity。unload/evict 时据此清 _image_stick,避免 stale
         # stick 指向已卸载/已满的卡 + 绕过 VRAM 守卫 → 反复 OOM(#210 回归修复)。
         self._image_stick_keys: dict[str, tuple] = {}
+        # 正在 infer 的 model_id —— node-executor 在 adapter.infer 期间标记。unload/evict
+        # 绝不卸载在用的(即使 force):denoise 在 to_thread 工作线程跑,卸载 = 释放正在用的
+        # CUDA 权重 → 工作线程撞已释放显存 → segfault。
+        self._in_use: set[str] = set()
         # Per-model load failures (set by background preload tasks or prior
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
@@ -553,6 +557,25 @@ class ModelManager:
             self._load_failures.pop(model_id, None)
             logger.info("Loaded model %r on %s", model_id, device)
 
+    def _model_id_for_adapter(self, adapter: InferenceAdapter) -> str | None:
+        """given adapter instance → its model_id(_models 里反查,n 很小)。"""
+        for mid, entry in self._models.items():
+            if entry.adapter is adapter:
+                return mid
+        return None
+
+    def mark_adapter_in_use(self, adapter: InferenceAdapter) -> None:
+        """node-executor 在 adapter.infer 前调:标记其 model_id 正在用,unload/evict 跳过。"""
+        mid = self._model_id_for_adapter(adapter)
+        if mid is not None:
+            self._in_use.add(mid)
+
+    def release_adapter(self, adapter: InferenceAdapter) -> None:
+        """infer 收尾(成功/异常)调:清正在用标记。"""
+        mid = self._model_id_for_adapter(adapter)
+        if mid is not None:
+            self._in_use.discard(mid)
+
     async def unload_model(self, model_id: str, force: bool = False) -> None:
         """Unload *model_id*.
 
@@ -562,6 +585,13 @@ class ModelManager:
         async with self._lock_for(model_id):
             entry = self._models.get(model_id)
             if entry is None:
+                return
+
+            # in-use 是硬守卫,**强于 force**:绝不卸载正在 infer 的 adapter —— denoise 在
+            # to_thread 工作线程跑,卸载会释放它正在用的 CUDA 权重 → segfault。
+            if model_id in self._in_use:
+                logger.warning(
+                    "Skipping unload of in-use model %r(正在 infer,卸载会 segfault)", model_id)
                 return
 
             if not force:
@@ -715,6 +745,7 @@ class ModelManager:
             for mid, entry in self._models.items()
             if not entry.spec.resident
             and not self._references.get(mid)
+            and mid not in self._in_use  # 不驱逐正在 infer 的(否则 segfault)
             and (gpu_index is None or entry.gpu_index == gpu_index)
         ]
 
