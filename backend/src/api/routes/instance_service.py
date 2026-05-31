@@ -114,7 +114,12 @@ async def instance_run(
             400, detail="Only workflow-based instances support /run"
         )
 
-    workflow_data = instance.params_override or {}
+    # v3 发布/快速开通服务把执行图存在 deferred 列 `workflow_snapshot`,不是废弃的
+    # `params_override`(后者只 legacy/preset 路径写、v3 恒空)—— 旧代码读 params_override
+    # 导致所有 v3 workflow 服务 /run 恒 400。refresh 加载 deferred 列(get() 不会自动加载),
+    # 与 openai_compat/anthropic_compat 取齐;留 params_override 兜底兼容 legacy。
+    await session.refresh(instance, attribute_names=["workflow_snapshot"])
+    workflow_data = instance.workflow_snapshot or instance.params_override or {}
     nodes = workflow_data.get("nodes", [])
     if not nodes:
         raise HTTPException(400, detail="Workflow has no nodes")
