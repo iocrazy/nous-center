@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from src.config import get_settings
+from src.utils.path_security import validate_path
 
 
 class AgentNotFound(Exception):
@@ -47,7 +48,12 @@ def load_persona(agent_id: str) -> PersonaBundle:
 
     Raises AgentNotFound if config.json missing; AgentLoadFailed on IO/JSON errors.
     """
-    agent_dir = _agents_root() / agent_id
+    # round7:agent_id 来自请求 body(req.agent),可含 `../`。早先直接拼路径读
+    # config.json/*.md 注入 system prompt = 任意文件读 + prompt 注入。校验落在 agents root 内。
+    try:
+        agent_dir = validate_path(_agents_root() / agent_id, _agents_root())
+    except ValueError as e:
+        raise AgentNotFound(f"agent {agent_id!r} not found") from e
     if not (agent_dir / "config.json").exists():
         raise AgentNotFound(f"agent {agent_id!r} not found")
     return _load_cached(agent_id, _config_mtime(agent_dir))
