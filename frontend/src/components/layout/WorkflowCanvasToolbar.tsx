@@ -15,6 +15,7 @@ import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
 import { executeWorkflow } from '../../utils/workflowExecutor'
+import { nextSeed, type SeedControlMode } from '../../utils/seedControl'
 import { useToastStore } from '../../stores/toast'
 import { useUnpublishWorkflow } from '../../api/workflows'
 import { useNotificationStore } from '../../stores/notifications'
@@ -23,6 +24,7 @@ export default function WorkflowCanvasToolbar() {
   const { tabs, activeTabId } = useWorkspaceStore()
   const getActiveWorkflow = useWorkspaceStore((s) => s.getActiveWorkflow)
   const setWorkflow = useWorkspaceStore((s) => s.setWorkflow)
+  const updateNode = useWorkspaceStore((s) => s.updateNode)
   const { activeOverlay } = usePanelStore()
   const { isRunning, progress, start, succeed, fail, resetNodeStates, bumpTaskBadge } =
     useExecutionStore()
@@ -43,6 +45,18 @@ export default function WorkflowCanvasToolbar() {
     setShowPublishWizard(true)
   }, [activeTab, location.search])
 
+  // ComfyUI control_after_generate:遍历工作流里带 control_after_generate 的节点(KSampler),
+  // 按模式把 seed 更新成下一个值。在 Run 完成后调,改的是 store 里的节点 data(下次 Run 用新 seed)。
+  const applySeedControl = (workflow: ReturnType<typeof getActiveWorkflow>) => {
+    for (const node of workflow.nodes) {
+      const mode = node.data?.control_after_generate as SeedControlMode | undefined
+      if (!mode || mode === 'fixed') continue
+      const cur = node.data?.seed as string | number | undefined
+      const updated = nextSeed(cur, mode)
+      updateNode(node.id, { seed: updated })
+    }
+  }
+
   const handleRun = async () => {
     if (isRunning) return
     void requestNotifyPermission()
@@ -55,6 +69,9 @@ export default function WorkflowCanvasToolbar() {
       toast(taskId ? `任务已入队 · ${taskId}` : '任务已入队', 'info')
       succeed(null)
       resetNodeStates()
+      // ComfyUI control_after_generate:Run 完成后按模式更新各 KSampler 的 seed
+      // (fixed 不动 / increment+1 / decrement-1 / randomize 随机)。纯前端,下次 Run 生效。
+      applySeedControl(workflow)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       fail(msg)
