@@ -294,11 +294,12 @@ async def test_unsupported_sampler_fails_loud(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unsupported_scheduler_fails_loud(monkeypatch):
+    # sgm_uniform 现已支持(#285 补齐 ComfyUI 9 个)→ 用真不存在的名字验 fail loud。
     _fake_klein(monkeypatch)
     be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
-    with pytest.raises(ValueError, match="调度器 'sgm_uniform' 不被"):
+    with pytest.raises(ValueError, match="调度器 'nonexistent_sched' 不被"):
         await be.infer(ImageRequest(request_id="g", prompt="x", steps=2, width=64, height=64,
-                                    sampler_name="euler", scheduler="sgm_uniform"))
+                                    sampler_name="euler", scheduler="nonexistent_sched"))
 
 
 @pytest.mark.asyncio
