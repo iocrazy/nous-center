@@ -162,3 +162,39 @@ def test_no_transformer_options_in_signature():
             assert "transformer_options" not in stripped, (
                 f"{f.name}: transformer_options 是 ComfyUI 特有 kwarg,nous port 应删干净:{line!r}"
             )
+
+
+# ---- 2026-06-01 噪点根因回归(3 个真 bug,跨 ComfyUI 验证;CI 只能查源码 wiring)----
+
+
+def test_text_encoder_strips_model_prefix():
+    """root cause #1:单文件权重 key 带 `model.` 前缀,HF AutoModel 期望无前缀 →
+    不 strip 则 matched=0、312 参数全填 torch.zeros → context 垃圾 → 纯噪点。"""
+    import pathlib  # noqa: PLC0415
+    src = (pathlib.Path(__file__).parent.parent
+           / "src/services/inference/arch_anima/text_encoder.py").read_text()
+    assert 'k.startswith("model.")' in src, "text_encoder 必须 strip 单文件 model. 前缀"
+
+
+def test_pipeline_uses_wan_vae_not_qwenimage():
+    """root cause #2:qwen_image_vae.safetensors 名字带 qwen 但权重是 Wan2.1 VAE 架构。
+    必须用 AutoencoderKLWan(ComfyUI 自动检测的),不是 AutoencoderKLQwenImage(base_dim 128≠96)。"""
+    import pathlib  # noqa: PLC0415
+    src = (pathlib.Path(__file__).parent.parent
+           / "src/services/inference/arch_anima/pipeline.py").read_text()
+    assert "AutoencoderKLWan" in src, "VAE 必须用 AutoencoderKLWan(Wan 架构)"
+    # 不该再硬编码 AutoencoderKLQwenImage 加载 VAE(注释里提及历史可以,但不能 import/调用)
+    for line in src.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            continue
+        assert "AutoencoderKLQwenImage" not in s, f"残留 AutoencoderKLQwenImage:{line!r}"
+
+
+def test_denoise_feeds_sigma_not_timestep():
+    """root cause #3:Anima DiT 期望 timestep=sigma(0-1),ComfyUI model_sampling multiplier=1.0。
+    diffusers scheduler.timesteps 是 0-1000 → 喂错差 1000 倍 → DiT 输出垃圾。必须喂 scheduler.sigmas。"""
+    import pathlib  # noqa: PLC0415
+    src = (pathlib.Path(__file__).parent.parent
+           / "src/services/inference/arch_anima/pipeline.py").read_text()
+    assert "self.scheduler.sigmas[i]" in src, "denoise 循环必须喂 scheduler.sigmas(sigma),不是 timesteps"

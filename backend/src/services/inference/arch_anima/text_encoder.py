@@ -97,6 +97,18 @@ class AnimaTextEncoder:
 
         # Qwen3-0.6B base:加载单文件 state_dict 到 AutoModel。
         sd = load_file(str(self.qwen_weights_path))
+        # 关键修复(噪点根因):单文件权重 key 带 `model.` 前缀(Qwen3ForCausalLM 顶层),
+        # 但 AutoModel.from_config(qwen3) 加载的是 inner Qwen3Model,期望 key 无 `model.` 前缀
+        # → 不 strip 则 matched=0 / 312 个参数全落 meta → 下方 meta 兜底全填 torch.zeros →
+        # text encoder 输出纯噪声 context → DiT 收到零 conditioning → 出**纯噪点**(Anima 一直
+        # 没真正出过图,旧 smoke 的 "PASS" 只是没崩、没真看图)。strip `model.` 让 310 key 全 matched。
+        if any(k.startswith("model.") for k in sd) and not any(
+            k.startswith("layers.") for k in sd
+        ):
+            sd = {
+                (k[len("model."):] if k.startswith("model.") else k): v
+                for k, v in sd.items()
+            }
         # config 来源(优先级):bundle config(免联网)→ HF 网络拉(兜底)。
         if self._BUNDLE_CONFIG.exists():
             with self._BUNDLE_CONFIG.open() as fh:
@@ -161,8 +173,12 @@ class AnimaTextEncoder:
             t5_input = self._t5_tokenizer(text, return_tensors="pt", padding=False)
             t5_ids = t5_input["input_ids"]
             result["t5xxl_ids"] = t5_ids.to(self.device)
-            # ComfyUI 设计:所有 weights = 1.0(逐 token 等权)。
-            result["t5xxl_weights"] = torch.ones_like(t5_ids, dtype=torch.float32, device=self.device)
+            # ComfyUI 设计:所有 weights = 1.0(逐 token 等权)。形状必须 (1, L, 1) —— LLMAdapter
+            # 输出是 (1, L, 1024),weights 要按 token 维(L)广播,不是按 hidden 维。早先 (1, L) →
+            # 广播到 hidden 维炸 "size 1024 vs 100"。unsqueeze 末维。
+            result["t5xxl_weights"] = torch.ones(
+                (t5_ids.shape[0], t5_ids.shape[1], 1), dtype=torch.float32, device=self.device,
+            )
         return result
 
     def unload(self) -> None:
