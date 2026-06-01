@@ -153,6 +153,19 @@ nodes:
           - { value: exponential, label: "Exponential", description: "指数衰减 — 早期细节更强" }
           - { value: beta,        label: "Beta",        description: "Beta 分布 — 风格变化温和" }
       - { name: seed,       label: "Seed",  widget: input, default: "" }
+      # 对齐 ComfyUI control_after_generate(纯前端,每次 Run 后按模式更新上面的 seed):
+      # fixed=不变 / increment=+1 / decrement=-1 / randomize=随机。本 widget 不传后端
+      # (前端在 Run 完成后改 seed 值)。default=fixed(比 ComfyUI 的 randomize 保守,
+      # 单图调试时 seed 不乱跳;想批量探索手动选 randomize)。
+      - name: control_after_generate
+        label: "生成后控制"
+        widget: select
+        default: fixed
+        options:
+          - { value: fixed,     label: "固定 (fixed)",      description: "seed 不变 — 复现同一张" }
+          - { value: increment, label: "递增 (increment)",  description: "每次 Run 后 seed +1" }
+          - { value: decrement, label: "递减 (decrement)",  description: "每次 Run 后 seed -1" }
+          - { value: randomize, label: "随机 (randomize)",  description: "每次 Run 后随机新 seed — 批量探索构图" }
 
   flux2_vae_decode:
     label: "VAE Decode"
