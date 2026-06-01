@@ -90,7 +90,14 @@ class FluxKleinArchAdapter:
         return {"euler"}
 
     def supported_schedulers(self) -> set[str]:
-        return {"normal", "karras", "exponential", "beta"}
+        # 9 个全支持(对齐 ComfyUI):normal/karras/exponential/beta 走 diffusers use_*_sigmas;
+        # simple/sgm_uniform/ddim_uniform/linear_quadratic/kl_optimal 手动算 sigma 注入
+        # pipe(sigmas=...)。sigma 算法 port 自 ComfyUI,数值经 ground truth 验过
+        # (sigma_schedules.py + test_sigma_schedules.py)。
+        return {
+            "normal", "karras", "exponential", "beta",
+            "simple", "sgm_uniform", "ddim_uniform", "linear_quadratic", "kl_optimal",
+        }
 
 
 # Registry — key is the diffusers Pipeline class name as returned by

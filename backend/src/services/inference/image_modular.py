@@ -309,6 +309,8 @@ class ModularImageBackend(InferenceAdapter):
         # PR-2 当前已装的 (sampler_name, scheduler);初值 = 参考库默认(FlowMatchEuler + normal sigmas)
         # → 默认请求不触发换 scheduler。
         self._sched_key: tuple[str, str] = ("euler", "normal")
+        # injected scheduler 名(simple/sgm_uniform/...);非 None 时 infer 传 pipe(sigmas=...)。
+        self._injected_scheduler: str | None = None
 
     async def load(self, device: str) -> None:
         """对齐 ABC;实际 pipeline 构建在首次 infer 时 lazy(_ensure_pipe)。"""
@@ -332,6 +334,7 @@ class ModularImageBackend(InferenceAdapter):
         # 还停在上轮值,请求同 key 时会漏装实际 scheduler → 静默用错 sigma 调度出错图。
         # 复位回 __init__ 的默认,使缓存键与新 pipe 的真实默认重新同步。
         self._sched_key = ("euler", "normal")
+        self._injected_scheduler = None
         if pipe is not None:
             # 先卸 LoRA(peft adapter 也占显存);失败不该挡卸载主流程。
             try:
@@ -480,14 +483,20 @@ class ModularImageBackend(InferenceAdapter):
         key = (sampler_name, scheduler)
         if key == self._sched_key:
             return
+        from src.services.inference.sigma_schedules import NATIVE_SCHEDULERS  # noqa: PLC0415
         cls_map = _import_flow_schedulers()
         cls = cls_map.get(key[0]) or cls_map["euler"]
         cfg = dict(pipe.scheduler.config)
-        cfg["use_karras_sigmas"] = key[1] == "karras"
-        cfg["use_exponential_sigmas"] = key[1] == "exponential"
-        cfg["use_beta_sigmas"] = key[1] == "beta"
+        # native 4 个走 diffusers use_*_sigmas;injected 5 个把这些 flag 全关,改由 infer
+        # 传 pipe(sigmas=...)注入(见 _injected_scheduler / infer call_kwargs)。
+        is_native = key[1] in NATIVE_SCHEDULERS
+        cfg["use_karras_sigmas"] = is_native and key[1] == "karras"
+        cfg["use_exponential_sigmas"] = is_native and key[1] == "exponential"
+        cfg["use_beta_sigmas"] = is_native and key[1] == "beta"
         pipe.scheduler = cls.from_config(cfg)
         self._sched_key = key
+        # injected scheduler:记下名字,infer 据此算 sigma 传 pipe(sigmas=...)。
+        self._injected_scheduler = key[1] if key[1] not in NATIVE_SCHEDULERS else None
 
     def _validate_sampler_scheduler(self, sampler_name: str, scheduler: str) -> None:
         """据 model_arch_adapter 注册表校验本架构是否支持该采样器/调度器;不支持 → 清晰报错。
@@ -583,6 +592,17 @@ class ModularImageBackend(InferenceAdapter):
             guidance_scale=cfg,
             generator=gen,
         )
+        # injected scheduler(simple/sgm_uniform/ddim_uniform/linear_quadratic/kl_optimal):
+        # diffusers FlowMatch 原生无对应 use_*_sigmas,手动算 sigma 传 pipe(sigmas=...)。
+        # pipe 期望不含末尾 0(它自己 append),compute_sigmas 返回含末尾 0 → 去掉末尾 0。
+        if self.pipeline_class == "Flux2KleinPipeline" and self._injected_scheduler:
+            from src.services.inference.sigma_schedules import compute_sigmas  # noqa: PLC0415
+            shift = float(getattr(pipe.scheduler.config, "shift", 3.0) or 3.0) \
+                if hasattr(pipe.scheduler, "config") else 3.0
+            sigmas = compute_sigmas(self._injected_scheduler, int(req.steps), shift=shift)
+            # 去末尾 0(diffusers pipe 自己补);num_inference_steps 与 sigmas 互斥时以 sigmas 为准。
+            call_kwargs["sigmas"] = sigmas[:-1] if sigmas and sigmas[-1] == 0.0 else sigmas
+            call_kwargs.pop("num_inference_steps", None)
         neg = (getattr(req, "negative_prompt", "") or "").strip()
         if (neg and cfg > 1.0 and self.pipeline_class == "Flux2KleinPipeline"
                 and hasattr(pipe, "encode_prompt")):

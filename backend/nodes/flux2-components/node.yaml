@@ -147,11 +147,19 @@ nodes:
         label: "调度器"
         widget: select
         default: normal
+        # 对齐 ComfyUI 9 个调度器(sigma 算法 port 自 comfy/samplers.py,数值经 ground truth 验)。
+        # normal/karras/exponential/beta 走 diffusers use_*_sigmas;simple/sgm_uniform/ddim_uniform/
+        # linear_quadratic/kl_optimal 手动算 sigma 注入 pipe(sigmas=...)。
         options:
-          - { value: normal,      label: "Normal",      description: "线性默认 — 参考库基线" }
-          - { value: karras,      label: "Karras",      description: "低/高 step 都更平滑 — 推荐细节" }
-          - { value: exponential, label: "Exponential", description: "指数衰减 — 早期细节更强" }
-          - { value: beta,        label: "Beta",        description: "Beta 分布 — 风格变化温和" }
+          - { value: normal,           label: "Normal",           description: "线性默认 — 参考库基线" }
+          - { value: karras,           label: "Karras",           description: "低/高 step 都更平滑 — 推荐细节" }
+          - { value: exponential,      label: "Exponential",      description: "指数衰减 — 早期细节更强" }
+          - { value: beta,             label: "Beta",             description: "Beta 分布 — 风格变化温和" }
+          - { value: sgm_uniform,      label: "SGM Uniform",      description: "均匀 timestep — 很多 ComfyUI 工作流默认" }
+          - { value: simple,           label: "Simple",           description: "简单等距取 sigma 表" }
+          - { value: ddim_uniform,     label: "DDIM Uniform",     description: "DDIM 均匀(为 epsilon/v-pred 设计,flow-match 上效果待验)" }
+          - { value: linear_quadratic, label: "Linear Quadratic", description: "前段线性后段二次 — Mochi 风格" }
+          - { value: kl_optimal,       label: "KL Optimal",       description: "KL 最优(arctan 插值)" }
       - { name: seed,       label: "Seed",  widget: input, default: "" }
       # 对齐 ComfyUI control_after_generate(纯前端,每次 Run 后按模式更新上面的 seed):
       # fixed=不变 / increment=+1 / decrement=-1 / randomize=随机。本 widget 不传后端
