@@ -46,9 +46,14 @@ def test_flux_klein_supported_samplers_euler_only():
 
 
 def test_flux_klein_supported_schedulers():
-    """PR-2:normal/karras/exponential/beta 经 FlowMatchEuler 真模型验过。"""
+    """对齐 ComfyUI 9 个:normal/karras/exponential/beta(diffusers use_*_sigmas)+
+    simple/sgm_uniform/ddim_uniform/linear_quadratic/kl_optimal(手动 sigma 注入)。
+    9 个均真模型 smoke 出图验过(smoke_schedulers.py)。"""
     adapter = FluxKleinArchAdapter()
-    assert adapter.supported_schedulers() == {"normal", "karras", "exponential", "beta"}
+    assert adapter.supported_schedulers() == {
+        "normal", "karras", "exponential", "beta",
+        "simple", "sgm_uniform", "ddim_uniform", "linear_quadratic", "kl_optimal",
+    }
 
 
 def test_unknown_pipeline_class_not_in_registry():
