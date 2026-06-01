@@ -9,7 +9,11 @@ vi.mock('../../api/vllm', () => ({
   useVLLMMetrics: () => ({ data: { instances: [] }, isLoading: false, error: null }),
   useUpdateLaunchParams: () => ({ mutate: vi.fn(), isPending: false }),
 }))
-vi.mock('../../api/engines', () => ({ useEngines: () => ({ data: [] }) }))
+vi.mock('../../api/engines', () => ({
+  useEngines: () => ({ data: [] }),
+  useLoadedAdapters: () => ({ data: { count: 0, entries: [] } }),
+  useUnloadImageAdapters: () => ({ mutate: () => {}, isPending: false }),
+}))
 vi.mock('../../api/system', () => ({
   useSysGpus: () => ({
     data: {

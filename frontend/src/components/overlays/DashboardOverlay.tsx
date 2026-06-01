@@ -4,7 +4,7 @@ import {
   useSysGpus, useSysStats, useSysProcesses, useKillProcess,
   type SysGpuInfo, type GpuProcessInfo,
 } from '../../api/system'
-import { useEngines, useUnloadImageAdapters } from '../../api/engines'
+import { useEngines, useUnloadImageAdapters, useLoadedAdapters } from '../../api/engines'
 import { useDashboardSummary, type AlertItem, type TopServiceRow } from '../../api/dashboard'
 import { useRuntimeMetrics, type RuntimeSnapshot } from '../../api/observability'
 import { useVLLMMetrics, useUpdateLaunchParams } from '../../api/vllm'
@@ -478,9 +478,16 @@ function CollapsibleSystem({
   const { data: procData } = useSysProcesses()
   const killProcess = useKillProcess()
   const { data: runners } = useRunners()
+  // image/tts adapter 真加载在 runner 子进程,主进程 engines 看不到 → 必须聚合
+  // /loaded-adapters(各 runner Pong 快照)。否则 Dashboard 系统状态恒显「0 模型常驻 /
+  // 已加载 (0)」而 GPU 卡明明有 Runner: Image 占显存(Bug 3 在 Dashboard 分支的残留;
+  // ModelsOverlay 已用 useLoadedAdapters 聚合,本组件没跟上)。
+  const { data: loadedAdaptersData } = useLoadedAdapters()
 
   const loadedModels = (engines ?? []).filter((e) => e.status === 'loaded')
-  const subtitle = `${gpuData?.gpus.length ?? 0}× GPU · ${loadedModels.length} 模型常驻`
+  const loadedAdapters = loadedAdaptersData?.entries ?? []
+  const totalLoaded = loadedModels.length + loadedAdapters.length
+  const subtitle = `${gpuData?.gpus.length ?? 0}× GPU · ${totalLoaded} 模型常驻`
 
   const fmt = (n: number, d = 1) => n.toFixed(d)
 
@@ -601,11 +608,11 @@ function CollapsibleSystem({
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ flex: 1 }}>已加载模型 ({loadedModels.length})</span>
+              <span style={{ flex: 1 }}>已加载模型 ({totalLoaded})</span>
               <UnloadImageAdaptersButton />
             </div>
           </div>
-          {loadedModels.length === 0 && (
+          {totalLoaded === 0 && (
             <div style={{ fontSize: 12, color: 'var(--muted)', padding: '4px 0' }}>
               无常驻模型
             </div>
@@ -646,6 +653,44 @@ function CollapsibleSystem({
                   GPU {m.loaded_gpus.join(',')} · {m.vram_gb}GB
                 </span>
               )}
+            </div>
+          ))}
+          {/* runner 子进程加载的 image/tts adapter(主进程 engines 看不到,聚合 Pong 快照)*/}
+          {loadedAdapters.map((a) => (
+            <div
+              key={a.model_id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 0',
+                fontSize: 12,
+              }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: 'var(--ok, #22c55e)',
+                }}
+              />
+              <span style={{ color: 'var(--text)' }}>{a.display_name}</span>
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: '1px 6px',
+                  borderRadius: 3,
+                  background: 'rgba(34,197,94,0.15)',
+                  color: 'var(--accent-2, #22c55e)',
+                }}
+              >
+                {a.model_type.toUpperCase()}
+              </span>
+              <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11 }}>
+                {a.gpu_index != null ? `GPU ${a.gpu_index}` : ''}
+                {a.vram_mb != null ? ` · ${(a.vram_mb / 1024).toFixed(1)}GB` : ''}
+              </span>
             </div>
           ))}
 
