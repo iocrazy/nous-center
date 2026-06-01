@@ -105,7 +105,17 @@ class AnimaPipeline:
             # 用 HF 上 Qwen/Qwen-Image 的 vae config(后续 PR 可 bundle)
             vae_cfg = AutoencoderKLQwenImage.load_config("Qwen/Qwen-Image", subfolder="vae")
             vae = AutoencoderKLQwenImage.from_config(vae_cfg)
-            vae.load_state_dict(vae_sd, strict=False)
+            try:
+                vae.load_state_dict(vae_sd, strict=False)
+            except RuntimeError as e:
+                # round-2026-06-01:防御纵深 —— 用户给 anima 接了非 Qwen-Image VAE(如 flux2-vae)
+                # 时 size mismatch。strict=False 也救不了形状不符(2D conv vs Qwen 的 3D)。
+                # 翻成人话,别甩裸 PyTorch state_dict 堆栈(用户看 size mismatch [128,3,3,3] 一脸懵)。
+                raise RuntimeError(
+                    f"Anima 需要 Qwen-Image VAE(qwen_image_vae.safetensors),"
+                    f"当前 VAE 文件 '{vae_weights}' 权重形状不符(疑似接了 Flux2/其它架构的 VAE)。"
+                    f"请在 Load VAE 选 qwen_image_vae。原始错误:{e}"
+                ) from e
             vae = vae.to(device, dtype=dtype).eval()
 
         # 4) FlowMatchEulerDiscreteScheduler(shift=3.0 对齐 anima sampling_settings)
