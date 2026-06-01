@@ -550,8 +550,12 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         }
       }
       if (data.type === 'node_progress' && data.node_id === id) {
-        // 真采样进度:detail = "step N/T",progress = 0-1。
-        const m = typeof data.detail === 'string' ? /step\s+(\d+)\s*\/\s*(\d+)/.exec(data.detail) : null
+        // 真采样进度:detail = "<stage> N/T"(后端 progress_tracker 发的是
+        // "dit_denoise 1/25" / "text_encode 0/25" 等,stage 名前缀随引擎变;早先正则
+        // 写死 "step N/T" → 对不上 dit_denoise → 进度条永不显示「RUNNING 无运行进度」)。
+        // 放宽:抓任意 "N/T"(可有前缀词),不依赖具体 stage 字面词。progress 字段(0-1)
+        // 仍优先用于百分比。
+        const m = typeof data.detail === 'string' ? /(\d+)\s*\/\s*(\d+)/.exec(data.detail) : null
         if (m) {
           const step = Number(m[1])
           const total = Number(m[2])
