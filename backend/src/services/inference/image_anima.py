@@ -103,7 +103,16 @@ class AnimaImageBackend(InferenceAdapter):
                 "AnimaImageBackend 需要 NOUS_ANIMA_QWEN_TOKENIZER env(qwen25_tokenizer 目录路径);"
                 "spec 2026-05-26 决策:tokenizer 6.7M 不 bundle 进 repo,caller 提供。",
             )
-        t5_tok = os.environ.get("NOUS_ANIMA_T5_TOKENIZER")  # 可选
+        # t5_tokenizer 是**必需**(不是可选!):Anima 的 LLMAdapter 桥接需要它,缺它 →
+        # DiT 收原始 qwen 隐状态而非 LLMAdapter 处理后的 conditioning → 纯噪点(2026-06-01
+        # 噪点根因之一,跨 ComfyUI 验证)。早先 spec 标"可选"是错的。缺则明确 RuntimeError,
+        # 别静默出噪点。
+        t5_tok = os.environ.get("NOUS_ANIMA_T5_TOKENIZER")
+        if not t5_tok:
+            raise RuntimeError(
+                "AnimaImageBackend 需要 NOUS_ANIMA_T5_TOKENIZER env(t5_tokenizer 目录);"
+                "Anima 的 LLMAdapter 桥接必需,缺它出纯噪点。ComfyUI 的 comfy/text_encoders/t5_tokenizer。",
+            )
 
         torch_dtype = torch.bfloat16 if self.dtype in ("bfloat16", "default") else torch.float16
         self._pipe = AnimaPipeline.from_components(

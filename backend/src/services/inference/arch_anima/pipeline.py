@@ -41,7 +41,7 @@ class AnimaPipeline:
         self,
         transformer: torch.nn.Module,   # nous Anima(继承 MiniTrainDIT)
         text_encoder,                    # nous AnimaTextEncoder(已 load)
-        vae: torch.nn.Module,            # diffusers AutoencoderKLQwenImage
+        vae: torch.nn.Module,            # diffusers AutoencoderKLWan(qwen_image_vae 实为 Wan VAE)
         scheduler,                       # diffusers FlowMatchEulerDiscreteScheduler
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
@@ -74,7 +74,6 @@ class AnimaPipeline:
         - t5_tokenizer_dir:可选 t5_tokenizer/,启用 LLMAdapter 桥接路径
         """
         from diffusers import (  # noqa: PLC0415
-            AutoencoderKLQwenImage,
             FlowMatchEulerDiscreteScheduler,
         )
 
@@ -96,24 +95,21 @@ class AnimaPipeline:
         )
         te.load()
 
-        # 3) Qwen-Image VAE(单文件 → diffusers AutoencoderKLQwenImage)
+        # 3) VAE(单文件)。**关键修复(噪点根因)**:`qwen_image_vae.safetensors` 名字带
+        # "qwen_image" 但权重 key 是 **Wan 2.1 VAE** 架构(decoder.middle.0.residual.0.gamma /
+        # conv1.weight / decoder.head.0.gamma),不是 diffusers AutoencoderKLQwenImage。
+        # ComfyUI 按权重 key 自动检测 → 加载成 comfy.ldm.wan.vae.WanVAE(base_dim=96)。我们
+        # 早先硬编码塞进 AutoencoderKLQwenImage(base_dim=128)→ 解码网络全错(strict=False 静默
+        # 部分加载)→ **纯噪点**。改用 diffusers AutoencoderKLWan.from_single_file(吃 Wan 原生 key)。
         vae: Optional[torch.nn.Module] = None
         if vae_weights is not None:
-            from safetensors.torch import load_file  # noqa: PLC0415
-
-            vae_sd = load_file(vae_weights, device="cpu")
-            # 用 HF 上 Qwen/Qwen-Image 的 vae config(后续 PR 可 bundle)
-            vae_cfg = AutoencoderKLQwenImage.load_config("Qwen/Qwen-Image", subfolder="vae")
-            vae = AutoencoderKLQwenImage.from_config(vae_cfg)
+            from diffusers import AutoencoderKLWan  # noqa: PLC0415
             try:
-                vae.load_state_dict(vae_sd, strict=False)
-            except RuntimeError as e:
-                # round-2026-06-01:防御纵深 —— 用户给 anima 接了非 Qwen-Image VAE(如 flux2-vae)
-                # 时 size mismatch。strict=False 也救不了形状不符(2D conv vs Qwen 的 3D)。
-                # 翻成人话,别甩裸 PyTorch state_dict 堆栈(用户看 size mismatch [128,3,3,3] 一脸懵)。
+                vae = AutoencoderKLWan.from_single_file(vae_weights, torch_dtype=dtype)
+            except Exception as e:  # noqa: BLE001
                 raise RuntimeError(
-                    f"Anima 需要 Qwen-Image VAE(qwen_image_vae.safetensors),"
-                    f"当前 VAE 文件 '{vae_weights}' 权重形状不符(疑似接了 Flux2/其它架构的 VAE)。"
+                    f"Anima 需要 Wan 架构 VAE(qwen_image_vae.safetensors,内部是 Wan2.1 VAE),"
+                    f"加载 '{vae_weights}' 失败(疑似接了非 Wan VAE,如 flux2-vae)。"
                     f"请在 Load VAE 选 qwen_image_vae。原始错误:{e}"
                 ) from e
             vae = vae.to(device, dtype=dtype).eval()
@@ -180,7 +176,14 @@ class AnimaPipeline:
 
         # 4) Denoise loop(CFG = 双 forward)
         for i, t in enumerate(self.scheduler.timesteps):
-            t_in = t.unsqueeze(0).to(self.device, dtype=self.dtype)
+            # **关键修复(噪点根因)**:Anima DiT 期望 timestep = **sigma(0-1)**,不是
+            # diffusers scheduler 的 timesteps(0-1000)。ComfyUI Anima 的 model_sampling
+            # multiplier=1.0 → 喂 DiT 的 timestep = sigma。我们早先直接喂 scheduler.timesteps
+            # (0-1000)→ t_embedder 收到大 1000 倍的值 → DiT 输出垃圾 → 纯噪点。
+            # scheduler.sigmas[i] 正好等于 ComfyUI 的 timestep(=sigma);用它喂 DiT,
+            # scheduler.step 仍用原 t(它内部按 t 查 sigma)。
+            sigma = self.scheduler.sigmas[i]
+            t_in = sigma.unsqueeze(0).to(self.device, dtype=self.dtype)
             cond_pred = self.transformer(
                 latents, t_in, cond_ctx,
                 t5xxl_ids=cond_t5_ids, t5xxl_weights=cond_t5_w,

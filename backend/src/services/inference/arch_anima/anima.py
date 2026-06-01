@@ -293,9 +293,13 @@ class LLMAdapter(nn.Module):
             if source_attention_mask.ndim == 2:
                 source_attention_mask = source_attention_mask.unsqueeze(1).unsqueeze(1)
 
-        context = source_hidden_states
+        # LLMAdapter 路径首次被真正执行(早先 t5 桥接未接 → DiT 收原始 qwen 隐状态出噪点)。
+        # qwen context 可能是 float32(text encoder last_hidden_state),adapter 权重是 bf16 →
+        # k_proj/q_proj dtype mismatch。统一 cast 到 adapter 参数 dtype。
+        _adapter_dtype = next(self.parameters()).dtype
+        context = source_hidden_states.to(_adapter_dtype)
         # ComfyUI 原版用 operations.Embedding(out_dtype=...) — 我们用 nn.Embedding 再 .to(dtype) 替代。
-        x = self.in_proj(self.embed(target_input_ids).to(context.dtype))
+        x = self.in_proj(self.embed(target_input_ids).to(_adapter_dtype))
         position_ids = torch.arange(x.shape[1], device=x.device).unsqueeze(0)
         position_ids_context = torch.arange(context.shape[1], device=x.device).unsqueeze(0)
         position_embeddings = self.rotary_emb(x, position_ids)
@@ -342,10 +346,12 @@ class Anima(MiniTrainDIT):
             return text_embeds
         out = self.llm_adapter(text_embeds, text_ids)
         if t5xxl_weights is not None:
-            out = out * t5xxl_weights
+            # weights 可能是 float32 → 乘后会把 out 提升 float32,流到 DiT cross_attn(bf16)
+            # 再炸 dtype。统一 cast 回 out dtype。
+            out = out * t5xxl_weights.to(out.dtype)
         if out.shape[1] < 512:
             out = F.pad(out, (0, 0, 0, 512 - out.shape[1]))
-        return out
+        return out.to(text_embeds.dtype)
 
     def forward(
         self,
