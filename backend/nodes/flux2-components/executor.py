@@ -133,6 +133,30 @@ async def exec_encode_prompt(data: dict, inputs: dict) -> dict:
     }}
 
 
+# 架构兼容表:DiT(diffusion model)的 adapter_arch → 它能配的 CLIP type 集合。
+# 端口类型校验只到 MODEL/CLIP/VAE 类别,管不了「架构语义」—— anima DiT 配 flux2 CLIP/VAE
+# 在前端连得上、inline 节点也全过,直到 runner 真加载模型才甩 PyTorch size-mismatch 堆栈
+# (AutoencoderKLQwenImage / unexpected weight keys),用户看不懂。这里在主进程派发前拦,
+# 给人话错误(node.yaml 注释的意图:catch category mismatches at draw time)。
+_ARCH_CLIP_COMPAT = {
+    "anima": {"anima", "qwen"},      # Anima 2B DiT 自带 qwen3 text encoder
+    "flux2": {"flux2", "flux1"},     # Flux2 family
+    "flux1": {"flux1", "flux2"},
+}
+
+
+def _check_arch_compat(unet_arch: str, clip_type: str) -> None:
+    allowed = _ARCH_CLIP_COMPAT.get(unet_arch)
+    if allowed is not None and clip_type not in allowed:
+        raise RuntimeError(
+            f"架构不匹配:Diffusion Model 架构是 '{unet_arch}',但 CLIP 架构是 '{clip_type}'。"
+            f"'{unet_arch}' 需配 {sorted(allowed)} 之一的 CLIP/text encoder"
+            + ("。Anima 用 qwen_3_06b_base.safetensors(架构选 anima/qwen)+ "
+               "qwen_image_vae.safetensors" if unet_arch == "anima" else "")
+            + "。请在 Load CLIP / Load VAE 选对应架构的组件。"
+        )
+
+
 async def exec_ksampler(data: dict, inputs: dict) -> dict:
     """MODEL + CONDITIONING → LATENT 描述符(采样参数 + 嵌套上游计划)。不在主进程
     sample —— 真采样在 runner 的 ImageSampler 内。"""
@@ -142,6 +166,10 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
     cond = inputs.get("conditioning")
     if not isinstance(cond, dict) or cond.get("_type") != "flux2_conditioning":
         raise RuntimeError("KSampler 的 CONDITIONING 端口未连接,或上游不是 flux2_conditioning")
+    # round-2026-06-01:DiT 架构 vs CLIP 架构一致性检查(派发前拦,人话错误)。
+    unet_arch = (model.get("spec") or {}).get("adapter_arch") or "flux2"
+    clip_type = (cond.get("clip") or {}).get("type") or "flux2"
+    _check_arch_compat(unet_arch, clip_type)
     raw_seed = data.get("seed")
     seed = int(raw_seed) if raw_seed not in (None, "") else None
     return {"latent": {

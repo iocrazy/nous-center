@@ -92,6 +92,35 @@ async def test_ksampler_rejects_non_conditioning():
         await mod.exec_ksampler({}, {"model": _MODEL})
 
 
+@pytest.mark.asyncio
+async def test_ksampler_rejects_arch_mismatch_anima_dit_flux2_clip():
+    """round-2026-06-01:anima DiT + flux2 CLIP 在派发前就抛人话错误,不等 runner
+    甩 PyTorch size-mismatch。复现用户 pr3-clip-single 失败(anima 模型接 flux2 CLIP/VAE)。"""
+    mod = _load_mod()
+    anima_model = {"_type": "flux2_model",
+                   "spec": {"kind": "diffusion_models", "file": "/m/anima.safe",
+                            "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "anima"},
+                   "loras": []}
+    flux2_cond = {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""}
+    with pytest.raises(RuntimeError, match="架构不匹配"):
+        await mod.exec_ksampler({"steps": 20}, {"model": anima_model, "conditioning": flux2_cond})
+
+
+@pytest.mark.asyncio
+async def test_ksampler_accepts_anima_dit_with_anima_clip():
+    """anima DiT + anima/qwen CLIP → 放行。"""
+    mod = _load_mod()
+    anima_model = {"_type": "flux2_model",
+                   "spec": {"kind": "diffusion_models", "file": "/m/anima.safe",
+                            "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "anima"},
+                   "loras": []}
+    anima_clip = {"_type": "flux2_clip", "type": "qwen",
+                  "encoders": [{"kind": "clip", "file": "/m/qwen.safe", "dtype": "bfloat16"}]}
+    anima_cond = {"_type": "flux2_conditioning", "clip": anima_clip, "text": "x", "negative": ""}
+    out = await mod.exec_ksampler({"steps": 20}, {"model": anima_model, "conditioning": anima_cond})
+    assert out["latent"]["_type"] == "flux2_latent"
+
+
 def test_yaml_declares_eight_total_nodes():
     import yaml
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
