@@ -67,3 +67,58 @@ def test_adapter_patches_before_vendor_import():
     assert patch_pos != -1, "adapter 没调 compat patch"
     # vendored.core 的真 import 只在 vendored_import_ok() 内部(延迟),顶层不直接 import 业务模块,
     # 所以 patch(顶层 apply)一定在任何 vendored 重链 import 之前执行。
+
+
+# --- PR-3a:ABC 接入 wiring(CI 安全 —— base/image_seedvr2 顶层无 torch/numpy/vendored 重链)---
+
+
+def test_upscale_request_shape():
+    """UpscaleRequest(图→图超分)在 base 定义,字段齐:image 输入 + resolution(短边语义)。"""
+    from src.services.inference.base import MediaModality, UpscaleRequest  # noqa: PLC0415
+
+    req = UpscaleRequest(request_id="t", image="data:image/png;base64,AA==", resolution=1024)
+    assert req.modality == MediaModality.IMAGE
+    assert req.image == "data:image/png;base64,AA=="
+    assert req.resolution == 1024
+    assert req.seed is None  # 默认 None → adapter 兜 42
+    assert req.color_correction == "lab"
+
+
+def test_seedvr2_adapter_conforms_to_abc():
+    """SeedVR2UpscaleBackend 符合 InferenceAdapter ABC:子类 + ClassVar + paths 构造。
+    顶层 import 不触发 torch(vendored 重链全惰性在方法内),CI 可跑。"""
+    from src.services.inference.base import InferenceAdapter, MediaModality  # noqa: PLC0415
+    from src.services.inference.image_seedvr2 import (  # noqa: PLC0415
+        DEFAULT_DIT,
+        DEFAULT_VAE,
+        SeedVR2UpscaleBackend,
+    )
+
+    assert issubclass(SeedVR2UpscaleBackend, InferenceAdapter)
+    assert SeedVR2UpscaleBackend.modality == MediaModality.IMAGE
+    assert SeedVR2UpscaleBackend.estimated_vram_mb > 0
+    # paths 构造:model_dir 必需;dit/vae 缺省走 DEFAULT。
+    be = SeedVR2UpscaleBackend(paths={"model_dir": "/tmp/seedvr2"}, device="cuda:0")
+    assert be.model_dir == "/tmp/seedvr2"
+    assert be.dit_model == DEFAULT_DIT
+    assert be.vae_model == DEFAULT_VAE
+    assert not be.is_loaded  # 没 load → _model is None
+
+
+def test_seedvr2_adapter_requires_model_dir():
+    """paths 缺 model_dir → 明确 RuntimeError(不静默用错路径)。"""
+    from src.services.inference.image_seedvr2 import SeedVR2UpscaleBackend  # noqa: PLC0415
+
+    with pytest.raises(RuntimeError, match="model_dir"):
+        SeedVR2UpscaleBackend(paths={}, device="cuda:0")
+
+
+def test_model_manager_has_seedvr2_loader():
+    """ModelManager 有 by-key SeedVR2 装载入口(独立路径,非三组件 combo)。源码检查
+    (model_manager import 重,避开 torch mock 边界,跟其它 wiring 测试一致用 read_text)。"""
+    import pathlib  # noqa: PLC0415
+
+    mm = (pathlib.Path(__file__).parent.parent / "src/services/model_manager.py").read_text()
+    assert "async def get_or_load_seedvr2_adapter(" in mm, "ModelManager 缺 SeedVR2 装载入口"
+    assert "image:SeedVR2:" in mm, "缺 SeedVR2 model_id 命名(登记进 _models)"
+    assert "SeedVR2UpscaleBackend" in mm

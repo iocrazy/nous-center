@@ -110,6 +110,21 @@ class ImageRequest(InferenceRequest):
     pipeline_class: str = "Flux2KleinPipeline"
 
 
+class UpscaleRequest(InferenceRequest):
+    """图→图超分(SeedVR2)。跟 ImageRequest(text2img) 不同:输入是**一张图** + 目标分辨率。
+
+    image:输入图。base64 data URI("data:image/png;base64,...") 或本地路径。
+    resolution:目标短边像素(SeedVR2 语义,非倍数)。
+    """
+    modality: Literal[MediaModality.IMAGE] = MediaModality.IMAGE
+    image: str  # base64 data URI 或本地路径
+    resolution: int = Field(1080, ge=64, le=4320)
+    seed: int | None = None
+    color_correction: Literal["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"] = "lab"
+    latent_noise_scale: float = Field(0.0, ge=0, le=1)
+    input_noise_scale: float = Field(0.0, ge=0, le=1)
+
+
 class AudioRequest(InferenceRequest):
     modality: Literal[MediaModality.AUDIO] = MediaModality.AUDIO
     text: str
