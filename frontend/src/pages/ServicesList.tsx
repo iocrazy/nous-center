@@ -449,7 +449,7 @@ function ServiceCard({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-          <CategoryIcon category={svc.category} />
+          <CategoryIcon category={effectiveCategory(svc)} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, color: 'var(--text)', fontWeight: 500 }}>{svc.name}</div>
           </div>
@@ -466,7 +466,7 @@ function ServiceCard({
         </div>
 
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          <CategoryTag category={svc.category} />
+          <CategoryTag category={effectiveCategory(svc)} />
           <SourceTag
             sourceType={svc.source_type}
             workflowId={svc.workflow_id}
@@ -643,16 +643,26 @@ const STATUS_STYLES: Record<string, React.CSSProperties> = {
   retired: { background: 'rgba(239,68,68,0.12)', color: 'var(--error, #ef4444)' },
 }
 
+// category 缺失时(旧服务 DB category=NULL,如 quick-provision 前发布的)从 type 推断,
+// 否则归类全掉进「其他」、LLM/TTS/VL 计数恒 0。真机实测:qwen3-5-api type=llm 但
+// category=null → 显示「LLM 0 · 其他 1」与「全部 2」对不上。type 是后端恒有的字段。
+function effectiveCategory(svc: Pick<ServiceRow, 'category' | 'type'>): ServiceCategory {
+  if (svc.category) return svc.category
+  const t = (svc.type ?? '').toLowerCase()
+  if (t === 'llm' || t === 'tts' || t === 'vl') return t
+  return 'app'
+}
+
 function buildCounts(rows: ServiceRow[]): Record<ServiceCategory, number> {
   const out: Record<ServiceCategory, number> = { llm: 0, tts: 0, vl: 0, app: 0 }
-  for (const r of rows) if (r.category && out[r.category] !== undefined) out[r.category] += 1
+  for (const r of rows) out[effectiveCategory(r)] += 1
   return out
 }
 
 function filter(rows: ServiceRow[], tab: FilterTab, search: string): ServiceRow[] {
   const q = search.trim().toLowerCase()
   return rows.filter((r) => {
-    if (tab !== 'all' && r.category !== tab) return false
+    if (tab !== 'all' && effectiveCategory(r) !== tab) return false
     if (q && !r.name.toLowerCase().includes(q)) return false
     return true
   })
