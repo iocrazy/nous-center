@@ -115,4 +115,27 @@ describe('ServicesList card click → navigate', () => {
     )
     expect(screen.getByText(/还没有服务/)).toBeInTheDocument()
   })
+
+  it('category=null 的 llm 服务按 type 归入 LLM 分类(真机:qwen3-5-api type=llm/category=null 被误归「其他」)', () => {
+    useServicesMock.mockReturnValue({
+      data: [
+        makeService({ id: '1', name: 'qwen3-5-api', type: 'llm', category: null }),
+        makeService({ id: '2', name: 'ltx-drama', type: 'inference', category: 'app' }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+    // tab 计数:LLM 应为 1(不是 0),其他为 1
+    const llmTab = screen.getByRole('button', { name: /LLM\s*1/ })
+    expect(llmTab).toBeInTheDocument()
+    // 点 LLM tab 只剩 qwen3-5-api
+    fireEvent.click(llmTab)
+    expect(screen.getByText('qwen3-5-api')).toBeInTheDocument()
+    expect(screen.queryByText('ltx-drama')).not.toBeInTheDocument()
+  })
 })
