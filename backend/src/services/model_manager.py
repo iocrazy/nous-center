@@ -1118,6 +1118,76 @@ class ModelManager:
             )
             return adapter
 
+    async def get_or_load_seedvr2_adapter(
+        self,
+        model_dir: str,
+        dit_model: str | None = None,
+        vae_model: str | None = None,
+        device: str = "cuda",
+    ):
+        """SeedVR2 超分 adapter 装配/复用 —— 跟 anima/modular 不同:SeedVR2 不是「三组件
+        (diffusion_models/clip/vae)」模型,是「DiT + 专用 VAE 整套自带」的上采样器(by
+        model_dir,非 component combo)。所以走**独立 by-key 路径**,不经 component-combo
+        机制(get_or_load_image_adapter 那套 device-auto/sticky/三组件强制同卡都不适用)。
+
+        但仍登记进统一 `_models` 字典 → 复用 LRU 驱逐 / loaded_models_snapshot 跨进程上报 /
+        手动 unload,跟 Flux2/anima 同一套生命周期管理。
+
+        model_id = `image:SeedVR2:<dit_base>:<short_hash>`(hash 兜底 model_dir/vae/device)。
+        """
+        import hashlib  # noqa: PLC0415
+        from os.path import basename, splitext  # noqa: PLC0415
+
+        from src.services.inference.image_seedvr2 import (  # noqa: PLC0415
+            DEFAULT_DIT,
+            DEFAULT_VAE,
+            SeedVR2UpscaleBackend,
+        )
+
+        dit = dit_model or DEFAULT_DIT
+        vae = vae_model or DEFAULT_VAE
+        # device=auto:SeedVR2 不走 component sticky;直接挑最空的卡(7B 给 Pro 6000)。
+        # get_best_gpu 返 -1 = 没卡装得下 → 回退 cuda:0,让下游 OOM 报真错(不静默)。
+        target = device
+        if device in ("auto", "cuda"):
+            best = self._allocator.get_best_gpu(SeedVR2UpscaleBackend.estimated_vram_mb)
+            target = f"cuda:{best}" if best is not None and best >= 0 else "cuda:0"
+
+        dit_base = splitext(basename(str(dit)))[0] or "main"
+        payload = repr((model_dir, dit, vae, target)).encode("utf-8")
+        short_hash = hashlib.sha256(payload).hexdigest()[:8]
+        model_id = f"image:SeedVR2:{dit_base}:{short_hash}"
+
+        async with self._lock_for(model_id):
+            entry = self._models.get(model_id)
+            if entry is not None:
+                logger.info("image adapter HIT id=%s (seedvr2)", model_id)
+                entry.touch()
+                return entry.adapter
+            logger.info("image adapter MISS id=%s (seedvr2) dir=%s dit=%s", model_id, model_dir, dit)
+
+            adapter = SeedVR2UpscaleBackend(
+                paths={"model_dir": model_dir, "dit": dit, "vae": vae},
+                device=target,
+            )
+            await adapter.load(target)
+
+            gpu_idx = int(target.split(":")[1]) if target.startswith("cuda:") else 0
+            self._models[model_id] = LoadedModel(
+                spec=self._synthesize_image_spec(
+                    model_id=model_id,
+                    adapter_class_path="src.services.inference.image_seedvr2.SeedVR2UpscaleBackend",
+                    target_device=target,
+                    vram_mb=SeedVR2UpscaleBackend.estimated_vram_mb,
+                    pipeline_class="SeedVR2",
+                    source_files=[dit, vae],
+                ),
+                adapter=adapter,
+                gpu_index=gpu_idx,
+                gpu_indices=[gpu_idx],
+            )
+            return adapter
+
     async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none"):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 

@@ -40,9 +40,9 @@ def main() -> None:
     small.save(OUT_DIR / "seedvr2_engine_in.png")
     print(f"[seedvr2] input {small.size} → upscale on {DEVICE}")
 
-    be = SeedVR2UpscaleBackend(model_dir=MODEL_DIR, device=DEVICE)
+    be = SeedVR2UpscaleBackend(paths={"model_dir": MODEL_DIR}, device=DEVICE)
     t0 = time.monotonic()
-    be.load()
+    be._load_sync()  # 同步内核(ABC async load 只是 to_thread(_load_sync) 包一层)
     print(f"  ✓ load {time.monotonic()-t0:.1f}s")
 
     t1 = time.monotonic()
