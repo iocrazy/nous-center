@@ -16,14 +16,26 @@ from __future__ import annotations
 
 
 def apply_seedvr2_compat_patches() -> None:
-    """幂等。import seedvr2_vendor 前调用一次。"""
+    """幂等。import seedvr2_vendor 前调用一次。
+
+    注:vendored 保留 NumZ 原 `src/` 目录结构(seedvr2_vendor/src/{core,models,...} +
+    configs_7b/3b 在 seedvr2_vendor 根),所以 NumZ 的 `get_script_directory()`(constants.py
+    上 3 层)原生算出 = seedvr2_vendor 根,config 路径(`script_directory/configs_7b`、
+    `script_directory/src/models/...`)原生解析正确,**不需 script_directory patch**。
+    只需修 transformers 5.6-dev 的 flash_attn bug。
+    """
+    _patch_transformers_flash_attn()
+
+
+def _patch_transformers_flash_attn() -> None:
+    """transformers 5.6-dev bug:is_flash_attn_2_available 查 PACKAGE_DISTRIBUTION_MAPPING
+    ['flash_attn'] 未装时 KeyError(本该返 False)。补 key → bug 不触发,回退 SDPA。"""
     try:
         import transformers.utils.import_utils as iu  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return
     mapping = getattr(iu, "PACKAGE_DISTRIBUTION_MAPPING", None)
     if mapping is not None and "flash_attn" not in mapping:
-        # 正常映射(import 名→distribution 名);flash_attn 未装时不会被命中。
         mapping["flash_attn"] = ["flash-attn"]
         fn = getattr(iu, "is_flash_attn_2_available", None)
         if fn is not None and hasattr(fn, "cache_clear"):
