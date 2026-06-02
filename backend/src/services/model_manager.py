@@ -1316,6 +1316,57 @@ class ModelManager:
                     comp.get("role"), _basename(key[0]))
         return freed
 
+    # 组件 kind(扫描器/节点用)→ L1 role(pipeline 子模块名)。
+    _KIND_TO_ROLE = {"diffusion_models": "transformer", "clip": "text_encoder", "vae": "vae"}
+
+    async def preload_image_component(self, spec, resident: bool = False, arch: str = "flux2") -> dict:
+        """单组件预加载进 L1 池(引擎库「预加载/常驻」,spec §4)—— 不经 combo,独立 build。
+
+        与 `_get_or_build_image_component` 区别:无 combo 引用(refs 空),由引擎库主动发起。
+        repo 从 `arch` 反推(`_reference_repo_for_arch`,单组件没有别的两件套推 repo;clip/vae 的
+        ComponentSpec 不带 adapter_arch,故 arch 单独传 —— diffusion_models 优先用 spec.adapter_arch)。
+        offload 恒 none(预加载/常驻的组件全程在卡)。已在池 → 仅按需升 resident。
+        返回 {state, key, role}。失败抛(调用方 runner handler 兜底,不崩)。
+        """
+        from src.services.inference.component_spec import component_state_key  # noqa: PLC0415
+        from src.services.inference.image_modular import (  # noqa: PLC0415
+            build_bridged_text_encoder,
+            build_bridged_transformer,
+            build_bridged_vae,
+        )
+        role = self._KIND_TO_ROLE.get(spec.kind)
+        if role is None:
+            raise ValueError(f"不支持预加载该组件 kind={spec.kind!r}(仅 diffusion_models/clip/vae)")
+        build_fn = {
+            "transformer": build_bridged_transformer,
+            "text_encoder": build_bridged_text_encoder,
+            "vae": build_bridged_vae,
+        }[role]
+        # device='auto' → 解析具体卡(与 combo 路径一致,避免落 'auto' key)
+        resolved_spec = self._resolve_component_device(spec)
+        load_device = resolved_spec.device
+        key = self._l1_component_key(resolved_spec, load_device)
+        state_key = component_state_key(resolved_spec)
+        comp = self._components.get(key)
+        if comp is not None:
+            if resident and not comp["resident"]:
+                comp["resident"] = True
+                logger.info("component L1 预加载命中升常驻 role=%s file=%s",
+                            role, _basename(resolved_spec.file))
+            comp["last_used"] = time.monotonic()
+            return {"state": "loaded", "key": state_key, "role": role, "resident": comp["resident"]}
+        eff_arch = getattr(resolved_spec, "adapter_arch", None) or arch or "flux2"
+        repo = _reference_repo_for_arch(eff_arch) or _modular_repo_from_components({spec.kind: resolved_spec})
+        logger.info("component L1 预加载 role=%s file=%s dev=%s resident=%s — building",
+                    role, _basename(resolved_spec.file), load_device, resident)
+        module = await asyncio.to_thread(build_fn, resolved_spec, repo, load_device)
+        self._components[key] = {
+            "module": module, "role": role, "key": key,
+            "refs": set(), "resident": resident,
+            "last_used": time.monotonic(), "device": load_device,
+        }
+        return {"state": "loaded", "key": state_key, "role": role, "resident": resident}
+
     async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none"):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 

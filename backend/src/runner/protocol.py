@@ -82,6 +82,17 @@ class PreloadSeedVR2:
     kind: Literal["preload_seedvr2"] = "preload_seedvr2"
 
 
+@dataclass(frozen=True)
+class PreloadComponent:
+    """主进程 → image runner:预加载**单个**组件进 L1 池(引擎库「预加载/常驻」,组件 L1 PR-2)。
+    spec = 一个 ComponentSpec dict(kind=diffusion_models/clip/vae);resident=True 同时钉常驻。
+    runner 走 mm.preload_image_component;loaded 状态经下一个 Pong 快照反映(无专门事件)。"""
+    spec: dict[str, Any]
+    resident: bool = False
+    arch: str = "flux2"  # 单组件 build 反推 repo 用(clip/vae 的 spec 不带 adapter_arch)
+    kind: Literal["preload_component"] = "preload_component"
+
+
 # ------------------------------------------------------------------
 # image/TTS runner -> 主进程
 # ------------------------------------------------------------------
@@ -168,6 +179,7 @@ _KIND_TO_CLASS: dict[str, type] = {
     "ping": Ping,
     "preload_components": PreloadComponents,
     "preload_seedvr2": PreloadSeedVR2,
+    "preload_component": PreloadComponent,
     "ready": Ready,
     "node_result": NodeResult,
     "node_progress": NodeProgress,
@@ -179,6 +191,7 @@ _KIND_TO_CLASS: dict[str, type] = {
 # 类型注解仅供调用方做 isinstance / match —— 任意消息的联合类型
 Message = (
     LoadModel | UnloadModel | RunNode | Abort | Ping | PreloadComponents | PreloadSeedVR2
+    | PreloadComponent
     | Ready | NodeResult | NodeProgress | ModelEvent | Pong | ComponentEvent
 )
 
