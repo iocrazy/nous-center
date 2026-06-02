@@ -42,6 +42,24 @@ describe('组件 L1 引擎库 hooks (PR-3b)', () => {
     })
   })
 
+  it('usePreloadComponent 指定 device → body 带 device(预加载到选定 GPU)', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ status: 'accepted' })
+    const { result } = renderHook(() => usePreloadComponent(), { wrapper: wrapper() })
+    result.current.mutate({ name: 'component:clip:/m/x.safetensors', device: 'cuda:1' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled())
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0][1] as any).body)
+    expect(body).toMatchObject({ device: 'cuda:1', dtype: 'bfloat16' })
+  })
+
+  it('usePreloadComponent 不传 device → body 不含 device(后端 auto 选卡)', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ status: 'accepted' })
+    const { result } = renderHook(() => usePreloadComponent(), { wrapper: wrapper() })
+    result.current.mutate({ name: 'component:clip:/m/x.safetensors' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled())
+    const body = JSON.parse((vi.mocked(apiFetch).mock.calls[0][1] as any).body)
+    expect(body).not.toHaveProperty('device')
+  })
+
   it('useSetComponentResident 有 state_key 时优先用它(精确匹配)', async () => {
     vi.mocked(apiFetch).mockResolvedValue({ status: 'accepted' })
     const { result } = renderHook(() => useSetComponentResident(), { wrapper: wrapper() })

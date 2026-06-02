@@ -196,10 +196,15 @@ export function useSetSeedvr2Resident() {
 export function usePreloadComponent() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ name, dtype, resident }: { name: string; dtype?: string; resident?: boolean }) =>
+    mutationFn: ({ name, dtype, device, resident }:
+      { name: string; dtype?: string; device?: string; resident?: boolean }) =>
       apiFetch('/api/v1/engines/component/preload', {
         method: 'POST',
-        body: JSON.stringify({ name, dtype: dtype ?? 'bfloat16', resident: resident ?? false }),
+        body: JSON.stringify({
+          name, dtype: dtype ?? 'bfloat16',
+          ...(device ? { device } : {}),  // 省略 → 后端 auto 自动选卡
+          resident: resident ?? false,
+        }),
       }),
     onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: ['engines'] })

@@ -163,7 +163,7 @@ export default function ModelsOverlay() {
     ? [
         {
           label: isComponent
-            ? (cmLoaded ? '已在显存（取消常驻后随 LRU 让出）' : '预加载到显存（bfloat16）')
+            ? (cmLoaded ? '已在显存（取消常驻后随 LRU 让出）' : '预加载到显存（自动选卡）')
             : isUpscale ? (cmLoaded ? '卸载 SeedVR2' : '加载 SeedVR2')
             : ctxMenu.model.kind === 'lora' ? 'LoRA · 随模型加载'
             : ctxMenu.model.status === 'loaded' ? '卸载模型'
@@ -176,20 +176,26 @@ export default function ModelsOverlay() {
             || ctxMenu.model.kind === 'lora'
             || (!isExtra && ctxMenu.model.status !== 'loaded' && !ctxMenu.model.has_adapter),
         },
-        // 组件:选精度预加载(对齐 loader 节点 weight_dtype:bfloat16/float16/fp8_e4m3)。
+        // 组件预加载:可选落哪张卡(自动选卡之外,直接指定 GPU)。bfloat16 默认精度。
+        ...(isComponent && !cmLoaded && (gpuData?.devices ?? []).length > 0
+          ? [{
+              label: '预加载到指定 GPU',
+              submenu: (gpuData?.devices ?? []).map((g) => ({
+                label: `GPU ${g.index}: ${g.name}`,
+                onClick: () => preloadComponent.mutate({
+                  name: ctxMenu.model!.name, device: `cuda:${g.index}`,
+                }),
+              })),
+            } as MenuItem]
+          : []),
+        // 「预加载 + 常驻」一步到位(自动选卡)。**不给选精度** —— 组件预加载固定用标准 bf16 计算
+        // 精度:文件存储格式名字里写死(bf16/fp8mixed…),而单组件 build_bridged 路径不做 fp8 torchao
+        // 量化(那只在整 pipeline _ensure_pipe 做),选 fp8 只会静默落 bf16 误导用户。省显存的 fp8
+        // 走「跑工作流时 loader 节点选 weight_dtype」,不在引擎库预加载这条路。
         ...(isComponent && !cmLoaded
           ? [{
-              label: '预加载到显存（选精度）',
-              submenu: ['bfloat16', 'float16', 'fp8_e4m3'].flatMap((dt) => ([
-                {
-                  label: dt,
-                  onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, dtype: dt }),
-                },
-                {
-                  label: `${dt} + 常驻`,
-                  onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, dtype: dt, resident: true }),
-                },
-              ])),
+              label: '预加载到显存 + 常驻（自动选卡）',
+              onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, resident: true }),
             } as MenuItem]
           : []),
         {
@@ -199,10 +205,15 @@ export default function ModelsOverlay() {
           onClick: () => handleToggleResident(ctxMenu.model!),
           disabled: residentDisabled,
         },
+        // GPU 分配 / 创建 API / 刷新元数据 只对**已注册整模型**适用(改 yaml / 起 instance / 拉元数据)——
+        // 组件/LoRA/超分这些 catalog 条目用不上,以前显示但全灰会让人困惑(用户:为啥 GPU 分配点不了)。
+        // 整段对 isExtra 隐藏;组件选卡走上面的「预加载到指定 GPU」。组件 L1 PR。
+        ...(!isExtra
+          ? [
         { label: '', divider: true },
         {
           label: 'GPU 分配',
-          disabled: isExtra,
+          disabled: false,
           submenu: (gpuData?.devices ?? []).map((g) => {
             const currentGpu = ctxMenu.model!.gpu
             const isCurrentGpu = Array.isArray(currentGpu)
@@ -250,8 +261,10 @@ export default function ModelsOverlay() {
         {
           label: '刷新元数据',
           onClick: () => refreshMeta.mutate(ctxMenu.model!.name),
-          disabled: isExtra,
+          disabled: false,
         },
+          ] as MenuItem[]
+          : []),
         {
           label: '删除',
           danger: true,
