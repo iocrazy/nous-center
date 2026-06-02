@@ -116,6 +116,8 @@ nodes:
       - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 2160, step: 16, default: 1080 }
       - { name: max_resolution, label: "长边上限(0=不限)", widget: slider, min: 0, max: 4320, step: 16, default: 0 }
       - { name: batch_size, label: "批大小", widget: slider, min: 1, max: 16, step: 1, default: 1 }
+      # uniform_batch_size:批内统一尺寸(批/视频场景;单图无影响)。对齐 ComfyUI。
+      - { name: uniform_batch_size, label: "统一批尺寸", widget: checkbox, default: false }
       - name: color_correction
         label: "色彩校正"
         widget: select
@@ -127,7 +129,34 @@ nodes:
           - { value: hsv, label: "HSV", description: "HSV 色调匹配" }
           - { value: adain, label: "AdaIN", description: "自适应实例归一化" }
           - { value: none, label: "无", description: "不做色彩校正" }
+      # temporal_overlap / prepend_frames:**视频**帧间参数(单图=0 无影响),对齐 ComfyUI 保留。
+      - { name: temporal_overlap, label: "时间重叠(视频)", widget: slider, min: 0, max: 32, step: 1, default: 0 }
+      - { name: prepend_frames, label: "前置帧(视频)", widget: slider, min: 0, max: 32, step: 1, default: 0 }
       - { name: input_noise_scale, label: "输入噪声", widget: slider, min: 0, max: 1, step: 0.01, default: 0.0 }
       - { name: latent_noise_scale, label: "latent 噪声", widget: slider, min: 0, max: 1, step: 0.01, default: 0.0 }
+      # offload_device:增强阶段张量 offload 目标(对齐 ComfyUI enhance 节点的 offload_device)。
+      # 默认 cpu(峰值显存友好)。load-time(进 setup_generation_context tensor_offload_device)。
+      - name: offload_device
+        label: "Offload 到"
+        widget: select
+        default: cpu
+        options:
+          - { value: cpu, label: "CPU(省显存)" }
+          - { value: none, label: "None(全程 GPU,最快)" }
+          - { value: "cuda:0", label: "cuda:0" }
+          - { value: "cuda:1", label: "cuda:1" }
+          - { value: "cuda:2", label: "cuda:2" }
+      - { name: enable_debug, label: "调试日志", widget: checkbox, default: false }
       - { name: seed, label: "Seed", widget: input, default: "" }
+      # seed 生成后控制(纯前端,Run 完成后按模式更新上面的 seed)。同 KSampler;applySeedControl 通用。
+      # 注:SeedVR2 是 one-step,seed 对出图影响很小,默认 fixed。
+      - name: control_after_generate
+        label: "生成后控制"
+        widget: select
+        default: fixed
+        options:
+          - { value: fixed,     label: "固定 (fixed)",      description: "seed 不变 — 复现同一张" }
+          - { value: increment, label: "递增 (increment)",  description: "每次 Run 后 seed +1" }
+          - { value: decrement, label: "递减 (decrement)",  description: "每次 Run 后 seed -1" }
+          - { value: randomize, label: "随机 (randomize)",  description: "每次 Run 后随机新 seed" }
       - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }

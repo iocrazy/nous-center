@@ -125,6 +125,9 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         self.vae_cfg: dict[str, Any] = dict(params.get("vae_config") or {})
         self.dit_model = self.dit_cfg.get("model") or paths.get("dit") or params.get("dit_model") or DEFAULT_DIT
         self.vae_model = self.vae_cfg.get("model") or paths.get("vae") or params.get("vae_model") or DEFAULT_VAE
+        # 增强阶段 tensor offload(对齐 ComfyUI enhance 节点 offload_device;默认 cpu,峰值显存友好)。
+        self.tensor_offload = str(params.get("tensor_offload", "cpu") or "cpu")
+        self.enable_debug = bool(params.get("enable_debug", False))
         self._runner: Any | None = None
         self._ctx_base: dict[str, Any] | None = None
         self._debug: Any | None = None
@@ -161,7 +164,7 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
 
         import torch  # noqa: PLC0415
 
-        self._debug = Debug(enabled=False)
+        self._debug = Debug(enabled=self.enable_debug)
 
         # DiT / VAE 各自 device(config 优先,回退 self.device);offload device("none"→None)。
         dit_device = self.dit_cfg.get("device") or self.device
@@ -192,12 +195,14 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         # attention:config 优先,默认 sdpa(flash_attn 装不上,SeedVR2 支持 SDPA 回退)。
         attention_mode = str(self.dit_cfg.get("attention_mode") or "sdpa")
 
+        # tensor offload:增强节点 offload_device;"none"→保持 GPU(传 None 让 NumZ 不挪)。
+        tensor_offload = torch.device(self.tensor_offload) if self.tensor_offload not in ("none", "") else None
         ctx = setup_generation_context(
             dit_device=dit_device,
             vae_device=vae_device,
             dit_offload_device=dit_offload or "cpu",
             vae_offload_device=vae_offload or "cpu",
-            tensor_offload_device="cpu",
+            tensor_offload_device=tensor_offload or "cpu",
             debug=self._debug,
         )
         # prepare_runner 改/装 ctx in-place,返回 (runner, cache_context)。串入 blockswap + tiling + attention。
