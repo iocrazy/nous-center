@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { MoreHorizontal, Plus, Search, Trash2 } from 'lucide-react'
+import { MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import {
   useCreateWorkflow,
   useDeleteWorkflow,
+  useSaveWorkflow,
   useWorkflows,
   type WorkflowSummary,
 } from '../api/workflows'
@@ -31,6 +32,7 @@ export default function WorkflowsList() {
 
   const create = useCreateWorkflowAndGo()
   const del = useDeleteWorkflow()
+  const save = useSaveWorkflow()
   const toast = useToastStore((s) => s.add)
 
   const handleDelete = (wf: WorkflowSummary) => {
@@ -38,6 +40,15 @@ export default function WorkflowsList() {
     del.mutate(String(wf.id), {
       onSuccess: () => toast(`已删除 ${wf.name}`, 'success'),
       onError: (e) => toast(`删除失败：${(e as Error).message}`, 'error'),
+    })
+  }
+
+  const handleRename = (wf: WorkflowSummary) => {
+    const name = window.prompt('重命名工作流', wf.name)?.trim()
+    if (!name || name === wf.name) return
+    save.mutate({ id: String(wf.id), name }, {
+      onSuccess: () => toast(`已重命名为「${name}」`, 'success'),
+      onError: (e) => toast(`重命名失败：${(e as Error).message}`, 'error'),
     })
   }
 
@@ -175,6 +186,7 @@ export default function WorkflowsList() {
                 onDetail={(svcId) => navigate(`/services/${svcId}`)}
                 onPublish={() => handlePublish(wf)}
                 onDelete={() => handleDelete(wf)}
+                onRename={() => handleRename(wf)}
               />
             ))}
             <NewWorkflowCard onClick={() => create.mutate()} />
@@ -194,6 +206,7 @@ function WorkflowCard({
   onDetail,
   onPublish,
   onDelete,
+  onRename,
 }: {
   wf: WorkflowSummary
   service: ServiceRow | null
@@ -201,6 +214,7 @@ function WorkflowCard({
   onDetail: (serviceId: string) => void
   onPublish: () => void
   onDelete: () => void
+  onRename: () => void
 }) {
   const nodeCount = wf.nodes?.length ?? 0
   // workflow status (draft / published) 与是否产出 service 是**两个独立状态**。
@@ -210,20 +224,25 @@ function WorkflowCard({
   //   - 底部专门看 service 关联
   const isPublished = wf.status === 'published'
   const isTemplate = wf.is_template
-  const [menuOpen, setMenuOpen] = useState(false)
+  // menuPos=null → 关；{x,y} → 在该屏幕坐标弹菜单(··· 按钮 / 右键卡片都走它)。
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (!menuOpen) return
+    if (!menuPos) return
     const onDoc = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false)
+        setMenuPos(null)
       }
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
-  }, [menuOpen])
+  }, [menuPos])
   return (
     <div
+      onContextMenu={(e) => {
+        e.preventDefault()
+        setMenuPos({ x: e.clientX, y: e.clientY })
+      }}
       style={{
         background: 'var(--bg-accent)',
         border: '1px solid var(--border)',
@@ -235,13 +254,14 @@ function WorkflowCard({
         position: 'relative',
       }}
     >
-      {/* 右上角 ··· 菜单：删除等清理操作 */}
-      <div ref={menuRef} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }}>
+      {/* 右上角 ··· 按钮：在按钮下方弹同一菜单(右键卡片也弹,定位到光标)。 */}
+      <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }}>
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation()
-            setMenuOpen((p) => !p)
+            const r = e.currentTarget.getBoundingClientRect()
+            setMenuPos(menuPos ? null : { x: r.right - 150, y: r.bottom + 4 })
           }}
           title="更多操作"
           style={{
@@ -249,7 +269,7 @@ function WorkflowCard({
             height: 24,
             borderRadius: 4,
             border: 'none',
-            background: menuOpen ? 'var(--bg)' : 'transparent',
+            background: menuPos ? 'var(--bg)' : 'transparent',
             color: 'var(--muted)',
             cursor: 'pointer',
             display: 'flex',
@@ -259,26 +279,36 @@ function WorkflowCard({
         >
           <MoreHorizontal size={14} />
         </button>
-        {menuOpen && (
-          <div
-            style={{
-              position: 'absolute',
-              top: 'calc(100% + 4px)',
-              right: 0,
-              minWidth: 140,
-              background: 'var(--bg-elevated, var(--bg))',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-              padding: '4px 0',
-            }}
-          >
+      </div>
+
+      {/* 卡片菜单(··· 或右键触发):重命名 / 删除。屏幕坐标定位(position:fixed)。 */}
+      {menuPos && (
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed',
+            left: menuPos.x,
+            top: menuPos.y,
+            zIndex: 50,
+            minWidth: 150,
+            background: 'var(--bg-elevated, var(--bg))',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            padding: '4px 0',
+          }}
+        >
+          {[
+            { icon: <Pencil size={12} />, label: '重命名', danger: false, run: onRename },
+            { icon: <Trash2 size={12} />, label: '删除', danger: true, run: onDelete },
+          ].map((it) => (
             <button
+              key={it.label}
               type="button"
               onClick={(e) => {
                 e.stopPropagation()
-                setMenuOpen(false)
-                onDelete()
+                setMenuPos(null)
+                it.run()
               }}
               style={{
                 display: 'flex',
@@ -288,7 +318,7 @@ function WorkflowCard({
                 padding: '6px 12px',
                 background: 'transparent',
                 border: 'none',
-                color: 'var(--accent, #ef4444)',
+                color: it.danger ? 'var(--accent, #ef4444)' : 'var(--text)',
                 fontSize: 12,
                 cursor: 'pointer',
                 textAlign: 'left',
@@ -300,12 +330,12 @@ function WorkflowCard({
                 e.currentTarget.style.background = 'transparent'
               }}
             >
-              <Trash2 size={12} />
-              删除
+              {it.icon}
+              {it.label}
             </button>
-          </div>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
 
       <button
         type="button"
