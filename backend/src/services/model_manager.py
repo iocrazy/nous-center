@@ -1023,6 +1023,28 @@ class ModelManager:
             })
         return out
 
+    def loaded_components_snapshot(self) -> list[dict]:
+        """已加载**单组件**(`_components` L1 池)结构化快照,跨进程上报(runner → 主进程经 Pong)。
+
+        引擎库据此标单组件 loaded@卡 + resident —— **含预加载的、不属于任何 combo 的组件**
+        (loaded_models_snapshot 只覆盖 combo adapter,够不着 PR-2a 预加载的孤组件)。组件 L1 PR-3a。
+        """
+        now = time.monotonic()
+        out: list[dict] = []
+        for comp in self._components.values():
+            file_, dev, dtype, _loras = comp["key"]
+            out.append({
+                "state_key": comp.get("state_key"),
+                "role": comp["role"],
+                "file": file_,
+                "device": dev,
+                "dtype": dtype,
+                "resident": comp["resident"],
+                "refs_count": len(comp["refs"]),
+                "last_used_ago_sec": round(now - comp["last_used"], 2),
+            })
+        return out
+
     async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline", on_event=None, offload: str = "none"):
         """PR-4 entry for the runner component path. Resolves auto devices,
         loads/reuses base modules via the component L1 cache, assembles (or

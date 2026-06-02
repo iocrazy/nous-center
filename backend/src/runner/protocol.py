@@ -177,6 +177,11 @@ class Pong:
     # _models,主进程靠这份快照(supervisor watchdog 每 ping 一次对账)还原「已加载」
     # 视图。历史上是 list[str](仅 id);改 dict 向后兼容(decode 不校验元素类型)。
     loaded_models: list[dict] = field(default_factory=list)
+    # 已加载单组件快照(ModelManager.loaded_components_snapshot()):每条 =
+    # {state_key, role, file, device, dtype, resident, refs_count, last_used_ago_sec}。
+    # 含预加载的孤组件(不属于任何 combo)—— 引擎库标组件 loaded@卡 + resident。组件 L1 PR-3a。
+    # 默认空 list 向后兼容(老 runner 不带 → 主进程聚合得空)。
+    loaded_components: list[dict] = field(default_factory=list)
     kind: Literal["pong"] = "pong"
 
 
