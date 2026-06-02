@@ -491,6 +491,47 @@ async def unload_seedvr2(request: Request, body: dict = Body(...)):
     return {"unloaded": unloaded, "count": len(unloaded)}
 
 
+# 引擎库 name 格式:`component:<kind>:<path>`(CopyButton 用同款)。kind ∈ diffusion_models/clip/vae。
+def _parse_component_name(name: str) -> tuple[str, str] | None:
+    parts = name.split(":", 2)
+    if len(parts) == 3 and parts[0] == "component" and parts[1] in {"diffusion_models", "clip", "vae"}:
+        return parts[1], parts[2]
+    return None
+
+
+@router.post("/component/preload", status_code=202, dependencies=[Depends(require_admin)])
+async def preload_component(request: Request, body: dict = Body(...)):
+    """引擎库预加载**单个**组件(clip/vae/diffusion_models)进 image runner 的 L1 池 + 可选常驻。
+
+    body: `name="component:<kind>:<path>"`(引擎库卡片标识)或显式 `{kind,file}`;可选
+    `dtype`(默认 bfloat16)、`device`(默认 auto)、`arch`(默认 flux2,单组件 build 反推 repo 用)、
+    `resident`(默认 false,true=同时钉常驻不被 LRU 驱逐)。派给 image runner;loaded/resident
+    状态经下个 Pong 快照反映。组件 L1 PR-2。"""
+    name = str(body.get("name") or "")
+    parsed = _parse_component_name(name)
+    kind = str(body.get("kind") or (parsed[0] if parsed else ""))
+    file = str(body.get("file") or (parsed[1] if parsed else ""))
+    if kind not in {"diffusion_models", "clip", "vae"} or not file:
+        raise HTTPException(422, "需要 name='component:<kind>:<path>' 或 {kind, file}(kind ∈ diffusion_models/clip/vae)")
+    # arch 单独传(clip/vae 的 ComponentSpec 不接受 adapter_arch;仅 diffusion_models 接受)。
+    arch = str(body.get("arch") or "flux2")
+    spec = {
+        "kind": kind,
+        "file": file,
+        "device": str(body.get("device") or "auto"),
+        "dtype": str(body.get("dtype") or "bfloat16"),
+    }
+    if kind == "diffusion_models":
+        spec["adapter_arch"] = arch
+    resident = bool(body.get("resident", False))
+    client = (getattr(request.app.state, "runner_clients", {}) or {}).get("image")
+    if client is None or not getattr(client, "_connected", True):
+        raise HTTPException(503, "image runner not available")
+    await client.preload_component(spec=spec, resident=resident, arch=arch)
+    invalidate("engines")
+    return {"status": "accepted", "kind": kind, "file": file, "resident": resident}
+
+
 _install_states: dict[str, dict[str, str]] = {}  # engine -> {status, detail}
 
 

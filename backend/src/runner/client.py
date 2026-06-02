@@ -279,6 +279,13 @@ class RunnerClient:
             P.PreloadSeedVR2(model_dir=model_dir, dit_model=dit_model, vae_model=vae_model)
         )
 
+    async def preload_component(self, spec: dict, resident: bool = False, arch: str = "flux2") -> None:
+        """发 PreloadComponent —— 单组件进 L1 + 可选常驻,fire-and-forget;状态走下个 Pong 快照。
+        组件 L1 PR-2:引擎库组件卡「预加载/常驻」。arch 供单组件 build 反推 repo。"""
+        if not self._connected:
+            raise ConnectionError("runner disconnected")
+        await self._ch.send_message(P.PreloadComponent(spec=spec, resident=resident, arch=arch))
+
     async def unload_model(self, model_key: str) -> None:
         if not self._connected:
             raise ConnectionError("runner disconnected")
