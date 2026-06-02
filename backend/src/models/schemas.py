@@ -85,6 +85,12 @@ class EngineInfo(BaseModel):
     gpu: int | list[int]
     vram_gb: float
     resident: bool
+    # 统一引擎库(2026-06-02):区分目录条目种类供前端分组。
+    #   model     = 整模型 / registry 引擎(可独立加载)
+    #   upscale   = SeedVR2 等 by-key 超分(可独立加载)
+    #   component = 单文件组件(diffusion_models/clip/vae)—— 随 pipeline 加载,不独立可加载
+    #   lora      = LoRA 文件 —— 随模型加载
+    kind: str = "model"
     local_path: str | None = None
     local_exists: bool = False
     status_detail: str | None = None

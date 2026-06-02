@@ -175,6 +175,11 @@ async def list_all_engines(
         if not local_path or local_path not in local_dirs:
             continue
         result.append(_build_engine_info(key, cfg, metadata.get(key), local_dirs, request))
+    # 统一引擎库(spec 2026-06-02):补 by-key 超分(SeedVR2)+ 单文件组件(diffusion_models/clip/
+    # vae/loras)目录条目,带 VRAM 残留状态(loaded/gpu 从 aggregate_runner_loaded 多键匹配)。
+    # registry 不含它们(model_scanner skip 组件 / SeedVR2 by-key)→ 在此并入,让引擎库统一可见。
+    from src.services.engine_catalog import catalog_extra_engines
+    result.extend(catalog_extra_engines(request.app.state, type))
     return result
 
 
