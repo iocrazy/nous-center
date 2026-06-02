@@ -46,3 +46,6 @@ class ExecutionTask(Base):
     )
     node_timings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     cancel_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # 服务层 API spec PR-2:统一 prediction 契约。请求 input(按 exposed_inputs 注入快照前的原始
+    # input 对象)持久化,供 GET /predictions/{id} 回显(Cog Prediction.input)。nullable —— 老行 NULL。
+    input_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

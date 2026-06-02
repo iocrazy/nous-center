@@ -52,51 +52,6 @@ async def async_client_with_db(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-@pytest.fixture
-async def published_workflow_instance(async_client_with_db):
-    """A source_type=workflow ServiceInstance with an inline-only workflow + API key."""
-    from src.models.instance_api_key import InstanceApiKey
-    from src.models.service_instance import ServiceInstance
-
-    session_factory = async_client_with_db.session_factory
-    raw = f"sk-test-{_secrets.token_hex(8)}"
-    async with session_factory() as s:
-        inst = ServiceInstance(
-            source_type="workflow",
-            source_name="inline-wf",
-            name="Lane S e2e",
-            type="workflow",
-            status="active",
-            params_override={
-                "nodes": [
-                    {"id": "t1", "type": "text_input",
-                     "data": {"text": "hello"}, "position": {"x": 0, "y": 0}},
-                ],
-                "edges": [],
-            },
-        )
-        s.add(inst)
-        await s.commit()
-        await s.refresh(inst)
-        key = InstanceApiKey(
-            instance_id=inst.id,
-            label="test",
-            key_hash=bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode(),
-            key_prefix=raw[:10],
-            is_active=True,
-        )
-        s.add(key)
-        await s.commit()
-        await s.refresh(key)
-
-    class _Wrap:
-        pass
-    w = _Wrap()
-    w.instance_id = inst.id
-    w.raw_key = raw
-    return w
-
-
 async def _poll_until_done(client, task_id, timeout=5.0):
     """轮询 /api/v1/tasks/{id} 直到 status 进入终态。"""
     deadline = asyncio.get_event_loop().time() + timeout
@@ -145,24 +100,25 @@ async def test_execute_workflow_direct_enqueue_poll_result(async_client_with_db)
 
 
 @pytest.fixture
-async def snapshot_workflow_instance(async_client_with_db):
-    """v3 服务:执行图存在 deferred 列 workflow_snapshot(不是 legacy params_override)。
-    修复前 /run 读 params_override(空)→ 400;修复后读 snapshot → 202。"""
+async def prediction_service(async_client_with_db):
+    """workflow 服务(图在 workflow_snapshot,dict-of-nodes 形)+ legacy 1:1 key + 一个 exposed_input。
+    服务层 API spec PR-2:测统一 POST /services/{name}/predictions(取代旧 /run)。"""
     from src.models.instance_api_key import InstanceApiKey
     from src.models.service_instance import ServiceInstance
 
     session_factory = async_client_with_db.session_factory
-    raw = f"sk-snap-{_secrets.token_hex(8)}"
+    raw = f"sk-pred-{_secrets.token_hex(8)}"
     async with session_factory() as s:
         inst = ServiceInstance(
-            source_type="workflow", source_name="snap-wf", name="v3 snapshot",
+            source_type="workflow", source_name="pred-wf", name="pred-svc",
             type="workflow", status="active",
-            params_override={},  # v3 不写这个
             workflow_snapshot={
-                "nodes": [{"id": "t1", "type": "text_input",
-                           "data": {"text": "hi"}, "position": {"x": 0, "y": 0}}],
+                "nodes": {"t1": {"class_type": "text_input", "inputs": {"text": "冻结默认"}}},
                 "edges": [],
             },
+            exposed_inputs=[{"node_id": "t1", "key": "text", "input_name": "text",
+                             "type": "string", "required": False}],
+            exposed_outputs=[],
         )
         s.add(inst)
         await s.commit()
@@ -174,48 +130,56 @@ async def snapshot_workflow_instance(async_client_with_db):
         s.add(key)
         await s.commit()
     w = type("_W", (), {})()
-    w.instance_id = inst.id
+    w.name = inst.name
     w.raw_key = raw
     return w
 
 
 @pytest.mark.asyncio
-async def test_instance_run_reads_workflow_snapshot(async_client_with_db, snapshot_workflow_instance):
-    """v3 服务(图在 workflow_snapshot)/run 应 202 —— 旧代码读 params_override 会 400(回归守卫)。"""
-    client = async_client_with_db
-    swi = snapshot_workflow_instance
+async def test_predictions_async_returns_202(async_client_with_db, prediction_service):
+    """Prefer: respond-async → 202 + prediction{id, status: processing/starting}。"""
+    client, p = async_client_with_db, prediction_service
     resp = await client.post(
-        f"/v1/instances/{swi.instance_id}/run", json={"inputs": {}},
-        headers={"Authorization": f"Bearer {swi.raw_key}"})
+        f"/api/v1/services/{p.name}/predictions", json={"input": {}},
+        headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
     assert resp.status_code == 202, resp.text
-    assert "task_id" in resp.json()
+    body = resp.json()
+    assert "id" in body and body["service"] == "pred-svc"
+    assert body["status"] in ("starting", "processing", "succeeded")
 
 
 @pytest.mark.asyncio
-async def test_instance_run_returns_202(async_client_with_db, published_workflow_instance):
-    """POST /v1/instances/{id}/run → 202 + task_id。"""
-    client = async_client_with_db
-    pwi = published_workflow_instance
+async def test_predictions_async_poll_to_succeeded(async_client_with_db, prediction_service):
+    """async create → poll GET /predictions/{id} → succeeded + output。"""
+    client, p = async_client_with_db, prediction_service
     resp = await client.post(
-        f"/v1/instances/{pwi.instance_id}/run",
-        json={"inputs": {}},
-        headers={"Authorization": f"Bearer {pwi.raw_key}"},
-    )
-    assert resp.status_code == 202, resp.text
-    assert "task_id" in resp.json()
-
-
-@pytest.mark.asyncio
-async def test_instance_run_enqueue_poll_result(async_client_with_db, published_workflow_instance):
-    """端到端：instance /run enqueue → poll → completed。"""
-    client = async_client_with_db
-    pwi = published_workflow_instance
-    resp = await client.post(
-        f"/v1/instances/{pwi.instance_id}/run",
-        json={"inputs": {}},
-        headers={"Authorization": f"Bearer {pwi.raw_key}"},
-    )
-    assert resp.status_code == 202
-    task_id = resp.json()["task_id"]
-    final = await _poll_until_done(client, task_id)
+        f"/api/v1/services/{p.name}/predictions", json={"input": {}},
+        headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
+    pid = resp.json()["id"]
+    final = await _poll_until_done(client, pid)
     assert final["status"] == "completed"
+    # 经 /predictions/{id} 也拿到终态
+    pr = await client.get(f"/api/v1/predictions/{pid}",
+                          headers={"Authorization": f"Bearer {p.raw_key}"})
+    assert pr.status_code == 200 and pr.json()["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_predictions_sync_blocks_to_terminal(async_client_with_db, prediction_service):
+    """无 Prefer(同步)→ 阻塞至终态 → 200 + status succeeded(inline text 工作流秒完成)。"""
+    client, p = async_client_with_db, prediction_service
+    resp = await client.post(
+        f"/api/v1/services/{p.name}/predictions", json={"input": {"text": "hi"}},
+        headers={"Authorization": f"Bearer {p.raw_key}"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_predictions_input_validation_422(async_client_with_db, prediction_service):
+    """input 类型不符 schema → 422(PR-1 校验接进调用路径)。"""
+    client, p = async_client_with_db, prediction_service
+    resp = await client.post(
+        f"/api/v1/services/{p.name}/predictions", json={"input": {"text": 123}},  # text 应 string
+        headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
+    assert resp.status_code == 422, resp.text
