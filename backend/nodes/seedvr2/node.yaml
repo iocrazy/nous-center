@@ -1,0 +1,53 @@
+name: seedvr2
+version: "1.0"
+description: "SeedVR2 超分上采样节点 — ByteDance one-step diffusion upscaler(图→图,NumZ vendored)"
+author: "NumZ (ComfyUI-SeedVR2_VideoUpscaler, Apache 2.0) / nous-center"
+
+# SeedVR2 是**图→图超分**(不是 text2img):接上游一张 IMAGE → 目标短边分辨率 →
+# one-step DiT 超分出更清晰的 IMAGE。不进 flux2 KSampler 链、不用 scheduler/seed-control
+# (那些是 text2img 语义)。是 **dispatch 节点**(走 image runner,node_routing.DISPATCH_NODE_TYPES
+# 已登记 seedvr2_upscale;workflow_executor 把它路由到 image GPU 组、构 UpscaleRequest)。
+# 没有 inline executor.py —— dispatch 节点不进 EXECUTORS,runner_process._node_executor 执行。
+
+nodes:
+
+  seedvr2_upscale:
+    label: "SeedVR2 超分"
+    category: image
+    badge: Upscaler
+    badgeColor: "var(--accent-2)"
+    inputs:
+      - { id: image, type: image, label: 图像 }
+    outputs:
+      - { id: image, type: image, label: 图像 }
+    widgets:
+      # DiT 模型:NumZ 走**白名单**(MODEL_REGISTRY:filename→HF repo+sha256,缺则自动下到
+      # model_dir = NAS_MODELS_PATH/image/SEEDVR2)。所以是固定 select(不扫磁盘 —— 磁盘可能
+      # 有非白名单旧变体,NumZ 不认)。默认 7B fp8-mixed(Pro 6000 跑得动,本机已下好)。
+      - name: dit_model
+        label: "DiT 模型"
+        widget: select
+        default: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors
+        options:
+          - { value: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors, label: "7B fp8-mixed", description: "7B,fp8+block35 fp16 混精 — 显存友好,推荐(默认)" }
+          - { value: seedvr2_ema_7b_fp16.safetensors, label: "7B fp16", description: "7B 全 fp16 — 最高质量,显存占用大" }
+          - { value: seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors, label: "7B sharp fp8-mixed", description: "7B sharp 变体 fp8-mixed — 更锐利" }
+          - { value: seedvr2_ema_3b_fp8_e4m3fn.safetensors, label: "3B fp8", description: "3B fp8 — 更快/更省显存,质量略低" }
+          - { value: seedvr2_ema_3b_fp16.safetensors, label: "3B fp16", description: "3B 全 fp16" }
+      # 目标短边像素(SeedVR2 语义:输出最短边,非放大倍数)。
+      - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 2160, step: 16, default: 1080 }
+      # 色彩校正:超分后把色彩拉回输入图基调(避免 DiT 漂色)。lab 通用最稳。
+      - name: color_correction
+        label: "色彩校正"
+        widget: select
+        default: lab
+        options:
+          - { value: lab, label: "LAB", description: "LAB 色彩空间匹配 — 通用最稳(默认)" }
+          - { value: wavelet, label: "Wavelet", description: "小波分解匹配 — 保高频细节" }
+          - { value: wavelet_adaptive, label: "Wavelet 自适应", description: "自适应小波" }
+          - { value: hsv, label: "HSV", description: "HSV 色调匹配" }
+          - { value: adain, label: "AdaIN", description: "自适应实例归一化" }
+          - { value: none, label: "无", description: "不做色彩校正 — 保留 DiT 原始输出" }
+      # seed:SeedVR2 是 one-step,seed 影响很小(非 text2img 的构图控制);留空 = 默认 42。
+      - { name: seed, label: "Seed", widget: input, default: "" }
+      - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }
