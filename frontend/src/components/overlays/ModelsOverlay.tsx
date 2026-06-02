@@ -67,6 +67,8 @@ export default function ModelsOverlay() {
     model: null,
   })
   const [activeTab, setActiveTab] = useState<TabId>('all')
+  // 图像 tab 下的二级 kind 子 tab(统一引擎库:整模型/超分/组件/LoRA 细分)。
+  const [imageKind, setImageKind] = useState<'all' | 'model' | 'upscale' | 'component' | 'lora'>('all')
 
   const closeMenu = useCallback(() => {
     setCtxMenu((prev) => ({ ...prev, visible: false }))
@@ -213,10 +215,28 @@ export default function ModelsOverlay() {
   const typeCounts: Record<string, number> = {}
   for (const e of allEngines) typeCounts[e.type] = (typeCounts[e.type] ?? 0) + 1
 
+  // 图像 kind 子 tab 计数(整模型/超分/组件/LoRA)。
+  const imageEngines = allEngines.filter((e) => e.type === 'image')
+  const imageKindCounts: Record<string, number> = {
+    all: imageEngines.length, model: 0, upscale: 0, component: 0, lora: 0,
+  }
+  for (const e of imageEngines) {
+    const k = e.kind ?? 'model'
+    imageKindCounts[k] = (imageKindCounts[k] ?? 0) + 1
+  }
+  const imageSubTabs = ([
+    { id: 'all', label: '全部' }, { id: 'model', label: '整模型' }, { id: 'upscale', label: '超分' },
+    { id: 'component', label: '组件' }, { id: 'lora', label: 'LoRA' },
+  ] as const).filter((t) => t.id === 'all' || (imageKindCounts[t.id] ?? 0) > 0)
+
   const visibleEngines = (() => {
     if (activeTab === 'all') return allEngines
     if (activeTab === 'loaded') return allEngines.filter((e) => e.status === 'loaded')
-    return allEngines.filter((e) => e.type === activeTab)
+    let list = allEngines.filter((e) => e.type === activeTab)
+    if (activeTab === 'image' && imageKind !== 'all') {
+      list = list.filter((e) => (e.kind ?? 'model') === imageKind)
+    }
+    return list
   })()
 
   // Tab list — only show type tabs that have at least one engine
@@ -337,6 +357,30 @@ export default function ModelsOverlay() {
             )
           })}
         </div>
+
+        {/* 图像 tab 下的二级 kind 子 tab(整模型/超分/组件/LoRA)—— 细分 23 个图像条目。 */}
+        {activeTab === 'image' && (
+          <div style={{ display: 'flex', gap: 6, marginTop: -8, marginBottom: 16, flexWrap: 'wrap' }}>
+            {imageSubTabs.map((t) => {
+              const active = imageKind === t.id
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setImageKind(t.id)}
+                  style={{
+                    padding: '3px 12px', fontSize: 11, borderRadius: 12, cursor: 'pointer',
+                    background: active ? 'var(--accent-subtle)' : 'var(--bg-hover)',
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                    color: active ? 'var(--accent)' : 'var(--muted)',
+                    transition: 'all 0.12s',
+                  }}
+                >
+                  {t.label} {imageKindCounts[t.id] ?? 0}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         {isLoading && (
           <div style={{ fontSize: 11, color: 'var(--muted)' }}>加载中...</div>
