@@ -104,6 +104,7 @@ def test_validate_passthrough_extra_and_non_object():
 
 
 def test_endpoint_wired():
-    src = (_SRC / "api/routes/services.py").read_text()
+    # schema 端点在 /v1(predictions 路由),不在 /api/v1(services,被 admin cookie 门拦)。
+    src = (_SRC / "api/routes/predictions.py").read_text()
     assert '"/services/{name}/schema"' in src
     assert "build_service_io_schema(" in src

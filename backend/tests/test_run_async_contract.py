@@ -144,7 +144,7 @@ async def test_predictions_async_returns_202(async_client_with_db, prediction_se
     """Prefer: respond-async → 202 + prediction{id, status: processing/starting}。"""
     client, p = async_client_with_db, prediction_service
     resp = await client.post(
-        f"/api/v1/services/{p.name}/predictions", json={"input": {}},
+        f"/v1/services/{p.name}/predictions", json={"input": {}},
         headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
     assert resp.status_code == 202, resp.text
     body = resp.json()
@@ -157,13 +157,13 @@ async def test_predictions_async_poll_to_succeeded(async_client_with_db, predict
     """async create → poll GET /predictions/{id} → succeeded + output。"""
     client, p = async_client_with_db, prediction_service
     resp = await client.post(
-        f"/api/v1/services/{p.name}/predictions", json={"input": {}},
+        f"/v1/services/{p.name}/predictions", json={"input": {}},
         headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
     pid = resp.json()["id"]
     final = await _poll_until_done(client, pid)
     assert final["status"] == "completed"
     # 经 /predictions/{id} 也拿到终态
-    pr = await client.get(f"/api/v1/predictions/{pid}",
+    pr = await client.get(f"/v1/predictions/{pid}",
                           headers={"Authorization": f"Bearer {p.raw_key}"})
     assert pr.status_code == 200 and pr.json()["status"] == "succeeded"
 
@@ -173,7 +173,7 @@ async def test_predictions_sync_blocks_to_terminal(async_client_with_db, predict
     """无 Prefer(同步)→ 阻塞至终态 → 200 + status succeeded(inline text 工作流秒完成)。"""
     client, p = async_client_with_db, prediction_service
     resp = await client.post(
-        f"/api/v1/services/{p.name}/predictions", json={"input": {"text": "hi"}},
+        f"/v1/services/{p.name}/predictions", json={"input": {"text": "hi"}},
         headers={"Authorization": f"Bearer {p.raw_key}"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "succeeded"
@@ -184,7 +184,7 @@ async def test_predictions_input_validation_422(async_client_with_db, prediction
     """input 类型不符 schema → 422(PR-1 校验接进调用路径)。"""
     client, p = async_client_with_db, prediction_service
     resp = await client.post(
-        f"/api/v1/services/{p.name}/predictions", json={"input": {"text": 123}},  # text 应 string
+        f"/v1/services/{p.name}/predictions", json={"input": {"text": 123}},  # text 应 string
         headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
     assert resp.status_code == 422, resp.text
 
@@ -195,12 +195,12 @@ async def test_predictions_sse_stream(async_client_with_db, prediction_service):
     client, p = async_client_with_db, prediction_service
     # 同步跑(终态)
     resp = await client.post(
-        f"/api/v1/services/{p.name}/predictions", json={"input": {}},
+        f"/v1/services/{p.name}/predictions", json={"input": {}},
         headers={"Authorization": f"Bearer {p.raw_key}"})
     pid = resp.json()["id"]
     # 流(已终态 → 立即一条 + 结束)
     body = ""
-    async with client.stream("GET", f"/api/v1/predictions/{pid}/stream",
+    async with client.stream("GET", f"/v1/predictions/{pid}/stream",
                              headers={"Authorization": f"Bearer {p.raw_key}"}) as r:
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/event-stream")
@@ -217,7 +217,7 @@ async def test_predictions_webhook_stored(async_client_with_db, prediction_servi
     from src.models.execution_task import ExecutionTask
     client, p = async_client_with_db, prediction_service
     resp = await client.post(
-        f"/api/v1/services/{p.name}/predictions",
+        f"/v1/services/{p.name}/predictions",
         json={"input": {}, "webhook": "https://hook.example/cb", "webhook_events_filter": ["completed"]},
         headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
     pid = int(resp.json()["id"])
