@@ -1126,6 +1126,8 @@ class ModelManager:
         device: str = "cuda",
         dit_config: dict | None = None,
         vae_config: dict | None = None,
+        tensor_offload: str = "cpu",
+        enable_debug: bool = False,
     ):
         """SeedVR2 超分 adapter 装配/复用 —— 跟 anima/modular 不同:SeedVR2 不是「三组件
         (diffusion_models/clip/vae)」模型,是「DiT + 专用 VAE 整套自带」的上采样器(by
@@ -1171,6 +1173,7 @@ class ModelManager:
             "enc_tiled": vcfg.get("encode_tiled"), "enc_ts": vcfg.get("encode_tile_size"),
             "enc_to": vcfg.get("encode_tile_overlap"), "dec_tiled": vcfg.get("decode_tiled"),
             "dec_ts": vcfg.get("decode_tile_size"), "dec_to": vcfg.get("decode_tile_overlap"),
+            "tensor_offload": tensor_offload,  # 增强阶段 tensor offload(setup_generation_context,load-time)
         }
         payload = repr((model_dir, dit, vae, target, sorted(key_cfg.items()))).encode("utf-8")
         short_hash = hashlib.sha256(payload).hexdigest()[:8]
@@ -1189,6 +1192,8 @@ class ModelManager:
                 device=target,
                 dit_config=dcfg,
                 vae_config=vcfg,
+                tensor_offload=tensor_offload,
+                enable_debug=enable_debug,
             )
             await adapter.load(target)
 

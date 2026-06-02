@@ -58,6 +58,17 @@ def test_build_upscale_request_three_node_params():
     assert req2.batch_size == 1
 
 
+def test_build_upscale_request_video_and_batch_params():
+    """对齐 ComfyUI:temporal_overlap/prepend_frames(视频)+ uniform_batch_size 从 inputs 读。"""
+    req = _build_request(_node({
+        "image_url": "/tmp/in.png", "temporal_overlap": "4", "prepend_frames": "2",
+        "uniform_batch_size": True,
+    }))
+    assert req.temporal_overlap == 4
+    assert req.prepend_frames == 2
+    assert req.uniform_batch_size is True
+
+
 def test_seedvr2_loaders_are_inline():
     """三节点:DiT/VAE loader 是 inline(CPU 产配置,主进程);只有增强是 dispatch(GPU runner)。"""
     from src.services.node_routing import node_exec_class

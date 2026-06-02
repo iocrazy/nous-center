@@ -242,11 +242,15 @@ def _build_request(node: P.RunNode):
             resolution=_i("resolution", 1080),
             seed=seed,
             color_correction=str(node.inputs.get("color_correction") or "lab"),
-            # 三节点增强参数(PR-2):dit/vae config 是 load-time(走 _node_executor),不在此。
+            # 三节点增强参数:dit/vae config + offload/enable_debug 是 load-time(走 _node_executor),
+            # 这里只放 per-inference。
             max_resolution=_i("max_resolution", 0),
             batch_size=_i("batch_size", 1),
             input_noise_scale=_f("input_noise_scale", 0.0),
             latent_noise_scale=_f("latent_noise_scale", 0.0),
+            temporal_overlap=_i("temporal_overlap", 0),
+            prepend_frames=_i("prepend_frames", 0),
+            uniform_batch_size=bool(node.inputs.get("uniform_batch_size", False)),
         )
     if node.node_type == "image":
         from src.services.inference.component_spec import ComponentSpec
@@ -398,11 +402,14 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
                 # 旧单节点 fallback:upscale 节点自身 dit_model widget → dit_config.model。
                 if not dit_cfg.get("model") and node.inputs.get("dit_model"):
                     dit_cfg["model"] = node.inputs["dit_model"]
+                # 增强节点自身的 tensor offload + 调试(load-time,进 setup_generation_context / Debug)。
                 adapter = await state.mm.get_or_load_seedvr2_adapter(
                     model_dir=model_dir,
                     device=str(node.inputs.get("device") or "auto"),
                     dit_config=dit_cfg,
                     vae_config=vae_cfg,
+                    tensor_offload=str(node.inputs.get("offload_device") or "cpu"),
+                    enable_debug=bool(node.inputs.get("enable_debug", False)),
                 )
             elif components:
                 adapter = await state.mm.get_or_load_image_adapter(

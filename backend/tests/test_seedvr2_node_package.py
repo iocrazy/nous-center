@@ -86,6 +86,18 @@ def test_seedvr2_loader_executors_build_config_dicts():
     assert vae["vae"]["encode_tile_size"] == 256
 
 
+def test_seedvr2_upscale_full_parity_widgets():
+    """增强节点 widget 对齐 ComfyUI:含 control_after_generate(seed 控制)+ uniform_batch_size +
+    temporal_overlap + prepend_frames + offload_device + enable_debug。"""
+    names = {w["name"] for w in _node_def("seedvr2_upscale")["widgets"]}
+    for w in ("control_after_generate", "uniform_batch_size", "temporal_overlap",
+              "prepend_frames", "offload_device", "enable_debug"):
+        assert w in names, f"增强节点缺 widget {w}(ComfyUI 有)"
+    # control_after_generate 是 seed 控制(同 KSampler;applySeedControl 通用,纯前端)。
+    cag = next(w for w in _node_def("seedvr2_upscale")["widgets"] if w["name"] == "control_after_generate")
+    assert {o["value"] for o in cag["options"]} == {"fixed", "increment", "decrement", "randomize"}
+
+
 def test_seedvr2_dit_widget_is_dynamic_disk_aware():
     """dit_model(在 load_dit 节点)是动态混合下拉(seedvr2_model_select),不写死 options,默认 = DEFAULT_DIT。"""
     from src.services.inference.image_seedvr2 import DEFAULT_DIT  # noqa: PLC0415
