@@ -67,8 +67,8 @@ export default function ModelsOverlay() {
     model: null,
   })
   const [activeTab, setActiveTab] = useState<TabId>('all')
-  // 图像 tab 下的二级 kind 子 tab(统一引擎库:整模型/超分/组件/LoRA 细分)。
-  const [imageKind, setImageKind] = useState<'all' | 'model' | 'upscale' | 'component' | 'lora'>('all')
+  // 图像 tab 下的二级子 tab —— 按**文件夹/角色**分:整模型 / 超分 / diffusion_models / clip / vae / loras。
+  const [imageBucket, setImageBucket] = useState<string>('all')
 
   const closeMenu = useCallback(() => {
     setCtxMenu((prev) => ({ ...prev, visible: false }))
@@ -215,26 +215,36 @@ export default function ModelsOverlay() {
   const typeCounts: Record<string, number> = {}
   for (const e of allEngines) typeCounts[e.type] = (typeCounts[e.type] ?? 0) + 1
 
-  // 图像 kind 子 tab 计数(整模型/超分/组件/LoRA)。
+  // 图像条目归到哪个「桶」(文件夹/角色):整模型/超分用 kind;组件/LoRA 用文件夹(从 name
+  // "component:<role>:<path>" 取 role:diffusion_models/clip/vae/loras)。
+  const imageBucketOf = (e: EngineInfo): string => {
+    if (e.kind === 'model' || e.kind === 'upscale') return e.kind
+    if (e.name.startsWith('component:')) return e.name.split(':')[1] || 'component'
+    return e.kind ?? 'component'
+  }
   const imageEngines = allEngines.filter((e) => e.type === 'image')
-  const imageKindCounts: Record<string, number> = {
-    all: imageEngines.length, model: 0, upscale: 0, component: 0, lora: 0,
-  }
+  const bucketCounts: Record<string, number> = { all: imageEngines.length }
   for (const e of imageEngines) {
-    const k = e.kind ?? 'model'
-    imageKindCounts[k] = (imageKindCounts[k] ?? 0) + 1
+    const b = imageBucketOf(e)
+    bucketCounts[b] = (bucketCounts[b] ?? 0) + 1
   }
-  const imageSubTabs = ([
-    { id: 'all', label: '全部' }, { id: 'model', label: '整模型' }, { id: 'upscale', label: '超分' },
-    { id: 'component', label: '组件' }, { id: 'lora', label: 'LoRA' },
-  ] as const).filter((t) => t.id === 'all' || (imageKindCounts[t.id] ?? 0) > 0)
+  // 子 tab 顺序:整模型 → 超分 → 各文件夹。label 友好化。
+  const BUCKET_LABEL: Record<string, string> = {
+    model: '整模型', upscale: '超分', diffusion_models: 'diffusion_models',
+    clip: 'CLIP', vae: 'VAE', loras: 'LoRA',
+  }
+  const BUCKET_ORDER = ['model', 'upscale', 'diffusion_models', 'clip', 'vae', 'loras']
+  const imageSubTabs = [
+    { id: 'all', label: '全部' },
+    ...BUCKET_ORDER.filter((b) => (bucketCounts[b] ?? 0) > 0).map((b) => ({ id: b, label: BUCKET_LABEL[b] ?? b })),
+  ]
 
   const visibleEngines = (() => {
     if (activeTab === 'all') return allEngines
     if (activeTab === 'loaded') return allEngines.filter((e) => e.status === 'loaded')
     let list = allEngines.filter((e) => e.type === activeTab)
-    if (activeTab === 'image' && imageKind !== 'all') {
-      list = list.filter((e) => (e.kind ?? 'model') === imageKind)
+    if (activeTab === 'image' && imageBucket !== 'all') {
+      list = list.filter((e) => imageBucketOf(e) === imageBucket)
     }
     return list
   })()
@@ -358,15 +368,15 @@ export default function ModelsOverlay() {
           })}
         </div>
 
-        {/* 图像 tab 下的二级 kind 子 tab(整模型/超分/组件/LoRA)—— 细分 23 个图像条目。 */}
+        {/* 图像 tab 下的二级子 tab —— 按文件夹/角色分(整模型/超分/diffusion_models/CLIP/VAE/LoRA)。 */}
         {activeTab === 'image' && (
           <div style={{ display: 'flex', gap: 6, marginTop: -8, marginBottom: 16, flexWrap: 'wrap' }}>
             {imageSubTabs.map((t) => {
-              const active = imageKind === t.id
+              const active = imageBucket === t.id
               return (
                 <button
                   key={t.id}
-                  onClick={() => setImageKind(t.id)}
+                  onClick={() => setImageBucket(t.id)}
                   style={{
                     padding: '3px 12px', fontSize: 11, borderRadius: 12, cursor: 'pointer',
                     background: active ? 'var(--accent-subtle)' : 'var(--bg-hover)',
@@ -375,7 +385,7 @@ export default function ModelsOverlay() {
                     transition: 'all 0.12s',
                   }}
                 >
-                  {t.label} {imageKindCounts[t.id] ?? 0}
+                  {t.label} {bucketCounts[t.id] ?? 0}
                 </button>
               )
             })}
@@ -392,7 +402,7 @@ export default function ModelsOverlay() {
           </div>
         )}
 
-        {/* m11 single flat grid (no per-type sections) — tab is the filter */}
+        {/* m11 single flat grid — 卡片;图像 tab 下按文件夹(diffusion_models/clip/vae/loras)子 tab 过滤。 */}
         <div
           style={{
             display: 'grid',
