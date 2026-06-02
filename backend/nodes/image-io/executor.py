@@ -53,6 +53,17 @@ async def exec_image_input(data: dict, inputs: dict) -> dict:
     }
 
 
+async def exec_image_compare(data: dict, inputs: dict) -> dict:
+    """图像对比 = 显示型 sink(对比纯前端,从两路上游 node_complete 的 image_url 取图渲染滑动对比)。
+    executor 是 no-op:让工作流执行不报「未知节点」,本身不产输出。透传两路 image_url 进 meta
+    方便调试/留痕(前端不依赖它)。"""
+    return {
+        "image_a_url": inputs.get("image_url_a") or inputs.get("image_a"),
+        "image_b_url": inputs.get("image_url_b") or inputs.get("image_b"),
+    }
+
+
 EXECUTORS = {
     "image_input": exec_image_input,
+    "image_compare": exec_image_compare,
 }
