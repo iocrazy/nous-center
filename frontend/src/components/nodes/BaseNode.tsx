@@ -286,45 +286,6 @@ export function NodeInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
 }
 
 /** Styled inline widget select with custom dropdown arrow */
-export function NodeSelect(props: React.SelectHTMLAttributes<HTMLSelectElement> & { children: React.ReactNode }) {
-  return (
-    <div className="nodrag" style={{ position: 'relative', width: '100%' }}>
-      <select
-        {...props}
-        style={{
-          width: '100%',
-          padding: '3px 20px 3px 7px',
-          fontSize: 10,
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          borderRadius: 3,
-          color: 'var(--text)',
-          fontFamily: 'var(--font)',
-          outline: 'none',
-          appearance: 'none',
-          WebkitAppearance: 'none',
-          cursor: 'pointer',
-          ...props.style,
-        }}
-      />
-      <svg
-        width="8"
-        height="5"
-        viewBox="0 0 8 5"
-        style={{
-          position: 'absolute',
-          right: 6,
-          top: '50%',
-          transform: 'translateY(-50%)',
-          pointerEvents: 'none',
-        }}
-      >
-        <path d="M0 0l4 5 4-5z" fill="var(--muted)" />
-      </svg>
-    </div>
-  )
-}
-
 /**
  * ElevenLabs-style slider: native range input (styled via CSS) + editable value.
  * Click value to type. Uses native <input type="range"> for reliable drag.

@@ -2,7 +2,8 @@ import type { NodeProps } from '@xyflow/react'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { getEngineConfig, ENGINE_PARAMS } from '../../config/engineParams'
 import { NODE_DEFS } from '../../models/workflow'
-import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag } from './BaseNode'
+import BaseNode, { NodeWidgetRow, NodeInput, NodeNumberDrag } from './BaseNode'
+import NodeSelectPopover from './NodeSelectPopover'
 
 export default function TTSEngineNode({ id, data, selected }: NodeProps) {
   const updateNode = useWorkspaceStore((s) => s.updateNode)
@@ -19,14 +20,12 @@ export default function TTSEngineNode({ id, data, selected }: NodeProps) {
       outputs={def.outputs}
     >
       <NodeWidgetRow label="engine">
-        <NodeSelect
+        <NodeSelectPopover
           value={engine}
-          onChange={(e) => updateNode(id, { engine: e.target.value })}
-        >
-          {Object.entries(ENGINE_PARAMS).map(([k, v]) => (
-            <option key={k} value={k}>{v.displayName}</option>
-          ))}
-        </NodeSelect>
+          onChange={(v) => updateNode(id, { engine: v })}
+          options={Object.entries(ENGINE_PARAMS).map(([k, v]) => ({ value: k, label: v.displayName }))}
+          size="compact"
+        />
       </NodeWidgetRow>
 
       {cfg.supportsSpeed && (
@@ -53,15 +52,12 @@ export default function TTSEngineNode({ id, data, selected }: NodeProps) {
 
       {cfg.supportsSampleRate && (
         <NodeWidgetRow label="sample_rate">
-          <NodeSelect
-            value={(data.sampleRate as number) ?? cfg.defaultSampleRate}
-            onChange={(e) => updateNode(id, { sampleRate: parseInt(e.target.value) })}
-          >
-            <option value={16000}>16000</option>
-            <option value={22050}>22050</option>
-            <option value={24000}>24000</option>
-            <option value={44100}>44100</option>
-          </NodeSelect>
+          <NodeSelectPopover
+            value={String((data.sampleRate as number) ?? cfg.defaultSampleRate)}
+            onChange={(v) => updateNode(id, { sampleRate: parseInt(v) })}
+            options={[16000, 22050, 24000, 44100].map((r) => ({ value: String(r), label: String(r) }))}
+            size="compact"
+          />
         </NodeWidgetRow>
       )}
 

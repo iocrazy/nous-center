@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('../../api/client', () => ({ apiFetch: vi.fn() }))
@@ -14,13 +14,18 @@ function wrap(ui: React.ReactElement) {
 
 describe('ComponentSelectWidget', () => {
   beforeEach(() => vi.clearAllMocks())
-  it('lists components for the role by abs_path', async () => {
+  // 迁移到 NodeSelectPopover 后:选项是 role=option 的按钮,只在打开浮层时渲染;选中回传 abs_path。
+  it('lists components for the role by abs_path (popover)', async () => {
     vi.mocked(apiFetch).mockResolvedValue({ components: [
       { filename: 'flux-unet.safetensors', abs_path: '/m/flux-unet.safetensors', size_mb: 18000, quant_type: 'bf16', mtime: 0 },
     ] })
-    wrap(<ComponentSelectWidget value="" onChange={() => {}} role="diffusion_models" />)
-    await waitFor(() => expect(screen.getByRole('option', { name: /flux-unet/ })).toBeInTheDocument())
-    const opt = screen.getByRole('option', { name: /flux-unet/ }) as HTMLOptionElement
-    expect(opt.value).toBe('/m/flux-unet.safetensors')
+    const onChange = vi.fn()
+    wrap(<ComponentSelectWidget value="" onChange={onChange} role="diffusion_models" />)
+    // 点触发按钮打开浮层
+    fireEvent.click(screen.getByRole('button'))
+    // 选项出现(数据 query 异步 → findByRole 重试等待),点选回传 abs_path
+    const opt = await screen.findByRole('option', { name: /flux-unet/ })
+    fireEvent.click(opt)
+    expect(onChange).toHaveBeenCalledWith('/m/flux-unet.safetensors')
   })
 })
