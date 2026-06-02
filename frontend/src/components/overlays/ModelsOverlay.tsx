@@ -188,20 +188,14 @@ export default function ModelsOverlay() {
               })),
             } as MenuItem]
           : []),
-        // 组件:选精度预加载(对齐 loader 节点 weight_dtype:bfloat16/float16/fp8_e4m3;自动选卡)。
+        // 「预加载 + 常驻」一步到位(自动选卡)。**不给选精度** —— 组件预加载固定用标准 bf16 计算
+        // 精度:文件存储格式名字里写死(bf16/fp8mixed…),而单组件 build_bridged 路径不做 fp8 torchao
+        // 量化(那只在整 pipeline _ensure_pipe 做),选 fp8 只会静默落 bf16 误导用户。省显存的 fp8
+        // 走「跑工作流时 loader 节点选 weight_dtype」,不在引擎库预加载这条路。
         ...(isComponent && !cmLoaded
           ? [{
-              label: '预加载（选精度/常驻 · 自动选卡）',
-              submenu: ['bfloat16', 'float16', 'fp8_e4m3'].flatMap((dt) => ([
-                {
-                  label: dt,
-                  onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, dtype: dt }),
-                },
-                {
-                  label: `${dt} + 常驻`,
-                  onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, dtype: dt, resident: true }),
-                },
-              ])),
+              label: '预加载到显存 + 常驻（自动选卡）',
+              onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, resident: true }),
             } as MenuItem]
           : []),
         {
