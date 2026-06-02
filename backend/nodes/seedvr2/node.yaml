@@ -48,12 +48,14 @@ nodes:
           - { value: "cuda:0", label: "cuda:0" }
           - { value: "cuda:1", label: "cuda:1" }
           - { value: "cuda:2", label: "cuda:2" }
+      # 引擎支持 flash_attn_2/3 + sageattn_2/3,但本机未装(CUDA 版本不匹配)→ 只暴露 sdpa(单选恒定)。
+      # 装上 flash/sage 后这里加选项即生效(attention.py 真分支)。
       - name: attention_mode
-        label: "Attention"
+        label: "Attention(仅 SDPA)"
         widget: select
         default: sdpa
         options:
-          - { value: sdpa, label: "SDPA", description: "PyTorch 原生(flash_attn 未装,SeedVR2 支持 SDPA 回退)" }
+          - { value: sdpa, label: "SDPA", description: "PyTorch 原生(flash_attn/sage 未装,SeedVR2 SDPA 回退)" }
 
   # --- VAE 加载(inline,产配置)-----------------------------------------------
   seedvr2_load_vae:
@@ -115,9 +117,9 @@ nodes:
     widgets:
       - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 2160, step: 16, default: 1080 }
       - { name: max_resolution, label: "长边上限(0=不限)", widget: slider, min: 0, max: 4320, step: 16, default: 0 }
-      - { name: batch_size, label: "批大小", widget: slider, min: 1, max: 16, step: 1, default: 1 }
-      # uniform_batch_size:批内统一尺寸(批/视频场景;单图无影响)。对齐 ComfyUI。
-      - { name: uniform_batch_size, label: "统一批尺寸", widget: checkbox, default: false }
+      # batch_size/uniform_batch_size 是**多帧/视频**参数(按帧分批)。单图=1 帧 → 无效。对齐 ComfyUI 保留。
+      - { name: batch_size, label: "批大小(视频/多帧;单图无效)", widget: slider, min: 1, max: 16, step: 1, default: 1 }
+      - { name: uniform_batch_size, label: "统一批尺寸(视频;单图无效)", widget: checkbox, default: false }
       - name: color_correction
         label: "色彩校正"
         widget: select
@@ -130,8 +132,8 @@ nodes:
           - { value: adain, label: "AdaIN", description: "自适应实例归一化" }
           - { value: none, label: "无", description: "不做色彩校正" }
       # temporal_overlap / prepend_frames:**视频**帧间参数(单图=0 无影响),对齐 ComfyUI 保留。
-      - { name: temporal_overlap, label: "时间重叠(视频)", widget: slider, min: 0, max: 32, step: 1, default: 0 }
-      - { name: prepend_frames, label: "前置帧(视频)", widget: slider, min: 0, max: 32, step: 1, default: 0 }
+      - { name: temporal_overlap, label: "时间重叠(视频;单图无效)", widget: slider, min: 0, max: 32, step: 1, default: 0 }
+      - { name: prepend_frames, label: "前置帧(视频;单图无效)", widget: slider, min: 0, max: 32, step: 1, default: 0 }
       - { name: input_noise_scale, label: "输入噪声", widget: slider, min: 0, max: 1, step: 0.01, default: 0.0 }
       - { name: latent_noise_scale, label: "latent 噪声", widget: slider, min: 0, max: 1, step: 0.01, default: 0.0 }
       # offload_device:增强阶段张量 offload 目标(对齐 ComfyUI enhance 节点的 offload_device)。
