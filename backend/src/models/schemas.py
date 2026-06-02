@@ -120,6 +120,10 @@ class EngineInfo(BaseModel):
     # None for non-image engines and for image engines that haven't
     # exposed lora_paths yet.
     lora_count: int | None = None
+    # 单文件组件(kind=component/lora)的 L1 cache 身份串(file|device|dtype|loras)。已加载组件
+    # 才有(来自 loaded_components 快照),供前端常驻 toggle 按它精确匹配(避 device='auto' 错配)。
+    # 组件 L1 PR-3a。非组件 / 未加载 → None。
+    state_key: str | None = None
 
 
 class EngineLoadResponse(BaseModel):

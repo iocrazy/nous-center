@@ -105,6 +105,7 @@ def test_component_catalog_marks_preloaded_loaded_resident(monkeypatch):
         "qwen_3_8b.safetensors": {
             "file": "/m/text_encoders/qwen_3_8b.safetensors", "device": "cuda:1",
             "resident": True, "role": "text_encoder",
+            "state_key": "/m/text_encoders/qwen_3_8b.safetensors|cuda:1|bfloat16|",
         }
     })
     out = EC.component_catalog_entries(app_state=None)
@@ -113,6 +114,8 @@ def test_component_catalog_marks_preloaded_loaded_resident(monkeypatch):
     assert e.resident is True
     assert e.loaded_gpu == 1
     assert e.kind == "component"
+    # state_key 露给前端常驻 toggle 精确匹配(含真实 device)
+    assert e.state_key == "/m/text_encoders/qwen_3_8b.safetensors|cuda:1|bfloat16|"
 
 
 def test_component_catalog_unloaded_when_absent(monkeypatch):

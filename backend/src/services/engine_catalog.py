@@ -149,6 +149,8 @@ def component_catalog_entries(app_state: Any) -> list[EngineInfo]:
                 local_exists=True,
                 auto_detected=True,
                 loaded_gpu=gpu_idx,
+                # 已加载组件的 L1 身份串 → 前端常驻 toggle 按它精确匹配(含真实 device)。组件 L1 PR-3a。
+                state_key=(comp_match.get("state_key") if comp_match else None),
             ))
     return out
 
