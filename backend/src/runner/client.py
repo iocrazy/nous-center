@@ -293,6 +293,13 @@ class RunnerClient:
             raise ConnectionError("runner disconnected")
         await self._ch.send_message(P.SetComponentResident(state_key=state_key, resident=resident))
 
+    async def set_model_resident(self, model_id: str, resident: bool) -> None:
+        """发 SetModelResident —— 切 by-key 模型(如 SeedVR2)常驻位,fire-and-forget;走下个 Pong。
+        组件 L1 PR-2c:引擎库 SeedVR2 卡常驻 toggle。"""
+        if not self._connected:
+            raise ConnectionError("runner disconnected")
+        await self._ch.send_message(P.SetModelResident(model_id=model_id, resident=resident))
+
     async def unload_model(self, model_key: str) -> None:
         if not self._connected:
             raise ConnectionError("runner disconnected")

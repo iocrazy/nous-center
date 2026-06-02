@@ -653,6 +653,20 @@ class ModelManager:
                 self._image_stick.pop(sk, None)
             logger.info("Unloaded model %r", model_id)
 
+    def set_model_resident(self, model_id: str, resident: bool) -> bool:
+        """切已加载 by-key 模型(如 SeedVR2)的常驻位 —— resident=True → evict_lru/unload(非 force)
+        跳过它(不被自动驱逐)。组件 L1 PR-2c:引擎库 SeedVR2 卡常驻 toggle。
+
+        ModelSpec 是 frozen,经 model_copy 换新 spec(LoadedModel.spec 可重赋)。没加载 → False。
+        in-memory pin(runner 重启失效;SeedVR2 非 registry 模型,无 yaml 持久 resident)。
+        """
+        entry = self._models.get(model_id)
+        if entry is None:
+            return False
+        entry.spec = entry.spec.model_copy(update={"resident": resident})
+        logger.info("set_model_resident %r → %s", model_id, resident)
+        return True
+
     @property
     def loaded_model_ids(self) -> list[str]:
         return [mid for mid, entry in self._models.items() if entry.adapter.is_loaded]

@@ -103,6 +103,16 @@ class SetComponentResident:
     kind: Literal["set_component_resident"] = "set_component_resident"
 
 
+@dataclass(frozen=True)
+class SetModelResident:
+    """主进程 → runner:切已加载 by-key 模型(如 SeedVR2)的常驻位(组件 L1 PR-2c)。
+    model_id = runner _models 的键(如 image:SeedVR2:<hash>)。runner 走 mm.set_model_resident;
+    没加载则 no-op;状态经下个 Pong 快照反映。"""
+    model_id: str
+    resident: bool
+    kind: Literal["set_model_resident"] = "set_model_resident"
+
+
 # ------------------------------------------------------------------
 # image/TTS runner -> 主进程
 # ------------------------------------------------------------------
@@ -191,6 +201,7 @@ _KIND_TO_CLASS: dict[str, type] = {
     "preload_seedvr2": PreloadSeedVR2,
     "preload_component": PreloadComponent,
     "set_component_resident": SetComponentResident,
+    "set_model_resident": SetModelResident,
     "ready": Ready,
     "node_result": NodeResult,
     "node_progress": NodeProgress,
@@ -202,7 +213,7 @@ _KIND_TO_CLASS: dict[str, type] = {
 # 类型注解仅供调用方做 isinstance / match —— 任意消息的联合类型
 Message = (
     LoadModel | UnloadModel | RunNode | Abort | Ping | PreloadComponents | PreloadSeedVR2
-    | PreloadComponent | SetComponentResident
+    | PreloadComponent | SetComponentResident | SetModelResident
     | Ready | NodeResult | NodeProgress | ModelEvent | Pong | ComponentEvent
 )
 

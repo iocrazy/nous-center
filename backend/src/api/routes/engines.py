@@ -491,6 +491,40 @@ async def unload_seedvr2(request: Request, body: dict = Body(...)):
     return {"unloaded": unloaded, "count": len(unloaded)}
 
 
+@router.post("/seedvr2/resident", dependencies=[Depends(require_admin)])
+async def set_seedvr2_resident(request: Request, body: dict = Body(...)):
+    """切已加载 SeedVR2 的常驻位(引擎库 SeedVR2 卡常驻 toggle,组件 L1 PR-2c)。name='seedvr2:<dit>'
+    → 匹配 source_files 含该 dit 的 by-key 模型(id 前缀 image:SeedVR2:);name 空 → 切所有 SeedVR2。
+    向持有它的 runner 派 SetModelResident。resident=True → 不被 LRU 自动驱逐。"""
+    import os  # noqa: PLC0415
+
+    from src.services.runner_models import aggregate_runner_loaded  # noqa: PLC0415
+    name = str(body.get("name") or "")
+    dit = name.split(":", 1)[1] if name.startswith("seedvr2:") else name
+    resident = bool(body.get("resident", True))
+    state = request.app.state
+    sups_by_group = {
+        getattr(s, "group_id", None): s
+        for s in (getattr(state, "runner_supervisors", None) or [])
+    }
+    touched: list[str] = []
+    for e in aggregate_runner_loaded(state):
+        mid = str(e.get("model_id") or "")
+        if not mid.startswith("image:SeedVR2:"):
+            continue
+        if dit and not any(os.path.basename(str(s)) == dit for s in (e.get("source_files") or [])):
+            continue
+        sup = sups_by_group.get(e.get("group_id"))
+        if sup is not None and getattr(sup, "client", None) is not None:
+            try:
+                await sup.client.set_model_resident(mid, resident)
+                touched.append(mid)
+            except Exception as ex:  # noqa: BLE001 — 单个失败不挡其余
+                logger.warning("set seedvr2 resident %s failed: %s", mid, ex)
+    invalidate("engines")
+    return {"status": "accepted", "model_ids": touched, "resident": resident, "count": len(touched)}
+
+
 # 引擎库 name 格式:`component:<kind>:<path>`(CopyButton 用同款)。kind ∈ diffusion_models/clip/vae。
 def _parse_component_name(name: str) -> tuple[str, str] | None:
     parts = name.split(":", 2)
