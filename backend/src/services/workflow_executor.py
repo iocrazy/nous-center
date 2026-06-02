@@ -41,6 +41,17 @@ _on_progress_ref = None
 _NODE_TYPE_TO_GROUP_ID: dict[str, str] = {
     "flux2_vae_decode": "image",  # 细粒度图 dispatch 终端(spec 2026-05-21 rev 2)
     "tts_engine": "tts",
+    "seedvr2_upscale": "image",  # 图→图超分,跑 image GPU 组(SeedVR2 PR-3b)
+}
+
+# fine workflow type → runner 请求 role(= RunNode.node_type,runner_process._build_request
+# 据此构 typed request)。**多数与 group_id 同名**,但 SeedVR2 例外:它跑在 image GPU 组
+# (group_id=image,复用 image runner)却需构 UpscaleRequest(role="upscale",非 ImageRequest)
+# —— 所以 role 与 group_id 在此解耦。未登记的 type 回退 group_id(与历史行为一致)。
+_NODE_TYPE_TO_RUNNER_ROLE: dict[str, str] = {
+    "flux2_vae_decode": "image",
+    "tts_engine": "tts",
+    "seedvr2_upscale": "upscale",
 }
 
 
@@ -395,10 +406,13 @@ class WorkflowExecutor:
             return isinstance(latent, dict) and latent.get("seed") not in (None, "")
         is_deterministic = _has_seed(merged_inputs)
 
+        # RunNode.node_type 是 runner 请求 role(image/tts/upscale),多数 = group_id,
+        # SeedVR2 例外(group_id=image 但 role=upscale)—— 见 _NODE_TYPE_TO_RUNNER_ROLE。
+        runner_role = _NODE_TYPE_TO_RUNNER_ROLE.get(node["type"], group_id)
         spec = P.RunNode(
             task_id=task_id,
             node_id=node["id"],
-            node_type=group_id,
+            node_type=runner_role,
             model_key=model_key,
             inputs=merged_inputs,
             is_deterministic=is_deterministic,

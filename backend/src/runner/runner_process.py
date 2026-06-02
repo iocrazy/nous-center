@@ -182,16 +182,52 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
         # 其余消息类型（runner→主进程方向的）不应收到，忽略
 
 
+def _resolve_input_image_path(image_url: str) -> str:
+    """上游 image_url(签名 URL /files/images/<date>/<uuid>.<ext>?token=...)→ 本地磁盘路径。
+
+    runner 与 backend 同机、共享 NAS_OUTPUTS_PATH —— 直接按 date/uuid/ext 解析磁盘文件
+    给 SeedVR2 读,免 HTTP 回环 + token 验证(图本就是本工作流上游刚生成的)。
+    非 /files/ 形态(本地路径 / data URI)原样返回,交给 adapter._decode_image。
+    """
+    s = str(image_url)
+    if not (s.startswith("/files/") or "/files/images/" in s):
+        return s  # 本地路径 / data URI
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    from src.services.image_output_storage import resolve_path  # noqa: PLC0415
+    path = urlparse(s).path  # /files/images/2026-06-02/<uuid>.png
+    parts = path.strip("/").split("/")  # [files, images, <date>, <uuid>.<ext>]
+    date = parts[-2]
+    uuid_str, _, ext = parts[-1].rpartition(".")
+    return str(resolve_path(date, uuid_str, ext or "png"))
+
+
 def _build_request(node: P.RunNode):
     """按 node_type 构造 typed InferenceRequest。
 
-    spec §3.3：RunNode.node_type 仅 "image" / "tts"。image 走 ImageRequest
-    （within-node cancel，progress callback per step）；tts 走 AudioRequest
-    （spec §4.4：boundary-cancel only，infer(req) 不接 progress/cancel kwargs）。
+    spec §3.3：RunNode.node_type 是 runner role —— "image"(ImageRequest,within-node
+    cancel + per-step progress)/ "tts"(AudioRequest,boundary-cancel only)/ "upscale"
+    (UpscaleRequest,SeedVR2 图→图超分,one-step 无 per-step progress)。
     未知 node_type 抛 ValueError —— node-executor 转成 NodeResult status=failed。
     """
     from src.services.inference.base import AudioRequest, ImageRequest
 
+    if node.node_type == "upscale":
+        from src.services.inference.base import UpscaleRequest  # noqa: PLC0415
+
+        # 上游图从 image_url(签名 URL)来;runner 解析成本地路径喂 adapter。
+        image_url = node.inputs.get("image_url") or node.inputs.get("image")
+        if not image_url:
+            raise ValueError("seedvr2_upscale 节点缺上游 image 输入(inputs.image_url)")
+        raw_seed = node.inputs.get("seed")
+        seed = int(raw_seed) if raw_seed not in (None, "") else None
+        return UpscaleRequest(
+            request_id=f"task-{node.task_id}",
+            image=_resolve_input_image_path(image_url),
+            resolution=int(node.inputs.get("resolution") or 1080),
+            seed=seed,
+            color_correction=str(node.inputs.get("color_correction") or "lab"),
+        )
     if node.node_type == "image":
         from src.services.inference.component_spec import ComponentSpec
 
@@ -270,7 +306,7 @@ def _build_request(node: P.RunNode):
             speed=float(node.inputs.get("speed", 1.0) or 1.0),
             sample_rate=int(node.inputs.get("sample_rate", 24000) or 24000),
         )
-    raise ValueError(f"unsupported node_type {node.node_type!r} (expected image / tts)")
+    raise ValueError(f"unsupported node_type {node.node_type!r} (expected image / tts / upscale)")
 
 
 async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
@@ -324,7 +360,23 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         # combo 缓存);否则老 model_key 路径(get_or_load,含 OOM evict)。
         try:
             components = getattr(req, "components", None)
-            if components:
+            if node.node_type == "upscale":
+                # SeedVR2 不是三组件模型(DiT+VAE 整套自带)—— 走 by-key 装载。model_dir
+                # 默认 NAS_MODELS_PATH/image/SEEDVR2;dit/vae 缺省 DEFAULT(NumZ 白名单,缺则 HF 下)。
+                # 模型选择 UI 在 PR-3c;PR-3b 先用默认 + inputs 可覆盖。
+                import os  # noqa: PLC0415
+
+                from src.config import get_settings  # noqa: PLC0415
+                from src.services.inference.image_seedvr2 import DEFAULT_DIT, DEFAULT_VAE  # noqa: PLC0415
+                nas = (get_settings().NAS_MODELS_PATH or "").strip()
+                model_dir = node.inputs.get("model_dir") or os.path.join(nas, "image", "SEEDVR2")
+                adapter = await state.mm.get_or_load_seedvr2_adapter(
+                    model_dir=model_dir,
+                    dit_model=node.inputs.get("dit_model") or DEFAULT_DIT,
+                    vae_model=node.inputs.get("vae_model") or DEFAULT_VAE,
+                    device=str(node.inputs.get("device") or "auto"),
+                )
+            elif components:
                 adapter = await state.mm.get_or_load_image_adapter(
                     components, getattr(req, "pipeline_class", "Flux2KleinPipeline"),
                     on_event=_make_component_event_sender(ch),
@@ -467,7 +519,8 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         # outputs,下游 image_output 节点才能从 inputs.image_url 取到。把 bytes
         # 通过 msgpack pipe 直接传 50MB 是反模式。
         outputs: dict[str, Any] = {"meta": result.metadata, "media_type": result.media_type}
-        if node.node_type == "image" and result.media_type.startswith("image/") and result.data:
+        if (node.node_type in ("image", "upscale")
+                and result.media_type.startswith("image/") and result.data):
             from src.services.image_output_storage import write_image
             ext = result.media_type.split("/", 1)[1].split("+", 1)[0] or "png"
             ttl = int(node.inputs.get("url_ttl_seconds") or 3600)

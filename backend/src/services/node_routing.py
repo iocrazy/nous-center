@@ -18,7 +18,9 @@ ExecClass = Literal["inline", "dispatch"]
 # flux2_vae_decode 是细粒度图的 dispatch 终端:整条 Load*→Encode→KSampler 链
 # inline 累积描述符,末端 VAE Decode 把嵌套 latent 派发到 image runner,整模型在
 # 所选卡执行(spec 2026-05-21 rev 2)。Family B 的 image_generate 已收敛删除(PR-4)。
-DISPATCH_NODE_TYPES: frozenset[str] = frozenset({"tts_engine", "flux2_vae_decode"})
+# seedvr2_upscale 是图→图超分(SeedVR2),吃 GPU,跑在 image runner 组(SeedVR2 PR-3b)。
+DISPATCH_NODE_TYPES: frozenset[str] = frozenset(
+    {"tts_engine", "flux2_vae_decode", "seedvr2_upscale"})
 
 
 def node_exec_class(node_type: str) -> ExecClass:
