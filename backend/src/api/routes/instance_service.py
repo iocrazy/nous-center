@@ -5,7 +5,7 @@ import base64
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,74 +97,5 @@ async def instance_synthesize(
     }
 
 
-class InstanceRunRequest(BaseModel):
-    inputs: dict | None = None
-
-
-@router.post("/{instance_id}/run", status_code=202)
-async def instance_run(
-    req: InstanceRunRequest,
-    request: Request,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_instance_key),
-    session: AsyncSession = Depends(get_async_session),
-):
-    """入队一个已发布 workflow 实例的执行（D17 纯异步）。
-
-    返回 202 + task_id。客户端轮询 GET /api/v1/tasks/{task_id} 或订阅
-    WS /ws/workflow/{instance_id} 拿结果。迁移指引见 docs/run-async-migration.md。
-    """
-    from src.models.execution_task import ExecutionTask
-    from src.services.workflow_runner import run_workflow_task
-
-    instance, api_key = auth
-
-    if instance.source_type != "workflow":
-        raise HTTPException(
-            400, detail="Only workflow-based instances support /run"
-        )
-
-    # v3 发布/快速开通服务把执行图存在 deferred 列 `workflow_snapshot`,不是废弃的
-    # `params_override`(后者只 legacy/preset 路径写、v3 恒空)—— 旧代码读 params_override
-    # 导致所有 v3 workflow 服务 /run 恒 400。refresh 加载 deferred 列(get() 不会自动加载),
-    # 与 openai_compat/anthropic_compat 取齐;留 params_override 兜底兼容 legacy。
-    await session.refresh(instance, attribute_names=["workflow_snapshot"])
-    workflow_data = instance.workflow_snapshot or instance.params_override or {}
-    nodes = workflow_data.get("nodes", [])
-    if not nodes:
-        raise HTTPException(400, detail="Workflow has no nodes")
-
-    task = ExecutionTask(
-        workflow_id=instance.source_id,
-        workflow_name=instance.name or "API 执行",
-        status="queued",
-        nodes_total=len(nodes),
-    )
-    session.add(task)
-    await session.commit()
-    await session.refresh(task)
-
-    # 用量计数：入队即计一次调用（异步契约下无法等执行完）。原子自增避免并发丢更新。
-    await session.execute(
-        update(InstanceApiKey)
-        .where(InstanceApiKey.id == api_key.id)
-        .values(
-            usage_calls=InstanceApiKey.usage_calls + 1,
-            last_used_at=datetime.now(timezone.utc),
-        )
-    )
-    await session.commit()
-
-    # WS channel 仍用 instance.id（上游订阅 /ws/workflow/{instance_id} 的老约定不变），
-    # 但同时把 task_id 回给客户端用于轮询。
-    channel_id = str(instance.id)
-    # Lane K: runner_clients dict (group_id → client) 由 lifespan 填,
-    # executor 内按 node_type 选 client。runner_client 单数兼容老调用方。
-    runner_client = getattr(request.app.state, "runner_client", None)
-    runner_clients = getattr(request.app.state, "runner_clients", None)
-
-    asyncio.create_task(run_workflow_task(
-        task.id, workflow_data,
-        runner_client=runner_client, runner_clients=runner_clients,
-        channel_id=channel_id,
-    ))
-    return {"task_id": str(task.id), "status": "queued"}
+# /instances/{id}/run 已删(服务层 API spec PR-2 clean-cut)—— workflow 服务调用迁到统一
+# POST /api/v1/services/{name}/predictions(支持 input 注入 + Prefer 同步/异步)。

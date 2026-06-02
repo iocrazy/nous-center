@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import understand, generate, tts, engines, audio, voices, openai_compat, ollama_compat, api_gateway as api_gateway_routes, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes, services as services_routes, workflow_publish as workflow_publish_routes, usage as usage_routes, dashboard as dashboard_routes, api_keys as api_keys_routes, anthropic_compat, observability, loras as loras_routes, image_files as image_files_routes, models as models_routes
+from src.api.routes import understand, generate, tts, engines, audio, voices, openai_compat, ollama_compat, api_gateway as api_gateway_routes, settings, instances, instance_keys, instance_service, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes, services as services_routes, workflow_publish as workflow_publish_routes, usage as usage_routes, dashboard as dashboard_routes, api_keys as api_keys_routes, anthropic_compat, observability, loras as loras_routes, image_files as image_files_routes, models as models_routes, predictions as predictions_routes
 from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services.gpu_monitor import memory_guard_loop
@@ -83,6 +83,16 @@ async def lifespan(app: FastAPI):
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                # 无 alembic,create_all 不给已存在表加列。新列用幂等 ALTER ADD COLUMN IF NOT EXISTS
+                # 补(Postgres 支持)。开发期微迁移,单条失败不阻断启动。服务层 API spec PR-2:input_json。
+                from sqlalchemy import text  # noqa: PLC0415
+                for _ddl in (
+                    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS input_json JSONB",
+                ):
+                    try:
+                        await conn.execute(text(_ddl))
+                    except Exception as _e:  # noqa: BLE001 — 微迁移 best-effort
+                        logger.warning("micro-migration skipped (%s): %s", _ddl, _e)
             logger.info("Database tables ensured%s", f" (after {attempt} retries)" if attempt else "")
             break
         except Exception as e:
@@ -686,6 +696,7 @@ def create_app() -> FastAPI:
     app.include_router(instances.router)
     app.include_router(instance_keys.router)
     app.include_router(instance_service.router)
+    app.include_router(predictions_routes.router)
     app.include_router(workflows.router)
     app.include_router(agents.router)
     app.include_router(skills.router)

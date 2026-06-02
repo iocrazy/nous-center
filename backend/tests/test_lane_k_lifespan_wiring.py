@@ -174,18 +174,19 @@ async def test_routes_read_runner_clients_by_group(monkeypatch, tmp_path):
 
     # 重新 import routes 以拿到最新源码。
     workflows_mod = importlib.reload(importlib.import_module("src.api.routes.workflows"))
-    instance_service_mod = importlib.reload(
-        importlib.import_module("src.api.routes.instance_service")
+    # 服务层 API spec PR-2:旧 instance_service.instance_run 已删,workflow 服务调用迁到
+    # predictions.create_prediction —— 它同样要按 group 读 runner_clients dict。
+    predictions_mod = importlib.reload(
+        importlib.import_module("src.api.routes.predictions")
     )
     import inspect
 
     src1 = inspect.getsource(workflows_mod.execute_workflow_direct)
-    src2 = inspect.getsource(instance_service_mod.instance_run)
+    src2 = inspect.getsource(predictions_mod.create_prediction)
 
-    # Lane K 之后,两条 /run 路径都要看 runner_clients dict（按 group/role 路由）。
-    # 旧实现读单个 `runner_client`(singular) 必须被替换 —— 否则永远拿不到注入的
-    # per-group client。
+    # Lane K 之后,两条 workflow 执行路径都要看 runner_clients dict（按 group/role 路由）。
+    # 旧实现读单个 `runner_client`(singular) 必须被替换 —— 否则永远拿不到注入的 per-group client。
     assert "runner_clients" in src1, \
         "execute_workflow_direct should read app.state.runner_clients (dict) post-Lane K"
     assert "runner_clients" in src2, \
-        "instance_run should read app.state.runner_clients (dict) post-Lane K"
+        "create_prediction should read app.state.runner_clients (dict) post-Lane K"
