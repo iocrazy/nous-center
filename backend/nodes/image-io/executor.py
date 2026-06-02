@@ -27,9 +27,10 @@ async def exec_image_input(data: dict, inputs: dict) -> dict:
     raw = base64.b64decode(b64)
 
     # 落盘签 URL(NAS_OUTPUTS_PATH + HMAC),同 flux2_vae_decode 出图。
+    from src.config import get_settings  # noqa: PLC0415
     from src.services.image_output_storage import write_image  # noqa: PLC0415
     ext = media_type.split("/", 1)[1].split("+", 1)[0] or "png"
-    ttl = int(data.get("url_ttl_seconds") or 3600)
+    ttl = int(get_settings().IMAGE_URL_TTL_SECONDS)  # PR-4:TTL 归服务层配置(不再读节点 widget)
     record = write_image(raw, ext=ext, ttl_seconds=ttl)
 
     # 量宽高(可选,失败不致命 —— 下游超分不依赖,只为 UI/meta)。

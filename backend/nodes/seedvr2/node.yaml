@@ -161,4 +161,3 @@ nodes:
           - { value: increment, label: "递增 (increment)",  description: "每次 Run 后 seed +1" }
           - { value: decrement, label: "递减 (decrement)",  description: "每次 Run 后 seed -1" }
           - { value: randomize, label: "随机 (randomize)",  description: "每次 Run 后随机新 seed" }
-      - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }

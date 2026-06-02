@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     GPU_VIDEO: str = "0,1"
 
     CACHE_TTL_SECONDS: int = 3600  # TTS cache TTL (1 hour)
+    # 图像/产物签名 URL 有效期(秒)。服务层 API spec PR-4:输出交付 TTL 归服务层配置,
+    # 不再是每个出图节点的 widget(用户:URL 有效期不该是节点的事,该是工作流 API 的功能)。
+    IMAGE_URL_TTL_SECONDS: int = 3600
 
     ADMIN_TOKEN: str = ""  # Set to require auth for management API (CLI/curl bearer token)
     # Browser admin login: when ADMIN_PASSWORD is set, /api/* and /ws/* require

@@ -22,7 +22,6 @@ nodes:
     widgets:
       # 上传图 → base64 data URI 存进 node.data.image;executor 落盘签 URL。
       - { name: image, label: "图像", widget: image_upload }
-      - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }
 
   # 图像对比(A/B 滑动对比)—— 显示型节点(像 image_output 是 sink,无输出)。前端自定义组件
   # ImageCompareNode 渲染:两路上游 image 叠加 + 可拖竖直分隔线,左露 A 右露 B。inline 节点

@@ -190,4 +190,3 @@ nodes:
     outputs:
       - { id: image, type: image, label: 图像 }
     widgets:
-      - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }
