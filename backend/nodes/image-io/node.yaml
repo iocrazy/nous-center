@@ -1,0 +1,25 @@
+name: image-io
+version: "1.0"
+description: "图像 I/O 节点 — 图像输入(上传)等通用图像来源/汇,喂 image→image 节点(如 SeedVR2 超分)"
+author: "nous-center"
+
+# image_input:把上传的图(base64 data URI)落盘签 URL,产出 image 端口 →
+# 接下游 image→image 节点(SeedVR2 超分等)。inline 节点(主进程,CPU:解码+写盘),
+# 不吃 GPU。补齐「现有图作来源」的能力 —— 此前只有 flux2_vae_decode(生成)产 image 端口。
+
+nodes:
+
+  image_input:
+    label: "图像输入"
+    category: image
+    badge: Input
+    badgeColor: "var(--info)"
+    inputs: []
+    outputs:
+      # type: image —— 与 flux2_vae_decode 输出 / image_output·seedvr2_upscale 输入同类型,
+      # UI 可连(sourceType===targetType)。
+      - { id: image, type: image, label: 图像 }
+    widgets:
+      # 上传图 → base64 data URI 存进 node.data.image;executor 落盘签 URL。
+      - { name: image, label: "图像", widget: image_upload }
+      - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }
