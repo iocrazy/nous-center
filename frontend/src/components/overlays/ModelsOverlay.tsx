@@ -163,7 +163,7 @@ export default function ModelsOverlay() {
     ? [
         {
           label: isComponent
-            ? (cmLoaded ? '已在显存（取消常驻后随 LRU 让出）' : '预加载到显存（bfloat16）')
+            ? (cmLoaded ? '已在显存（取消常驻后随 LRU 让出）' : '预加载到显存（自动选卡）')
             : isUpscale ? (cmLoaded ? '卸载 SeedVR2' : '加载 SeedVR2')
             : ctxMenu.model.kind === 'lora' ? 'LoRA · 随模型加载'
             : ctxMenu.model.status === 'loaded' ? '卸载模型'
@@ -176,10 +176,22 @@ export default function ModelsOverlay() {
             || ctxMenu.model.kind === 'lora'
             || (!isExtra && ctxMenu.model.status !== 'loaded' && !ctxMenu.model.has_adapter),
         },
-        // 组件:选精度预加载(对齐 loader 节点 weight_dtype:bfloat16/float16/fp8_e4m3)。
+        // 组件预加载:可选落哪张卡(自动选卡之外,直接指定 GPU)。bfloat16 默认精度。
+        ...(isComponent && !cmLoaded && (gpuData?.devices ?? []).length > 0
+          ? [{
+              label: '预加载到指定 GPU',
+              submenu: (gpuData?.devices ?? []).map((g) => ({
+                label: `GPU ${g.index}: ${g.name}`,
+                onClick: () => preloadComponent.mutate({
+                  name: ctxMenu.model!.name, device: `cuda:${g.index}`,
+                }),
+              })),
+            } as MenuItem]
+          : []),
+        // 组件:选精度预加载(对齐 loader 节点 weight_dtype:bfloat16/float16/fp8_e4m3;自动选卡)。
         ...(isComponent && !cmLoaded
           ? [{
-              label: '预加载到显存（选精度）',
+              label: '预加载（选精度/常驻 · 自动选卡）',
               submenu: ['bfloat16', 'float16', 'fp8_e4m3'].flatMap((dt) => ([
                 {
                   label: dt,
