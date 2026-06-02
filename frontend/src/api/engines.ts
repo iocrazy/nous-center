@@ -27,6 +27,9 @@ export interface EngineInfo {
    *  超分(可独立加载,load 接入在 PR-3) component=单文件组件(随 pipeline 加载,不独立可加载)
    *  lora=LoRA(随模型加载)。缺省 model(向后兼容)。 */
   kind?: 'model' | 'upscale' | 'component' | 'lora'
+  /** 已加载单文件组件的 L1 身份串(file|device|dtype|loras,含真实 device)。常驻 toggle 按它
+   *  精确匹配,避 device='auto' 错配。未加载 / 非组件 → null。组件 L1 PR-3a。 */
+  state_key?: string | null
   local_path: string | null
   local_exists: boolean
   // Remote metadata
@@ -167,6 +170,65 @@ export function useUnloadSeedvr2() {
     },
     onError: (error: Error) => {
       useToastStore.getState().add(`卸载失败: ${error.message}`, 'error')
+    },
+  })
+}
+
+/** SeedVR2 常驻 toggle(组件 L1 PR-2c:by-key 模型常驻 pin)。 */
+export function useSetSeedvr2Resident() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, resident }: { name: string; resident: boolean }) =>
+      apiFetch('/api/v1/engines/seedvr2/resident', {
+        method: 'POST', body: JSON.stringify({ name, resident }),
+      }),
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add(v.resident ? 'SeedVR2 已设为常驻' : 'SeedVR2 已取消常驻', 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`常驻切换失败: ${error.message}`, 'error')
+    },
+  })
+}
+
+/** 单组件预加载到显存 + 可选常驻(组件 L1 PR-2a)。name='component:<kind>:<path>';dtype 选精度。 */
+export function usePreloadComponent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, dtype, resident }: { name: string; dtype?: string; resident?: boolean }) =>
+      apiFetch('/api/v1/engines/component/preload', {
+        method: 'POST',
+        body: JSON.stringify({ name, dtype: dtype ?? 'bfloat16', resident: resident ?? false }),
+      }),
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add(
+        `组件开始预加载${v.resident ? ' + 常驻' : ''}...（几秒后引擎库刷新显示已加载）`, 'info')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`组件预加载失败: ${error.message}`, 'error')
+    },
+  })
+}
+
+/** 已加载组件常驻 toggle(组件 L1 PR-2b)。优先用 state_key 精确匹配,否则 name+device/dtype。 */
+export function useSetComponentResident() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ state_key, name, device, dtype, resident }:
+      { state_key?: string | null; name?: string; device?: string; dtype?: string; resident: boolean }) =>
+      apiFetch('/api/v1/engines/component/resident', {
+        method: 'POST',
+        body: JSON.stringify(
+          state_key ? { state_key, resident } : { name, device, dtype: dtype ?? 'bfloat16', resident }),
+      }),
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add(v.resident ? '组件已设为常驻' : '组件已取消常驻', 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`常驻切换失败: ${error.message}`, 'error')
     },
   })
 }
