@@ -511,16 +511,28 @@ function ModelCard({
         transition: 'border-color 0.15s ease',
       }}
     >
-      {/* Row 1: Name + badges + status */}
-      <div className="flex items-center gap-2 mb-1">
+      {/* Row 1: Name full-width — 不再 truncate(末尾省略号会切掉 bf16/fp8mixed 这种精度后缀,
+          导致一堆 Flux2-Klein-9B-True-v… 分不清谁是谁)。改 2 行 clamp + break-all,长名也能
+          看到关键后缀;hover 看全名。徽标/状态行下移(Row 1b),让名字独占整宽。 */}
+      <div className="flex items-start gap-2 mb-1">
         <span
-          style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-strong)' }}
-          className="truncate flex-1"
+          title={`${model.organization ? model.organization + '/' : ''}${model.display_name}`}
+          style={{
+            fontSize: 12, fontWeight: 600, color: 'var(--text-strong)',
+            wordBreak: 'break-all', lineHeight: 1.3,
+            display: '-webkit-box', WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical', overflow: 'hidden',
+          }}
+          className="flex-1"
         >
           {model.organization ? `${model.organization}/` : ''}
           {model.display_name}
         </span>
         <CopyButton text={model.name} />
+      </div>
+
+      {/* Row 1b: 徽标 + 状态(从名字行下移)。状态徽标靠右(marginLeft auto)。 */}
+      <div className="flex items-center flex-wrap gap-1.5 mb-1">
         {model.auto_detected && (
           <span
             style={{
@@ -568,12 +580,14 @@ function ModelCard({
             未注册
           </span>
         )}
-        <StatusBadge
-          status={model.status}
-          loadedGpus={model.loaded_gpus}
-          modelName={model.name}
-          detail={model.status_detail}
-        />
+        <span style={{ marginLeft: 'auto', flexShrink: 0 }}>
+          <StatusBadge
+            status={model.status}
+            loadedGpus={model.loaded_gpus}
+            modelName={model.name}
+            detail={model.status_detail}
+          />
+        </span>
       </div>
 
       {/* Row 2: Tags line */}
