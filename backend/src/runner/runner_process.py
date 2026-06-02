@@ -221,12 +221,32 @@ def _build_request(node: P.RunNode):
             raise ValueError("seedvr2_upscale 节点缺上游 image 输入(inputs.image_url)")
         raw_seed = node.inputs.get("seed")
         seed = int(raw_seed) if raw_seed not in (None, "") else None
+
+        def _f(key: str, default: float) -> float:
+            v = node.inputs.get(key)
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        def _i(key: str, default: int) -> int:
+            v = node.inputs.get(key)
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return default
+
         return UpscaleRequest(
             request_id=f"task-{node.task_id}",
             image=_resolve_input_image_path(image_url),
-            resolution=int(node.inputs.get("resolution") or 1080),
+            resolution=_i("resolution", 1080),
             seed=seed,
             color_correction=str(node.inputs.get("color_correction") or "lab"),
+            # 三节点增强参数(PR-2):dit/vae config 是 load-time(走 _node_executor),不在此。
+            max_resolution=_i("max_resolution", 0),
+            batch_size=_i("batch_size", 1),
+            input_noise_scale=_f("input_noise_scale", 0.0),
+            latent_noise_scale=_f("latent_noise_scale", 0.0),
         )
     if node.node_type == "image":
         from src.services.inference.component_spec import ComponentSpec
@@ -363,18 +383,26 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             if node.node_type == "upscale":
                 # SeedVR2 不是三组件模型(DiT+VAE 整套自带)—— 走 by-key 装载。model_dir
                 # 默认 NAS_MODELS_PATH/image/SEEDVR2;dit/vae 缺省 DEFAULT(NumZ 白名单,缺则 HF 下)。
-                # 模型选择 UI 在 PR-3c;PR-3b 先用默认 + inputs 可覆盖。
+                # 三节点(PR-2):上游 seedvr2_load_dit/seedvr2_load_vae 产配置 dict,经 inputs.dit/inputs.vae
+                # 进来(device/blockswap/tiling)。向后兼容:没连 loader → 空配置 → 默认;旧单节点工作流
+                # 的 inputs.dit_model(字符串)兜底成 dit_config.model。
                 import os  # noqa: PLC0415
 
                 from src.config import get_settings  # noqa: PLC0415
-                from src.services.inference.image_seedvr2 import DEFAULT_DIT, DEFAULT_VAE  # noqa: PLC0415
                 nas = (get_settings().NAS_MODELS_PATH or "").strip()
                 model_dir = node.inputs.get("model_dir") or os.path.join(nas, "image", "SEEDVR2")
+                dit_cfg = node.inputs.get("dit")
+                vae_cfg = node.inputs.get("vae")
+                dit_cfg = dict(dit_cfg) if isinstance(dit_cfg, dict) else {}
+                vae_cfg = dict(vae_cfg) if isinstance(vae_cfg, dict) else {}
+                # 旧单节点 fallback:upscale 节点自身 dit_model widget → dit_config.model。
+                if not dit_cfg.get("model") and node.inputs.get("dit_model"):
+                    dit_cfg["model"] = node.inputs["dit_model"]
                 adapter = await state.mm.get_or_load_seedvr2_adapter(
                     model_dir=model_dir,
-                    dit_model=node.inputs.get("dit_model") or DEFAULT_DIT,
-                    vae_model=node.inputs.get("vae_model") or DEFAULT_VAE,
                     device=str(node.inputs.get("device") or "auto"),
+                    dit_config=dit_cfg,
+                    vae_config=vae_cfg,
                 )
             elif components:
                 adapter = await state.mm.get_or_load_image_adapter(

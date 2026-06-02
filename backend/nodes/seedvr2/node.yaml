@@ -1,35 +1,121 @@
 name: seedvr2
-version: "1.0"
-description: "SeedVR2 超分上采样节点 — ByteDance one-step diffusion upscaler(图→图,NumZ vendored)"
+version: "2.0"
+description: "SeedVR2 超分(三节点对齐 ComfyUI)— DiT 加载 + VAE 加载 + 增强(图→图 one-step upscaler)"
 author: "NumZ (ComfyUI-SeedVR2_VideoUpscaler, Apache 2.0) / nous-center"
 
-# SeedVR2 是**图→图超分**(不是 text2img):接上游一张 IMAGE → 目标短边分辨率 →
-# one-step DiT 超分出更清晰的 IMAGE。不进 flux2 KSampler 链、不用 scheduler/seed-control
-# (那些是 text2img 语义)。是 **dispatch 节点**(走 image runner,node_routing.DISPATCH_NODE_TYPES
-# 已登记 seedvr2_upscale;workflow_executor 把它路由到 image GPU 组、构 UpscaleRequest)。
-# 没有 inline executor.py —— dispatch 节点不进 EXECUTORS,runner_process._node_executor 执行。
+# 对齐 ComfyUI 最新三节点(NumZ interfaces/):
+#   seedvr2_load_dit  (inline)→ 产 SEEDVR2_DIT 配置 dict(model/device/blockswap/attention)
+#   seedvr2_load_vae  (inline)→ 产 SEEDVR2_VAE 配置 dict(model/device/tiling)
+#   seedvr2_upscale   (dispatch)→ image + dit + vae → 超分图(真加载在此,经 runner)
+# 两个 loader 只 bundle 配置(惰性,不真加载,像 flux2 loader 产描述符);真加载 + 4 阶段在增强节点。
+# 端口类型 seedvr2_dit / seedvr2_vae 让 UI 连线类型校验(只能 DiT→dit / VAE→vae)。spec
+# docs/superpowers/specs/2026-06-02-seedvr2-three-node-comfyui-aligned-design.md。
 
 nodes:
 
+  # --- DiT 加载(inline,产配置)-------------------------------------------------
+  seedvr2_load_dit:
+    label: "SeedVR2 加载 DiT"
+    category: image
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: dit, type: seedvr2_dit, label: DiT }
+    widgets:
+      # 磁盘感知白名单下拉(盘上有标已就绪 / 其余标可下载;选项由 /components/seedvr2-dit 动态给)。
+      - { name: dit_model, label: "DiT 模型", widget: seedvr2_model_select, default: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors }
+      - name: device
+        label: "显卡"
+        widget: select
+        default: auto
+        options:
+          - { value: auto, label: "自动" }
+          - { value: "cuda:0", label: "cuda:0" }
+          - { value: "cuda:1", label: "cuda:1" }
+          - { value: "cuda:2", label: "cuda:2" }
+      # BlockSwap:把 N 个 transformer 块在 device↔offload_device 间换出,7B 塞 24GB 3090。
+      # 0=关;3B 0-32、7B 0-36。需 offload_device != device(且非 none)。
+      - { name: blocks_to_swap, label: "BlockSwap 块数", widget: slider, min: 0, max: 36, step: 1, default: 0 }
+      - { name: swap_io_components, label: "换出 I/O 组件", widget: checkbox, default: false }
+      - name: offload_device
+        label: "Offload 到"
+        widget: select
+        default: none
+        options:
+          - { value: none, label: "None(不 offload,最快)" }
+          - { value: cpu, label: "CPU(省显存,慢)" }
+          - { value: "cuda:0", label: "cuda:0" }
+          - { value: "cuda:1", label: "cuda:1" }
+          - { value: "cuda:2", label: "cuda:2" }
+      - name: attention_mode
+        label: "Attention"
+        widget: select
+        default: sdpa
+        options:
+          - { value: sdpa, label: "SDPA", description: "PyTorch 原生(flash_attn 未装,SeedVR2 支持 SDPA 回退)" }
+
+  # --- VAE 加载(inline,产配置)-----------------------------------------------
+  seedvr2_load_vae:
+    label: "SeedVR2 加载 VAE"
+    category: image
+    badge: Loader
+    badgeColor: "var(--accent)"
+    inputs: []
+    outputs:
+      - { id: vae, type: seedvr2_vae, label: VAE }
+    widgets:
+      # VAE 白名单当前只有 1 个(ema_vae_fp16),固定 select。
+      - name: vae_model
+        label: "VAE 模型"
+        widget: select
+        default: ema_vae_fp16.safetensors
+        options:
+          - { value: ema_vae_fp16.safetensors, label: "ema_vae fp16", description: "SeedVR2 专用 video VAE(fp16)" }
+      - name: device
+        label: "显卡"
+        widget: select
+        default: auto
+        options:
+          - { value: auto, label: "自动" }
+          - { value: "cuda:0", label: "cuda:0" }
+          - { value: "cuda:1", label: "cuda:1" }
+          - { value: "cuda:2", label: "cuda:2" }
+      # 分块编码/解码:大图不爆 VAE 显存。tile_size/overlap 单位像素。
+      - { name: encode_tiled, label: "分块编码", widget: checkbox, default: false }
+      - { name: encode_tile_size, label: "编码块大小", widget: slider, min: 128, max: 1024, step: 64, default: 512 }
+      - { name: encode_tile_overlap, label: "编码块重叠", widget: slider, min: 0, max: 256, step: 16, default: 64 }
+      - { name: decode_tiled, label: "分块解码", widget: checkbox, default: false }
+      - { name: decode_tile_size, label: "解码块大小", widget: slider, min: 128, max: 1024, step: 64, default: 512 }
+      - { name: decode_tile_overlap, label: "解码块重叠", widget: slider, min: 0, max: 256, step: 16, default: 64 }
+      - name: offload_device
+        label: "Offload 到"
+        widget: select
+        default: none
+        options:
+          - { value: none, label: "None" }
+          - { value: cpu, label: "CPU" }
+          - { value: "cuda:0", label: "cuda:0" }
+          - { value: "cuda:1", label: "cuda:1" }
+          - { value: "cuda:2", label: "cuda:2" }
+
+  # --- 增强(dispatch,真加载 + 超分)------------------------------------------
   seedvr2_upscale:
-    label: "SeedVR2 超分"
+    label: "SeedVR2 增强"
     category: image
     badge: Upscaler
     badgeColor: "var(--accent-2)"
     inputs:
       - { id: image, type: image, label: 图像 }
+      # dit/vae 可选:连了用三节点配置;不连则 runner 用默认(向后兼容旧单节点工作流)。
+      - { id: dit, type: seedvr2_dit, label: DiT }
+      - { id: vae, type: seedvr2_vae, label: VAE }
     outputs:
       - { id: image, type: image, label: 图像 }
     widgets:
-      # DiT 模型:NumZ 走**白名单**(MODEL_REGISTRY:filename→HF repo+sha256,缺则自动下到
-      # model_dir = NAS_MODELS_PATH/image/SEEDVR2)。**混合下拉**(seedvr2_model_select):白名单全列,
-      # 盘上有的标「已就绪」、其余标「可下载」(选了 NumZ 从 HF 自动下)。选项+默认由后端
-      # /components/seedvr2-dit 动态给(单一真相 = image_seedvr2.SEEDVR2_DIT_MODELS),不在此写死
-      # —— 否则 node.yaml 和后端两份白名单会漂。默认 7B fp8-mixed(= DEFAULT_DIT,本机已下好)。
-      - { name: dit_model, label: "DiT 模型", widget: seedvr2_model_select, default: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors }
-      # 目标短边像素(SeedVR2 语义:输出最短边,非放大倍数)。
       - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 2160, step: 16, default: 1080 }
-      # 色彩校正:超分后把色彩拉回输入图基调(避免 DiT 漂色)。lab 通用最稳。
+      - { name: max_resolution, label: "长边上限(0=不限)", widget: slider, min: 0, max: 4320, step: 16, default: 0 }
+      - { name: batch_size, label: "批大小", widget: slider, min: 1, max: 16, step: 1, default: 1 }
       - name: color_correction
         label: "色彩校正"
         widget: select
@@ -40,7 +126,8 @@ nodes:
           - { value: wavelet_adaptive, label: "Wavelet 自适应", description: "自适应小波" }
           - { value: hsv, label: "HSV", description: "HSV 色调匹配" }
           - { value: adain, label: "AdaIN", description: "自适应实例归一化" }
-          - { value: none, label: "无", description: "不做色彩校正 — 保留 DiT 原始输出" }
-      # seed:SeedVR2 是 one-step,seed 影响很小(非 text2img 的构图控制);留空 = 默认 42。
+          - { value: none, label: "无", description: "不做色彩校正" }
+      - { name: input_noise_scale, label: "输入噪声", widget: slider, min: 0, max: 1, step: 0.01, default: 0.0 }
+      - { name: latent_noise_scale, label: "latent 噪声", widget: slider, min: 0, max: 1, step: 0.01, default: 0.0 }
       - { name: seed, label: "Seed", widget: input, default: "" }
       - { name: url_ttl_seconds, label: "URL 有效期(秒)", widget: input, default: "3600" }

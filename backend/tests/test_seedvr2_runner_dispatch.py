@@ -42,6 +42,31 @@ def test_build_upscale_request_defaults():
     assert req.color_correction == "lab"
 
 
+def test_build_upscale_request_three_node_params():
+    """PR-2:增强节点 per-inference 参数(max_resolution/batch_size/noise)从 inputs 读;缺→默认。"""
+    req = _build_request(_node({
+        "image_url": "/tmp/in.png", "max_resolution": "2160", "batch_size": "4",
+        "input_noise_scale": "0.1", "latent_noise_scale": "0.05",
+    }))
+    assert req.max_resolution == 2160
+    assert req.batch_size == 4
+    assert abs(req.input_noise_scale - 0.1) < 1e-6
+    assert abs(req.latent_noise_scale - 0.05) < 1e-6
+    # 缺 → 默认(单图安全值)
+    req2 = _build_request(_node({"image_url": "/tmp/in.png"}))
+    assert req2.max_resolution == 0
+    assert req2.batch_size == 1
+
+
+def test_seedvr2_loaders_are_inline():
+    """三节点:DiT/VAE loader 是 inline(CPU 产配置,主进程);只有增强是 dispatch(GPU runner)。"""
+    from src.services.node_routing import node_exec_class
+
+    assert node_exec_class("seedvr2_load_dit") == "inline"
+    assert node_exec_class("seedvr2_load_vae") == "inline"
+    assert node_exec_class("seedvr2_upscale") == "dispatch"
+
+
 def test_build_upscale_request_missing_image_raises():
     """缺上游 image → ValueError(node-executor 转 failed,不静默)。"""
     with pytest.raises(ValueError, match="image"):

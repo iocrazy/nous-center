@@ -14,40 +14,83 @@ import yaml
 _PKG = pathlib.Path(__file__).parent.parent / "nodes" / "seedvr2"
 
 
-def _node_def() -> dict:
-    cfg = yaml.safe_load((_PKG / "node.yaml").read_text())
-    return cfg["nodes"]["seedvr2_upscale"]
+def _nodes() -> dict:
+    return yaml.safe_load((_PKG / "node.yaml").read_text())["nodes"]
 
 
-def test_seedvr2_package_yaml_valid():
-    """node.yaml 解析 + 有 seedvr2_upscale 节点。"""
+def _node_def(name: str = "seedvr2_upscale") -> dict:
+    return _nodes()[name]
+
+
+def test_seedvr2_package_three_nodes():
+    """三节点对齐 ComfyUI:load_dit + load_vae(inline 产配置)+ upscale(dispatch)。"""
     cfg = yaml.safe_load((_PKG / "node.yaml").read_text())
     assert cfg["name"] == "seedvr2"
-    assert "seedvr2_upscale" in cfg["nodes"]
+    for n in ("seedvr2_load_dit", "seedvr2_load_vae", "seedvr2_upscale"):
+        assert n in cfg["nodes"], f"缺节点 {n}"
 
 
-def test_seedvr2_node_image_to_image_ports():
-    """图→图:单 image 输入 + 单 image 输出(接上游 VAE Decode → 下游 image_output)。"""
+def test_seedvr2_upscale_ports():
+    """增强节点:image + dit + vae 输入(dit/vae 是新端口类型)→ image 输出。"""
     nd = _node_def()
-    assert [p["id"] for p in nd["inputs"]] == ["image"]
-    assert [p["type"] for p in nd["inputs"]] == ["image"]
-    assert [p["id"] for p in nd["outputs"]] == ["image"]
-    assert [p["type"] for p in nd["outputs"]] == ["image"]
-    assert nd["category"] == "image"
+    assert [(p["id"], p["type"]) for p in nd["inputs"]] == [
+        ("image", "image"), ("dit", "seedvr2_dit"), ("vae", "seedvr2_vae")]
+    assert [(p["id"], p["type"]) for p in nd["outputs"]] == [("image", "image")]
+    # dit_model widget 已移到 load_dit,不在 upscale。
+    assert not any(w["name"] == "dit_model" for w in nd["widgets"]), "dit_model 应移到 load_dit"
 
 
-def test_seedvr2_no_inline_executor():
-    """dispatch 节点不带 executor.py(不进 EXECUTORS;runner 执行)。"""
-    assert not (_PKG / "executor.py").exists(), "seedvr2 是 dispatch 节点,不该有 inline executor"
+def test_seedvr2_loaders_produce_typed_config_ports():
+    """load_dit → dit(seedvr2_dit)、load_vae → vae(seedvr2_vae);各带配置 widget。"""
+    dit = _node_def("seedvr2_load_dit")
+    vae = _node_def("seedvr2_load_vae")
+    assert dit["inputs"] == [] and [(p["id"], p["type"]) for p in dit["outputs"]] == [("dit", "seedvr2_dit")]
+    assert vae["inputs"] == [] and [(p["id"], p["type"]) for p in vae["outputs"]] == [("vae", "seedvr2_vae")]
+    dit_w = {w["name"] for w in dit["widgets"]}
+    assert {"dit_model", "device", "blocks_to_swap", "swap_io_components", "offload_device", "attention_mode"} <= dit_w
+    vae_w = {w["name"] for w in vae["widgets"]}
+    assert {"vae_model", "encode_tiled", "encode_tile_size", "decode_tiled", "decode_tile_size", "offload_device"} <= vae_w
+
+
+def test_seedvr2_has_inline_executor_for_loaders():
+    """现在有 executor.py:为两个 inline loader 节点注册 EXECUTORS(增强节点仍 dispatch,不在内)。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_sv2_exec", _PKG / "executor.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert set(mod.EXECUTORS) == {"seedvr2_load_dit", "seedvr2_load_vae"}
+    assert "seedvr2_upscale" not in mod.EXECUTORS, "增强节点是 dispatch,不该进 EXECUTORS"
+
+
+def test_seedvr2_loader_executors_build_config_dicts():
+    """loader executor 把 widget → 配置 dict(adapter 串进 prepare_runner 的契约)。纯 dict,CI 安全。"""
+    import asyncio
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_sv2_exec2", _PKG / "executor.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    dit = asyncio.run(mod.exec_load_dit(
+        {"dit_model": "m.safetensors", "device": "cuda:1", "blocks_to_swap": "16",
+         "swap_io_components": True, "offload_device": "cpu", "attention_mode": "sdpa"}, {}))
+    assert dit["dit"]["model"] == "m.safetensors"
+    assert dit["dit"]["blocks_to_swap"] == 16  # 字符串 → int
+    assert dit["dit"]["device"] == "cuda:1"
+
+    vae = asyncio.run(mod.exec_load_vae(
+        {"vae_model": "v.safetensors", "encode_tiled": True, "encode_tile_size": "256",
+         "decode_tiled": True, "decode_tile_size": "256"}, {}))
+    assert vae["vae"]["encode_tiled"] is True
+    assert vae["vae"]["encode_tile_size"] == 256
 
 
 def test_seedvr2_dit_widget_is_dynamic_disk_aware():
-    """dit_model 是动态混合下拉(seedvr2_model_select)—— 选项由后端 /components/seedvr2-dit
-    动态给(盘上标已就绪 / 白名单其余标可下载),node.yaml 不再写死 options(避免两份白名单漂)。
-    默认 = DEFAULT_DIT。"""
+    """dit_model(在 load_dit 节点)是动态混合下拉(seedvr2_model_select),不写死 options,默认 = DEFAULT_DIT。"""
     from src.services.inference.image_seedvr2 import DEFAULT_DIT  # noqa: PLC0415
 
-    dit_widget = next(w for w in _node_def()["widgets"] if w["name"] == "dit_model")
+    dit_widget = next(w for w in _node_def("seedvr2_load_dit")["widgets"] if w["name"] == "dit_model")
     assert dit_widget["widget"] == "seedvr2_model_select"
     assert "options" not in dit_widget, "动态 widget 不该在 node.yaml 写死 options"
     assert dit_widget["default"] == DEFAULT_DIT, "node.yaml 默认 DiT 与 adapter DEFAULT_DIT 不一致"
