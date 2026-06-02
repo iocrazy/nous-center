@@ -57,3 +57,32 @@ def test_image_input_executor_registered_and_rejects_missing_image():
         asyncio.run(mod.exec_image_input({}, {}))
     with pytest.raises(RuntimeError, match="未上传图"):
         asyncio.run(mod.exec_image_input({"image": "/not/a/data/uri.png"}, {}))
+
+
+def _compare_def() -> dict:
+    return yaml.safe_load((_PKG / "node.yaml").read_text())["nodes"]["image_compare"]
+
+
+def test_image_compare_node_two_image_inputs_sink():
+    """图像对比:两路 image 输入(image_a/image_b)+ 无输出(显示型 sink,前端滑动对比)。"""
+    nd = _compare_def()
+    assert [(p["id"], p["type"]) for p in nd["inputs"]] == [("image_a", "image"), ("image_b", "image")]
+    assert nd["outputs"] == []
+    assert nd["category"] == "image"
+
+
+def test_image_compare_is_inline_with_noop_executor():
+    """image_compare 是 inline(纯前端对比,后端 no-op);executor 注册且不抛(透传两路 url)。"""
+    import asyncio
+    import importlib.util
+
+    from src.services.node_routing import node_exec_class
+    assert node_exec_class("image_compare") == "inline"
+
+    spec = importlib.util.spec_from_file_location("_imgio_exec2", _PKG / "executor.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert "image_compare" in mod.EXECUTORS
+    # no-op:空输入不抛(对比纯前端)
+    out = asyncio.run(mod.exec_image_compare({}, {}))
+    assert "image_a_url" in out and "image_b_url" in out

@@ -23,6 +23,7 @@ export type BuiltinNodeType =
   | 'if_else'
   | 'python_exec'
   | 'image_output'
+  | 'image_compare'
 
 export interface PortDef {
   id: string
@@ -155,6 +156,15 @@ export const NODE_DEFS: Record<NodeType, NodeDef> = {
     type: 'image_output',
     label: '图像输出',
     inputs: [{ id: 'image', type: 'image', label: '图像' }],
+    outputs: [],
+  },
+  image_compare: {
+    type: 'image_compare',
+    label: '图像对比',
+    inputs: [
+      { id: 'image_a', type: 'image', label: '图像 A' },
+      { id: 'image_b', type: 'image', label: '图像 B' },
+    ],
     outputs: [],
   },
 }
