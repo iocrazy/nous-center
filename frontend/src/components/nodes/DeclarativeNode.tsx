@@ -470,9 +470,74 @@ function WidgetRenderer({
           onChange={(v) => onChange(v)}
         />
       )
+    case 'image_upload':
+      return (
+        <ImageUploadWidget
+          value={String(resolved ?? '')}
+          onChange={(v) => onChange(v)}
+        />
+      )
     default:
       return null
   }
+}
+
+/** 图像上传 widget:选/拖/粘贴图 → base64 data URI 存进 node.data。喂 image→image 节点
+ *  (SeedVR2 超分等)。有图显示缩略图 + 重传;无图显示上传框。 */
+function ImageUploadWidget({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const readFile = (file: File) => {
+    if (!file.type.startsWith('image/')) return
+    const reader = new FileReader()
+    reader.onload = (e) => onChange((e.target?.result as string) || '')
+    reader.readAsDataURL(file)
+  }
+  const hasImage = value.startsWith('data:')
+  return (
+    <div className="nodrag" style={{ width: '100%' }}>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) readFile(f)
+        }}
+      />
+      <div
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault()
+          const f = e.dataTransfer.files?.[0]
+          if (f) readFile(f)
+        }}
+        style={{
+          width: '100%', minHeight: hasImage ? undefined : 64,
+          border: '1px dashed var(--border)', borderRadius: 6, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 6, background: 'var(--bg)', overflow: 'hidden',
+        }}
+      >
+        {hasImage ? (
+          <img
+            src={value}
+            alt="upload"
+            style={{ maxWidth: '100%', maxHeight: 140, borderRadius: 4, display: 'block' }}
+          />
+        ) : (
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>点击或拖拽上传图片</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export default function DeclarativeNode({ id, type, data, selected }: NodeProps) {
