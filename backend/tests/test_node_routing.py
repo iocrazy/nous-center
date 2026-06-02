@@ -29,7 +29,12 @@ def test_unknown_node_defaults_inline():
 
 def test_dispatch_set_is_explicit():
     """DISPATCH_NODE_TYPES 是显式白名单，新增 GPU 节点必须在此登记。"""
-    assert DISPATCH_NODE_TYPES == {"tts_engine", "flux2_vae_decode"}
+    assert DISPATCH_NODE_TYPES == {"tts_engine", "flux2_vae_decode", "seedvr2_upscale"}
+
+
+def test_seedvr2_upscale_is_dispatch():
+    """SeedVR2 超分吃 GPU,走 dispatch(image runner 组,SeedVR2 PR-3b)。"""
+    assert node_exec_class("seedvr2_upscale") == "dispatch"
 
 
 def test_flux2_vae_decode_is_dispatch():
