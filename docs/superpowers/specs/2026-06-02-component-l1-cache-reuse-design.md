@@ -24,6 +24,13 @@
 
 ## 设计
 
+### 0. 前提:image runner 单串行队列(用户确认,2026-06-02)
+image runner = 单 `run_queue`(asyncio.Queue)+ 单 `_node_executor`,一次取一个 node 执行
+(runner_process.py:354/605;node_routing 设计:dispatch 走「GPU runner 串行队列」消灭 GPU race)。
+→ 工作流按 FIFO(API/提交顺序)**串行**跑,A 的 GPU 活儿跑完才轮 B,**不交错**。
+**这让组件 L1 缓存天然安全**:不会有两个工作流并发加载同一组件 → `_components` 无并发竞争、**不用加锁**;
+A 把 X-bf16 放好后 B 才跑 → L1 命中复用,无「半加载」竞态。refcount 增减也在串行执行里,无 race。
+
 ### 1. 组件级 L1 缓存(`_components`)
 - `_components: dict[ComponentKey, LoadedComponent]`,key = `to_component_key`(file|device|dtype|loras)。
 - `_get_or_load_modular_adapter`:装配前,对 transformer/clip/vae **逐个查 L1**:命中 → 复用已加载模块;
