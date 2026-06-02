@@ -23,6 +23,10 @@ export interface EngineInfo {
   gpu: number | number[]
   vram_gb: number
   resident: boolean
+  /** 统一引擎库:目录条目种类。model=整模型/引擎(可独立加载) upscale=SeedVR2 等 by-key
+   *  超分(可独立加载,load 接入在 PR-3) component=单文件组件(随 pipeline 加载,不独立可加载)
+   *  lora=LoRA(随模型加载)。缺省 model(向后兼容)。 */
+  kind?: 'model' | 'upscale' | 'component' | 'lora'
   local_path: string | null
   local_exists: boolean
   // Remote metadata

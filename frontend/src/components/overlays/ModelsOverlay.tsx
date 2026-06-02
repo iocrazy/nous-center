@@ -78,6 +78,19 @@ export default function ModelsOverlay() {
   const handleToggle = useCallback(
     (engine: EngineInfo) => {
       if (engine.status === 'loading') return // ignore while loading
+      // 统一引擎库新条目:超分(SeedVR2)引擎库直接载/卸 = PR-3;组件/LoRA 随 pipeline 加载,
+      // 不独立可加载 —— 先给提示不发请求(避免对 catalog name 发无效 load/unload)。
+      if (engine.kind === 'upscale') {
+        useToastStore.getState().add(
+          `${engine.display_name}:引擎库直接加载/卸载即将接入（PR-3）；现在请在工作流里用`, 'info')
+        return
+      }
+      if (engine.kind === 'component' || engine.kind === 'lora') {
+        useToastStore.getState().add(
+          `${engine.display_name} 是${engine.kind === 'lora' ? 'LoRA' : '组件'}，随图像 pipeline 加载，不能独立加载`,
+          'info')
+        return
+      }
       if (engine.status === 'loaded') {
         unloadEngine.mutate(engine.name)
         return
@@ -98,18 +111,24 @@ export default function ModelsOverlay() {
 
   const hasAnyMissing = (engines ?? []).some((e) => !e.has_metadata)
 
+  // 统一引擎库:catalog 扩展条目(超分/组件/LoRA)—— 非 registry 模型,resident/GPU/API/元数据
+  // 等操作不适用,菜单里禁用(载/卸经 handleToggle 给提示)。
+  const isExtra = !!(ctxMenu.model?.kind && ctxMenu.model.kind !== 'model')
   // Build context menu items for the active model
   const menuItems: MenuItem[] = ctxMenu.model
     ? [
         {
-          label: ctxMenu.model.status === 'loaded' ? '卸载模型'
+          label: isExtra
+            ? (ctxMenu.model.kind === 'upscale' ? '工作流中加载（引擎库直载 PR-3）'
+              : ctxMenu.model.kind === 'lora' ? 'LoRA · 随模型加载' : '组件 · 随 pipeline 加载')
+            : ctxMenu.model.status === 'loaded' ? '卸载模型'
             : ctxMenu.model.status === 'loading' ? '加载中...'
             : !ctxMenu.model.has_adapter ? '未注册（无 adapter）'
             : '加载模型',
           onClick: () => handleToggle(ctxMenu.model!),
           disabled:
             ctxMenu.model.status === 'loading'
-            || (ctxMenu.model.status !== 'loaded' && !ctxMenu.model.has_adapter),
+            || (!isExtra && ctxMenu.model.status !== 'loaded' && !ctxMenu.model.has_adapter),
         },
         {
           label: ctxMenu.model.resident ? '取消自动加载' : '设为自动加载',
@@ -118,10 +137,12 @@ export default function ModelsOverlay() {
               name: ctxMenu.model!.name,
               resident: !ctxMenu.model!.resident,
             }),
+          disabled: isExtra,
         },
         { label: '', divider: true },
         {
           label: 'GPU 分配',
+          disabled: isExtra,
           submenu: (gpuData?.devices ?? []).map((g) => {
             const currentGpu = ctxMenu.model!.gpu
             const isCurrentGpu = Array.isArray(currentGpu)
@@ -163,12 +184,13 @@ export default function ModelsOverlay() {
               useToastStore.getState().add(`创建失败: ${e.message}`, 'error')
             }
           },
-          disabled: ctxMenu.model.status !== 'loaded',
+          disabled: isExtra || ctxMenu.model.status !== 'loaded',
         },
         { label: '', divider: true },
         {
           label: '刷新元数据',
           onClick: () => refreshMeta.mutate(ctxMenu.model!.name),
+          disabled: isExtra,
         },
         {
           label: '删除',
@@ -456,7 +478,25 @@ function ModelCard({
             自动检测
           </span>
         )}
-        {!model.has_adapter && (
+        {/* 统一引擎库 kind 徽标:超分(SeedVR2,可加载)/ 组件 / LoRA(随 pipeline 加载,不独立加载)。 */}
+        {model.kind && model.kind !== 'model' && (
+          <span
+            title={
+              model.kind === 'upscale'
+                ? 'SeedVR2 超分(by-key 可独立加载)'
+                : '单文件组件，随图像 pipeline 加载，不能独立加载'
+            }
+            style={{
+              fontSize: 8, padding: '1px 5px', borderRadius: 3, flexShrink: 0,
+              background: 'color-mix(in srgb, var(--accent) 16%, transparent)',
+              color: 'var(--accent)',
+            }}
+          >
+            {model.kind === 'upscale' ? '超分' : model.kind === 'lora' ? 'LoRA' : '组件'}
+          </span>
+        )}
+        {/* 红色「未注册」只给真·无 adapter 的整模型(如 ERNIE-Image);组件/LoRA/超分有自己的徽标。 */}
+        {!model.has_adapter && (!model.kind || model.kind === 'model') && (
           <span
             title="adapter 未实现，无法加载。需先在 backend/configs/models.yaml 添加 adapter 字段。"
             style={{
