@@ -211,10 +211,15 @@ export default function ModelsOverlay() {
           onClick: () => handleToggleResident(ctxMenu.model!),
           disabled: residentDisabled,
         },
+        // GPU 分配 / 创建 API / 刷新元数据 只对**已注册整模型**适用(改 yaml / 起 instance / 拉元数据)——
+        // 组件/LoRA/超分这些 catalog 条目用不上,以前显示但全灰会让人困惑(用户:为啥 GPU 分配点不了)。
+        // 整段对 isExtra 隐藏;组件选卡走上面的「预加载到指定 GPU」。组件 L1 PR。
+        ...(!isExtra
+          ? [
         { label: '', divider: true },
         {
           label: 'GPU 分配',
-          disabled: isExtra,
+          disabled: false,
           submenu: (gpuData?.devices ?? []).map((g) => {
             const currentGpu = ctxMenu.model!.gpu
             const isCurrentGpu = Array.isArray(currentGpu)
@@ -262,8 +267,10 @@ export default function ModelsOverlay() {
         {
           label: '刷新元数据',
           onClick: () => refreshMeta.mutate(ctxMenu.model!.name),
-          disabled: isExtra,
+          disabled: false,
         },
+          ] as MenuItem[]
+          : []),
         {
           label: '删除',
           danger: true,
