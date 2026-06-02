@@ -34,7 +34,9 @@ from src.services.prediction_service import (
 )
 from src.services.service_schema import build_service_io_schema, validate_service_input
 
-router = APIRouter(prefix="/api/v1", tags=["predictions"])
+# /v1/* = 对外 bearer-authed 端点(AdminSessionGate 只拦 /api/*,这里用各自的 bearer 校验)。
+# 放 /api/v1 会被 admin cookie 门拦死 bearer 客户端(真机 smoke 逮到)。
+router = APIRouter(prefix="/v1", tags=["predictions"])
 
 # 同步默认上限(秒):无 Prefer 时阻塞,但封顶避免无限挂(长任务用 respond-async)。
 _SYNC_CAP_SECONDS = 600.0
@@ -82,6 +84,42 @@ async def _resolve_service(session, auth, name: str) -> tuple[ServiceInstance, I
     await session.refresh(
         instance, attribute_names=["workflow_snapshot", "exposed_inputs", "exposed_outputs"])
     return instance, api_key
+
+
+@router.get("/services/{name}/schema")
+async def get_service_schema(
+    name: str,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """per-service I/O JSON-Schema(input/output)—— 机器可发现的调用契约(服务层 API spec PR-1)。
+
+    **公开端点**(第三方集成先拿契约,无 auth),按 service `name` 查。在 /v1(非 /api/v1)避开 admin cookie 门。
+    从 exposed_inputs/outputs + 各节点 node.yaml widget 生成(对齐 Cog 声明即 schema + ComfyUI object_info)。
+    """
+    from sqlalchemy.orm import undefer  # noqa: PLC0415
+
+    from src.services.service_schema import build_service_io_schema  # noqa: PLC0415
+    stmt = (
+        select(ServiceInstance)
+        .options(
+            undefer(ServiceInstance.workflow_snapshot),
+            undefer(ServiceInstance.exposed_inputs),
+            undefer(ServiceInstance.exposed_outputs),
+        )
+        .where(ServiceInstance.name == name)
+    )
+    svc = (await session.execute(stmt)).scalar_one_or_none()
+    if svc is None:
+        raise HTTPException(404, detail="service not found")
+    schema = build_service_io_schema(
+        svc.exposed_inputs, svc.exposed_outputs, svc.workflow_snapshot)
+    return {
+        "service": name,
+        "category": svc.category,
+        "source_type": svc.source_type,
+        "input_schema": schema["input_schema"],
+        "output_schema": schema["output_schema"],
+    }
 
 
 @router.post("/services/{name}/predictions")

@@ -206,40 +206,6 @@ async def get_service(
     return out
 
 
-@router.get("/services/{name}/schema")
-async def get_service_schema(
-    name: str,
-    session: AsyncSession = Depends(get_async_session),
-):
-    """per-service I/O JSON-Schema(input/output)—— 机器可发现的调用契约(服务层 API spec PR-1)。
-
-    **公开端点**(第三方集成要先拿契约),按 service `name` 查。从 exposed_inputs/outputs + 各节点
-    node.yaml widget 定义生成(对齐 Cog 声明即 schema + ComfyUI object_info)。
-    """
-    from src.services.service_schema import build_service_io_schema  # noqa: PLC0415
-    stmt = (
-        select(ServiceInstance)
-        .options(
-            undefer(ServiceInstance.workflow_snapshot),
-            undefer(ServiceInstance.exposed_inputs),
-            undefer(ServiceInstance.exposed_outputs),
-        )
-        .where(ServiceInstance.name == name)
-    )
-    svc = (await session.execute(stmt)).scalar_one_or_none()
-    if svc is None:
-        raise HTTPException(404, detail="service not found")
-    schema = build_service_io_schema(
-        svc.exposed_inputs, svc.exposed_outputs, svc.workflow_snapshot)
-    return {
-        "service": name,
-        "category": svc.category,
-        "source_type": svc.source_type,
-        "input_schema": schema["input_schema"],
-        "output_schema": schema["output_schema"],
-    }
-
-
 @router.post(
     "/services/quick-provision",
     response_model=ServiceDetailOut,
