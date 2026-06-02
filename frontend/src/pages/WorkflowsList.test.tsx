@@ -9,6 +9,8 @@ const navigateSpy = vi.fn()
 const useWorkflowsMock = vi.fn()
 const useServicesMock = vi.fn()
 const createMutateMock = vi.fn()
+const saveMutateMock = vi.fn()
+const deleteMutateMock = vi.fn()
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -24,8 +26,9 @@ vi.mock('../api/workflows', async () => {
       mutate: createMutateMock,
       isPending: false,
     }),
-    // 卡片菜单的删除入口
-    useDeleteWorkflow: () => ({ mutate: vi.fn(), isPending: false }),
+    // 卡片菜单的删除 / 重命名入口
+    useDeleteWorkflow: () => ({ mutate: deleteMutateMock, isPending: false }),
+    useSaveWorkflow: () => ({ mutate: saveMutateMock, isPending: false }),
   }
 })
 
@@ -96,6 +99,36 @@ describe('WorkflowsList', () => {
     )
     fireEvent.click(screen.getByText('click-me'))
     expect(navigateSpy).toHaveBeenCalledWith('/workflows/wf-99')
+  })
+
+  it('右键卡片弹菜单 → 重命名 调 prompt + save({id,name})', () => {
+    useWorkflowsMock.mockReturnValue({
+      data: [makeWf({ id: 'wf-7', name: '老名字' })], isLoading: false, error: null,
+    })
+    useServicesMock.mockReturnValue({ data: [] })
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('新名字')
+    render(<MemoryRouter><WorkflowsList /></MemoryRouter>)
+    fireEvent.contextMenu(screen.getByText('老名字'))   // 右键卡片
+    fireEvent.click(screen.getByText('重命名'))
+    expect(promptSpy).toHaveBeenCalled()
+    expect(saveMutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'wf-7', name: '新名字' }),
+      expect.anything(),
+    )
+    promptSpy.mockRestore()
+  })
+
+  it('右键卡片 → 删除 确认后调 delete', () => {
+    useWorkflowsMock.mockReturnValue({
+      data: [makeWf({ id: 'wf-8', name: '待删' })], isLoading: false, error: null,
+    })
+    useServicesMock.mockReturnValue({ data: [] })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<MemoryRouter><WorkflowsList /></MemoryRouter>)
+    fireEvent.contextMenu(screen.getByText('待删'))
+    fireEvent.click(screen.getByText('删除'))
+    expect(deleteMutateMock).toHaveBeenCalledWith('wf-8', expect.anything())
+    confirmSpy.mockRestore()
   })
 
   it('shows the linked service + bump-version button when an associated service exists', () => {
