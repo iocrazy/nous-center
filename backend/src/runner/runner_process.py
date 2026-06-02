@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
+import os
+import sys
 import threading
 import time
 import uuid
@@ -28,6 +31,29 @@ from typing import Any
 
 from src.runner import protocol as P
 from src.runner.pipe_channel import PipeChannel
+
+
+def _init_runner_logging(group_id: str) -> None:
+    """让 runner 子进程的 INFO 日志可见(统一进父进程日志)。
+
+    runner 由 mp spawn 起,不继承父进程的 logging handler → `logger.info` 默认无 handler
+    丢弃,只有库直接写 stdout 的(tqdm 进度 / import 警告)能看到。这让 runner 里发生的
+    模型加载 / 组件 L1 命中 / 驱逐等 INFO 全部隐身(用户「日志不统一管理」的一环)。
+
+    runner stdout 已被父进程重定向进同一日志文件,这里配一个 INFO StreamHandler 到 stdout
+    即可让 runner 日志汇入。前缀 [runner:<group>] 便于和主进程日志区分。等级可经
+    NOUS_RUNNER_LOG_LEVEL 覆盖(默认 INFO)。幂等:已配过 handler 就不重复加。
+    """
+    root = logging.getLogger()
+    if any(getattr(h, "_nous_runner", False) for h in root.handlers):
+        return
+    level = getattr(logging, os.getenv("NOUS_RUNNER_LOG_LEVEL", "INFO").upper(), logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler._nous_runner = True  # type: ignore[attr-defined]  # 幂等标记
+    handler.setFormatter(logging.Formatter(
+        f"%(asctime)s %(levelname)-5s [runner:{group_id}] %(name)s — %(message)s"))
+    root.addHandler(handler)
+    root.setLevel(level)
 
 
 class _RunnerState:
@@ -624,6 +650,7 @@ def runner_main(
     """
     from src.runner.runner_modelmanager import build_runner_model_manager
 
+    _init_runner_logging(group_id)
     runner_id = f"runner-{group_id}-{uuid.uuid4().hex[:6]}"
     mm = build_runner_model_manager(
         group_id, gpus, models_yaml_path=models_yaml_path, fake_adapter=fake_adapter,
