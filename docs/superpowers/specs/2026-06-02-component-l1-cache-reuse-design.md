@@ -45,14 +45,26 @@ A 把 X-bf16 放好后 B 才跑 → L1 命中复用,无「半加载」竞态。r
 风险:两 combo 共享同一 transformer 模块实例,但 offload 模式不同(A=cpu offload,B=none)→
 A 的 `enable_model_cpu_offload` hook 把共享模块挪 CPU,B 在 GPU 用就崩(segfault 高发区,runner bug 史)。
 
-**✅ 用户决策(2026-06-02):「点常驻就不 offload」** —— 常驻组件钉死 GPU、全程不挪,共享天然安全。
-落到设计:
-- **L1 共享只发生在常驻组件**(resident=True → offload 强制 none,全程 GPU)。两 combo 共享的就是这份
-  GPU 常驻副本,谁都不能挪它 → 无冲突。
-- **非常驻 + offload 的工作流:不进 L1 共享池**(各自 build_bridged + 自己的 offload hook,跟现在一样,
-  combo 级 L2 缓存)。即「想 offload 省显存」与「想常驻共享」是两条路,L1 复用只服务后者。
-- L1 key 仍 `to_component_key`(file|device|dtype|loras);但只缓存 offload=none 的组件。
-- 仍**真模型 smoke 验**(常驻组件被 A、B 共享,卸 A 不影响 B;offload 工作流不误用常驻副本)。
+**✅ 用户决策(2026-06-02):「点常驻就不 offload」+ 用户追问「非常驻怎么办」→ 修正:共享按 offload 分,
+不是按常驻分。**
+
+**共享的真正判据 = offload 模式**(不是 resident):
+- **offload=none**(全程 GPU):组件是干净模块,A、B 引用同一份无害 → **进 L1 共享池**(常驻/非常驻都进)。
+- **offload=cpu / cuda stash**:带 `enable_model_cpu_offload` 的换入换出 hook,hook 绑在 pipeline 上,
+  两 combo 共享带 hook 的同一模块会冲突 → **不共享**,各 combo 自己一份(combo 级 L2,跟现在一样)。
+
+| | 进 L1 共享池 | 可驱逐 |
+|---|---|---|
+| offload=none + 常驻 | ✅ | ❌ 钉死 |
+| offload=none + 非常驻 | ✅ | ✅ LRU 可挤(refs=0 时) |
+| offload=cpu/cuda | ❌ 各自一份 | ✅ |
+
+→ **非常驻照样复用**(只要 offload=none):X-bf16 仍只加载一份给 A、B 用;区别仅在显存紧 + refs=0 时
+非常驻的可被 LRU 让出去(下次再用再加载)。常驻多一层「钉死不被挤」。「常驻⇒offload=none」仍成立
+(常驻的一定不 offload),但非常驻 offload=none 也共享。
+- L1 key = `to_component_key`(file|device|dtype|loras);只对 offload=none 组件建/复用。
+- **真模型 smoke 验**:offload=none 组件被 A、B 共享(卸 A 或 LRU 驱逐不误伤 B 在用的);offload=cpu
+  工作流各自一份不进池。
 
 offload 原理(备忘):权重平时停 CPU RAM(cpu)或别的卡(cuda:N),计算时 diffusers hook 把当前子模块
 临时搬上计算卡 → 算 → 搬回。峰值显存=最大单块,代价 GPU↔CPU 搬运慢 3-5×。none=全程 GPU 最快。
