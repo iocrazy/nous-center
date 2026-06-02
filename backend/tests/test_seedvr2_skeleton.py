@@ -105,6 +105,18 @@ def test_seedvr2_adapter_conforms_to_abc():
     assert not be.is_loaded  # 没 load → _model is None
 
 
+def test_seedvr2_clamp_seed_to_uint32():
+    """seed 归一 [0, 2**32-1]:NumZ np.random.seed 要求(randomize 给 2**53 会抛
+    「Seed must be between 0 and 2**32 - 1」)。<2**32 不变,超范围折叠且确定。"""
+    from src.services.inference.image_seedvr2 import _clamp_seed  # noqa: PLC0415
+
+    assert _clamp_seed(42) == 42  # 小 seed 不变
+    assert _clamp_seed(2**32 - 1) == 2**32 - 1  # 边界
+    assert _clamp_seed(5500410140161955) == 5500410140161955 % (2**32) == 142997411  # 真机报错那个
+    assert 0 <= _clamp_seed(2**53) < 2**32  # randomize 上界折叠进范围
+    assert _clamp_seed(5500410140161955) == _clamp_seed(5500410140161955)  # 确定(复现一致)
+
+
 def test_seedvr2_adapter_requires_model_dir():
     """paths 缺 model_dir → 明确 RuntimeError(不静默用错路径)。"""
     from src.services.inference.image_seedvr2 import SeedVR2UpscaleBackend  # noqa: PLC0415

@@ -82,6 +82,13 @@ def seedvr2_dit_models_with_disk_status(model_dir: str | None = None) -> list[di
     return out
 
 
+def _clamp_seed(seed: int) -> int:
+    """归一到 [0, 2**32-1] —— NumZ set_seed→np.random.seed 的要求(超范围 numpy 抛
+    「Seed must be between 0 and 2**32 - 1」)。<2**32 不变,超范围(如 randomize 给的 2**53)
+    才折叠;同输入同输出 → 复现一致。"""
+    return int(seed) % (2**32)
+
+
 def _decode_image(src: str) -> Any:
     """req.image(base64 data URI 或本地路径)→ PIL.Image(RGB)。"""
     from PIL import Image  # noqa: PLC0415
@@ -263,7 +270,9 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
             raise TypeError(f"SeedVR2UpscaleBackend 只接受 UpscaleRequest,收到 {type(req).__name__}")
 
         pil = _decode_image(req.image)
-        seed = req.seed if req.seed is not None else 42
+        # NumZ set_seed → np.random.seed 要求 [0, 2**32-1];randomize 给的 2**53 超范围会抛。
+        # 引擎边界归一;metadata 报折叠后的有效 seed。
+        seed = _clamp_seed(req.seed if req.seed is not None else 42)
 
         def _run() -> Any:
             return self.upscale(
@@ -320,6 +329,7 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         """
         if self._runner is None:
             raise RuntimeError("SeedVR2 未 load")
+        seed = _clamp_seed(seed)  # 直接调 upscale 的路径(smoke)也归一
         import numpy as np  # noqa: PLC0415
         import torch  # noqa: PLC0415
         from PIL import Image  # noqa: PLC0415
