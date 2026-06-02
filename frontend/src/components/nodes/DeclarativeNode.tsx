@@ -10,7 +10,7 @@ import { apiFetch } from '../../api/client'
 import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import { useLoras } from '../../api/loras'
 import { useComponents, useComponentState, useSeedvr2DitModels, componentStateKey, type ComponentRole } from '../../api/components'
-import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
+import BaseNode, { NodeWidgetRow, NodeInput, NodeNumberDrag, NodeTextarea } from './BaseNode'
 import NodeSelectPopover from './NodeSelectPopover'
 
 function LoraSelectWidget({
@@ -26,16 +26,11 @@ function LoraSelectWidget({
   // is the same /api/v1/loras scanner endpoint that lora_stack reads —
   // so newly-dropped LoRA files appear in both without an edit.
   const { data: loras } = useLoras()
-  return (
-    <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">— 不应用 LoRA —</option>
-      {loras?.map((lora) => (
-        <option key={lora.name} value={lora.name}>
-          {lora.name}
-        </option>
-      ))}
-    </NodeSelect>
-  )
+  const opts = [
+    { value: '', label: '— 不应用 LoRA —' },
+    ...(loras ?? []).map((lora) => ({ value: lora.name, label: lora.name })),
+  ]
+  return <NodeSelectPopover value={value} onChange={onChange} options={opts} size="compact" />
 }
 
 
@@ -47,16 +42,15 @@ function AgentSelectWidget({
   onChange: (v: string) => void
 }) {
   const { data: agents } = useAgents()
-
+  const opts = (agents ?? []).map((a) => ({ value: a.name, label: a.display_name || a.name }))
   return (
-    <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">选择 Agent...</option>
-      {agents?.map((a) => (
-        <option key={a.name} value={a.name}>
-          {a.display_name || a.name}
-        </option>
-      ))}
-    </NodeSelect>
+    <NodeSelectPopover
+      value={value}
+      onChange={onChange}
+      options={opts}
+      placeholder="选择 Agent..."
+      size="compact"
+    />
   )
 }
 
@@ -112,18 +106,15 @@ function LoraStackWidget({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
       {items.map((row, idx) => (
         <div key={idx} style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-          <NodeSelect
-            value={row.name}
-            onChange={(e) => setName(idx, e.target.value)}
-            style={{ flex: 1, minWidth: 0 }}
-          >
-            <option value="">选择 LoRA...</option>
-            {(loras ?? []).map((l) => (
-              <option key={l.name} value={l.name}>
-                {l.name}
-              </option>
-            ))}
-          </NodeSelect>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <NodeSelectPopover
+              value={row.name}
+              onChange={(v) => setName(idx, v)}
+              options={(loras ?? []).map((l) => ({ value: l.name, label: l.name }))}
+              placeholder="选择 LoRA..."
+              size="compact"
+            />
+          </div>
           <div style={{ width: 50 }}>
             <NodeNumberDrag
               value={row.strength}
@@ -203,23 +194,30 @@ function ModelSelectWidget({
   const loaded = (engines ?? []).filter((e) => e.status === 'loaded')
   const unloaded = (engines ?? []).filter((e) => e.status !== 'loaded' && e.local_exists)
 
+  const opts = [
+    ...loaded.map((e) => ({
+      value: e.name,
+      label: e.display_name,
+      description: '已加载',
+      color: 'var(--ok)',
+    })),
+    // 未加载:置灰不可选(同旧原生 select 的 disabled 语义)。
+    ...unloaded.map((e) => ({
+      value: e.name,
+      label: e.display_name,
+      description: '未加载',
+      color: 'var(--muted)',
+      disabled: true,
+    })),
+  ]
   return (
-    <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">选择模型...</option>
-      {loaded.map((e) => (
-        <option key={e.name} value={e.name}>
-          {e.display_name}
-        </option>
-      ))}
-      {unloaded.length > 0 && loaded.length > 0 && (
-        <option disabled>──── 未加载 ────</option>
-      )}
-      {unloaded.map((e) => (
-        <option key={e.name} value={e.name} disabled>
-          {e.display_name} (未加载)
-        </option>
-      ))}
-    </NodeSelect>
+    <NodeSelectPopover
+      value={value}
+      onChange={onChange}
+      options={opts}
+      placeholder="选择模型..."
+      size="compact"
+    />
   )
 }
 
@@ -229,22 +227,23 @@ export function ComponentSelectWidget({
   role,
 }: { value: string; onChange: (v: string) => void; role: ComponentRole }) {
   const { data: components } = useComponents(role)
+  const opts = (components ?? []).map((c) => {
+    // 同名不同目录的文件(如各模型的 diffusion_pytorch_model.safetensors)在下拉里会看着
+    // 一样 —— 副标题附上量化类型 + 末两级目录(模型目录/子目录)区分。
+    const parts = (c.abs_path || '').split('/').filter(Boolean)
+    const ctx = parts.slice(-3, -1).join('/')
+    const quant = c.quant_type && c.quant_type !== 'bf16' ? c.quant_type : ''
+    const description = [quant, ctx].filter(Boolean).join(' — ')
+    return { value: c.abs_path, label: c.filename, description: description || undefined }
+  })
   return (
-    <NodeSelect value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">选择 {role}...</option>
-      {(components ?? []).map((c) => {
-        // 同名不同目录的文件(如各模型的 diffusion_pytorch_model.safetensors)在下拉里
-        // 会看着一样 —— 附上末两级目录(模型目录/子目录)区分。
-        const parts = (c.abs_path || '').split('/').filter(Boolean)
-        const ctx = parts.slice(-3, -1).join('/')
-        const quant = c.quant_type && c.quant_type !== 'bf16' ? ` · ${c.quant_type}` : ''
-        return (
-          <option key={c.abs_path} value={c.abs_path}>
-            {c.filename}{quant}{ctx ? ` — ${ctx}` : ''}
-          </option>
-        )
-      })}
-    </NodeSelect>
+    <NodeSelectPopover
+      value={value}
+      onChange={onChange}
+      options={opts}
+      placeholder={`选择 ${role}...`}
+      size="compact"
+    />
   )
 }
 
@@ -313,9 +312,12 @@ export function ClipStackWidget({
             <ComponentSelectWidget value={row.file} onChange={(v) => setFile(idx, v)} role="clip" />
           </div>
           <div style={{ width: 78 }}>
-            <NodeSelect value={row.weight_dtype || 'bfloat16'} onChange={(e) => setDtype(idx, e.target.value)}>
-              {_CLIP_DTYPES.map((d) => <option key={d} value={d}>{d}</option>)}
-            </NodeSelect>
+            <NodeSelectPopover
+              value={row.weight_dtype || 'bfloat16'}
+              onChange={(v) => setDtype(idx, v)}
+              options={_CLIP_DTYPES.map((d) => ({ value: d, label: d }))}
+              size="compact"
+            />
           </div>
           <button
             className="nodrag" type="button"

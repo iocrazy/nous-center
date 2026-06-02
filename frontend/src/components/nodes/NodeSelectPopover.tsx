@@ -15,6 +15,8 @@ export interface SelectOption {
   label: string
   description?: string
   color?: string
+  /** 置灰不可选(如 model_select 里「未加载」的模型)。点击无效,样式淡化。 */
+  disabled?: boolean
 }
 
 export interface NodeSelectPopoverProps {
@@ -139,13 +141,17 @@ export function NodeSelectPopover({
         >
           {options.map((opt) => {
             const selected = opt.value === value
+            const disabled = !!opt.disabled
             return (
               <button
                 key={opt.value}
                 type="button"
                 role="option"
                 aria-selected={selected}
+                aria-disabled={disabled}
+                disabled={disabled}
                 onClick={() => {
+                  if (disabled) return
                   onChange(opt.value)
                   setOpen(false)
                 }}
@@ -158,14 +164,15 @@ export function NodeSelectPopover({
                   background: selected ? 'var(--accent-subtle)' : 'transparent',
                   border: 'none',
                   borderRadius: 4,
-                  cursor: 'pointer',
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  opacity: disabled ? 0.45 : 1,
                   textAlign: 'left',
                   color: 'var(--text)',
                   fontFamily: 'var(--font)',
                   transition: 'background 0.1s',
                 }}
                 onMouseEnter={(e) => {
-                  if (!selected) e.currentTarget.style.background = 'var(--bg-hover)'
+                  if (!selected && !disabled) e.currentTarget.style.background = 'var(--bg-hover)'
                 }}
                 onMouseLeave={(e) => {
                   if (!selected) e.currentTarget.style.background = 'transparent'

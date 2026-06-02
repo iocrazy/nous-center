@@ -24,8 +24,9 @@ describe('ClipStackWidget (PR-3 动态多 CLIP)', () => {
 
   it('渲染已有 CLIP 条目(每行 file 下拉 + 精度)', () => {
     wrap(<ClipStackWidget value={[{ file: '/m/clipL.safetensors', weight_dtype: 'bfloat16' }]} onChange={() => {}} />)
-    const opt = screen.getByRole('option', { name: /clipL/ }) as HTMLOptionElement
-    expect(opt.value).toBe('/m/clipL.safetensors')
+    // 迁移到 NodeSelectPopover:file/精度 是触发按钮,显示当前选中项的 label(文件名 / dtype)。
+    expect(screen.getByText('clipL.safetensors')).toBeInTheDocument()
+    expect(screen.getByText('bfloat16')).toBeInTheDocument()
   })
 
   it('点「添加 CLIP」追加一行', () => {

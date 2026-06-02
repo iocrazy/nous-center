@@ -1,7 +1,8 @@
 import type { NodeProps } from '@xyflow/react'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { NODE_DEFS } from '../../models/workflow'
-import BaseNode, { NodeWidgetRow, NodeSelect } from './BaseNode'
+import BaseNode, { NodeWidgetRow } from './BaseNode'
+import NodeSelectPopover from './NodeSelectPopover'
 
 export default function ResampleNode({ id, data, selected }: NodeProps) {
   const updateNode = useWorkspaceStore((s) => s.updateNode)
@@ -16,16 +17,12 @@ export default function ResampleNode({ id, data, selected }: NodeProps) {
       outputs={def.outputs}
     >
       <NodeWidgetRow label="rate">
-        <NodeSelect
-          value={(data.target_rate as number) ?? 24000}
-          onChange={(e) => updateNode(id, { target_rate: parseInt(e.target.value) })}
-        >
-          <option value={16000}>16000 Hz</option>
-          <option value={22050}>22050 Hz</option>
-          <option value={24000}>24000 Hz</option>
-          <option value={44100}>44100 Hz</option>
-          <option value={48000}>48000 Hz</option>
-        </NodeSelect>
+        <NodeSelectPopover
+          value={String((data.target_rate as number) ?? 24000)}
+          onChange={(v) => updateNode(id, { target_rate: parseInt(v) })}
+          options={[16000, 22050, 24000, 44100, 48000].map((r) => ({ value: String(r), label: `${r} Hz` }))}
+          size="compact"
+        />
       </NodeWidgetRow>
     </BaseNode>
   )
