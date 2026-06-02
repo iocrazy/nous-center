@@ -1124,6 +1124,8 @@ class ModelManager:
         dit_model: str | None = None,
         vae_model: str | None = None,
         device: str = "cuda",
+        dit_config: dict | None = None,
+        vae_config: dict | None = None,
     ):
         """SeedVR2 超分 adapter 装配/复用 —— 跟 anima/modular 不同:SeedVR2 不是「三组件
         (diffusion_models/clip/vae)」模型,是「DiT + 专用 VAE 整套自带」的上采样器(by
@@ -1144,17 +1146,33 @@ class ModelManager:
             SeedVR2UpscaleBackend,
         )
 
-        dit = dit_model or DEFAULT_DIT
-        vae = vae_model or DEFAULT_VAE
+        # 三节点对齐:dit/vae config(device/blockswap/tiling/attention)。model 名优先取 config。
+        dcfg = dict(dit_config or {})
+        vcfg = dict(vae_config or {})
+        dit = dcfg.get("model") or dit_model or DEFAULT_DIT
+        vae = vcfg.get("model") or vae_model or DEFAULT_VAE
         # device=auto:SeedVR2 不走 component sticky;直接挑最空的卡(7B 给 Pro 6000)。
         # get_best_gpu 返 -1 = 没卡装得下 → 回退 cuda:0,让下游 OOM 报真错(不静默)。
-        target = device
-        if device in ("auto", "cuda"):
+        # DiT config 显式给 device 则尊重(对齐 ComfyUI 用户选卡);否则用 device 参数 / auto 解析。
+        target = dcfg.get("device") or device
+        if target in ("auto", "cuda"):
             best = self._allocator.get_best_gpu(SeedVR2UpscaleBackend.estimated_vram_mb)
             target = f"cuda:{best}" if best is not None and best >= 0 else "cuda:0"
 
         dit_base = splitext(basename(str(dit)))[0] or "main"
-        payload = repr((model_dir, dit, vae, target)).encode("utf-8")
+        # 缓存键纳入 dit/vae config 的 load-time 维度(blockswap/tiling/device/attention)——
+        # 不同配置 = 不同 prepare_runner 实例,不能复用。torch_compile/node_id 不进键(前者影响
+        # 实例但极少用,node_id 是 ComfyUI 内部 id 无关)。
+        key_cfg = {
+            "dit_device": dcfg.get("device"), "vae_device": vcfg.get("device"),
+            "blocks_to_swap": dcfg.get("blocks_to_swap"), "swap_io": dcfg.get("swap_io_components"),
+            "dit_offload": dcfg.get("offload_device"), "vae_offload": vcfg.get("offload_device"),
+            "attention": dcfg.get("attention_mode"),
+            "enc_tiled": vcfg.get("encode_tiled"), "enc_ts": vcfg.get("encode_tile_size"),
+            "enc_to": vcfg.get("encode_tile_overlap"), "dec_tiled": vcfg.get("decode_tiled"),
+            "dec_ts": vcfg.get("decode_tile_size"), "dec_to": vcfg.get("decode_tile_overlap"),
+        }
+        payload = repr((model_dir, dit, vae, target, sorted(key_cfg.items()))).encode("utf-8")
         short_hash = hashlib.sha256(payload).hexdigest()[:8]
         model_id = f"image:SeedVR2:{dit_base}:{short_hash}"
 
@@ -1169,6 +1187,8 @@ class ModelManager:
             adapter = SeedVR2UpscaleBackend(
                 paths={"model_dir": model_dir, "dit": dit, "vae": vae},
                 device=target,
+                dit_config=dcfg,
+                vae_config=vcfg,
             )
             await adapter.load(target)
 

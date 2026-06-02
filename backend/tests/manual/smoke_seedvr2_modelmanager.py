@@ -74,7 +74,40 @@ async def main() -> None:
     adapter2 = await mm.get_or_load_seedvr2_adapter(model_dir=MODEL_DIR, device=DEVICE)
     assert adapter2 is adapter, "二次 get_or_load 没命中缓存(应同一 adapter 实例)"
     print("  ✓ 二次 get_or_load 命中缓存(同 adapter 实例)")
-    print("[seedvr2-mm] done — 肉眼看 _smoke_out/seedvr2_mm_out.png 是否清晰超分")
+
+    # === PR-1 验证:不同 config(tiling)= 不同缓存键 = 新实例,且大图分块出图不 OOM ===
+    print("\n[seedvr2-mm] PR-1: VAE tiling(大图分块)")
+    big = src.resize((512, 512))  # 稍大输入,验分块路径
+    bbuf = io.BytesIO()
+    big.save(bbuf, format="PNG")
+    big_uri = "data:image/png;base64," + base64.b64encode(bbuf.getvalue()).decode()
+    vae_cfg = {"encode_tiled": True, "encode_tile_size": 256, "encode_tile_overlap": 32,
+               "decode_tiled": True, "decode_tile_size": 256, "decode_tile_overlap": 32}
+    t2 = time.monotonic()
+    adapter_t = await mm.get_or_load_seedvr2_adapter(model_dir=MODEL_DIR, device=DEVICE, vae_config=vae_cfg)
+    assert adapter_t is not adapter, "tiling config 应是不同缓存键(新实例),却命中了旧实例"
+    print(f"  ✓ tiling adapter load {time.monotonic()-t2:.1f}s(新 model_id,缓存键纳入 tiling)")
+    t3 = time.monotonic()
+    res_t = await adapter_t.infer(UpscaleRequest(request_id="smoke-tile", image=big_uri, resolution=1536, seed=42))
+    print(f"  ✓ tiling infer {time.monotonic()-t3:.1f}s → {res_t.media_type} {len(res_t.data)}B")
+    Image.open(io.BytesIO(res_t.data)).save(OUT_DIR / "seedvr2_mm_tiled_out.png")
+    print("  ✓ 分块出图 → _smoke_out/seedvr2_mm_tiled_out.png")
+
+    # === PR-1 验证:DiT blockswap(7B 塞小卡)。SMOKE_BLOCKSWAP=N 启用(需 offload_device != device)===
+    bs = int(os.environ.get("SMOKE_BLOCKSWAP", "0") or "0")
+    if bs > 0:
+        print(f"\n[seedvr2-mm] PR-1: DiT blockswap blocks_to_swap={bs}(7B 塞 {DEVICE},offload→cpu)")
+        dit_cfg = {"blocks_to_swap": bs, "offload_device": "cpu"}
+        t4 = time.monotonic()
+        adapter_bs = await mm.get_or_load_seedvr2_adapter(model_dir=MODEL_DIR, device=DEVICE, dit_config=dit_cfg)
+        print(f"  ✓ blockswap adapter load {time.monotonic()-t4:.1f}s")
+        res_bs = await adapter_bs.infer(UpscaleRequest(request_id="smoke-bs", image=data_uri, resolution=1024, seed=42))
+        Image.open(io.BytesIO(res_bs.data)).save(OUT_DIR / "seedvr2_mm_blockswap_out.png")
+        print("  ✓ blockswap 出图 → _smoke_out/seedvr2_mm_blockswap_out.png")
+    else:
+        print("\n[seedvr2-mm] (跳过 blockswap;设 SMOKE_BLOCKSWAP=16 跑 7B 塞小卡验证)")
+
+    print("\n[seedvr2-mm] done — 肉眼看 _smoke_out/seedvr2_mm_*.png 是否清晰超分")
 
 
 if __name__ == "__main__":

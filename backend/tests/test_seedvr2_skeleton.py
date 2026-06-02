@@ -122,3 +122,59 @@ def test_model_manager_has_seedvr2_loader():
     assert "async def get_or_load_seedvr2_adapter(" in mm, "ModelManager 缺 SeedVR2 装载入口"
     assert "image:SeedVR2:" in mm, "缺 SeedVR2 model_id 命名(登记进 _models)"
     assert "SeedVR2UpscaleBackend" in mm
+
+
+# --- PR-1(三节点引擎):dit/vae config + tiling/blockswap + 增强参数 wiring(CI 安全)---
+
+
+def test_upscale_request_three_node_fields():
+    """UpscaleRequest 加了增强节点 per-inference 参数(max_resolution/batch_size/temporal_overlap/
+    prepend_frames/uniform_batch_size),默认 = 单图安全值。"""
+    from src.services.inference.base import UpscaleRequest  # noqa: PLC0415
+
+    req = UpscaleRequest(request_id="t", image="/tmp/x.png")
+    assert req.max_resolution == 0  # 不限长边
+    assert req.batch_size == 1
+    assert req.temporal_overlap == 0  # 单图
+    assert req.prepend_frames == 0
+    assert req.uniform_batch_size is False
+    # 边界:max_resolution 可设大图上限
+    req2 = UpscaleRequest(request_id="t", image="/tmp/x.png", max_resolution=2160, batch_size=4)
+    assert req2.max_resolution == 2160
+    assert req2.batch_size == 4
+
+
+def test_seedvr2_adapter_accepts_dit_vae_config():
+    """adapter 接 dit_config/vae_config(三节点的 DiT/VAE 配置)——model 名从 config 取(优先于
+    paths/默认);config 存进 dit_cfg/vae_cfg 供 _load_sync 串 blockswap/tiling/attention。
+    顶层无 torch,纯 dict 存储,CI 可跑(_load_sync 才碰 torch)。"""
+    from src.services.inference.image_seedvr2 import SeedVR2UpscaleBackend  # noqa: PLC0415
+
+    be = SeedVR2UpscaleBackend(
+        paths={"model_dir": "/tmp/seedvr2"},
+        device="cuda:0",
+        dit_config={"model": "seedvr2_ema_3b_fp16.safetensors", "device": "cuda:1",
+                    "blocks_to_swap": 16, "swap_io_components": True, "offload_device": "cpu",
+                    "attention_mode": "sdpa"},
+        vae_config={"model": "ema_vae_fp16.safetensors", "encode_tiled": True,
+                    "encode_tile_size": 512, "decode_tiled": True, "decode_tile_size": 512},
+    )
+    # model 名从 config.model 取(覆盖默认)
+    assert be.dit_model == "seedvr2_ema_3b_fp16.safetensors"
+    assert be.vae_model == "ema_vae_fp16.safetensors"
+    # config 字典存好(blockswap/tiling 留给 _load_sync 串进 prepare_runner)
+    assert be.dit_cfg["blocks_to_swap"] == 16
+    assert be.dit_cfg["swap_io_components"] is True
+    assert be.vae_cfg["encode_tiled"] is True
+
+
+def test_model_manager_seedvr2_loader_accepts_configs():
+    """get_or_load_seedvr2_adapter 接 dit_config/vae_config + 缓存键纳入(不同配置=不同实例)。
+    源码检查(避 torch import 链)。"""
+    import pathlib  # noqa: PLC0415
+
+    mm = (pathlib.Path(__file__).parent.parent / "src/services/model_manager.py").read_text()
+    assert "dit_config: dict | None = None" in mm, "loader 未接 dit_config"
+    assert "vae_config: dict | None = None" in mm, "loader 未接 vae_config"
+    # 缓存键纳入 blockswap/tiling 维度
+    assert "blocks_to_swap" in mm and "enc_tiled" in mm, "缓存键未纳入 blockswap/tiling"
