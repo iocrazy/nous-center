@@ -17,6 +17,11 @@ from src.services.gpu_allocator import GPUAllocator
 logger = logging.getLogger(__name__)
 
 
+def _basename(file_path) -> str:
+    """日志友好的文件名末段(只用于 log,容错 None/空)。"""
+    return Path(file_path).name if file_path else str(file_path)
+
+
 def _modular_repo_from_components(resolved: dict) -> str:
     """从细粒度图组件推 HF-layout repo(含 model_index.json 的目录)。
 
@@ -158,8 +163,13 @@ class ModelManager:
         # 真正 OOM 的卡,退成 evict_lru(None) 驱全局 LRU(可能驱了另一张没满的卡,OOM 的卡
         # 仍满 → 重试再 OOM → 永久毒化)。这里记每个 model 上次尝试的落卡,OOM 时据它精确驱逐。
         self._last_attempt_gpu: dict[str, int] = {}
-        # PR-1 Task 6: component-level cache (parallel to _models). Old yaml-driven
-        # adapters keep using _models; PR-2's ImageSampler will use _components.
+        # 组件级 L1 缓存(spec 2026-06-02):同一组件(file|load_device|dtype|loras = 一个 id)
+        # 被多个 combo 共享时只加载一份、跨 combo 复用。key = L1 component key(见
+        # `_l1_component_key`,用真实 load_device 而非 spec.device);value = LoadedComponent dict
+        # {module, role, key, refs:set[combo_id], resident:bool, last_used, device}。
+        # **只对 offload=none 组件建/复用**(带 cpu/cuda offload hook 的模块共享会冲突,spec §3);
+        # image runner 单串行队列 → 无并发加载 → 无需加锁(spec §0)。
+        self._components: dict = {}
         # Forward-ref the ComponentKey type as a tuple alias so the module-top
         # import stays clean (component_spec doesn't import ModelManager).
         from src.services.inference.component_spec import ComponentKey  # noqa: F401
@@ -623,6 +633,19 @@ class ModelManager:
 
             entry.adapter.unload()
             del self._models[model_id]
+            # 组件 L1 refcount 释放(spec §2):此 combo 引用的组件 refs 减;refs 空 + 非 resident
+            # 才真出池。共享组件被别的 combo 用着则保留(不误伤,否则卸了在用的 → segfault)。
+            # adapter.unload 已 empty_cache,但那时组件还被 _components 持着没真释放 —— 出池后
+            # 断了最后强引用,再清一次缓存让显存真降。
+            if self._release_combo_components(model_id):
+                try:
+                    import gc  # noqa: PLC0415
+                    import torch  # noqa: PLC0415
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001 — 清缓存 best-effort
+                    pass
             # 清 device=auto 粘性(#210 回归):adapter 没了,stick 不能再指向它的卡并跳 VRAM
             # 守卫 —— 否则下次同工作流粘回已卸载/可能已满的卡反复 OOM。
             sk = self._image_stick_keys.pop(model_id, None)
@@ -651,6 +674,20 @@ class ModelManager:
             "last_used": {
                 mid: entry.last_used for mid, entry in self._models.items()
             },
+            # 组件级 L1 共享池(spec §1/§2):每个组件 role/文件/卡 + 哪些 combo 在引用它
+            # (refs)+ 是否常驻。跨 combo 复用的组件 refs 会有多个 combo_id —— 真机 smoke
+            # 验「A、B 共用 X-bf16/vaeZ」就看这里 refs 是否含两个 combo。
+            "components": [
+                {
+                    "role": c["role"],
+                    "file": _basename(c["key"][0]),
+                    "device": c["key"][1],
+                    "dtype": c["key"][2],
+                    "refs": sorted(c["refs"]),
+                    "resident": c["resident"],
+                }
+                for c in self._components.values()
+            ],
         }
 
     def get_model_dependencies(self, workflow: dict) -> list[dict]:
@@ -1213,6 +1250,72 @@ class ModelManager:
             )
             return adapter
 
+    @staticmethod
+    def _l1_component_key(spec, load_device: str):
+        """组件 L1 缓存 key —— 用**真实 load_device**(非 spec.device,后者可能是 'auto')。
+
+        to_component_key 用 spec.device;但 device='auto' 时两个落到不同卡的 combo 会算出
+        同一个 'auto' key → 误复用跨卡模块(card1 的 vae 装到 card2 的 pipe)。这里把 device
+        字段换成真实 load_device,保证同卡才命中。file/dtype/loras 仍来自 to_component_key。
+        """
+        from src.services.inference.component_spec import to_component_key  # noqa: PLC0415
+        file_, _dev, dtype, loras = to_component_key(spec)
+        return (file_, load_device, dtype, loras)
+
+    async def _get_or_build_image_component(
+        self, role, build_fn, spec, repo, load_device, offload, combo_id,
+    ):
+        """逐组件 L1:命中复用已加载模块,未命中 build + 存池。返回桥接模块。
+
+        - **offload != none → 不进 L1 共享池**(cpu/cuda offload 的 enable_model_cpu_offload
+          hook 绑 pipeline,两 combo 共享带 hook 同模块会换入换出冲突 → segfault,spec §3)。
+          各 combo 自己 build 一份(等同改动前行为)。
+        - offload == none → 干净模块,A、B 引用同一份无害 → 进池共享 + refcount。
+        重 build 经 to_thread 不阻塞 runner 事件循环。
+        """
+        if offload != "none":
+            return await asyncio.to_thread(build_fn, spec, repo, load_device)
+        key = self._l1_component_key(spec, load_device)
+        comp = self._components.get(key)
+        if comp is not None:
+            comp["refs"].add(combo_id)
+            comp["last_used"] = time.monotonic()
+            logger.info(
+                "component L1 HIT role=%s file=%s dev=%s refs=%s",
+                role, _basename(spec.file), load_device, sorted(comp["refs"]))
+            return comp["module"]
+        logger.info(
+            "component L1 MISS role=%s file=%s dev=%s — building",
+            role, _basename(spec.file), load_device)
+        module = await asyncio.to_thread(build_fn, spec, repo, load_device)
+        self._components[key] = {
+            "module": module, "role": role, "key": key,
+            "refs": {combo_id}, "resident": False,
+            "last_used": time.monotonic(), "device": load_device,
+        }
+        return module
+
+    def _release_combo_components(self, combo_id: str) -> bool:
+        """卸 combo 时减它引用的组件 refs;refs 空 + 非 resident → 出池真释放。
+
+        返回是否有组件被释放(调用方据此决定要不要再 empty_cache —— adapter.unload
+        已 empty_cache 过,但那时组件还被 _components 持着没真释放;出池后才需再清一次)。
+        共享组件被别的 combo 用着(refs 非空)→ 保留,不误伤(spec §2 refcount 正确性)。
+        """
+        freed = False
+        for key, comp in list(self._components.items()):
+            if combo_id not in comp["refs"]:
+                continue
+            comp["refs"].discard(combo_id)
+            if not comp["refs"] and not comp["resident"]:
+                self._components.pop(key, None)
+                comp["module"] = None  # 断最后一个强引用,让 gc 回收 CUDA 存储
+                freed = True
+                logger.info(
+                    "component L1 释放 role=%s file=%s(refs 空+非常驻)",
+                    comp.get("role"), _basename(key[0]))
+        return freed
+
     async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none"):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 
@@ -1259,16 +1362,22 @@ class ModelManager:
                     load_device = offload  # stash 卡
                 else:
                     load_device = target
+                # 逐组件 L1:命中复用、未命中 build + 存池(offload=none 才共享,见
+                # `_get_or_build_image_component`)。combo miss 但组件 L1 命中 = 部分复用
+                # (用户场景:A、B 共用 X-bf16+vaeZ,只各自 build 不同的 clip)。
                 t_ov = c_ov = v_ov = None
                 if _is_standalone_single_file(resolved["diffusion_models"]):
-                    t_ov = await asyncio.to_thread(
-                        build_bridged_transformer, resolved["diffusion_models"], repo, load_device)
+                    t_ov = await self._get_or_build_image_component(
+                        "transformer", build_bridged_transformer,
+                        resolved["diffusion_models"], repo, load_device, offload, model_id)
                 if _is_standalone_single_file(resolved["clip"]):
-                    c_ov = await asyncio.to_thread(
-                        build_bridged_text_encoder, resolved["clip"], repo, load_device)
+                    c_ov = await self._get_or_build_image_component(
+                        "text_encoder", build_bridged_text_encoder,
+                        resolved["clip"], repo, load_device, offload, model_id)
                 if _is_standalone_single_file(resolved["vae"]):
-                    v_ov = await asyncio.to_thread(
-                        build_bridged_vae, resolved["vae"], repo, load_device)
+                    v_ov = await self._get_or_build_image_component(
+                        "vae", build_bridged_vae,
+                        resolved["vae"], repo, load_device, offload, model_id)
                 def _build_adapter():
                     return ModularImageBackend(
                         repo=repo,
@@ -1316,6 +1425,10 @@ class ModelManager:
             except Exception as e:  # noqa: BLE001
                 # 桥接 build_bridged_* / 其它非 OOM 路径 — 兜底 emit failed 再抛。
                 # 内层 OOM 重试块已经发了 emit failed,这里只 cover 它没覆盖的路径。
+                # combo 失败前可能已 L1 存了部分组件(如 transformer 建好但 clip 崩)——
+                # combo 不入 _models 就永远不会 unload 释放这些 refs → 泄漏。这里主动回收
+                # 此 model_id 的组件 refs(refs 空 → 出池),避免半建组件常驻显存。
+                self._release_combo_components(model_id)
                 for k in ("diffusion_models", "clip", "vae"):
                     await _emit(resolved[k], "failed", f"{type(e).__name__}: {e}")
                 raise
