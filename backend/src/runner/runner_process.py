@@ -445,7 +445,8 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             l2_key = image_l2_key(node, req)
             entry = state.image_l2.get(l2_key)
             if entry is not None:
-                ttl = int(node.inputs.get("url_ttl_seconds") or 3600)
+                from src.config import get_settings  # noqa: PLC0415
+                ttl = int(get_settings().IMAGE_URL_TTL_SECONDS)  # PR-4:TTL 归服务层配置
                 hit = serve_image_l2(entry, ttl)
                 if hit is not None:
                     await ch.send_message(P.NodeResult(
@@ -639,9 +640,10 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         outputs: dict[str, Any] = {"meta": result.metadata, "media_type": result.media_type}
         if (node.node_type in ("image", "upscale")
                 and result.media_type.startswith("image/") and result.data):
+            from src.config import get_settings  # noqa: PLC0415
             from src.services.image_output_storage import write_image
             ext = result.media_type.split("/", 1)[1].split("+", 1)[0] or "png"
-            ttl = int(node.inputs.get("url_ttl_seconds") or 3600)
+            ttl = int(get_settings().IMAGE_URL_TTL_SECONDS)  # PR-4:TTL 归服务层配置
             record = write_image(result.data, ext=ext, ttl_seconds=ttl)
             meta = result.metadata or {}
             outputs.update({
