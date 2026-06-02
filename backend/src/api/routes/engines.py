@@ -532,6 +532,32 @@ async def preload_component(request: Request, body: dict = Body(...)):
     return {"status": "accepted", "kind": kind, "file": file, "resident": resident}
 
 
+@router.post("/component/resident", dependencies=[Depends(require_admin)])
+async def set_component_resident(request: Request, body: dict = Body(...)):
+    """切**已加载**组件的常驻位(引擎库组件卡常驻 toggle,组件 L1 PR-2b)。
+
+    body: `state_key`(component_state_key,file|device|dtype|loras 串)或 `name=
+    'component:<kind>:<path>'`+`device`/`dtype` 自拼;`resident`(true/false)。派 image runner;
+    没加载该组件则 no-op。状态经下个 Pong 快照反映。"""
+    state_key = str(body.get("state_key") or "")
+    if not state_key:
+        # 从 name + device/dtype 拼 component_state_key(无 LoRA 的常见情形)
+        parsed = _parse_component_name(str(body.get("name") or ""))
+        if parsed:
+            dev = str(body.get("device") or "auto")
+            dtype = str(body.get("dtype") or "bfloat16")
+            state_key = f"{parsed[1]}|{dev}|{dtype}|"
+    if not state_key:
+        raise HTTPException(422, "需要 state_key 或 name='component:<kind>:<path>'(+device/dtype)")
+    resident = bool(body.get("resident", True))
+    client = (getattr(request.app.state, "runner_clients", {}) or {}).get("image")
+    if client is None or not getattr(client, "_connected", True):
+        raise HTTPException(503, "image runner not available")
+    await client.set_component_resident(state_key=state_key, resident=resident)
+    invalidate("engines")
+    return {"status": "accepted", "state_key": state_key, "resident": resident}
+
+
 _install_states: dict[str, dict[str, str]] = {}  # engine -> {status, detail}
 
 

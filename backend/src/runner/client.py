@@ -286,6 +286,13 @@ class RunnerClient:
             raise ConnectionError("runner disconnected")
         await self._ch.send_message(P.PreloadComponent(spec=spec, resident=resident, arch=arch))
 
+    async def set_component_resident(self, state_key: str, resident: bool) -> None:
+        """发 SetComponentResident —— 切已加载组件常驻位,fire-and-forget;状态走下个 Pong 快照。
+        组件 L1 PR-2b:引擎库组件卡常驻 toggle。"""
+        if not self._connected:
+            raise ConnectionError("runner disconnected")
+        await self._ch.send_message(P.SetComponentResident(state_key=state_key, resident=resident))
+
     async def unload_model(self, model_key: str) -> None:
         if not self._connected:
             raise ConnectionError("runner disconnected")
