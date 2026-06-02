@@ -71,6 +71,17 @@ class PreloadComponents:
     kind: Literal["preload_components"] = "preload_components"
 
 
+@dataclass(frozen=True)
+class PreloadSeedVR2:
+    """主进程 → image runner:从引擎库预热 SeedVR2 超分(by-key,默认配置,无 tiling/blockswap)。
+    runner 走 get_or_load_seedvr2_adapter;loaded 状态经下一个 Pong 快照反映(无专门事件)。
+    统一引擎库 PR-3。"""
+    model_dir: str
+    dit_model: str
+    vae_model: str
+    kind: Literal["preload_seedvr2"] = "preload_seedvr2"
+
+
 # ------------------------------------------------------------------
 # image/TTS runner -> 主进程
 # ------------------------------------------------------------------
@@ -156,6 +167,7 @@ _KIND_TO_CLASS: dict[str, type] = {
     "abort": Abort,
     "ping": Ping,
     "preload_components": PreloadComponents,
+    "preload_seedvr2": PreloadSeedVR2,
     "ready": Ready,
     "node_result": NodeResult,
     "node_progress": NodeProgress,
@@ -166,7 +178,7 @@ _KIND_TO_CLASS: dict[str, type] = {
 
 # 类型注解仅供调用方做 isinstance / match —— 任意消息的联合类型
 Message = (
-    LoadModel | UnloadModel | RunNode | Abort | Ping | PreloadComponents
+    LoadModel | UnloadModel | RunNode | Abort | Ping | PreloadComponents | PreloadSeedVR2
     | Ready | NodeResult | NodeProgress | ModelEvent | Pong | ComponentEvent
 )
 

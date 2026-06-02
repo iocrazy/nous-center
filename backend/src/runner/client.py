@@ -271,6 +271,14 @@ class RunnerClient:
             )
         )
 
+    async def preload_seedvr2(self, model_dir: str, dit_model: str, vae_model: str) -> None:
+        """发 PreloadSeedVR2 —— fire-and-forget;loaded 状态走下个 Pong 快照。统一引擎库 PR-3。"""
+        if not self._connected:
+            raise ConnectionError("runner disconnected")
+        await self._ch.send_message(
+            P.PreloadSeedVR2(model_dir=model_dir, dit_model=dit_model, vae_model=vae_model)
+        )
+
     async def unload_model(self, model_key: str) -> None:
         if not self._connected:
             raise ConnectionError("runner disconnected")
