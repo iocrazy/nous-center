@@ -135,6 +135,42 @@ export function useLoadEngine() {
   })
 }
 
+/** 统一引擎库 PR-3:从引擎库预热 SeedVR2(by-key,默认配置)。name='seedvr2:<filename>'。
+ *  loaded 状态经 runner Pong 反映(几秒后 engines 刷新出 loaded)。 */
+export function usePreloadSeedvr2() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch('/api/v1/engines/seedvr2/preload', {
+        method: 'POST', body: JSON.stringify({ name }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add('SeedVR2 开始加载...（几秒后引擎库刷新显示常驻）', 'info')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`SeedVR2 预热失败: ${error.message}`, 'error')
+    },
+  })
+}
+
+export function useUnloadSeedvr2() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch('/api/v1/engines/seedvr2/unload', {
+        method: 'POST', body: JSON.stringify({ name }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add('SeedVR2 已卸载', 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`卸载失败: ${error.message}`, 'error')
+    },
+  })
+}
+
 export function useUnloadEngine() {
   const qc = useQueryClient()
   return useMutation({

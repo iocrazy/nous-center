@@ -3,7 +3,7 @@ import { Copy, Check } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
-  useLoadedAdapters,
+  useLoadedAdapters, usePreloadSeedvr2, useUnloadSeedvr2,
   type EngineInfo, type LoadedAdapter,
 } from '../../api/engines'
 import { apiFetch } from '../../api/client'
@@ -52,6 +52,8 @@ export default function ModelsOverlay() {
   const { data: loadedAdaptersData } = useLoadedAdapters()
   const loadEngine = useLoadEngine()
   const unloadEngine = useUnloadEngine()
+  const preloadSeedvr2 = usePreloadSeedvr2()
+  const unloadSeedvr2 = useUnloadSeedvr2()
   const syncMeta = useSyncMetadata()
   const scanModels = useScanModels()
   const setResident = useSetResident()
@@ -78,13 +80,13 @@ export default function ModelsOverlay() {
   const handleToggle = useCallback(
     (engine: EngineInfo) => {
       if (engine.status === 'loading') return // ignore while loading
-      // 统一引擎库新条目:超分(SeedVR2)引擎库直接载/卸 = PR-3;组件/LoRA 随 pipeline 加载,
-      // 不独立可加载 —— 先给提示不发请求(避免对 catalog name 发无效 load/unload)。
+      // 统一引擎库 PR-3:超分(SeedVR2)从引擎库直接预热/卸载(by-key,经 image runner)。
       if (engine.kind === 'upscale') {
-        useToastStore.getState().add(
-          `${engine.display_name}:引擎库直接加载/卸载即将接入（PR-3）；现在请在工作流里用`, 'info')
+        if (engine.status === 'loaded') unloadSeedvr2.mutate(engine.name)
+        else preloadSeedvr2.mutate(engine.name)
         return
       }
+      // 组件/LoRA 随 pipeline 加载,不独立可加载 —— 给提示不发请求。
       if (engine.kind === 'component' || engine.kind === 'lora') {
         useToastStore.getState().add(
           `${engine.display_name} 是${engine.kind === 'lora' ? 'LoRA' : '组件'}，随图像 pipeline 加载，不能独立加载`,
@@ -106,7 +108,7 @@ export default function ModelsOverlay() {
       }
       loadEngine.mutate(engine.name)
     },
-    [loadEngine, unloadEngine],
+    [loadEngine, unloadEngine, preloadSeedvr2, unloadSeedvr2],
   )
 
   const hasAnyMissing = (engines ?? []).some((e) => !e.has_metadata)
@@ -119,7 +121,8 @@ export default function ModelsOverlay() {
     ? [
         {
           label: isExtra
-            ? (ctxMenu.model.kind === 'upscale' ? '工作流中加载（引擎库直载 PR-3）'
+            ? (ctxMenu.model.kind === 'upscale'
+                ? (ctxMenu.model.status === 'loaded' ? '卸载 SeedVR2' : '加载 SeedVR2')
               : ctxMenu.model.kind === 'lora' ? 'LoRA · 随模型加载' : '组件 · 随 pipeline 加载')
             : ctxMenu.model.status === 'loaded' ? '卸载模型'
             : ctxMenu.model.status === 'loading' ? '加载中...'

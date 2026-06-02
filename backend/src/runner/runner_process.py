@@ -102,6 +102,18 @@ async def _handle_preload_components(state: _RunnerState, ch: PipeChannel, msg: 
         pass
 
 
+async def _handle_preload_seedvr2(state: _RunnerState, ch: PipeChannel, msg: P.PreloadSeedVR2) -> None:
+    """PreloadSeedVR2 → get_or_load_seedvr2_adapter(默认配置)。不抛 —— 失败只记日志,runner 不能崩;
+    loaded 状态经下个 Pong 快照反映。统一引擎库 PR-3:从引擎库预热 SeedVR2。"""
+    try:
+        await state.mm.get_or_load_seedvr2_adapter(
+            model_dir=msg.model_dir, dit_model=msg.dit_model, vae_model=msg.vae_model, device="auto",
+        )
+    except Exception as e:  # noqa: BLE001 — 预热失败不崩 runner
+        import sys  # noqa: PLC0415
+        print(f"[runner_process] preload_seedvr2 failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+
 async def _handle_load_model(state: _RunnerState, ch: PipeChannel, msg: P.LoadModel) -> None:
     """LoadModel —— 走 ModelManager.get_or_load（含 OOM evict 重试），发 ModelEvent。"""
     from src.errors import ModelLoadError, ModelNotFoundError
@@ -168,6 +180,8 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
                 state.pending_aborts.add(msg.task_id)
         elif isinstance(msg, P.PreloadComponents):
             await _handle_preload_components(state, ch, msg)
+        elif isinstance(msg, P.PreloadSeedVR2):
+            await _handle_preload_seedvr2(state, ch, msg)
         elif isinstance(msg, P.LoadModel):
             await _handle_load_model(state, ch, msg)
         elif isinstance(msg, P.UnloadModel):

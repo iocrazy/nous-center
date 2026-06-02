@@ -3,7 +3,7 @@ import logging
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
@@ -425,6 +425,65 @@ async def unload_all_image_adapters(request: Request):
             unloaded.append(mid)
     # 卸载后立刻对账,让响应 + UI 反映真实剩余(FIFO 保证 Pong 在 UnloadModel 之后)。
     for gid in touched_groups:
+        sup = sups_by_group.get(gid)
+        if sup is not None and hasattr(sup, "_reconcile_loaded"):
+            await sup._reconcile_loaded()
+    invalidate("engines")
+    return {"unloaded": unloaded, "count": len(unloaded)}
+
+
+@router.post("/seedvr2/preload", status_code=202, dependencies=[Depends(require_admin)])
+async def preload_seedvr2(request: Request, body: dict = Body(...)):
+    """从引擎库预热 SeedVR2 超分(默认配置,无 tiling/blockswap)。name='seedvr2:<filename>' 或 dit 文件名。
+    派给 image runner(get_or_load_seedvr2_adapter);loaded 状态经下个 Pong 反映。统一引擎库 PR-3。"""
+    import os  # noqa: PLC0415
+
+    from src.config import get_settings  # noqa: PLC0415
+    from src.services.inference.image_seedvr2 import DEFAULT_DIT, DEFAULT_VAE  # noqa: PLC0415
+    name = str(body.get("name") or "")
+    dit = name.split(":", 1)[1] if name.startswith("seedvr2:") else (name or DEFAULT_DIT)
+    nas = (get_settings().NAS_MODELS_PATH or "").strip()
+    model_dir = os.path.join(nas, "image", "SEEDVR2")
+    client = (getattr(request.app.state, "runner_clients", {}) or {}).get("image")
+    if client is None or not getattr(client, "_connected", True):
+        raise HTTPException(503, "image runner not available")
+    await client.preload_seedvr2(model_dir=model_dir, dit_model=dit, vae_model=DEFAULT_VAE)
+    invalidate("engines")
+    return {"status": "accepted", "dit": dit}
+
+
+@router.post("/seedvr2/unload", dependencies=[Depends(require_admin)])
+async def unload_seedvr2(request: Request, body: dict = Body(...)):
+    """卸载已加载的 SeedVR2。name='seedvr2:<filename>' → 匹配 source_files 含该 dit 的 adapter(model_id
+    前缀 image:SeedVR2:);name 空 → 卸所有 SeedVR2。向持有它的 runner 派 UnloadModel + 对账快照。"""
+    import os  # noqa: PLC0415
+
+    from src.services.runner_models import aggregate_runner_loaded  # noqa: PLC0415
+    name = str(body.get("name") or "")
+    dit = name.split(":", 1)[1] if name.startswith("seedvr2:") else name
+    state = request.app.state
+    sups_by_group = {
+        getattr(s, "group_id", None): s
+        for s in (getattr(state, "runner_supervisors", None) or [])
+    }
+    unloaded: list[str] = []
+    touched: set[str] = set()
+    for e in aggregate_runner_loaded(state):
+        mid = str(e.get("model_id") or "")
+        if not mid.startswith("image:SeedVR2:"):
+            continue
+        if dit and not any(os.path.basename(str(s)) == dit for s in (e.get("source_files") or [])):
+            continue
+        gid = e.get("group_id")
+        sup = sups_by_group.get(gid)
+        if sup is not None and getattr(sup, "client", None) is not None:
+            try:
+                await sup.client.unload_model(mid)
+                unloaded.append(mid)
+                touched.add(gid)
+            except Exception as ex:  # noqa: BLE001 — 单个失败不挡其余
+                logger.warning("unload seedvr2 %s on runner %s failed: %s", mid, gid, ex)
+    for gid in touched:
         sup = sups_by_group.get(gid)
         if sup is not None and hasattr(sup, "_reconcile_loaded"):
             await sup._reconcile_loaded()
