@@ -284,9 +284,11 @@ export default function ModelsOverlay() {
     bucketCounts[b] = (bucketCounts[b] ?? 0) + 1
   }
   // 子 tab 顺序:整模型 → 超分 → 各文件夹。label 友好化。
+  // clip 角色对齐 ComfyUI「Load CLIP」节点,但文件实际在 image/text_encoders/ —— 标签用「文本编码器」
+  // 对齐文件夹,免「为啥叫 CLIP 不是 text_encoders」的困惑(底层角色 key 仍是 clip,扫描/端点不变)。
   const BUCKET_LABEL: Record<string, string> = {
     model: '整模型', upscale: '超分', diffusion_models: 'diffusion_models',
-    clip: 'CLIP', vae: 'VAE', loras: 'LoRA',
+    clip: '文本编码器', vae: 'VAE', loras: 'LoRA',
   }
   const BUCKET_ORDER = ['model', 'upscale', 'diffusion_models', 'clip', 'vae', 'loras']
   const imageSubTabs = [
