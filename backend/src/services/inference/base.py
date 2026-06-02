@@ -123,6 +123,13 @@ class UpscaleRequest(InferenceRequest):
     color_correction: Literal["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"] = "lab"
     latent_noise_scale: float = Field(0.0, ge=0, le=1)
     input_noise_scale: float = Field(0.0, ge=0, le=1)
+    # 三节点对齐 ComfyUI 增强节点的 per-inference 参数(2026-06-02)。dit/vae config 是 load-time
+    # (进 get_or_load_seedvr2_adapter),不在此 request;这里只放每次推理的参数。
+    max_resolution: int = Field(0, ge=0, le=8640)  # 长边上限,0=不限
+    batch_size: int = Field(1, ge=1, le=64)
+    temporal_overlap: int = Field(0, ge=0, le=32)  # 视频帧间重叠(单图=0)
+    prepend_frames: int = Field(0, ge=0, le=32)
+    uniform_batch_size: bool = False
 
 
 class AudioRequest(InferenceRequest):

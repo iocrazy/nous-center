@@ -116,8 +116,15 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         self.model_dir = paths.get("model_dir") or params.get("model_dir")
         if not self.model_dir:
             raise RuntimeError("SeedVR2UpscaleBackend 需要 paths['model_dir'](SEEDVR2 模型目录)")
-        self.dit_model = paths.get("dit") or params.get("dit_model") or DEFAULT_DIT
-        self.vae_model = paths.get("vae") or params.get("vae_model") or DEFAULT_VAE
+        # 三节点对齐 ComfyUI:DiT / VAE 各一份 config dict(device/offload/blockswap/tiling/attention)。
+        # 缺省 = 空 dict(走默认),向后兼容单节点(paths["dit"]/["vae"] + 单 device)。
+        # dit_config 形状:{model,device,offload_device,blocks_to_swap,swap_io_components,attention_mode}
+        # vae_config 形状:{model,device,offload_device,encode_tiled,encode_tile_size,encode_tile_overlap,
+        #                   decode_tiled,decode_tile_size,decode_tile_overlap,tile_debug}
+        self.dit_cfg: dict[str, Any] = dict(params.get("dit_config") or {})
+        self.vae_cfg: dict[str, Any] = dict(params.get("vae_config") or {})
+        self.dit_model = self.dit_cfg.get("model") or paths.get("dit") or params.get("dit_model") or DEFAULT_DIT
+        self.vae_model = self.vae_cfg.get("model") or paths.get("vae") or params.get("vae_model") or DEFAULT_VAE
         self._runner: Any | None = None
         self._ctx_base: dict[str, Any] | None = None
         self._debug: Any | None = None
@@ -152,23 +159,63 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         )
         from src.services.inference.seedvr2_vendor.src.utils.debug import Debug  # noqa: PLC0415
 
+        import torch  # noqa: PLC0415
+
         self._debug = Debug(enabled=False)
+
+        # DiT / VAE 各自 device(config 优先,回退 self.device);offload device("none"→None)。
+        dit_device = self.dit_cfg.get("device") or self.device
+        vae_device = self.vae_cfg.get("device") or self.device
+        dit_offload_str = str(self.dit_cfg.get("offload_device", "none") or "none")
+        vae_offload_str = str(self.vae_cfg.get("offload_device", "none") or "none")
+        dit_offload = torch.device(dit_offload_str) if dit_offload_str != "none" else None
+        vae_offload = torch.device(vae_offload_str) if vae_offload_str != "none" else None
+
+        # BlockSwap:7B 塞小卡(N>0 或 swap_io 才启;需 offload_device != device)。忠实复刻
+        # video_upscaler.execute 的构法。
+        blocks_to_swap = int(self.dit_cfg.get("blocks_to_swap", 0) or 0)
+        swap_io = bool(self.dit_cfg.get("swap_io_components", False))
+        block_swap_config = None
+        if blocks_to_swap > 0 or swap_io:
+            block_swap_config = {"blocks_to_swap": blocks_to_swap, "swap_io_components": swap_io}
+            if dit_offload is not None:
+                block_swap_config["offload_device"] = dit_offload
+
+        # VAE tiling:大图分块不爆显存。tile_size/overlap 是 (H,W) tuple(prepare_runner 契约)。
+        encode_tiled = bool(self.vae_cfg.get("encode_tiled", False))
+        decode_tiled = bool(self.vae_cfg.get("decode_tiled", False))
+        enc_ts = int(self.vae_cfg.get("encode_tile_size", 512) or 512)
+        enc_to = int(self.vae_cfg.get("encode_tile_overlap", 64) or 64)
+        dec_ts = int(self.vae_cfg.get("decode_tile_size", 512) or 512)
+        dec_to = int(self.vae_cfg.get("decode_tile_overlap", 64) or 64)
+        tile_debug = str(self.vae_cfg.get("tile_debug", "false") or "false")
+        # attention:config 优先,默认 sdpa(flash_attn 装不上,SeedVR2 支持 SDPA 回退)。
+        attention_mode = str(self.dit_cfg.get("attention_mode") or "sdpa")
+
         ctx = setup_generation_context(
-            dit_device=self.device,
-            vae_device=self.device,
-            dit_offload_device="cpu",
-            vae_offload_device="cpu",
+            dit_device=dit_device,
+            vae_device=vae_device,
+            dit_offload_device=dit_offload or "cpu",
+            vae_offload_device=vae_offload or "cpu",
             tensor_offload_device="cpu",
             debug=self._debug,
         )
-        # prepare_runner 改/装 ctx in-place,返回 (runner, cache_context)。
+        # prepare_runner 改/装 ctx in-place,返回 (runner, cache_context)。串入 blockswap + tiling + attention。
         self._runner, cache_context = prepare_runner(
             dit_model=self.dit_model,
             vae_model=self.vae_model,
             model_dir=self.model_dir,
             debug=self._debug,
             ctx=ctx,
-            attention_mode="sdpa",  # flash_attn 装不上,SDPA 回退(SeedVR2 支持)
+            block_swap_config=block_swap_config,
+            encode_tiled=encode_tiled,
+            encode_tile_size=(enc_ts, enc_ts),
+            encode_tile_overlap=(enc_to, enc_to),
+            decode_tiled=decode_tiled,
+            decode_tile_size=(dec_ts, dec_ts),
+            decode_tile_overlap=(dec_to, dec_to),
+            tile_debug=tile_debug,
+            attention_mode=attention_mode,
         )
         # NumZ CLI 在 prepare_runner 后、encode 前手动补的两步(否则 encode 撞 KeyError):
         ctx["cache_context"] = cache_context
@@ -218,9 +265,14 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
                 pil,
                 resolution=req.resolution,
                 seed=seed,
+                batch_size=req.batch_size,
                 color_correction=req.color_correction,
                 latent_noise_scale=req.latent_noise_scale,
                 input_noise_scale=req.input_noise_scale,
+                max_resolution=req.max_resolution,
+                temporal_overlap=req.temporal_overlap,
+                prepend_frames=req.prepend_frames,
+                uniform_batch_size=req.uniform_batch_size,
             )
 
         t = time.monotonic()
@@ -251,10 +303,15 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         color_correction: str = "lab",
         latent_noise_scale: float = 0.0,
         input_noise_scale: float = 0.0,
+        max_resolution: int = 0,
+        temporal_overlap: int = 0,
+        prepend_frames: int = 0,
+        uniform_batch_size: bool = False,
     ) -> "Any":
         """单图超分。image(PIL.Image)→ 超分后 PIL.Image。忠实复刻 NumZ 4 阶段。
 
         resolution = 目标短边(SeedVR2 语义:输出最短边像素;非倍数)。
+        max_resolution = 长边上限(0=不限);temporal_overlap/prepend_frames = 视频帧间(单图=0)。
         """
         if self._runner is None:
             raise RuntimeError("SeedVR2 未 load")
@@ -278,9 +335,9 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
 
         ctx = encode_all_batches(
             self._runner, ctx=ctx, images=frames, debug=self._debug,
-            batch_size=batch_size, uniform_batch_size=False, seed=seed,
-            progress_callback=None, temporal_overlap=0,
-            resolution=resolution, max_resolution=0,
+            batch_size=batch_size, uniform_batch_size=uniform_batch_size, seed=seed,
+            progress_callback=None, temporal_overlap=temporal_overlap,
+            resolution=resolution, max_resolution=max_resolution,
             input_noise_scale=input_noise_scale, color_correction=color_correction,
         )
         ctx = upscale_all_batches(
@@ -293,8 +350,8 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         )
         ctx = postprocess_all_batches(
             ctx=ctx, debug=self._debug, progress_callback=None,
-            color_correction=color_correction, prepend_frames=0,
-            temporal_overlap=0, batch_size=batch_size,
+            color_correction=color_correction, prepend_frames=prepend_frames,
+            temporal_overlap=temporal_overlap, batch_size=batch_size,
         )
 
         out = ctx["final_video"]  # [N,H,W,C] [0,1]
