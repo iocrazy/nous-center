@@ -116,6 +116,52 @@ def test_prediction_no_output_until_succeeded():
     assert p["output"] is None                     # 未终态不给 output
 
 
+def test_prediction_progress_field():
+    p = task_to_prediction(_task(status="running", nodes_done=3, nodes_total=5))
+    assert p["progress"] == {"nodes_done": 3, "nodes_total": 5}
+
+
+# ---- fire_webhook (PR-3) ----
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_fire_webhook_skips_when_no_url():
+    from src.services.prediction_service import fire_webhook  # noqa: PLC0415
+    # 无 url → 直接返回(不应抛 / 不应尝试 POST)
+    await fire_webhook(None, None, "completed", {"id": "1"})
+
+
+@pytest.mark.asyncio
+async def test_fire_webhook_event_filter(monkeypatch):
+    from src.services import prediction_service as PS  # noqa: PLC0415
+    posted = []
+
+    class _FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None): posted.append((url, json))
+
+    import httpx  # noqa: PLC0415
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    # filter 不含 start → 跳过
+    await PS.fire_webhook("http://x", ["completed"], "start", {"id": "1"})
+    assert posted == []
+    # filter 含 completed → 发,payload = {event, prediction}
+    await PS.fire_webhook("http://x", ["completed"], "completed", {"id": "1"})
+    assert posted == [("http://x", {"event": "completed", "prediction": {"id": "1"}})]
+
+
+def test_workflow_runner_fires_webhook_wiring():
+    src = (_SRC / "services/workflow_runner.py").read_text()
+    assert "fire_webhook" in src and "_webhook(task" in src
+    # start + 终态都发
+    assert '_webhook(task, "start")' in src
+    assert '_webhook(task, "completed")' in src
+
+
 # ---- Prefer 头解析 + wiring ----
 
 def test_parse_prefer():

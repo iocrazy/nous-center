@@ -39,10 +39,14 @@ async def async_client_with_db(tmp_path, monkeypatch):
     test_app.state.model_manager = MagicMock()
     test_app.dependency_overrides[get_async_session] = override_session
 
-    # Pin workflow_runner's session factory to the test DB.
+    # Pin workflow_runner's session factory to the test DB（它 import 时已绑引用）。
     from src.services import workflow_runner as _runner
     monkeypatch.setattr(_runner, "get_session_factory",
                         lambda: session_factory)
+    # predictions SSE 流懒 import `src.models.database.get_session_factory`(每轮新 session)——
+    # 补 patch 源,否则 SSE 走真 Postgres(测试用 SQLite)。
+    import src.models.database as _db
+    monkeypatch.setattr(_db, "get_session_factory", lambda: session_factory)
 
     transport = ASGITransport(app=test_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -183,3 +187,41 @@ async def test_predictions_input_validation_422(async_client_with_db, prediction
         f"/api/v1/services/{p.name}/predictions", json={"input": {"text": 123}},  # text 应 string
         headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
     assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_predictions_sse_stream(async_client_with_db, prediction_service):
+    """PR-3:同步跑完后 GET /predictions/{id}/stream → SSE 推一条 succeeded data 后结束。"""
+    client, p = async_client_with_db, prediction_service
+    # 同步跑(终态)
+    resp = await client.post(
+        f"/api/v1/services/{p.name}/predictions", json={"input": {}},
+        headers={"Authorization": f"Bearer {p.raw_key}"})
+    pid = resp.json()["id"]
+    # 流(已终态 → 立即一条 + 结束)
+    body = ""
+    async with client.stream("GET", f"/api/v1/predictions/{pid}/stream",
+                             headers={"Authorization": f"Bearer {p.raw_key}"}) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        async for chunk in r.aiter_text():
+            body += chunk
+            if "succeeded" in body:
+                break
+    assert "data:" in body and "succeeded" in body
+
+
+@pytest.mark.asyncio
+async def test_predictions_webhook_stored(async_client_with_db, prediction_service):
+    """PR-3:请求带 webhook → 持久化到 ExecutionTask.webhook_url(供 runner 终态投递)。"""
+    from src.models.execution_task import ExecutionTask
+    client, p = async_client_with_db, prediction_service
+    resp = await client.post(
+        f"/api/v1/services/{p.name}/predictions",
+        json={"input": {}, "webhook": "https://hook.example/cb", "webhook_events_filter": ["completed"]},
+        headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
+    pid = int(resp.json()["id"])
+    async with async_client_with_db.session_factory() as s:
+        task = await s.get(ExecutionTask, pid)
+        assert task.webhook_url == "https://hook.example/cb"
+        assert task.webhook_events == ["completed"]

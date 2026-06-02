@@ -42,6 +42,10 @@ _SYNC_CAP_SECONDS = 600.0
 
 class PredictionRequest(BaseModel):
     input: dict[str, Any] | None = None
+    # PR-3:webhook 回调(对齐 Cog)。webhook=完成/开始时 POST Prediction 的 URL;
+    # webhook_events_filter=["start","completed",...] 过滤,省略=全发。
+    webhook: str | None = None
+    webhook_events_filter: list[str] | None = None
 
 
 def _parse_prefer(prefer: str | None) -> tuple[bool, float | None]:
@@ -120,6 +124,8 @@ async def create_prediction(
         status="queued",
         nodes_total=len(patched.get("nodes") or []),
         input_json=inputs,
+        webhook_url=body.webhook,
+        webhook_events=body.webhook_events_filter,
     )
     session.add(task)
     await session.commit()
@@ -166,6 +172,42 @@ async def get_prediction(
     if task is None:
         raise HTTPException(404, detail="prediction not found")
     return task_to_prediction(task, service=task.workflow_name)
+
+
+@router.get("/predictions/{prediction_id}/stream")
+async def stream_prediction(
+    prediction_id: int,
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+):
+    """SSE 流:每次状态/进度变化推一条 `data: <prediction>`,终态后结束(对齐 Cog SSE + ComfyUI ws)。
+
+    每轮用独立 session 读最新已提交态(后台执行写的是另一个 session)。404 不存在则发一条 error 即结束。
+    """
+    import json  # noqa: PLC0415
+
+    from fastapi.responses import StreamingResponse  # noqa: PLC0415
+
+    from src.models.database import get_session_factory  # noqa: PLC0415
+
+    async def _gen():
+        sf = get_session_factory()
+        last_sig = None
+        while True:
+            async with sf() as s:
+                task = await s.get(ExecutionTask, prediction_id)
+            if task is None:
+                yield f"event: error\ndata: {json.dumps({'error': 'prediction not found'})}\n\n"
+                return
+            pred = task_to_prediction(task, service=task.workflow_name)
+            sig = (pred["status"], task.nodes_done)
+            if sig != last_sig:
+                yield f"data: {json.dumps(pred, ensure_ascii=False)}\n\n"
+                last_sig = sig
+            if pred["status"] in ("succeeded", "failed", "canceled"):
+                return
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
 @router.post("/predictions/{prediction_id}/cancel")
