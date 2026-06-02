@@ -93,6 +93,16 @@ class PreloadComponent:
     kind: Literal["preload_component"] = "preload_component"
 
 
+@dataclass(frozen=True)
+class SetComponentResident:
+    """主进程 → image runner:切**已加载**单组件的常驻位(引擎库 toggle,组件 L1 PR-2)。
+    state_key = component_state_key(file|device|dtype|loras)。runner 走 mm.set_component_resident;
+    没加载该组件则 no-op;状态经下个 Pong 快照反映。"""
+    state_key: str
+    resident: bool
+    kind: Literal["set_component_resident"] = "set_component_resident"
+
+
 # ------------------------------------------------------------------
 # image/TTS runner -> 主进程
 # ------------------------------------------------------------------
@@ -180,6 +190,7 @@ _KIND_TO_CLASS: dict[str, type] = {
     "preload_components": PreloadComponents,
     "preload_seedvr2": PreloadSeedVR2,
     "preload_component": PreloadComponent,
+    "set_component_resident": SetComponentResident,
     "ready": Ready,
     "node_result": NodeResult,
     "node_progress": NodeProgress,
@@ -191,7 +202,7 @@ _KIND_TO_CLASS: dict[str, type] = {
 # 类型注解仅供调用方做 isinstance / match —— 任意消息的联合类型
 Message = (
     LoadModel | UnloadModel | RunNode | Abort | Ping | PreloadComponents | PreloadSeedVR2
-    | PreloadComponent
+    | PreloadComponent | SetComponentResident
     | Ready | NodeResult | NodeProgress | ModelEvent | Pong | ComponentEvent
 )
 

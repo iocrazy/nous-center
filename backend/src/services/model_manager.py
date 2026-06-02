@@ -683,6 +683,7 @@ class ModelManager:
                     "file": _basename(c["key"][0]),
                     "device": c["key"][1],
                     "dtype": c["key"][2],
+                    "state_key": c.get("state_key"),
                     "refs": sorted(c["refs"]),
                     "resident": c["resident"],
                 }
@@ -1262,6 +1263,28 @@ class ModelManager:
         file_, _dev, dtype, loras = to_component_key(spec)
         return (file_, load_device, dtype, loras)
 
+    @staticmethod
+    def _state_key_from_l1(key) -> str:
+        """L1 key tuple → component_state_key 同款串(file|device|dtype|loras)。
+
+        与 `component_state_key(spec)` 格式严格一致(前端按 loader-node 描述符算同款串来匹配)。
+        存进组件 dict 供 resident toggle / 跨进程快照按串匹配,不用反构 ComponentSpec。
+        """
+        file_, dev, dtype, loras = key
+        lora_sig = "+".join(sorted(f"{name}@{strength}" for name, strength in loras))
+        return f"{file_}|{dev}|{dtype}|{lora_sig}"
+
+    def set_component_resident(self, state_key: str, resident: bool) -> bool:
+        """按 component_state_key 切已加载组件的常驻位(引擎库 toggle)。匹配上 → 设并返回 True;
+        没加载该组件 → False。取消常驻后组件按 refs 走正常 LRU(refs 空即可在显存压力时让出)。"""
+        for comp in self._components.values():
+            if comp.get("state_key") == state_key:
+                comp["resident"] = resident
+                logger.info("component L1 set_resident role=%s file=%s → %s",
+                            comp["role"], _basename(comp["key"][0]), resident)
+                return True
+        return False
+
     async def _get_or_build_image_component(
         self, role, build_fn, spec, repo, load_device, offload, combo_id,
     ):
@@ -1290,6 +1313,7 @@ class ModelManager:
         module = await asyncio.to_thread(build_fn, spec, repo, load_device)
         self._components[key] = {
             "module": module, "role": role, "key": key,
+            "state_key": self._state_key_from_l1(key),
             "refs": {combo_id}, "resident": False,
             "last_used": time.monotonic(), "device": load_device,
         }
@@ -1328,7 +1352,6 @@ class ModelManager:
         offload 恒 none(预加载/常驻的组件全程在卡)。已在池 → 仅按需升 resident。
         返回 {state, key, role}。失败抛(调用方 runner handler 兜底,不崩)。
         """
-        from src.services.inference.component_spec import component_state_key  # noqa: PLC0415
         from src.services.inference.image_modular import (  # noqa: PLC0415
             build_bridged_text_encoder,
             build_bridged_transformer,
@@ -1346,7 +1369,7 @@ class ModelManager:
         resolved_spec = self._resolve_component_device(spec)
         load_device = resolved_spec.device
         key = self._l1_component_key(resolved_spec, load_device)
-        state_key = component_state_key(resolved_spec)
+        state_key = self._state_key_from_l1(key)  # 单一来源,与存进 dict 的一致
         comp = self._components.get(key)
         if comp is not None:
             if resident and not comp["resident"]:
@@ -1362,6 +1385,7 @@ class ModelManager:
         module = await asyncio.to_thread(build_fn, resolved_spec, repo, load_device)
         self._components[key] = {
             "module": module, "role": role, "key": key,
+            "state_key": state_key,
             "refs": set(), "resident": resident,
             "last_used": time.monotonic(), "device": load_device,
         }

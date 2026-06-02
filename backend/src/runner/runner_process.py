@@ -144,6 +144,16 @@ async def _handle_preload_component(state: _RunnerState, ch: PipeChannel, msg: P
               file=sys.stderr, flush=True)
 
 
+def _handle_set_component_resident(state: _RunnerState, msg: P.SetComponentResident) -> None:
+    """SetComponentResident → mm.set_component_resident(切常驻位)。同步、不抛 ——
+    没加载该组件则 no-op;状态经下个 Pong 快照反映。组件 L1 PR-2b。"""
+    try:
+        state.mm.set_component_resident(msg.state_key, msg.resident)
+    except Exception as e:  # noqa: BLE001
+        print(f"[runner_process] set_component_resident failed: {type(e).__name__}: {e}",
+              file=sys.stderr, flush=True)
+
+
 async def _handle_preload_seedvr2(state: _RunnerState, ch: PipeChannel, msg: P.PreloadSeedVR2) -> None:
     """PreloadSeedVR2 → get_or_load_seedvr2_adapter(默认配置)。不抛 —— 失败只记日志,runner 不能崩;
     loaded 状态经下个 Pong 快照反映。统一引擎库 PR-3:从引擎库预热 SeedVR2。"""
@@ -226,6 +236,8 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
             await _handle_preload_seedvr2(state, ch, msg)
         elif isinstance(msg, P.PreloadComponent):
             await _handle_preload_component(state, ch, msg)
+        elif isinstance(msg, P.SetComponentResident):
+            _handle_set_component_resident(state, msg)
         elif isinstance(msg, P.LoadModel):
             await _handle_load_model(state, ch, msg)
         elif isinstance(msg, P.UnloadModel):
