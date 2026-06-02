@@ -88,6 +88,8 @@ async def lifespan(app: FastAPI):
                 from sqlalchemy import text  # noqa: PLC0415
                 for _ddl in (
                     "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS input_json JSONB",
+                    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_url VARCHAR(500)",
+                    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_events JSONB",
                 ):
                     try:
                         await conn.execute(text(_ddl))

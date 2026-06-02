@@ -101,6 +101,24 @@ def _iso(dt) -> str | None:
     return dt.isoformat() if dt is not None else None
 
 
+async def fire_webhook(url: str | None, events_filter: Any, event: str, prediction: dict) -> None:
+    """POST 整个 Prediction 对象到 webhook URL(对齐 Cog:payload = prediction 资源本身)。
+
+    `events_filter` 非空时只发被选事件(start/completed/…)。best-effort —— 失败只记不抛(绝不崩 runner)。
+    """
+    if not url:
+        return
+    if events_filter and event not in events_filter:
+        return
+    try:
+        import httpx  # noqa: PLC0415
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(url, json={"event": event, "prediction": prediction})
+    except Exception as e:  # noqa: BLE001 — webhook 投递 best-effort
+        import logging  # noqa: PLC0415
+        logging.getLogger(__name__).warning("webhook POST %s failed: %s", url, e)
+
+
 def task_to_prediction(task, *, service: str | None = None, input_values: Any = None) -> dict:
     """ExecutionTask → Prediction 对象(Cog 形)。
 
@@ -116,6 +134,10 @@ def task_to_prediction(task, *, service: str | None = None, input_values: Any = 
         "input": input_values if input_values is not None else (persisted_input or {}),
         "output": getattr(task, "result", None) if status == "succeeded" else None,
         "error": getattr(task, "error", None),
+        "progress": {
+            "nodes_done": getattr(task, "nodes_done", 0) or 0,
+            "nodes_total": getattr(task, "nodes_total", 0) or 0,
+        },
         "metrics": {"predict_time": round(duration_ms / 1000.0, 3)} if duration_ms else {},
         "created_at": _iso(getattr(task, "created_at", None)),
         "started_at": _iso(getattr(task, "started_at", None)),

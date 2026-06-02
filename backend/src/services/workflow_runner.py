@@ -15,9 +15,19 @@ from typing import Any
 
 from src.models.database import get_session_factory
 from src.models.execution_task import ExecutionTask
+from src.services.prediction_service import fire_webhook, task_to_prediction
 from src.services.workflow_executor import ExecutionError, WorkflowExecutor
 
 logger = logging.getLogger(__name__)
+
+
+async def _webhook(task: ExecutionTask, event: str) -> None:
+    """PR-3:在 start/终态点 POST Prediction 到 task.webhook_url(best-effort,有就发)。"""
+    url = getattr(task, "webhook_url", None)
+    if not url:
+        return
+    pred = task_to_prediction(task, service=task.workflow_name)
+    await fire_webhook(url, getattr(task, "webhook_events", None), event, pred)
 
 
 async def _broadcast(channel_id: str | None, event: dict) -> None:
@@ -102,6 +112,7 @@ async def run_workflow_task(
         wf_name = task.workflow_name or ""
         # PR-5:广播 running 状态到 /ws/tasks(前端 useTasks 立即翻新)
         await _broadcast_task_status(task, event="updated")
+        await _webhook(task, "start")  # PR-3
 
     executor = WorkflowExecutor(
         workflow_data,
@@ -130,6 +141,7 @@ async def run_workflow_task(
                 await session.commit()
                 logger.info("workflow %s completed after cancel — honoring cancelled", task_id)
                 await _broadcast_task_status(task, event="updated")
+                await _webhook(task, "completed")  # PR-3
                 return
             task.status = "completed"
             task.result = result
@@ -140,6 +152,7 @@ async def run_workflow_task(
             await _broadcast(channel_id, {"type": "complete", "progress": 100})
             # PR-5:广播 completed 状态到 /ws/tasks
             await _broadcast_task_status(task, event="updated")
+            await _webhook(task, "completed")  # PR-3
         except ExecutionError as e:
             elapsed = int((time.monotonic() - start) * 1000)
             # PR-3:HTTP cancel 在另一路径已把 status 写 cancelled —— 不要覆盖成 failed。
@@ -150,6 +163,7 @@ async def run_workflow_task(
             task.duration_ms = elapsed
             await session.commit()
             await _broadcast_task_status(task, event="updated")  # PR-5
+            await _webhook(task, "completed")  # PR-3(终态含 failed)
             # 用 ERROR 级别 + exc_info=True 输出完整 traceback —— ExecutionError 是顶层包装,
             # 真实节点错误(RuntimeError/CUDA OOM 等)在 __cause__ 链上,需要 traceback 才能看见。
             logger.error(
@@ -166,4 +180,5 @@ async def run_workflow_task(
             task.duration_ms = elapsed
             await session.commit()
             await _broadcast_task_status(task, event="updated")  # PR-5
+            await _webhook(task, "completed")  # PR-3(终态含 failed)
             logger.info("workflow %s end: status=%s err=%s", task_id, task.status, e, exc_info=task.status != "cancelled")
