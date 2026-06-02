@@ -260,6 +260,7 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
             await ch.send_message(P.Pong(
                 runner_id=state.runner_id,
                 loaded_models=state.mm.loaded_models_snapshot(),
+                loaded_components=state.mm.loaded_components_snapshot(),
             ))
         # 其余消息类型（runner→主进程方向的）不应收到，忽略
 

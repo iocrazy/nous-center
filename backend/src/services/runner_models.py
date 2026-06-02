@@ -46,6 +46,36 @@ def aggregate_runner_loaded(app_state: Any) -> list[dict]:
     return out
 
 
+def aggregate_runner_components(app_state: Any) -> list[dict]:
+    """汇总所有 runner + 主进程上报的已加载**单组件** L1 快照(组件 L1 PR-3a)。
+
+    每条 = ModelManager.loaded_components_snapshot() 的 dict + `group_id`。引擎库据此把单文件
+    组件标 loaded@卡 + resident(含预加载的孤组件,combo source_files 够不着)。
+    """
+    out: list[dict] = []
+    sups = getattr(app_state, "runner_supervisors", None)
+    if isinstance(sups, list):
+        for sup in sups:
+            gid = getattr(sup, "group_id", "?")
+            entries = getattr(sup, "loaded_components", None)
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        out.append({**entry, "group_id": gid})
+    mgr = getattr(app_state, "model_manager", None)
+    snap = getattr(mgr, "loaded_components_snapshot", None)
+    if callable(snap):
+        try:
+            entries = snap()
+        except Exception:  # noqa: BLE001 — mock / 异常 mgr 不该拖垮聚合
+            entries = None
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict):
+                    out.append({**entry, "group_id": "main"})
+    return out
+
+
 def _norm(path: str) -> str:
     """文件路径归一化到可比较的基名(去目录/扩展名,小写)。
 

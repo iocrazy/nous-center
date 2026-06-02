@@ -90,6 +90,9 @@ class RunnerSupervisor:
         # /image-cache、系统状态「已加载模型」、引擎库 loaded 视图聚合这份 —— image/tts
         # adapter 真加载在 runner 进程,主进程 _models 看不到,这是唯一可见窗口。
         self.loaded_models: list[dict] = []
+        # 同上,但单组件 L1 池快照(loaded_components_snapshot):引擎库标组件 loaded@卡 + resident
+        # (含预加载的孤组件)。组件 L1 PR-3a。
+        self.loaded_components: list[dict] = []
         self._reconcile_inflight = False  # PR-2b:去重并发 node-done reconcile
         self._inflight: set[int] = set()
         self._last_spawn_at = 0.0
@@ -178,6 +181,7 @@ class RunnerSupervisor:
         try:
             pong = await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
             self.loaded_models = list(pong.loaded_models or [])
+            self.loaded_components = list(getattr(pong, "loaded_components", None) or [])
         except Exception:  # noqa: BLE001 — 状态刷新失败不影响监管主流程
             pass
         finally:
@@ -264,6 +268,7 @@ class RunnerSupervisor:
                 pong = await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
                 # 顺手对账已加载快照(ping 本就为存活检测,Pong 带回了状态,别丢)。
                 self.loaded_models = list(pong.loaded_models or [])
+                self.loaded_components = list(getattr(pong, "loaded_components", None) or [])
                 self._unresponsive_since = None  # 答上了 → 恢复
             except ConnectionError:
                 # pipe EOF —— 子进程真死了(crash/OOM kill/segfault),立刻重启。
@@ -312,6 +317,7 @@ class RunnerSupervisor:
         # 旧 runner 的已加载 adapter 随进程一起没了,清空快照(respawn 后 _spawn 末尾
         # 不会自动 reconcile —— 等下一个 watchdog ping 重新填,期间显示为空是正确的)。
         self.loaded_models = []
+        self.loaded_components = []
         self._unresponsive_since = None
 
         # 2. inflight task 全标 failed (runner_crashed)，不重试

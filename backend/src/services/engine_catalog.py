@@ -38,6 +38,34 @@ def _loaded_index(app_state: Any) -> tuple[dict, list]:
     return by_src, seedvr2_loaded
 
 
+def _component_loaded_index(app_state: Any) -> dict:
+    """aggregate_runner_components → {组件文件 basename -> comp 快照 entry}(组件 L1 PR-3a)。
+
+    含预加载的孤组件(不属任何 combo)+ 它们的 resident 态。引擎库据此标单组件 loaded@卡 + 常驻。
+    """
+    from src.services.runner_models import aggregate_runner_components  # noqa: PLC0415
+
+    idx: dict[str, dict] = {}
+    try:
+        entries = aggregate_runner_components(app_state)
+    except Exception:  # noqa: BLE001 — best-effort,拿不到就当无加载
+        entries = []
+    for e in entries:
+        f = e.get("file")
+        if f:
+            idx[os.path.basename(str(f))] = e
+    return idx
+
+
+def _dev_to_gpu(dev: Any) -> int:
+    if isinstance(dev, str) and dev.startswith("cuda:"):
+        try:
+            return int(dev.split(":")[1])
+        except (ValueError, IndexError):
+            return 0
+    return 0
+
+
 def seedvr2_catalog_entries(app_state: Any) -> list[EngineInfo]:
     """SeedVR2 DiT(磁盘已有的白名单)→ 引擎库条目(kind=upscale,可独立加载)。
     loaded:某 SeedVR2 adapter 的 source_files 含这个 DiT 文件名。"""
@@ -87,6 +115,7 @@ def component_catalog_entries(app_state: Any) -> list[EngineInfo]:
     from src.services.component_scanner import scan_components  # noqa: PLC0415
 
     by_src, _sv = _loaded_index(app_state)
+    comp_idx = _component_loaded_index(app_state)  # PR-3a:预加载的孤组件 + resident 态
     out: list[EngineInfo] = []
     for role, kind in _COMPONENT_ROLES:
         try:
@@ -95,21 +124,31 @@ def component_catalog_entries(app_state: Any) -> list[EngineInfo]:
             files = []
         for c in files:
             fn = c.get("filename", "")
-            match = by_src.get(fn)
+            combo_match = by_src.get(fn)        # 属于某 loaded combo(随 pipeline 加载)
+            comp_match = comp_idx.get(fn)       # 单组件 L1 池(含预加载孤组件)
+            match = comp_match or combo_match   # 任一即视为已加载
+            # gpu:组件快照带 device(cuda:N);combo entry 带 gpu_index。
+            if comp_match is not None:
+                gpu_idx = _dev_to_gpu(comp_match.get("device"))
+            elif combo_match is not None and combo_match.get("gpu_index") is not None:
+                gpu_idx = int(combo_match["gpu_index"])
+            else:
+                gpu_idx = None
             out.append(EngineInfo(
                 name=f"component:{role}:{c.get('abs_path')}",
                 display_name=fn,
                 type="image",
                 kind=kind,
                 status="loaded" if match else "unloaded",
-                gpu=int(match.get("gpu_index", 0)) if match else 0,
+                gpu=gpu_idx if gpu_idx is not None else 0,
                 vram_gb=round((c.get("size_mb") or 0) / 1024, 1),
-                resident=False,
-                has_adapter=False,  # 不独立可加载 → UI 禁用加载按钮
+                # resident 只来自单组件 L1 池(combo 随 pipeline 的不算组件级常驻)。组件 L1 PR-3a。
+                resident=bool(comp_match and comp_match.get("resident")),
+                has_adapter=False,  # 不作为独立 adapter 加载;前端按 kind 开「预加载/常驻」动作(PR-3b)
                 local_path=c.get("abs_path"),
                 local_exists=True,
                 auto_detected=True,
-                loaded_gpu=int(match["gpu_index"]) if match and match.get("gpu_index") is not None else None,
+                loaded_gpu=gpu_idx,
             ))
     return out
 
