@@ -22,18 +22,11 @@ nodes:
       - { id: image, type: image, label: 图像 }
     widgets:
       # DiT 模型:NumZ 走**白名单**(MODEL_REGISTRY:filename→HF repo+sha256,缺则自动下到
-      # model_dir = NAS_MODELS_PATH/image/SEEDVR2)。所以是固定 select(不扫磁盘 —— 磁盘可能
-      # 有非白名单旧变体,NumZ 不认)。默认 7B fp8-mixed(Pro 6000 跑得动,本机已下好)。
-      - name: dit_model
-        label: "DiT 模型"
-        widget: select
-        default: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors
-        options:
-          - { value: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors, label: "7B fp8-mixed", description: "7B,fp8+block35 fp16 混精 — 显存友好,推荐(默认)" }
-          - { value: seedvr2_ema_7b_fp16.safetensors, label: "7B fp16", description: "7B 全 fp16 — 最高质量,显存占用大" }
-          - { value: seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors, label: "7B sharp fp8-mixed", description: "7B sharp 变体 fp8-mixed — 更锐利" }
-          - { value: seedvr2_ema_3b_fp8_e4m3fn.safetensors, label: "3B fp8", description: "3B fp8 — 更快/更省显存,质量略低" }
-          - { value: seedvr2_ema_3b_fp16.safetensors, label: "3B fp16", description: "3B 全 fp16" }
+      # model_dir = NAS_MODELS_PATH/image/SEEDVR2)。**混合下拉**(seedvr2_model_select):白名单全列,
+      # 盘上有的标「已就绪」、其余标「可下载」(选了 NumZ 从 HF 自动下)。选项+默认由后端
+      # /components/seedvr2-dit 动态给(单一真相 = image_seedvr2.SEEDVR2_DIT_MODELS),不在此写死
+      # —— 否则 node.yaml 和后端两份白名单会漂。默认 7B fp8-mixed(= DEFAULT_DIT,本机已下好)。
+      - { name: dit_model, label: "DiT 模型", widget: seedvr2_model_select, default: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors }
       # 目标短边像素(SeedVR2 语义:输出最短边,非放大倍数)。
       - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 2160, step: 16, default: 1080 }
       # 色彩校正:超分后把色彩拉回输入图基调(避免 DiT 漂色)。lab 通用最稳。

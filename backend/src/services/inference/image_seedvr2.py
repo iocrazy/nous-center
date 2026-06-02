@@ -37,6 +37,50 @@ from src.services.inference.base import (  # noqa: E402 — 必须在 compat pat
 DEFAULT_DIT = "seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors"
 DEFAULT_VAE = "ema_vae_fp16.safetensors"
 
+# SeedVR2 DiT 白名单(我们暴露的子集 —— NumZ MODEL_REGISTRY 里 category=dit 的 safetensors)。
+# **单一真相**:节点 widget(seedvr2_model_select)+ /components/seedvr2-dit 端点都读这,
+# 避免 node.yaml 和后端各写一份漂掉。gguf 变体暂不列(GGUF 加载未接,见 project memory)。
+# 纯数据(无 torch);不直接 import 钉死 torch 的 vendored model_registry(那个 import 链拉
+# model 类 → torch,API 路由/CI 都不该付这代价)。filename 与 NumZ 白名单逐字对齐(已核)。
+SEEDVR2_DIT_MODELS: list[dict[str, str]] = [
+    {"filename": "seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+     "label": "7B fp8-mixed", "desc": "7B,fp8+block35 fp16 混精 — 显存友好,推荐(默认)"},
+    {"filename": "seedvr2_ema_7b_fp16.safetensors",
+     "label": "7B fp16", "desc": "7B 全 fp16 — 最高质量,显存占用大"},
+    {"filename": "seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+     "label": "7B sharp fp8-mixed", "desc": "7B sharp 变体 fp8-mixed — 更锐利"},
+    {"filename": "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+     "label": "3B fp8", "desc": "3B fp8 — 更快/更省显存,质量略低"},
+    {"filename": "seedvr2_ema_3b_fp16.safetensors",
+     "label": "3B fp16", "desc": "3B 全 fp16"},
+]
+
+
+def seedvr2_dit_models_with_disk_status(model_dir: str | None = None) -> list[dict]:
+    """SEEDVR2_DIT_MODELS + 每个是否已在磁盘(present)+ 大小。给 UI 下拉「混合」展示:
+    盘上有的标已就绪,白名单其余标可下载(选了 NumZ 从 HF 自动下)。
+
+    model_dir 缺省 = NAS_MODELS_PATH/image/SEEDVR2(与 runner get_or_load_seedvr2_adapter 一致)。
+    """
+    import os  # noqa: PLC0415
+
+    if not model_dir:
+        from src.config import get_settings  # noqa: PLC0415
+        nas = (get_settings().NAS_MODELS_PATH or "").strip()
+        model_dir = os.path.join(nas, "image", "SEEDVR2")
+    out: list[dict] = []
+    for m in SEEDVR2_DIT_MODELS:
+        path = os.path.join(model_dir, m["filename"])
+        present = os.path.isfile(path)
+        size_mb = None
+        if present:
+            try:
+                size_mb = round(os.path.getsize(path) / (1024 * 1024), 1)
+            except OSError:
+                size_mb = None
+        out.append({**m, "present": present, "size_mb": size_mb, "is_default": m["filename"] == DEFAULT_DIT})
+    return out
+
 
 def _decode_image(src: str) -> Any:
     """req.image(base64 data URI 或本地路径)→ PIL.Image(RGB)。"""

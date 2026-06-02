@@ -41,24 +41,54 @@ def test_seedvr2_no_inline_executor():
     assert not (_PKG / "executor.py").exists(), "seedvr2 是 dispatch 节点,不该有 inline executor"
 
 
-def test_seedvr2_default_dit_in_whitelist_and_matches_adapter():
-    """前后端契约:node.yaml 的 dit_model 默认值必须 ① 在 NumZ 白名单 ② = adapter DEFAULT_DIT
-    (否则 UI 默认选的模型引擎不认 / 跟 runner 缺省不一致)。所有 select 选项都得在白名单。
-
-    白名单用**源码文本检查**(model_registry.py import 链拉 torch — CI mock torch 会炸);
-    image_seedvr2.DEFAULT_DIT 是模块常量,顶层无 torch,CI 安全可直接 import。"""
+def test_seedvr2_dit_widget_is_dynamic_disk_aware():
+    """dit_model 是动态混合下拉(seedvr2_model_select)—— 选项由后端 /components/seedvr2-dit
+    动态给(盘上标已就绪 / 白名单其余标可下载),node.yaml 不再写死 options(避免两份白名单漂)。
+    默认 = DEFAULT_DIT。"""
     from src.services.inference.image_seedvr2 import DEFAULT_DIT  # noqa: PLC0415
+
+    dit_widget = next(w for w in _node_def()["widgets"] if w["name"] == "dit_model")
+    assert dit_widget["widget"] == "seedvr2_model_select"
+    assert "options" not in dit_widget, "动态 widget 不该在 node.yaml 写死 options"
+    assert dit_widget["default"] == DEFAULT_DIT, "node.yaml 默认 DiT 与 adapter DEFAULT_DIT 不一致"
+
+
+def test_seedvr2_dit_whitelist_single_source_in_registry():
+    """单一真相:image_seedvr2.SEEDVR2_DIT_MODELS 的每个 filename 都在 NumZ 白名单,且含 DEFAULT_DIT。
+    白名单用源码文本检查(model_registry.py import 链拉 torch — CI mock torch 会炸)。"""
+    from src.services.inference.image_seedvr2 import DEFAULT_DIT, SEEDVR2_DIT_MODELS  # noqa: PLC0415
 
     registry_src = (
         pathlib.Path(__file__).parent.parent
         / "src/services/inference/seedvr2_vendor/src/utils/model_registry.py"
     ).read_text()
+    names = [m["filename"] for m in SEEDVR2_DIT_MODELS]
+    assert DEFAULT_DIT in names, "DEFAULT_DIT 不在 SEEDVR2_DIT_MODELS"
+    for m in SEEDVR2_DIT_MODELS:
+        assert f'"{m["filename"]}":' in registry_src, f"DiT {m['filename']} 不在 NumZ 白名单"
+        assert m["label"] and m["desc"], "每个 DiT 要有 label/desc 给 UI"
 
-    dit_widget = next(w for w in _node_def()["widgets"] if w["name"] == "dit_model")
-    assert dit_widget["default"] == DEFAULT_DIT, "node.yaml 默认 DiT 与 adapter DEFAULT_DIT 不一致"
-    # 白名单条目是 MODEL_REGISTRY 的字符串 key —— 源码里以 "<filename>": 形态出现。
-    for opt in dit_widget["options"]:
-        assert f'"{opt["value"]}":' in registry_src, f"DiT 选项 {opt['value']} 不在 NumZ 白名单"
+
+def test_seedvr2_dit_disk_status_marks_present_and_downloadable():
+    """seedvr2_dit_models_with_disk_status:盘上有的 present=True+size_mb,缺的 present=False。
+    用临时目录放一个白名单文件验证(不依赖真模型盘)。"""
+    import tempfile
+
+    from src.services.inference.image_seedvr2 import (  # noqa: PLC0415
+        DEFAULT_DIT,
+        seedvr2_dit_models_with_disk_status,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        (pathlib.Path(td) / DEFAULT_DIT).write_bytes(b"x" * 2048)  # 假装默认模型已下
+        rows = seedvr2_dit_models_with_disk_status(model_dir=td)
+        by_name = {r["filename"]: r for r in rows}
+        assert by_name[DEFAULT_DIT]["present"] is True
+        assert by_name[DEFAULT_DIT]["size_mb"] is not None
+        assert by_name[DEFAULT_DIT]["is_default"] is True
+        # 其余白名单文件不在该临时目录 → 可下载
+        others = [r for r in rows if r["filename"] != DEFAULT_DIT]
+        assert others and all(r["present"] is False for r in others)
 
 
 def test_seedvr2_color_correction_options_match_request():

@@ -31,6 +31,26 @@ export function useComponents(role: ComponentRole) {
   })
 }
 
+export interface Seedvr2DitModel {
+  filename: string
+  label: string
+  desc: string
+  present: boolean // 磁盘上是否已有(否则选了 NumZ 从 HF 自动下)
+  size_mb: number | null
+  is_default: boolean
+}
+
+/** SeedVR2 DiT 白名单 + 磁盘状态。给 seedvr2_model_select widget「混合」展示
+ *  (盘上有标已就绪 / 白名单其余标可下载)。 */
+export function useSeedvr2DitModels() {
+  return useQuery({
+    queryKey: ['seedvr2-dit'],
+    queryFn: async () =>
+      (await apiFetch<{ models: Seedvr2DitModel[] }>('/api/v1/components/seedvr2-dit')).models,
+    staleTime: 30_000,
+  })
+}
+
 interface ComponentStateStore {
   states: Record<string, { state: ComponentLoadState; error: string | null }>
   set: (key: string, state: ComponentLoadState, error: string | null) => void

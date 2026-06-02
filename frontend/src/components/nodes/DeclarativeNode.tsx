@@ -9,7 +9,7 @@ import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
 import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import { useLoras } from '../../api/loras'
-import { useComponents, useComponentState, componentStateKey, type ComponentRole } from '../../api/components'
+import { useComponents, useComponentState, useSeedvr2DitModels, componentStateKey, type ComponentRole } from '../../api/components'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeSelect, NodeNumberDrag, NodeTextarea } from './BaseNode'
 import NodeSelectPopover from './NodeSelectPopover'
 
@@ -477,9 +477,45 @@ function WidgetRenderer({
           onChange={(v) => onChange(v)}
         />
       )
+    case 'seedvr2_model_select':
+      return (
+        <Seedvr2ModelSelectWidget
+          value={String(resolved ?? '')}
+          onChange={(v) => onChange(v)}
+        />
+      )
     default:
       return null
   }
+}
+
+/** SeedVR2 DiT 模型下拉(混合):白名单全列 —— 盘上有的标「已就绪」(绿点)+ 大小,
+ *  其余标「可下载」(灰点,选了 NumZ 从 HF 自动下)。value = filename。 */
+function Seedvr2ModelSelectWidget({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { data: models } = useSeedvr2DitModels()
+  const opts = (models ?? []).map((m) => {
+    const gb = m.size_mb != null ? ` · ${(m.size_mb / 1024).toFixed(1)}GB` : ''
+    return {
+      value: m.filename,
+      label: m.label,
+      description: m.present ? `已就绪${gb} — ${m.desc}` : `可下载(HF)— ${m.desc}`,
+      color: m.present ? 'var(--ok)' : 'var(--muted)',
+    }
+  })
+  return (
+    <NodeSelectPopover
+      value={String(value ?? '')}
+      onChange={(v) => onChange(v)}
+      options={opts}
+      size="compact"
+    />
+  )
 }
 
 /** 图像上传 widget:选/拖/粘贴图 → base64 data URI 存进 node.data。喂 image→image 节点
