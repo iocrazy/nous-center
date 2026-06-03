@@ -231,7 +231,16 @@ export default function ModelsOverlay() {
           label: '创建 API 接入点',
           onClick: async () => {
             const model = ctxMenu.model!
-            const serviceName = `${model.display_name} API`
+            // service name = 客户端请求里要传的 model 标识,必须匹配 ^[a-z][a-z0-9-]{1,62}$
+            // (旧代码用「${display_name} API」带空格/大写 → 违反 ck_service_instances_name_fmt 直接 500)。
+            // slug 化 + 短后缀保唯一(name 有 UNIQUE 约束,重复建会 409/500)。
+            const slug = (model.name || model.display_name)
+              .toLowerCase()
+              .replace(/[^a-z0-9-]+/g, '-')
+              .replace(/^[^a-z]+/, '')
+              .replace(/-+$/g, '')
+              .slice(0, 50) || 'model'
+            const serviceName = `${slug}-${Date.now().toString(36).slice(-4)}`
             try {
               // 1) 把模型登记成服务(ServiceInstance,M:N 解析按 name 匹配 request.model)
               const instance = await apiFetch<{ id: string }>('/api/v1/instances', {
