@@ -17,6 +17,7 @@ import { useGpuStats, pickPrimaryGpu, type GpuInfo } from '../../api/gpuStats'
 import { useExecutionStore } from '../../stores/execution'
 import ActiveTaskRow from './ActiveTaskRow'
 import HistoryCard from './HistoryCard'
+import TopbarGpuMonitor from './TopbarGpuMonitor'
 
 export default function GlobalTopbar() {
   const navigate = useNavigate()
@@ -79,6 +80,10 @@ export default function GlobalTopbar() {
         />
         infra <span style={{ color: 'var(--tp-text)', fontWeight: 500 }}>healthy</span>
       </div>
+
+      {/* GPU 硬件监控条(跟 healthy 同层,ComfyUI 式) */}
+      <div style={{ width: 1, height: 16, background: 'var(--tp-border-faint)', marginRight: 12 }} />
+      <TopbarGpuMonitor />
 
       {/* 搜索 placeholder */}
       <button
