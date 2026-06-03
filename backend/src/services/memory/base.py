@@ -37,7 +37,7 @@ class MemoryEntry(TypedDict):
 
 class StoredMemoryEntry(MemoryEntry):
     id: int
-    instance_id: int
+    api_key_id: int | None
     created_at: str  # ISO8601
 
 
@@ -85,18 +85,18 @@ class MemoryProvider(PluginBase):
     async def add_entries(
         self,
         *,
-        instance_id: int,
-        api_key_id: int | None,
+        owner_key_id: int,
         entries: list[MemoryEntry],
         context_key: str | None = None,
     ) -> list[int]:
-        """Store entries; return new entry ids.
+        """Store entries owned by the caller's API key; return new entry ids.
+
+        legacy rip:memory 按调用方 API key 切作用域(M:N 无单一 instance,谁存谁拥有)。
 
         Contract:
         - entries == []: return []; no DB write; no raise (idempotent).
         - len(entries) > 100: raise MemoryProviderClientError.
         - any content > 10KB: raise MemoryProviderClientError.
-        - unauthorized instance_id: raise MemoryProviderClientError.
         - DB transient failure: raise MemoryProviderInternalError
           (caller may swallow; HTTP layer maps to 500).
         """
@@ -105,15 +105,14 @@ class MemoryProvider(PluginBase):
     async def prefetch(
         self,
         *,
-        instance_id: int,
+        owner_key_id: int,
         query: str,
         limit: int = 10,
         context_key: str | None = None,
     ) -> list[StoredMemoryEntry]:
-        """best-effort: recall relevant memories.
+        """best-effort: recall memories owned by the caller's API key.
 
         Returns [] on InternalError (logs warning).
-        Raises ClientError on bad input (unauthorized instance).
         """
 
     async def on_session_end(

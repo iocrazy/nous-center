@@ -24,13 +24,15 @@ class MemoryEntryModel(Base):
         primary_key=True,
         autoincrement=True,
     )
+    # legacy rip:memory 按调用方 API key 切作用域。instance_id 降为 nullable 遗留列
+    # (M:N key 无单一 instance);归属与查询走 api_key_id。
     instance_id = Column(
         BigInteger,
         ForeignKey("service_instances.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
-    api_key_id = Column(BigInteger, nullable=True)
+    api_key_id = Column(BigInteger, nullable=True, index=True)
     category = Column(String(32), nullable=False)
     content = Column(Text, nullable=False)
     context_key = Column(String(128), nullable=True)
@@ -46,8 +48,9 @@ class MemoryEntryModel(Base):
     )
 
     __table_args__ = (
-        Index("idx_mem_inst_created", "instance_id", "created_at"),
-        Index("idx_mem_inst_key_cat", "instance_id", "context_key", "category"),
+        # 归属/查询走 api_key_id(prefetch 按 owner + context_key + 时间排序)。
+        Index("idx_mem_key_created", "api_key_id", "created_at"),
+        Index("idx_mem_key_ctx_cat", "api_key_id", "context_key", "category"),
     )
 
 
