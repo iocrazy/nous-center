@@ -39,69 +39,21 @@ async def enforce_instance_rate_limit(instance: ServiceInstance) -> None:
     )
 
 
-# 兼容内部旧名(本模块的 3 个 verify_* 准入点仍用它)。
-_enforce_instance_limits = enforce_instance_rate_limit
-
-
-async def verify_instance_key(
-    instance_id: int,
-    authorization: str = Header(...),
-    session: AsyncSession = Depends(get_async_session),
-) -> tuple[ServiceInstance, InstanceApiKey]:
-    """Verify Bearer token against instance API keys.
-
-    Returns (instance, matched_key) on success.
-    Raises 401/403/404 on failure.
-    """
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, detail="Invalid authorization header")
-    token = authorization[7:]
-
-    instance = await session.get(ServiceInstance, instance_id)
-    if not instance:
-        raise HTTPException(404, detail="Instance not found")
-    if instance.status != "active":
-        raise HTTPException(403, detail="Instance is inactive")
-
-    # Use key_prefix to narrow candidates before bcrypt (O(1) instead of O(n))
-    key_prefix = token[:10]
-    result = await session.execute(
-        select(InstanceApiKey).where(
-            InstanceApiKey.instance_id == instance_id,
-            InstanceApiKey.key_prefix == key_prefix,
-            InstanceApiKey.is_active == True,  # noqa: E712
-        )
-    )
-    keys = result.scalars().all()
-
-    for key in keys:
-        if bcrypt.checkpw(token.encode(), key.key_hash.encode()):
-            if _key_expired(key):
-                raise AuthenticationError(
-                    "API key expired", code="api_key_expired",
-                )
-            await _enforce_instance_limits(instance)
-            return instance, key
-
-    # Always do one bcrypt round to prevent timing-based probing
-    bcrypt.checkpw(token.encode(), _DUMMY_HASH.encode())
-
-    raise HTTPException(401, detail="Invalid API key")
-
-
 async def verify_bearer_token_any(
     authorization: str = Header(...),
     session: AsyncSession = Depends(get_async_session),
 ) -> tuple[ServiceInstance | None, InstanceApiKey]:
     """Global bearer auth for /v1/* endpoints, tolerant of M:N keys (instance_id NULL).
 
-    Returned instance is None for M:N keys; the caller is expected to use
-    `model_resolver.resolve_target_service(api_key, request.model)` to
-    pick the target ServiceInstance, then enforce rate limits on it.
+    Returned instance is None for M:N keys; the caller resolves the target via
+    `model_resolver.resolve_target_service(api_key, request.model)` then enforces
+    rate limits on it.
 
-    Legacy keys (instance_id set) are resolved and rate-limited up-front
-    (returned instance is non-None). No live subsystem creates such keys
-    anymore; the branch stays until the instance/1:1 subsystem is removed.
+    Legacy keys (instance_id set) are resolved and rate-limited up-front. No live
+    subsystem creates such keys anymore (the instance/instance_keys 1:1 routes were
+    deleted), but the branch + test fixtures still exercise it; collapsing
+    verify_bearer_token_any to M:N-only is a separate PR that must first migrate the
+    conftest default key (legacy → M:N + grant) and re-verify the full suite.
     """
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, detail="Invalid authorization header")
@@ -127,7 +79,7 @@ async def verify_bearer_token_any(
                 return None, key
             instance = await session.get(ServiceInstance, key.instance_id)
             if instance and instance.status == "active":
-                await _enforce_instance_limits(instance)
+                await enforce_instance_rate_limit(instance)
                 return instance, key
             raise HTTPException(403, detail="Instance is inactive")
 

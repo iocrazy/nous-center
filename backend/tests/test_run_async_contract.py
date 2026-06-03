@@ -105,8 +105,10 @@ async def test_execute_workflow_direct_enqueue_poll_result(async_client_with_db)
 
 @pytest.fixture
 async def prediction_service(async_client_with_db):
-    """workflow 服务(图在 workflow_snapshot,dict-of-nodes 形)+ legacy 1:1 key + 一个 exposed_input。
-    服务层 API spec PR-2:测统一 POST /services/{name}/predictions(取代旧 /run)。"""
+    """workflow 服务(图在 workflow_snapshot,dict-of-nodes 形)+ M:N key + grant + 一个 exposed_input。
+    服务层 API spec PR-2:测统一 POST /services/{name}/predictions(取代旧 /run)。
+    legacy rip:key 由 1:1 改 M:N(instance_id=None + ApiKeyGrant),legacy 分支已删。"""
+    from src.models.api_gateway import ApiKeyGrant
     from src.models.instance_api_key import InstanceApiKey
     from src.models.service_instance import ServiceInstance
 
@@ -128,10 +130,13 @@ async def prediction_service(async_client_with_db):
         await s.commit()
         await s.refresh(inst)
         key = InstanceApiKey(
-            instance_id=inst.id, label="t",
+            instance_id=None, label="t",  # M:N — 走 grant
             key_hash=bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode(),
             key_prefix=raw[:10], is_active=True)
         s.add(key)
+        await s.commit()
+        await s.refresh(key)
+        s.add(ApiKeyGrant(api_key_id=key.id, service_id=inst.id, status="active"))
         await s.commit()
     w = type("_W", (), {})()
     w.name = inst.name
