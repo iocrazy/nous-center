@@ -231,25 +231,30 @@ export default function ModelsOverlay() {
           label: '创建 API 接入点',
           onClick: async () => {
             const model = ctxMenu.model!
+            const serviceName = `${model.display_name} API`
             try {
+              // 1) 把模型登记成服务(ServiceInstance,M:N 解析按 name 匹配 request.model)
               const instance = await apiFetch<{ id: string }>('/api/v1/instances', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   source_type: 'model',
                   source_name: model.name,
-                  name: `${model.display_name} API`,
+                  name: serviceName,
                   type: model.type,
                 }),
               })
-              // Auto-create an API key
-              const keyResult = await apiFetch<{ key: string; id: string }>(`/api/v1/instances/${instance.id}/keys`, {
+              // 2) M:N 建 key + 一键授权 grant(取代 legacy 1:1 /instances/{id}/keys)
+              const keyResult = await apiFetch<{ secret: string; id: string }>('/api/v1/keys', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ label: 'default' }),
+                body: JSON.stringify({ label: `${model.display_name} default`, service_ids: [instance.id] }),
               })
-              // Show the key
-              window.prompt('API Endpoint Info (Ctrl+C to copy):', keyResult.key)
+              // M:N key 需在请求里带 model=<服务名>,所以连服务名一起给出
+              window.prompt(
+                `API 接入点已创建(Ctrl+C 复制 key)。请求时 model 传 "${serviceName}",Authorization: Bearer <key>:`,
+                keyResult.secret,
+              )
               useToastStore.getState().add(`接入点已创建: ${model.display_name}`, 'success')
             } catch (e: any) {
               useToastStore.getState().add(`创建失败: ${e.message}`, 'error')
