@@ -12,7 +12,7 @@ class InstanceApiKey(Base):
     id = Column(BigInteger, primary_key=True, default=snowflake_id)
     # API-gateway transition (2026-04-21): instance_id is now nullable.
     # Legacy 1:1 binding when set (pre-existing keys); new M:N binding when
-    # null, with grants living in api_key_grants. verify_bearer_token
+    # null, with grants living in api_key_grants. verify_bearer_token_any
     # handles both paths for backward compat.
     instance_id = Column(
         BigInteger,
@@ -22,7 +22,7 @@ class InstanceApiKey(Base):
     )
     label = Column(String(100), nullable=False)
     key_hash = Column(String(200), nullable=False)
-    # round4 #5:加索引 —— 全局 bearer 鉴权(verify_bearer_token/_any)按 key_prefix
+    # round4 #5:加索引 —— 全局 bearer 鉴权(verify_bearer_token_any)按 key_prefix
     # 查、不带 instance_id 过滤,无索引则每次 API 调用全表扫 + Python bcrypt 循环。
     key_prefix = Column(String(20), nullable=False, index=True)
     # m10: always-visible mode (Aliyun Bailian style). Stored alongside
