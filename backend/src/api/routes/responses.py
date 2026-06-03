@@ -199,8 +199,9 @@ def normalize_input(input_field: Any) -> list[dict]:
     )
 
 
-async def _resolve_file_id_image(file_id: str, instance_id: int) -> dict:
-    """Load a Files API row, read bytes, return image_url data URL content part."""
+async def _resolve_file_id_image(file_id: str, owner_key_id: int) -> dict:
+    """Load a Files API row, read bytes, return image_url data URL content part.
+    PR-5b:文件按 API key 切作用域,owner_key_id = 调用方 key.id(不是 instance)。"""
     import base64
     from pathlib import Path
     from src.models.database import create_session_factory as _csf
@@ -208,7 +209,7 @@ async def _resolve_file_id_image(file_id: str, instance_id: int) -> dict:
 
     async with _csf()() as fs:
         row = await fs.get(FileRow, file_id)
-        if row is None or row.instance_id != instance_id:
+        if row is None or row.api_key_id != owner_key_id:
             raise NotFoundError(
                 f"file '{file_id}' not found", code="file_not_found"
             )
@@ -250,9 +251,10 @@ def resolve_image(item: dict) -> dict:
 
 
 async def resolve_pending_file_ids(
-    messages: list[dict], instance_id: int,
+    messages: list[dict], owner_key_id: int,
 ) -> list[dict]:
-    """Second pass: swap {_pending_file_id: x} sentinels with real image_url parts."""
+    """Second pass: swap {_pending_file_id: x} sentinels with real image_url parts.
+    PR-5b:文件按 API key 切作用域,owner_key_id = 调用方 key.id。"""
     for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -260,7 +262,7 @@ async def resolve_pending_file_ids(
         for i, part in enumerate(content):
             fid = isinstance(part, dict) and part.get("_pending_file_id")
             if fid:
-                content[i] = await _resolve_file_id_image(fid, instance_id)
+                content[i] = await _resolve_file_id_image(fid, owner_key_id)
     return messages
 
 
@@ -392,7 +394,7 @@ async def create_response(
         normalize_input(req.input)
     )
     new_input_messages = await resolve_pending_file_ids(
-        new_input_messages, instance.id
+        new_input_messages, api_key.id  # PR-5b:文件按 API key 切作用域
     )
 
     # --- agent/skill 装配 ---

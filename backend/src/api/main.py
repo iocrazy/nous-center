@@ -90,6 +90,11 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS input_json JSONB",
                     "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_url VARCHAR(500)",
                     "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_events JSONB",
+                    # PR-5b:files 作用域 instance_id → api_key_id。加列 + 旧列降 nullable(孤儿)+ 新键/索引。
+                    "ALTER TABLE files ADD COLUMN IF NOT EXISTS api_key_id BIGINT",
+                    "ALTER TABLE files ALTER COLUMN instance_id DROP NOT NULL",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_files_apikey_sha256 ON files (api_key_id, sha256)",
+                    "CREATE INDEX IF NOT EXISTS ix_files_apikey_created ON files (api_key_id, created_at)",
                 ):
                     try:
                         await conn.execute(text(_ddl))
