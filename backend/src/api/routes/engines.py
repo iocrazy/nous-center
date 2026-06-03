@@ -655,33 +655,25 @@ async def _install_in_background(name: str):
 
 
 @router.patch("/{name}/resident", dependencies=[Depends(require_admin)])
-async def set_resident(name: str, resident: bool = True):
-    """Toggle auto-load on startup for an engine."""
-    import yaml
+async def set_resident(name: str, request: Request, resident: bool = True):
+    """Toggle 常驻(随启动预加载 + 不被 TTL/LRU 自动卸)for an engine.
 
-    configs_path = Path(__file__).resolve().parent.parent.parent.parent / "configs" / "models.yaml"
+    两个修复:
+    1. **持久到 gitignore 的 runtime_overrides.json**(不碰 git 跟踪的 models.yaml)—— 否则 UI 设的
+       常驻是未提交本地改动,任何 git checkout/pull/reset 都冲掉(用户报告「标了常驻还是丢」)。
+    2. **立即作用到已加载实例**(set_model_resident,no-op if 未加载)—— 否则当前加载着的模型标常驻后
+       内存 spec.resident 没变,仍被 TTL 卸,常驻只下次加载才生效(用户报告「标常驻还是被卸」)。
+    """
+    from src.config import load_model_configs, set_runtime_override
 
-    with open(configs_path) as f:
-        data = yaml.safe_load(f)
+    if name not in load_model_configs():
+        raise HTTPException(404, detail=f"Unknown engine: {name}")
 
-    # Support both old dict format and new list format
-    models = data.get("models", [])
-    if isinstance(models, list):
-        found = False
-        for entry in models:
-            if entry.get("id") == name:
-                entry["resident"] = resident
-                found = True
-                break
-        if not found:
-            raise HTTPException(404, detail=f"Unknown engine: {name}")
-    else:
-        if name not in models:
-            raise HTTPException(404, detail=f"Unknown engine: {name}")
-        models[name]["resident"] = resident
+    set_runtime_override(name, "resident", resident)
 
-    with open(configs_path, "w") as f:
-        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+    mgr = getattr(request.app.state, "model_manager", None)
+    if mgr is not None:
+        mgr.set_model_resident(name, resident)
 
     invalidate("engines")
     return {"name": name, "resident": resident}

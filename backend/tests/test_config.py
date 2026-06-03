@@ -1,4 +1,6 @@
 
+import pytest
+
 from src.config import Settings, load_model_configs, _resolve_path
 
 
@@ -47,3 +49,48 @@ def test_load_settings_yaml_non_dict_returns_empty(tmp_path, monkeypatch):
     # 正常 dict 仍工作
     p.write_text("FOO: bar\n")
     assert cfg._load_settings_yaml() == {"FOO": "bar"}
+
+
+def test_runtime_override_roundtrip(tmp_path, monkeypatch):
+    """set_runtime_override 写 → load_runtime_overrides 读回(gitignore 的 overlay)。"""
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
+    assert cfg.load_runtime_overrides() == {}  # 文件不存在 → 空
+    cfg.set_runtime_override("m1", "resident", True)
+    cfg.set_runtime_override("m2", "gpu", 1)
+    assert cfg.load_runtime_overrides() == {"m1": {"resident": True}, "m2": {"gpu": 1}}
+    # 同 model 再写不同 key,合并不覆盖
+    cfg.set_runtime_override("m1", "gpu", 0)
+    assert cfg.load_runtime_overrides()["m1"] == {"resident": True, "gpu": 0}
+
+
+def test_runtime_override_rejects_non_overridable_key(tmp_path, monkeypatch):
+    """只白名单 resident/gpu,别让随意键污染 overlay。"""
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
+    with pytest.raises(ValueError):
+        cfg.set_runtime_override("m1", "type", "evil")
+
+
+def test_runtime_override_corrupt_file_is_soft(tmp_path, monkeypatch):
+    """坏 JSON 不该拖垮模型加载 → 降级空 dict。"""
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
+    p = tmp_path / "configs"
+    p.mkdir()
+    (p / "runtime_overrides.json").write_text("{not json")
+    assert cfg.load_runtime_overrides() == {}
+
+
+def test_runtime_override_overlays_model_configs(monkeypatch):
+    """overlay 优先叠加到 load_model_configs 的结果(只对已存在的 model 生效)。"""
+    import src.config as cfg
+    monkeypatch.setattr(
+        cfg, "load_runtime_overrides",
+        lambda: {"m1": {"resident": True}, "ghost": {"resident": True}},
+    )
+    cfgs = {"m1": {"resident": False}, "m2": {"resident": False}}
+    cfg._apply_runtime_overrides(cfgs)
+    assert cfgs["m1"]["resident"] is True   # overlay 生效
+    assert cfgs["m2"]["resident"] is False  # 未覆盖的不动
+    assert "ghost" not in cfgs              # overlay 里有但 cfgs 没有 → 不凭空建条目

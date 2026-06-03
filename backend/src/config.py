@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -102,10 +103,45 @@ def save_settings(updates: dict) -> None:
     get_settings.cache_clear()
 
 
+# 运行时/每机覆盖(resident 常驻、gpu 指派等)。存 gitignore 的 runtime_overrides.json,
+# **叠加在 models.yaml 之上**(overlay 优先)。原因:models.yaml 是 git 跟踪的,UI 设的常驻
+# 写进去就是未提交本地改动,任何 git checkout/pull/reset 都会冲掉(用户报告:标了常驻还是丢)。
+# 把运行时状态分离到不跟踪的 overlay,既即时持久又不被 git 动。形如 {"<model_id>": {"resident": true}}。
+_RUNTIME_OVERRIDES_REL = "configs/runtime_overrides.json"
+_OVERRIDABLE_KEYS = ("resident", "gpu")
+
+
+def load_runtime_overrides() -> dict:
+    # Path(...) 包一层:_resolve_path 正常返回 Path,但测试会 monkeypatch 它返回 str
+    # (test_image_model_integration),str 没有 .exists() —— 包一层两种都安全。
+    p = Path(_resolve_path(_RUNTIME_OVERRIDES_REL))
+    if not p.exists():
+        return {}
+    try:
+        with open(p) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — 坏文件不该拖垮模型加载
+        return {}
+
+
+def set_runtime_override(model_id: str, key: str, value) -> None:
+    """写一条运行时覆盖(如 resident),持久到 gitignore 的 overlay,不碰 git 跟踪的 models.yaml。"""
+    if key not in _OVERRIDABLE_KEYS:
+        raise ValueError(f"non-overridable key: {key}")
+    p = Path(_resolve_path(_RUNTIME_OVERRIDES_REL))
+    data = load_runtime_overrides()
+    data.setdefault(model_id, {})[key] = value
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 def load_model_configs(path: str = "configs/models.yaml") -> dict:
     """Load model configs and return dict keyed by model id/name.
 
     Supports both old dict-based format and new list-based format.
+    运行时覆盖(resident/gpu)叠加在最后,见 load_runtime_overrides。
     """
     resolved = _resolve_path(path)
     with open(resolved) as f:
@@ -153,10 +189,22 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
             # nodes consume it for dropdowns; the adapter still loads via paths.
             if entry.get("files"):
                 result[model_id]["files"] = entry["files"]
+        _apply_runtime_overrides(result)
         return result
 
     # Old dict-based format: return as-is
+    _apply_runtime_overrides(models)
     return models
+
+
+def _apply_runtime_overrides(cfgs: dict) -> None:
+    """把 runtime_overrides.json 的 resident/gpu 叠加进 cfgs(原地改)。overlay 优先于 models.yaml。"""
+    overrides = load_runtime_overrides()
+    for mid, ov in overrides.items():
+        if mid in cfgs and isinstance(ov, dict):
+            for k in _OVERRIDABLE_KEYS:
+                if k in ov:
+                    cfgs[mid][k] = ov[k]
 
 
 @lru_cache
