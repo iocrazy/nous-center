@@ -70,23 +70,24 @@ async def create_cache_row(
 async def fetch_active_cache(
     session: AsyncSession,
     cache_id: str,
-    instance_id: int,
+    owner_key_id: int,
 ) -> ContextCache | None:
-    """Returns row only if exists, not expired, and belongs to instance."""
+    """Returns row only if exists, not expired, and owned by the API key.
+    legacy rip:归属按调用方 API key 切(M:N 下同模型可被多 key 共享,instance 切会跨 key 泄漏)。"""
     now = datetime.now(timezone.utc)
     stmt = select(ContextCache).where(
         ContextCache.id == cache_id,
-        ContextCache.instance_id == instance_id,
+        ContextCache.api_key_id == owner_key_id,
         ContextCache.expires_at > now,
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def fetch_cache_any_instance(
+async def fetch_cache_by_id(
     session: AsyncSession,
     cache_id: str,
 ) -> ContextCache | None:
-    """Used by GET/DELETE handlers to distinguish 404 from 403 (wrong instance)."""
+    """Used by GET/DELETE handlers to distinguish 404 from 403 (wrong owner)."""
     return await session.get(ContextCache, cache_id)
 
 
@@ -94,17 +95,17 @@ async def increment_hit_and_extend(
     session: AsyncSession,
     cache_id: str,
     ttl_seconds: int,
-    instance_id: int | None = None,
+    owner_key_id: int | None = None,
 ) -> None:
     """Atomic UPDATE: hit_count += 1, expires_at = now+ttl, last_used_at = now.
 
-    Caller may pass instance_id for defense-in-depth scoping.
+    Caller may pass owner_key_id for defense-in-depth scoping.
     """
     now = datetime.now(timezone.utc)
     new_exp = now + timedelta(seconds=ttl_seconds)
     stmt = update(ContextCache).where(ContextCache.id == cache_id)
-    if instance_id is not None:
-        stmt = stmt.where(ContextCache.instance_id == instance_id)
+    if owner_key_id is not None:
+        stmt = stmt.where(ContextCache.api_key_id == owner_key_id)
     stmt = stmt.values(
         hit_count=ContextCache.hit_count + 1,
         expires_at=new_exp,
@@ -117,14 +118,14 @@ async def increment_hit_and_extend(
 async def delete_cache(
     session: AsyncSession,
     cache_id: str,
-    instance_id: int,
+    owner_key_id: int,
 ) -> bool:
     """Idempotent delete; returns True if a row was actually removed."""
     stmt = (
         delete(ContextCache)
         .where(
             ContextCache.id == cache_id,
-            ContextCache.instance_id == instance_id,
+            ContextCache.api_key_id == owner_key_id,
         )
         .execution_options(synchronize_session="fetch")
     )
@@ -150,7 +151,7 @@ async def resolve_for_request(
     session: AsyncSession,
     *,
     context_id: str | None,
-    instance_id: int,
+    owner_key_id: int,
     engine_name: str,
 ) -> tuple[list[dict] | None, int | None]:
     """Common cache lookup for chat_completions and responses endpoints.
@@ -172,15 +173,15 @@ async def resolve_for_request(
     except Exception:
         record_cache_lookup = None
 
-    cache = await fetch_active_cache(session, context_id, instance_id)
+    cache = await fetch_active_cache(session, context_id, owner_key_id)
     if cache is None:
         if record_cache_lookup:
             record_cache_lookup(hit=False)
-        other = await fetch_cache_any_instance(session, context_id)
-        if other is not None and other.instance_id != instance_id:
+        other = await fetch_cache_by_id(session, context_id)
+        if other is not None and other.api_key_id != owner_key_id:
             raise NousPermissionError(
-                "Cache belongs to another instance",
-                code="context_wrong_instance",
+                "Cache belongs to another API key",
+                code="context_wrong_owner",
             )
         raise NotFoundError(
             "Context cache not found or expired",

@@ -19,7 +19,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps_auth import verify_bearer_token
+from src.api.deps_auth import (
+    enforce_instance_rate_limit,
+    verify_bearer_token_any,
+)
 from src.errors import (
     APIError,
     InvalidRequestError,
@@ -39,8 +42,9 @@ from src.services.context_cache_service import (
     create_cache_row,
     delete_cache,
     fetch_active_cache,
-    fetch_cache_any_instance,
+    fetch_cache_by_id,
 )
+from src.services.model_resolver import ModelNotFound, resolve_target_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["context-cache"])
@@ -56,10 +60,21 @@ class CreateContextRequest(BaseModel):
 async def create_context(
     req: CreateContextRequest,
     request: Request,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
     instance, api_key = auth
+    # legacy rip:M:N key 不带 instance,按 req.model 解析目标服务 + 补占限流坑;legacy key 直通。
+    if instance is None:
+        try:
+            instance = await resolve_target_service(
+                session, api_key=api_key, requested_model=req.model,
+            )
+        except ModelNotFound as e:
+            raise NotFoundError(str(e), code="model_not_found") from e
+        if instance.status != "active":
+            raise APIError("Instance is inactive", code="instance_inactive")
+        await enforce_instance_rate_limit(instance)
     if instance.source_type != "model":
         raise InvalidRequestError(
             "Context Cache only supported on model-type instances",
@@ -139,16 +154,16 @@ async def create_context(
 
 @router.get("/v1/contexts")
 async def list_contexts(
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """List active (non-expired) caches for the caller's instance."""
-    instance, _ = auth
+    """List active (non-expired) caches owned by the caller's API key."""
+    _, api_key = auth
     now = datetime.now(timezone.utc)
     stmt = (
         select(ContextCache)
         .where(
-            ContextCache.instance_id == instance.id,
+            ContextCache.api_key_id == api_key.id,
             ContextCache.expires_at > now,
         )
         .order_by(ContextCache.created_at.desc())
@@ -177,17 +192,17 @@ async def list_contexts(
 @router.get("/v1/context/{cache_id}")
 async def get_context(
     cache_id: str,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    instance, _ = auth
-    row = await fetch_active_cache(session, cache_id, instance.id)
+    _, api_key = auth
+    row = await fetch_active_cache(session, cache_id, api_key.id)
     if row is None:
-        other = await fetch_cache_any_instance(session, cache_id)
-        if other is not None and other.instance_id != instance.id:
+        other = await fetch_cache_by_id(session, cache_id)
+        if other is not None and other.api_key_id != api_key.id:
             raise NousPermissionError(
-                "Cache belongs to another instance",
-                code="context_wrong_instance",
+                "Cache belongs to another API key",
+                code="context_wrong_owner",
             )
         raise NotFoundError(
             "Context cache not found or expired",
@@ -218,17 +233,17 @@ async def get_context(
 @router.delete("/v1/context/{cache_id}", status_code=204)
 async def delete_context(
     cache_id: str,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    instance, _ = auth
-    other = await fetch_cache_any_instance(session, cache_id)
-    if other is not None and other.instance_id != instance.id:
+    _, api_key = auth
+    other = await fetch_cache_by_id(session, cache_id)
+    if other is not None and other.api_key_id != api_key.id:
         raise NousPermissionError(
-            "Cache belongs to another instance",
-            code="context_wrong_instance",
+            "Cache belongs to another API key",
+            code="context_wrong_owner",
         )
-    # Idempotent — race between fetch_cache_any_instance and delete_cache returns
+    # Idempotent — race between fetch_cache_by_id and delete_cache returns
     # 204 even if the row was concurrently removed; that matches REST DELETE semantics.
-    await delete_cache(session, cache_id, instance.id)
+    await delete_cache(session, cache_id, api_key.id)
     return Response(status_code=204)
