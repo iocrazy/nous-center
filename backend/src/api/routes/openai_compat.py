@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.deps_auth import verify_bearer_token, verify_bearer_token_any
+from src.api.deps_auth import verify_bearer_token_any
 from src.config import get_settings, load_model_configs
 from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
 from src.models.service_instance import ServiceInstance
@@ -424,7 +424,9 @@ CONTENT_TYPE_MAP = {
 @router.post("/v1/audio/speech")
 async def create_speech(
     req: SpeechRequest,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    # PR-5a:legacy verify_bearer_token(只认 1:1 key,M:N 实际 403)→ verify_bearer_token_any。
+    # handler 不用 instance(只按 req.model 取 engine),M:N 有效 key 即可。
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
 ):
     """Generate audio from text (OpenAI TTS compatible)."""
     from src.workers.tts_engines import registry
