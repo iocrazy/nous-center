@@ -6,7 +6,7 @@
  * monitor 暂不采 CPU/内存(要加需 psutil)。多卡场景一次显示全部卡(用户库:Pro6000 + 2×3090)。
  */
 import { useState } from 'react'
-import { useGpuStats, type GpuInfo } from '../../api/gpuStats'
+import { useGpuStats, useSystemStats, type GpuInfo } from '../../api/gpuStats'
 
 function shortName(name: string): string {
   const n = (name || '').replace(/NVIDIA\s+/i, '').replace(/GeForce\s+/i, '')
@@ -38,20 +38,55 @@ function tempColor(t: number): string {
   return 'var(--tp-text-muted)'
 }
 
+/** CPU / RAM 紧凑芯片:标签 + mini 进度条 + 百分比(+ 展开时附带详情)。 */
+function MetricChip({ label, pct, detail }: { label: string; pct: number; detail?: string }) {
+  const p = Math.max(0, Math.min(100, Math.round(pct)))
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] leading-none" style={{ color: 'var(--tp-text-muted)' }}>
+      <span style={{ fontWeight: 500, color: 'var(--tp-text)' }}>{label}</span>
+      <span
+        style={{
+          width: 26, height: 5, borderRadius: 3,
+          background: 'var(--tp-border-faint)', overflow: 'hidden',
+          display: 'inline-block', flexShrink: 0,
+        }}
+      >
+        <span style={{ display: 'block', height: '100%', width: `${p}%`, background: loadColor(p), transition: 'width .4s ease' }} />
+      </span>
+      <span style={{ fontVariantNumeric: 'tabular-nums', minWidth: 28, textAlign: 'right' }}>{p}%</span>
+      {detail && <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.85 }}>{detail}</span>}
+    </div>
+  )
+}
+
 export default function TopbarGpuMonitor() {
   const { data: gpus } = useGpuStats()
+  const { data: sys } = useSystemStats()
   const [expanded, setExpanded] = useState(false)
-  if (!gpus || gpus.length === 0) return null
+  if ((!gpus || gpus.length === 0) && !sys) return null
 
   return (
     <div
-      className="flex items-center gap-3 mr-4 cursor-pointer select-none"
+      className="flex items-center gap-3 mr-3 cursor-pointer select-none"
       onClick={() => setExpanded((e) => !e)}
-      title={expanded ? '点击收起显存' : '点击展开显存'}
+      title={expanded ? '点击收起详情' : '点击展开显存/内存'}
       role="button"
-      aria-label="GPU 硬件监控"
+      aria-label="硬件监控(CPU/内存/GPU)"
     >
-      {gpus.map((g) => {
+      {sys && (
+        <>
+          <MetricChip label="CPU" pct={sys.cpu_usage_percent} />
+          <MetricChip
+            label="内存"
+            pct={sys.memory_total_gb ? (sys.memory_used_gb / sys.memory_total_gb) * 100 : 0}
+            detail={expanded ? `${sys.memory_used_gb.toFixed(0)}/${sys.memory_total_gb.toFixed(0)}G` : undefined}
+          />
+          {gpus && gpus.length > 0 && (
+            <span style={{ width: 1, height: 14, background: 'var(--tp-border-faint)' }} />
+          )}
+        </>
+      )}
+      {(gpus ?? []).map((g, _i, arr) => {
         const util = Math.max(0, Math.min(100, g.utilization_gpu ?? 0))
         return (
           <div
@@ -59,7 +94,7 @@ export default function TopbarGpuMonitor() {
             className="flex items-center gap-1.5 text-[11px] leading-none"
             style={{ color: 'var(--tp-text-muted)' }}
           >
-            <span style={{ fontWeight: 500, color: 'var(--tp-text)' }}>{labelFor(gpus, g)}</span>
+            <span style={{ fontWeight: 500, color: 'var(--tp-text)' }}>{labelFor(arr, g)}</span>
             <span
               style={{
                 width: 26, height: 5, borderRadius: 3,

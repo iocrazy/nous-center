@@ -69,6 +69,10 @@ export default function GlobalTopbar() {
 
       <div className="flex-1" />
 
+      {/* 硬件监控条(CPU/内存/GPU)—— 放在 healthy 左侧,ComfyUI 式 */}
+      <TopbarGpuMonitor />
+      <div style={{ width: 1, height: 16, background: 'var(--tp-border-faint)', marginRight: 12 }} />
+
       {/* 全局状态 */}
       <div className="text-xs flex items-center gap-1.5 mr-4" style={{ color: 'var(--tp-text-muted)' }}>
         <span
@@ -80,10 +84,6 @@ export default function GlobalTopbar() {
         />
         infra <span style={{ color: 'var(--tp-text)', fontWeight: 500 }}>healthy</span>
       </div>
-
-      {/* GPU 硬件监控条(跟 healthy 同层,ComfyUI 式) */}
-      <div style={{ width: 1, height: 16, background: 'var(--tp-border-faint)', marginRight: 12 }} />
-      <TopbarGpuMonitor />
 
       {/* 搜索 placeholder */}
       <button
