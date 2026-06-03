@@ -52,9 +52,10 @@ async def test_fetch_session_404_when_session_expired(db_session, sample_instanc
 
 
 @pytest.mark.asyncio
-async def test_fetch_session_403_when_other_instance(db_session, sample_instance, other_instance):
+async def test_fetch_session_403_when_other_owner(db_session, sample_instance):
+    """legacy rip PR-5b:会话归属按 API key 切 —— 别的 key 取不到(wrong_owner)。"""
     sess = await create_session(
-        db_session, instance_id=sample_instance.id, api_key_id=None,
+        db_session, instance_id=sample_instance.id, api_key_id=111,
         model="m", context_cache_id=None,
     )
     _user, asst = await write_user_and_assistant_turns(
@@ -64,15 +65,15 @@ async def test_fetch_session_403_when_other_instance(db_session, sample_instance
         usage={}, reasoning=None, instructions=None, text_format=None,
     )
     with pytest.raises(NousPermissionError) as ex:
-        await fetch_session_for_turn(db_session, asst.id, other_instance.id)
-    assert ex.value.code == "previous_response_wrong_instance"
+        await fetch_session_for_turn(db_session, asst.id, owner_key_id=222)
+    assert ex.value.code == "previous_response_wrong_owner"
 
 
 @pytest.mark.asyncio
 async def test_assemble_history_skips_non_assistant_user_rows(db_session, sample_instance):
     """If the schema ever lets through a 'system' / 'tool' row, it should be skipped."""
     sess = await create_session(
-        db_session, instance_id=sample_instance.id, api_key_id=None,
+        db_session, instance_id=sample_instance.id, api_key_id=111,
         model="m", context_cache_id=None,
     )
     # Insert a 'tool' row directly to simulate junk
@@ -94,7 +95,7 @@ async def test_assemble_history_skips_non_assistant_user_rows(db_session, sample
         usage={}, reasoning=None, instructions=None, text_format=None,
     )
     msgs, _ = await assemble_history_for_response(
-        db_session, asst.id, instance_id=sample_instance.id
+        db_session, asst.id, owner_key_id=111
     )
     roles = [m["role"] for m in msgs]
     assert roles == ["user", "assistant"]  # tool row dropped

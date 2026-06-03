@@ -256,9 +256,10 @@ async def write_partial_assistant_turn(
 # ---------- History assembly ---------- #
 
 async def fetch_session_for_turn(
-    session: AsyncSession, turn_id: str, instance_id: int,
+    session: AsyncSession, turn_id: str, owner_key_id: int,
 ) -> ResponseSession:
-    """Lookup the session containing a given turn, with permission + TTL checks."""
+    """Lookup the session containing a given turn, with permission + TTL checks.
+    legacy rip PR-5b:会话归属按调用方 API key(owner_key_id)切,不再按 instance。"""
     turn = await session.get(ResponseTurn, turn_id)
     if turn is None:
         raise NotFoundError(
@@ -279,20 +280,20 @@ async def fetch_session_for_turn(
             "previous response expired",
             code="previous_response_not_found",
         )
-    if sess.instance_id != instance_id:
+    if sess.api_key_id != owner_key_id:
         raise NousPermissionError(
-            "previous response belongs to another instance",
-            code="previous_response_wrong_instance",
+            "previous response belongs to another API key",
+            code="previous_response_wrong_owner",
         )
     return sess
 
 
 async def assemble_history_for_response(
-    session: AsyncSession, prev_resp_id: str, instance_id: int,
+    session: AsyncSession, prev_resp_id: str, owner_key_id: int,
 ) -> tuple[list[dict], ResponseSession]:
     """Walk the session of prev_resp_id, return (messages, session).
     Returns only user/assistant turns (skips system / tool rows as defense)."""
-    sess = await fetch_session_for_turn(session, prev_resp_id, instance_id)
+    sess = await fetch_session_for_turn(session, prev_resp_id, owner_key_id)
     stmt = (
         select(ResponseTurn)
         .where(ResponseTurn.session_id == sess.id)
