@@ -25,7 +25,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps_auth import verify_bearer_token
+from src.api.deps_auth import (
+    enforce_instance_rate_limit,
+    verify_bearer_token_any,
+)
 from src.config import get_settings
 from src.errors import (
     APIError, InvalidRequestError, NotFoundError,
@@ -38,6 +41,7 @@ from src.models.service_instance import ServiceInstance
 from src.services.context.base import ContextOverflowError
 from src.services.context.gzip_compact import GzipCompactContextEngine
 from src.services.context_cache_service import resolve_for_request
+from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
@@ -336,10 +340,22 @@ class CreateResponseRequest(BaseModel):
 async def create_response(
     req: CreateResponseRequest,
     request: Request,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
     instance, api_key = auth
+    # legacy rip PR-5b:M:N key 在 auth 层不带 instance(返回 None),按 req.model 解析目标服务,
+    # 解析后补占限流坑(verify_bearer_token_any 对 M:N 不限流)。legacy 1:1 key 已带 instance,直通。
+    if instance is None:
+        try:
+            instance = await resolve_target_service(
+                session, api_key=api_key, requested_model=req.model,
+            )
+        except ModelNotFound as e:
+            raise NotFoundError(str(e), code="model_not_found") from e
+        if instance.status != "active":
+            raise APIError("Instance is inactive", code="instance_inactive")
+        await enforce_instance_rate_limit(instance)
     if instance.source_type != "model":
         raise InvalidRequestError(
             "Responses only supported on model-type instances",
@@ -372,7 +388,7 @@ async def create_response(
     sess: ResponseSession | None = None
     if req.previous_response_id:
         previous_messages, sess = await assemble_history_for_response(
-            session, req.previous_response_id, instance_id=instance.id
+            session, req.previous_response_id, owner_key_id=api_key.id
         )
         if sess.model != engine_name:
             raise InvalidRequestError(
@@ -825,10 +841,10 @@ def _render_response(turn: ResponseTurn, sess: ResponseSession) -> dict:
 @router.get("/v1/responses/{response_id}")
 async def get_response(
     response_id: str,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    instance, _ = auth
+    _, api_key = auth
     turn = await session.get(ResponseTurn, response_id)
     if turn is None or turn.role != "assistant":
         raise NotFoundError(
@@ -839,10 +855,10 @@ async def get_response(
         raise NotFoundError(
             "response not found (session missing)", code="response_not_found"
         )
-    if sess.instance_id != instance.id:
+    if sess.api_key_id != api_key.id:
         raise NousPermissionError(
-            "response belongs to another instance",
-            code="response_wrong_instance",
+            "response belongs to another API key",
+            code="response_wrong_owner",
         )
     if _to_utc(sess.expire_at) < datetime.now(timezone.utc):
         raise NotFoundError("response expired", code="response_not_found")
@@ -852,19 +868,19 @@ async def get_response(
 @router.get("/v1/responses")
 async def list_responses(
     request: Request,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
     limit: int = 20,
     after: str | None = None,
 ):
-    instance, _ = auth
+    _, api_key = auth
     limit = max(1, min(limit, 100))
 
     stmt = (
         select(ResponseTurn, ResponseSession)
         .join(ResponseSession, ResponseTurn.session_id == ResponseSession.id)
         .where(
-            ResponseSession.instance_id == instance.id,
+            ResponseSession.api_key_id == api_key.id,
             ResponseTurn.role == "assistant",
         )
         .order_by(ResponseTurn.created_at.desc(), ResponseTurn.id.desc())
@@ -880,7 +896,7 @@ async def list_responses(
             select(ResponseTurn, ResponseSession)
             .join(ResponseSession, ResponseTurn.session_id == ResponseSession.id)
             .where(
-                ResponseSession.instance_id == instance.id,
+                ResponseSession.api_key_id == api_key.id,
                 ResponseTurn.role == "assistant",
                 tuple_(ResponseTurn.created_at, ResponseTurn.id)
                 < (anchor.created_at, anchor.id),
@@ -904,20 +920,20 @@ async def list_responses(
 @router.delete("/v1/responses/{response_id}")
 async def delete_response(
     response_id: str,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
     """Delete the whole session that the response belongs to (FK cascade
     removes all turns). Mirrors OpenAI: deleting any response removes the thread."""
-    instance, _ = auth
+    _, api_key = auth
     turn = await session.get(ResponseTurn, response_id)
     if turn is None:
         raise NotFoundError("response not found", code="response_not_found")
     sess = await session.get(ResponseSession, turn.session_id)
-    if sess is None or sess.instance_id != instance.id:
+    if sess is None or sess.api_key_id != api_key.id:
         raise NousPermissionError(
-            "response belongs to another instance",
-            code="response_wrong_instance",
+            "response belongs to another API key",
+            code="response_wrong_owner",
         )
     await session.delete(sess)
     await session.commit()

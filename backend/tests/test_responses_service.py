@@ -170,7 +170,7 @@ async def test_assemble_history_orders_by_turn_idx(db_session, sample_instance):
     sess = await create_session(
         db_session,
         instance_id=sample_instance.id,
-        api_key_id=None,
+        api_key_id=1,  # legacy rip PR-5b:会话归属按 API key 切
         model="m",
         context_cache_id=None,
     )
@@ -196,7 +196,7 @@ async def test_assemble_history_orders_by_turn_idx(db_session, sample_instance):
         )
     ).scalars().first()
     msgs, fetched_sess = await assemble_history_for_response(
-        db_session, last_asst.id, instance_id=sample_instance.id
+        db_session, last_asst.id, owner_key_id=1
     )
     assert fetched_sess.id == sess.id
     assert len(msgs) == 6
@@ -208,7 +208,7 @@ async def test_assemble_history_orders_by_turn_idx(db_session, sample_instance):
 async def test_assemble_history_404_on_unknown(db_session, sample_instance):
     with pytest.raises(NotFoundError):
         await assemble_history_for_response(
-            db_session, "resp-doesnotexist", instance_id=sample_instance.id
+            db_session, "resp-doesnotexist", owner_key_id=1
         )
 
 
