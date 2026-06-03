@@ -103,9 +103,9 @@ def test_ws_handler_is_passthrough():
 
     from src.services.workflow_executor import EVENT_TYPES  # noqa: F401  (documents intent)
     from src.api import main as api_main
-    from src.api.routes import instance_service, workflows
+    from src.api.routes import workflows
 
-    for module in (workflows, instance_service, api_main):
+    for module in (workflows, api_main):
         src = inspect.getsource(module)
         assert 'event["type"] in' not in src, (
             f"{module.__name__} has a ws type whitelist on event['type']; "

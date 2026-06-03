@@ -83,11 +83,8 @@ async def create_instance(
     await session.commit()
     await session.refresh(instance)
 
-    # Auto-set endpoint_path
-    instance.endpoint_path = f"/v1/instances/{instance.id}/synthesize"
-    await session.commit()
-    await session.refresh(instance)
-
+    # legacy rip:旧 /instances/{id}/synthesize 路由已删(instance_service.py),
+    # 不再写死该 endpoint_path(留空;M:N 调用走 /v1/chat/completions 等按 name 解析)。
     return _instance_to_out(instance, source_name)
 
 

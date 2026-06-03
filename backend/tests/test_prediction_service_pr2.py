@@ -178,10 +178,8 @@ def test_route_wired_and_run_deleted():
     assert '"/predictions/{prediction_id}"' in pred
     assert "apply_inputs_to_snapshot(" in pred
     assert "validate_service_input(" in pred  # 接进 PR-1 校验
-    # 旧 /run 已删(clean cut)
-    inst = (_SRC / "api/routes/instance_service.py").read_text()
-    assert '"/{instance_id}/run"' not in inst
-    assert "def instance_run" not in inst
+    # 旧 /run 已删(clean cut);legacy rip 进一步删掉整个 instance_service.py(/synthesize)。
+    assert not (_SRC / "api/routes/instance_service.py").exists()
     # router 注册
     main = (_SRC / "api/main.py").read_text()
     assert "predictions_routes.router" in main
