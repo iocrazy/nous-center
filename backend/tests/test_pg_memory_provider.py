@@ -37,12 +37,12 @@ async def test_fts_index_hit(async_session_factory):
     p = PGMemoryProvider(session_factory=async_session_factory)
     await p.initialize()
     await p.add_entries(
-        instance_id=1, api_key_id=None,
+        owner_key_id=1,
         entries=[
             {"category": "fact", "content": "user prefers concise replies", "context_key": None},
             {"category": "fact", "content": "user lives in Tokyo", "context_key": None},
         ],
     )
-    results = await p.prefetch(instance_id=1, query="concise")
+    results = await p.prefetch(owner_key_id=1, query="concise")
     assert len(results) == 1
     assert "concise" in results[0]["content"]

@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from src.api.deps_auth import verify_bearer_token
+from src.api.deps_auth import verify_bearer_token_any
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 from src.services.memory.base import (
@@ -15,7 +15,9 @@ from src.services.memory.base import (
     MemoryProviderInternalError,
 )
 
-router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
+# legacy rip:外部 bearer API 必须挂 /v1(/api/* 被 AdminSessionGate 的浏览器 cookie 门挡死,
+# M:N key 根本够不到 —— 同 #324 教训)。memory 按调用方 API key 切作用域。
+router = APIRouter(prefix="/v1/memory", tags=["memory"])
 logger = logging.getLogger(__name__)
 
 
@@ -34,14 +36,13 @@ class SyncRequest(BaseModel):
 async def memory_sync(
     body: SyncRequest,
     request: Request,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
 ):
-    instance, api_key = auth
+    _, api_key = auth
     provider = request.app.state.memory_provider
     try:
         ids = await provider.add_entries(
-            instance_id=instance.id,
-            api_key_id=api_key.id if api_key else None,
+            owner_key_id=api_key.id,
             entries=[e.model_dump() for e in body.entries],
             context_key=body.context_key,
         )
@@ -61,12 +62,12 @@ async def memory_prefetch(
     # instance memory_entries 表(内存膨胀/慢查/响应体 DoS)。
     limit: int = Query(10, ge=1, le=100),
     context_key: str | None = None,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
 ):
-    instance, _ = auth
+    _, api_key = auth
     provider = request.app.state.memory_provider
     results = await provider.prefetch(
-        instance_id=instance.id,
+        owner_key_id=api_key.id,
         query=q,
         limit=limit,
         context_key=context_key,

@@ -1,4 +1,4 @@
-"""Integration tests for /api/v1/memory/sync + /prefetch (Wave 1 Task 5.3)."""
+"""Integration tests for /v1/memory/sync + /prefetch (Wave 1 Task 5.3)."""
 
 import bcrypt
 import pytest
@@ -117,7 +117,7 @@ def bearer_headers(api_client_and_key):
 @pytest.mark.asyncio
 async def test_sync_endpoint_writes_entries(api_client, bearer_headers):
     resp = await api_client.post(
-        "/api/v1/memory/sync",
+        "/v1/memory/sync",
         json={
             "entries": [
                 {"category": "preference", "content": "用户喜欢简洁回复", "context_key": "proj-1"},
@@ -134,12 +134,12 @@ async def test_sync_endpoint_writes_entries(api_client, bearer_headers):
 @pytest.mark.asyncio
 async def test_prefetch_endpoint_returns_entries(api_client, bearer_headers):
     await api_client.post(
-        "/api/v1/memory/sync",
+        "/v1/memory/sync",
         json={"entries": [{"category": "fact", "content": "Tokyo", "context_key": None}]},
         headers=bearer_headers,
     )
     resp = await api_client.get(
-        "/api/v1/memory/prefetch?q=Tokyo&limit=5",
+        "/v1/memory/prefetch?q=Tokyo&limit=5",
         headers=bearer_headers,
     )
     assert resp.status_code == 200
@@ -150,7 +150,7 @@ async def test_prefetch_endpoint_returns_entries(api_client, bearer_headers):
 async def test_prefetch_limit_over_cap_rejected(api_client, bearer_headers):
     """round6:limit 超上界(>100)→ 校验拒绝(本项目自定义 handler 返 400),不再无界拉整张表。"""
     resp = await api_client.get(
-        "/api/v1/memory/prefetch?q=&limit=999999999",
+        "/v1/memory/prefetch?q=&limit=999999999",
         headers=bearer_headers,
     )
     assert resp.status_code in (400, 422)
@@ -160,7 +160,7 @@ async def test_prefetch_limit_over_cap_rejected(api_client, bearer_headers):
 async def test_sync_over_100_entries_returns_400(api_client, bearer_headers):
     entries = [{"category": "fact", "content": "x", "context_key": None}] * 101
     resp = await api_client.post(
-        "/api/v1/memory/sync",
+        "/v1/memory/sync",
         json={"entries": entries},
         headers=bearer_headers,
     )
@@ -170,7 +170,7 @@ async def test_sync_over_100_entries_returns_400(api_client, bearer_headers):
 @pytest.mark.asyncio
 async def test_sync_empty_list_ok(api_client, bearer_headers):
     resp = await api_client.post(
-        "/api/v1/memory/sync",
+        "/v1/memory/sync",
         json={"entries": []},
         headers=bearer_headers,
     )

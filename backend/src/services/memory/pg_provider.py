@@ -32,7 +32,7 @@ MAX_BATCH_SIZE = 100
 def _to_stored_entry(row: MemoryEntryModel) -> StoredMemoryEntry:
     return StoredMemoryEntry(
         id=row.id,
-        instance_id=row.instance_id,
+        api_key_id=row.api_key_id,
         category=row.category,
         content=row.content,
         context_key=row.context_key,
@@ -62,8 +62,7 @@ class PGMemoryProvider(MemoryProvider):
     async def add_entries(
         self,
         *,
-        instance_id: int,
-        api_key_id: int | None,
+        owner_key_id: int,
         entries: list[MemoryEntry],
         context_key: str | None = None,
     ) -> list[int]:
@@ -85,10 +84,10 @@ class PGMemoryProvider(MemoryProvider):
             async with self._sf() as s:
                 # Per-entry context_key takes precedence over the batch-level
                 # parameter (mirrors _FakeMemoryProvider contract in W-T2.2).
+                # legacy rip:按 API key 切作用域;instance_id 不再填(列已降 nullable)。
                 rows = [
                     MemoryEntryModel(
-                        instance_id=instance_id,
-                        api_key_id=api_key_id,
+                        api_key_id=owner_key_id,
                         category=e["category"],
                         content=e["content"],
                         context_key=e.get("context_key") if e.get("context_key") is not None else context_key,
@@ -106,7 +105,7 @@ class PGMemoryProvider(MemoryProvider):
     async def prefetch(
         self,
         *,
-        instance_id: int,
+        owner_key_id: int,
         query: str,
         limit: int = 10,
         context_key: str | None = None,
@@ -116,7 +115,7 @@ class PGMemoryProvider(MemoryProvider):
         try:
             async with self._sf() as s:
                 stmt = select(MemoryEntryModel).where(
-                    MemoryEntryModel.instance_id == instance_id
+                    MemoryEntryModel.api_key_id == owner_key_id
                 )
                 if context_key:
                     stmt = stmt.where(MemoryEntryModel.context_key == context_key)

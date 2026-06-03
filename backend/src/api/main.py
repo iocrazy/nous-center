@@ -95,6 +95,11 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE files ALTER COLUMN instance_id DROP NOT NULL",
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_files_apikey_sha256 ON files (api_key_id, sha256)",
                     "CREATE INDEX IF NOT EXISTS ix_files_apikey_created ON files (api_key_id, created_at)",
+                    # legacy rip:memory_entries 作用域 instance_id → api_key_id。降 instance_id nullable
+                    # (M:N 无单一 instance)+ 建 api_key 索引(旧 idx_mem_inst_* create_all 已建,不删)。
+                    "ALTER TABLE memory_entries ALTER COLUMN instance_id DROP NOT NULL",
+                    "CREATE INDEX IF NOT EXISTS idx_mem_key_created ON memory_entries (api_key_id, created_at)",
+                    "CREATE INDEX IF NOT EXISTS idx_mem_key_ctx_cat ON memory_entries (api_key_id, context_key, category)",
                 ):
                     try:
                         await conn.execute(text(_ddl))
