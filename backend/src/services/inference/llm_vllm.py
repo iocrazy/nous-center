@@ -302,6 +302,13 @@ class VLLMAdapter(InferenceAdapter):
         env["TORCH_HOME"] = str(Path(_cache_root) / "torch")
         env["XDG_CACHE_HOME"] = _cache_root
 
+        # torch 2.11 / CUDA 13(Blackwell sm_120):flashinfer 的 sampler JIT kernel 要 nvcc
+        # (cuda-toolkit-13-0)才能现编;没 nvcc 时 vLLM EngineCore 初始化直接失败。回退到
+        # TORCH_SDPA attention + 关 flashinfer sampler(spike 2f452cf 真机验证 vllm 0.22 可起)。
+        # setdefault:装了 nvcc / 想用 flashinfer 的,在 .env 覆盖这俩即可。
+        env.setdefault("VLLM_ATTENTION_BACKEND", "TORCH_SDPA")
+        env.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+
         # Set CUDA_VISIBLE_DEVICES for single-GPU mode
         if tp <= 1 and device:
             # Extract GPU index from device string like "cuda:0"
