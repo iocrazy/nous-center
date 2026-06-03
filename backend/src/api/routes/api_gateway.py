@@ -500,23 +500,12 @@ async def my_services(
     ),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Return every service this bearer-token key can reach, with a
-    quota summary. Legacy 1:1 keys see a single row for their bound
-    instance (no grant/pack info unless explicitly provisioned).
+    """Return every service this bearer-token key can reach (via active or
+    paused grants), with a quota summary. M:N only — legacy 1:1 keys are gone.
     """
-    instance, api_key = auth
+    _, api_key = auth
 
     rows: list[MyServiceOut] = []
-
-    if instance is not None:
-        # Legacy key: one row, no grant/pack info.
-        rows.append(MyServiceOut(
-            instance_id=instance.id, instance_name=instance.name,
-            category=instance.category, meter_dim=instance.meter_dim,
-            grant_status="legacy",
-            total_units=0, used_units=0, remaining_units=0,
-        ))
-        return rows
 
     # M:N: join grants → instances, sum packs per grant.
     grants_stmt = (

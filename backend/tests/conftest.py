@@ -455,6 +455,7 @@ async def api_client(tmp_path):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from src.api.main import create_app
+    from src.models.api_gateway import ApiKeyGrant
     from src.models.database import Base, get_async_session
     from src.models.instance_api_key import InstanceApiKey
     from src.models.service_instance import ServiceInstance
@@ -467,13 +468,15 @@ async def api_client(tmp_path):
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-    # Seed a model-type instance + an active API key.
+    # Seed a model-type service + an active M:N API key + a grant.
+    # legacy rip:默认 key 由 legacy 1:1(instance_id 绑定、忽略 req.model)改 M:N(instance_id=None + grant)。
+    # service name 必须 == 测试请求的 model("qwen3.5") —— M:N 解析按 ServiceInstance.name 匹配 request.model。
     raw_key = f"sk-test-{_secrets.token_hex(8)}"
     async with session_factory() as s:
         inst = ServiceInstance(
             source_type="model",
             source_name="qwen3.5",
-            name="qwen3.5 test instance",
+            name="qwen3.5",
             type="llm",
             status="active",
         )
@@ -481,13 +484,16 @@ async def api_client(tmp_path):
         await s.commit()
         await s.refresh(inst)
         key = InstanceApiKey(
-            instance_id=inst.id,
+            instance_id=None,
             label="test",
             key_hash=bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode(),
             key_prefix=raw_key[:10],
             is_active=True,
         )
         s.add(key)
+        await s.commit()
+        await s.refresh(key)
+        s.add(ApiKeyGrant(api_key_id=key.id, service_id=inst.id, status="active"))
         await s.commit()
 
     async def override_session():
