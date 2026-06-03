@@ -15,22 +15,6 @@ export interface ServiceInstance {
   updated_at: string
 }
 
-export interface InstanceApiKey {
-  id: string
-  instance_id: string
-  label: string
-  key_prefix: string
-  is_active: boolean
-  usage_calls: number
-  usage_chars: number
-  last_used_at: string | null
-  created_at: string
-}
-
-export interface InstanceApiKeyCreated extends InstanceApiKey {
-  key: string
-}
-
 // --- Instance CRUD ---
 
 export function useInstances(type?: string) {
@@ -97,35 +81,3 @@ export function useUpdateInstanceStatus(instanceId: string) {
   })
 }
 
-// --- Instance API Keys ---
-
-export function useInstanceKeys(instanceId: string | null) {
-  return useQuery({
-    queryKey: ['instance-keys', instanceId],
-    queryFn: () => apiFetch<InstanceApiKey[]>(`/api/v1/instances/${instanceId}/keys`),
-    enabled: !!instanceId,
-    refetchOnWindowFocus: false,
-    retry: false,
-  })
-}
-
-export function useCreateInstanceKey(instanceId: string) {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (label: string) =>
-      apiFetch<InstanceApiKeyCreated>(`/api/v1/instances/${instanceId}/keys`, {
-        method: 'POST',
-        body: JSON.stringify({ label }),
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['instance-keys', instanceId] }),
-  })
-}
-
-export function useDeleteInstanceKey(instanceId: string) {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (keyId: string) =>
-      apiFetch(`/api/v1/instances/${instanceId}/keys/${keyId}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['instance-keys', instanceId] }),
-  })
-}
