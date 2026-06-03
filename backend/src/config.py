@@ -112,7 +112,9 @@ _OVERRIDABLE_KEYS = ("resident", "gpu")
 
 
 def load_runtime_overrides() -> dict:
-    p = _resolve_path(_RUNTIME_OVERRIDES_REL)
+    # Path(...) 包一层:_resolve_path 正常返回 Path,但测试会 monkeypatch 它返回 str
+    # (test_image_model_integration),str 没有 .exists() —— 包一层两种都安全。
+    p = Path(_resolve_path(_RUNTIME_OVERRIDES_REL))
     if not p.exists():
         return {}
     try:
@@ -127,7 +129,7 @@ def set_runtime_override(model_id: str, key: str, value) -> None:
     """写一条运行时覆盖(如 resident),持久到 gitignore 的 overlay,不碰 git 跟踪的 models.yaml。"""
     if key not in _OVERRIDABLE_KEYS:
         raise ValueError(f"non-overridable key: {key}")
-    p = _resolve_path(_RUNTIME_OVERRIDES_REL)
+    p = Path(_resolve_path(_RUNTIME_OVERRIDES_REL))
     data = load_runtime_overrides()
     data.setdefault(model_id, {})[key] = value
     p.parent.mkdir(parents=True, exist_ok=True)
