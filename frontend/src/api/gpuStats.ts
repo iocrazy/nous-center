@@ -23,18 +23,39 @@ export interface GpuInfo {
   memory_total_mb: number
 }
 
-interface MonitorStats {
-  gpus: { count: number; gpus: GpuInfo[] }
+export interface SystemStats {
+  cpu_usage_percent: number
+  cpu_count: number
+  memory_total_gb: number
+  memory_used_gb: number
+  memory_available_gb: number
 }
 
+interface MonitorStats {
+  gpus: { count: number; gpus: GpuInfo[] }
+  system: SystemStats
+}
+
+const fetchMonitorStats = () => apiFetch<MonitorStats>('/api/v1/monitor/stats')
+const MONITOR_QK = ['monitor', 'stats'] as const
+
+// useGpuStats / useSystemStats 共享同一 queryKey → React Query 去重,一次轮询两处用。
 export function useGpuStats() {
   return useQuery({
-    queryKey: ['monitor', 'stats'],
-    queryFn: async () => {
-      const data = await apiFetch<MonitorStats>('/api/v1/monitor/stats')
-      return data.gpus.gpus
-    },
-    refetchInterval: 2_000,  // 2s 轮询,task panel 显示用够稳
+    queryKey: MONITOR_QK,
+    queryFn: fetchMonitorStats,
+    select: (d) => d.gpus.gpus,
+    refetchInterval: 2_000,
+    staleTime: 1_500,
+  })
+}
+
+export function useSystemStats() {
+  return useQuery({
+    queryKey: MONITOR_QK,
+    queryFn: fetchMonitorStats,
+    select: (d) => d.system,
+    refetchInterval: 2_000,
     staleTime: 1_500,
   })
 }
