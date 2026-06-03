@@ -379,7 +379,7 @@ async def create_response(
     cached_messages, _ttl = await resolve_for_request(
         session,
         context_id=req.context_id,
-        instance_id=instance.id,
+        owner_key_id=api_key.id,
         engine_name=engine_name,
     )
 

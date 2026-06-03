@@ -274,17 +274,17 @@ async def chat_completions(
             cached_messages, cached_ttl = await resolve_for_request(
                 cache_session,
                 context_id=context_id,
-                instance_id=instance.id,
+                owner_key_id=api_key.id,
                 engine_name=engine_name,
             )
         if cached_messages:
             body["messages"] = cached_messages + list(body.get("messages", []))
 
         # Fire-and-forget hit-count update; loop persists across requests under uvicorn.
-        async def _bump(cid: str = context_id, ttl: int = cached_ttl):
+        async def _bump(cid: str = context_id, ttl: int = cached_ttl, kid: int = api_key.id):
             try:
                 async with _csf()() as s2:
-                    await _ihe(s2, cid, ttl)
+                    await _ihe(s2, cid, ttl, owner_key_id=kid)
             except Exception:
                 logger.exception("hit_count update failed for %s", cid)
         asyncio.create_task(_bump())
