@@ -175,8 +175,10 @@ async def test_services_me_mn_key(api_client, mock_vllm):
 
 
 @pytest.mark.asyncio
-async def test_services_me_legacy_key(api_client, bearer_headers, mock_vllm):
-    """Legacy 1:1 key returns a single synthetic row with status=legacy."""
+async def test_services_me_returns_granted_service(api_client, bearer_headers, mock_vllm):
+    """legacy rip:默认 key 现在是 M:N,/services/me 返回它被授权的服务(grant_status=active)。"""
     r = await api_client.get("/api/v1/services/me", headers=bearer_headers)
     assert r.status_code == 200
-    assert r.json()[0]["grant_status"] == "legacy"
+    body = r.json()
+    assert body[0]["grant_status"] == "active"
+    assert body[0]["instance_name"] == "qwen3.5"

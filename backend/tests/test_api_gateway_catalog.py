@@ -14,12 +14,12 @@ from src.models.service_instance import ServiceInstance
 
 @pytest.mark.asyncio
 async def test_catalog_empty_when_no_instances_seeded_beyond_fixture(api_client, mock_vllm):
-    """Fixture seeds one 'qwen3.5 test instance'. Catalog returns at least that row."""
+    """Fixture seeds one service named 'qwen3.5'. Catalog returns at least that row."""
     r = await api_client.get("/api/v1/services/catalog")
     assert r.status_code == 200, r.text
     data = r.json()
     names = [d["instance_name"] for d in data]
-    assert "qwen3.5 test instance" in names
+    assert "qwen3.5" in names
 
 
 @pytest.mark.asyncio

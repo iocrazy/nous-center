@@ -184,7 +184,7 @@ async def test_api_generate_non_stream(api_client, mock_vllm, bearer_headers):
 
 
 @pytest.mark.asyncio
-async def test_api_tags_legacy_key_sees_its_instance(
+async def test_api_tags_key_sees_granted_service(
     api_client, mock_vllm, bearer_headers,
 ):
     resp = await api_client.get("/api/tags", headers=bearer_headers)
@@ -192,7 +192,7 @@ async def test_api_tags_legacy_key_sees_its_instance(
     data = resp.json()
     assert "models" in data
     names = [m["name"] for m in data["models"]]
-    # Legacy fixture's instance is named "qwen3.5 test instance".
+    # Default fixture's M:N key is granted the service named "qwen3.5".
     assert any("qwen3.5" in n for n in names)
 
 

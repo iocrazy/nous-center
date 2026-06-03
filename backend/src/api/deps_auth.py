@@ -43,17 +43,14 @@ async def verify_bearer_token_any(
     authorization: str = Header(...),
     session: AsyncSession = Depends(get_async_session),
 ) -> tuple[ServiceInstance | None, InstanceApiKey]:
-    """Global bearer auth for /v1/* endpoints, tolerant of M:N keys (instance_id NULL).
+    """Global bearer auth for /v1/* endpoints (M:N keys only).
 
-    Returned instance is None for M:N keys; the caller resolves the target via
-    `model_resolver.resolve_target_service(api_key, request.model)` then enforces
-    rate limits on it.
-
-    Legacy keys (instance_id set) are resolved and rate-limited up-front. No live
-    subsystem creates such keys anymore (the instance/instance_keys 1:1 routes were
-    deleted), but the branch + test fixtures still exercise it; collapsing
-    verify_bearer_token_any to M:N-only is a separate PR that must first migrate the
-    conftest default key (legacy → M:N + grant) and re-verify the full suite.
+    Always returns ``(None, key)``; the caller resolves the target service via
+    `model_resolver.resolve_target_service(api_key, request.model)` and enforces
+    rate limits on it. The legacy 1:1 binding regime is gone (the instance /
+    instance_keys / verify_instance_key subsystem was deleted in the legacy rip);
+    `InstanceApiKey.instance_id` stays nullable for schema stability but is always
+    NULL. The ``(instance, key)`` tuple shape is kept so callers stay uniform.
     """
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, detail="Invalid authorization header")
@@ -74,14 +71,9 @@ async def verify_bearer_token_any(
                 raise AuthenticationError(
                     "API key expired", code="api_key_expired",
                 )
-            if key.instance_id is None:
-                # M:N key; rate limits enforced after resolution.
-                return None, key
-            instance = await session.get(ServiceInstance, key.instance_id)
-            if instance and instance.status == "active":
-                await enforce_instance_rate_limit(instance)
-                return instance, key
-            raise HTTPException(403, detail="Instance is inactive")
+            # M:N: rate limits enforced by the caller after model resolution.
+            return None, key
 
+    # Always do one bcrypt round to prevent timing-based probing.
     bcrypt.checkpw(token.encode(), _DUMMY_HASH.encode())
     raise HTTPException(401, detail="Invalid API key")

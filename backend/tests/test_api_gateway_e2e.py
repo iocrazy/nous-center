@@ -59,9 +59,9 @@ async def test_full_provision_and_consume_flow(api_client, mock_vllm):
 
     # Stub the model_manager so /v1/chat/completions resolves the mn key's
     # M:N-target instance to a "loaded" adapter at test-vllm.invalid.
-    # (api_client fixture already stubs qwen3.5 by default; we reuse it by
+    # (api_client fixture already stubs qwen-e2e by default; we reuse it by
     # using that name for our instance.)
-    raw_key, key_id, inst_id = await _seed_instance_and_mn_key(sf, name="qwen3.5")
+    raw_key, key_id, inst_id = await _seed_instance_and_mn_key(sf, name="qwen-e2e")
 
     # 1. Admin: create grant.
     r = await api_client.post(
@@ -93,7 +93,7 @@ async def test_full_provision_and_consume_flow(api_client, mock_vllm):
     r = await api_client.post(
         "/v1/chat/completions",
         json={
-            "model": "qwen3.5",
+            "model": "qwen-e2e",
             "messages": [{"role": "user", "content": "hi"}],
         },
         headers={"Authorization": f"Bearer {raw_key}"},
@@ -114,7 +114,7 @@ async def test_full_provision_and_consume_flow(api_client, mock_vllm):
     r = await api_client.post(
         "/api/chat",
         json={
-            "model": "qwen3.5",
+            "model": "qwen-e2e",
             "messages": [{"role": "user", "content": "hi again"}],
             "stream": False,
         },
@@ -139,7 +139,7 @@ async def test_grant_pause_blocks_the_call(api_client, mock_vllm):
     untouched — no tokens served, no tokens consumed. Reactivating
     restores service."""
     sf = api_client.app.state.async_session_factory
-    raw_key, key_id, inst_id = await _seed_instance_and_mn_key(sf, name="qwen3.5")
+    raw_key, key_id, inst_id = await _seed_instance_and_mn_key(sf, name="qwen-e2e")
 
     r = await api_client.post(
         f"/api/v1/keys/{key_id}/grants", json={"instance_id": inst_id},
@@ -161,7 +161,7 @@ async def test_grant_pause_blocks_the_call(api_client, mock_vllm):
     r = await api_client.post(
         "/v1/chat/completions",
         json={
-            "model": "qwen3.5",
+            "model": "qwen-e2e",
             "messages": [{"role": "user", "content": "hi"}],
         },
         headers={"Authorization": f"Bearer {raw_key}"},
@@ -177,7 +177,7 @@ async def test_grant_pause_blocks_the_call(api_client, mock_vllm):
     r = await api_client.post(
         "/v1/chat/completions",
         json={
-            "model": "qwen3.5",
+            "model": "qwen-e2e",
             "messages": [{"role": "user", "content": "hi"}],
         },
         headers={"Authorization": f"Bearer {raw_key}"},
@@ -193,7 +193,7 @@ async def test_tags_reflects_active_grants_only(api_client, mock_vllm):
     """Ollama /api/tags lists every instance reachable via active grants.
     Pausing one removes it from the listing."""
     sf = api_client.app.state.async_session_factory
-    raw_key, key_id, inst_id = await _seed_instance_and_mn_key(sf, name="qwen3.5")
+    raw_key, key_id, inst_id = await _seed_instance_and_mn_key(sf, name="qwen-e2e")
     # Second instance to exercise multi-grant visibility.
     async with sf() as s:
         inst2 = ServiceInstance(
@@ -217,7 +217,7 @@ async def test_tags_reflects_active_grants_only(api_client, mock_vllm):
     )
     assert r.status_code == 200
     names = sorted(m["name"] for m in r.json()["models"])
-    assert names == ["other", "qwen3.5"]
+    assert names == ["other", "qwen-e2e"]
 
     # Pause the second grant.
     await api_client.patch(f"/api/v1/grants/{gid2}", json={"status": "paused"})
@@ -225,4 +225,4 @@ async def test_tags_reflects_active_grants_only(api_client, mock_vllm):
     r = await api_client.get(
         "/api/tags", headers={"Authorization": f"Bearer {raw_key}"},
     )
-    assert [m["name"] for m in r.json()["models"]] == ["qwen3.5"]
+    assert [m["name"] for m in r.json()["models"]] == ["qwen-e2e"]
