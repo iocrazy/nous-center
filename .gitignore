@@ -57,3 +57,4 @@ backend/data/*.db-wal
 
 # Per-run eval output (committed baselines live in baselines/)
 backend/tests/evals/compact/latest_report.json
+backend/configs/runtime_overrides.json
