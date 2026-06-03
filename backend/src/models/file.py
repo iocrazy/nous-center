@@ -15,9 +15,11 @@ class File(Base):
     __tablename__ = "files"
 
     id = Column(String(64), primary_key=True)  # file-{token_urlsafe(12)}
-    instance_id = Column(
+    # legacy rip PR-5b:文件作用域从「绑服务 instance」改成「绑调用方 API key」(M:N 无单一 instance,
+    # 谁上传谁拥有)。dedup 键 (api_key_id, sha256)。旧 instance_id 列经迁移降为 nullable 孤儿(开发期空表)。
+    api_key_id = Column(
         BigInteger,
-        ForeignKey("service_instances.id", ondelete="CASCADE"),
+        ForeignKey("instance_api_keys.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -35,9 +37,9 @@ class File(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "instance_id", "sha256", name="uq_files_instance_sha256"
+            "api_key_id", "sha256", name="uq_files_apikey_sha256"
         ),
         Index(
-            "ix_files_instance_created", "instance_id", "created_at"
+            "ix_files_apikey_created", "api_key_id", "created_at"
         ),
     )

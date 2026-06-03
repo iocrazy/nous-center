@@ -78,29 +78,21 @@ async def test_get_unknown_file_404(file_client):
     assert r.json()["error"]["code"] == "file_not_found"
 
 
-async def test_other_instance_blocked_403(db_client, sample_api_key, sample_instance, db_session):
-    """A file uploaded by instance A must not be GETtable by instance B."""
+async def test_other_key_blocked_403(db_client, sample_api_key, db_session):
+    """PR-5b:文件按 API key 切作用域 —— key A 传的文件,key B 取不到(403 file_wrong_owner)。"""
     import bcrypt
     import secrets as _sec
     from src.models.instance_api_key import InstanceApiKey
-    from src.models.service_instance import ServiceInstance
 
-    # Upload as instance A
+    # Upload as key A
     db_client.headers["Authorization"] = f"Bearer {sample_api_key}"
     r = await _upload(db_client)
     fid = r.json()["id"]
 
-    # Create instance B + key
-    inst_b = ServiceInstance(
-        source_type="model", source_name="other", name="b",
-        type="llm", status="active",
-    )
-    db_session.add(inst_b)
-    await db_session.commit()
-    await db_session.refresh(inst_b)
+    # 另一个 M:N key B(instance_id=None)
     raw_b = f"sk-other-{_sec.token_hex(8)}"
     db_session.add(InstanceApiKey(
-        instance_id=inst_b.id, label="b",
+        instance_id=None, label="b",
         key_hash=bcrypt.hashpw(raw_b.encode(), bcrypt.gensalt()).decode(),
         key_prefix=raw_b[:10], is_active=True,
     ))
@@ -109,7 +101,7 @@ async def test_other_instance_blocked_403(db_client, sample_api_key, sample_inst
     db_client.headers["Authorization"] = f"Bearer {raw_b}"
     cross = await db_client.get(f"/v1/files/{fid}")
     assert cross.status_code == 403
-    assert cross.json()["error"]["code"] == "file_wrong_instance"
+    assert cross.json()["error"]["code"] == "file_wrong_owner"
 
 
 async def test_list_pagination_with_after_cursor(file_client):

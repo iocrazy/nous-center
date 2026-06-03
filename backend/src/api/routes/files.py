@@ -1,7 +1,7 @@
 """Files API (Step 5) — upload, get, list, download, delete.
 
 Content-addressed local storage at `backend/data/files/{sha256[:2]}/{sha256}`.
-Dedup per (instance_id, sha256): repeated uploads return the same `file-xxx` id.
+Dedup per (api_key_id, sha256): repeated uploads return the same `file-xxx` id.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps_auth import verify_bearer_token
+from src.api.deps_auth import verify_bearer_token_any
 from src.errors import (
     InvalidRequestError, NotFoundError,
     PermissionError as NousPermissionError,
@@ -77,10 +77,10 @@ class _PayloadTooLarge(NousError):
 async def upload_file(
     file: UploadFile = UploadField(...),
     purpose: str = Form(...),
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    instance, _ = auth
+    _, api_key = auth
     if purpose not in ALLOWED_PURPOSES:
         raise InvalidRequestError(
             f"purpose must be one of {sorted(ALLOWED_PURPOSES)}",
@@ -114,15 +114,15 @@ async def upload_file(
         # Dedup check
         existing = (await session.execute(
             select(FileRow).where(
-                FileRow.instance_id == instance.id,
+                FileRow.api_key_id == api_key.id,
                 FileRow.sha256 == sha,
             )
         )).scalar_one_or_none()
         if existing is not None:
             return _render(existing)
 
-        # Move tmp -> content-addressed path (shared across instances OK;
-        # other instance may have already placed the same content)
+        # Move tmp -> content-addressed path (shared across keys OK;
+        # another key may have already placed the same content)
         dest = _storage_path_for(sha)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists():
@@ -132,7 +132,7 @@ async def upload_file(
 
         row = FileRow(
             id=_new_file_id(),
-            instance_id=instance.id,
+            api_key_id=api_key.id,
             purpose=purpose,
             filename=file.filename or "unnamed",
             bytes=total,
@@ -154,14 +154,14 @@ async def upload_file(
                 pass
 
 
-async def _load_owned(session: AsyncSession, file_id: str, instance_id: int) -> FileRow:
+async def _load_owned(session: AsyncSession, file_id: str, api_key_id: int) -> FileRow:
     row = await session.get(FileRow, file_id)
     if row is None:
         raise NotFoundError("file not found", code="file_not_found")
-    if row.instance_id != instance_id:
+    if row.api_key_id != api_key_id:
         raise NousPermissionError(
-            "file belongs to another instance",
-            code="file_wrong_instance",
+            "file belongs to another API key",
+            code="file_wrong_owner",
         )
     return row
 
@@ -169,22 +169,22 @@ async def _load_owned(session: AsyncSession, file_id: str, instance_id: int) -> 
 @router.get("/v1/files/{file_id}")
 async def get_file(
     file_id: str,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    instance, _ = auth
-    row = await _load_owned(session, file_id, instance.id)
+    _, api_key = auth
+    row = await _load_owned(session, file_id, api_key.id)
     return _render(row)
 
 
 @router.get("/v1/files/{file_id}/content")
 async def download_file(
     file_id: str,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    instance, _ = auth
-    row = await _load_owned(session, file_id, instance.id)
+    _, api_key = auth
+    row = await _load_owned(session, file_id, api_key.id)
     p = Path(row.storage_path)
     if not p.exists():
         raise NotFoundError(
@@ -199,20 +199,20 @@ async def download_file(
 
 @router.get("/v1/files")
 async def list_files(
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
     purpose: str | None = None,
     limit: int = 20,
     after: str | None = None,
 ):
-    instance, _ = auth
+    _, api_key = auth
     limit = max(1, min(limit, 100))
-    stmt = select(FileRow).where(FileRow.instance_id == instance.id)
+    stmt = select(FileRow).where(FileRow.api_key_id == api_key.id)
     if purpose:
         stmt = stmt.where(FileRow.purpose == purpose)
     if after:
         anchor = await session.get(FileRow, after)
-        if anchor is None or anchor.instance_id != instance.id:
+        if anchor is None or anchor.api_key_id != api_key.id:
             raise InvalidRequestError(
                 "after cursor not found",
                 code="invalid_cursor",
@@ -240,11 +240,11 @@ async def list_files(
 @router.delete("/v1/files/{file_id}")
 async def delete_file(
     file_id: str,
-    auth: tuple[ServiceInstance, InstanceApiKey] = Depends(verify_bearer_token),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    instance, _ = auth
-    row = await _load_owned(session, file_id, instance.id)
+    _, api_key = auth
+    row = await _load_owned(session, file_id, api_key.id)
     # Don't touch disk blob: other instances may share the same sha256.
     # Orphan reaper (future) can GC unreferenced blobs.
     await session.delete(row)
