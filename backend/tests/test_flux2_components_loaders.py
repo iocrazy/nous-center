@@ -68,11 +68,12 @@ def test_load_vae_widgets_have_file_dtype():
 
 
 def test_load_clip_widgets_clip_stack_and_type():
-    """PR-3 动态多 CLIP:Load CLIP 用 clip_stack(增删条目)+ type(架构),
-    不再是单 file(节点级 componentRole 移除,改 clip_stack 每行状态点)。"""
+    """PR-3 动态多 CLIP:Load CLIP 用 clip_stack(增删条目)+ type(架构)。
+    PR-C(#342):重新加 componentRole=clip → 节点级**聚合**四态 header
+    (ClipAggregateStatusHeader,全 encoder loaded 才 loaded);clip_stack 每行 per-row 点保留。"""
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
     clip = cfg["nodes"]["flux2_load_clip"]
-    assert "componentRole" not in clip
+    assert clip.get("componentRole") == "clip"
     clip_w = {w["name"]: w for w in clip["widgets"]}
     assert clip_w["clips"]["widget"] == "clip_stack"
     assert clip_w["type"]["widget"] == "select"
