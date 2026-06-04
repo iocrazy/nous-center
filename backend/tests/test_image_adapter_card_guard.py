@@ -59,6 +59,28 @@ async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
     assert adapter is not None
 
 
+@pytest.mark.asyncio
+async def test_guard_skipped_when_combo_already_loaded(mm, monkeypatch):
+    """combo 已加载(self._models 有该 model_id)→ 跳守卫。显式选卡 re-run 时组件已在该卡上,
+    守卫却按「全新装载」从 file bytes 估需求 → free 因 combo 已占而偏低 → 旧版误判「卡被自己
+    占满」拦死合法复用(本 session 真机踩)。已加载 = 纯 cache hit、零新显存 → 跳守卫安全。"""
+    # 卡空闲极低 —— 若守卫真跑(估出需求)会 raise;这里只验它被**跳过**(根本不调)。
+    monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: 1)
+    # 固定 model_id 并预置进 _models = 模拟 combo 已加载。
+    monkeypatch.setattr(mm, "_derive_image_model_id", lambda combo_key: "already-loaded-combo")
+    mm._models["already-loaded-combo"] = object()
+    guard_calls: list = []
+    monkeypatch.setattr(mm, "_guard_image_vram_per_card", lambda resolved: guard_calls.append(True))
+
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
+        return "stub-adapter"
+
+    monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
+    adapter = await mm.get_or_load_image_adapter(_comps("cuda:1"), "Flux2KleinPipeline")
+    assert adapter == "stub-adapter"
+    assert guard_calls == []  # combo 已加载 → 守卫被跳过
+
+
 def test_estimate_vram_fp8_halves_transformer_and_clip(mm, tmp_path):
     """fp8 weight-only:transformer + clip 按 file bytes 的一半估(vae 不量化全计),
     所以 fp8 估算 ≈ bf16 估算 - (transformer+clip)/2 的余量倍数。"""
