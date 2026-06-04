@@ -17,6 +17,8 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { nodeTypes } from './nodeTypes'
+import PortTypedEdge from '../edges/PortTypedEdge'
+import { PORT_TYPE_COLORS } from './portColors'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
@@ -116,19 +118,34 @@ export default function NodeEditor() {
     [workflow.nodes, nodeStates],
   )
 
+  // 节点 id → type:给 PortTypedEdge 按 source 端口推 PortType 着色用。
+  const nodeTypeById = useMemo(
+    () => Object.fromEntries(workflow.nodes.map((n) => [n.id, n.type])) as Record<string, string>,
+    [workflow.nodes],
+  )
+
   const rfEdges: Edge[] = useMemo(
     () =>
-      workflow.edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        sourceHandle: e.sourceHandle,
-        target: e.target,
-        targetHandle: e.targetHandle,
-        style: { stroke: 'var(--muted-strong)' },
-        animated: true,
-      })),
-    [workflow.edges],
+      workflow.edges.map((e) => {
+        // source 端口类型 → 颜色(复用端口圆点配色)。推不出则回退 muted。
+        const portType = getPortType(nodeTypeById[e.source] ?? '', e.sourceHandle)
+        const color = portType
+          ? PORT_TYPE_COLORS[portType] ?? 'var(--muted-strong)'
+          : 'var(--muted-strong)'
+        return {
+          id: e.id,
+          source: e.source,
+          sourceHandle: e.sourceHandle,
+          target: e.target,
+          targetHandle: e.targetHandle,
+          type: 'portTyped',
+          data: { color, portType },
+        }
+      }),
+    [workflow.edges, nodeTypeById],
   )
+
+  const edgeTypes = useMemo(() => ({ portTyped: PortTypedEdge }), [])
 
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState(rfNodes)
   const [edges, setEdges, onEdgesChangeInternal] = useEdgesState(rfEdges)
@@ -195,9 +212,7 @@ export default function NodeEditor() {
 
   const onConnect = useCallback(
     (params: Connection) => {
-      setEdges((eds) =>
-        addEdge({ ...params, animated: true, style: { stroke: 'var(--muted-strong)' } }, eds),
-      )
+      setEdges((eds) => addEdge({ ...params, type: 'portTyped' }, eds))
       const edgeId = crypto.randomUUID().slice(0, 8)
       storeAddEdge({
         id: edgeId,
@@ -327,22 +342,15 @@ export default function NodeEditor() {
             storeRemoveEdge(edge.id)
           }}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           deleteKeyCode={['Backspace', 'Delete']}
           edgesReconnectable
           fitView
           fitViewOptions={{ padding: 0.1, minZoom: 0.5, maxZoom: 1.5 }}
           defaultEdgeOptions={{
-            animated: true,
-            style: { stroke: 'var(--muted-strong)', strokeWidth: 2 },
+            type: 'portTyped',
             focusable: true,
             interactionWidth: 20,
-          }}
-          onEdgeClick={(_event, edge) => {
-            setEdges((eds) => eds.map((e) =>
-              e.id === edge.id
-                ? { ...e, selected: true, style: { stroke: 'var(--accent)', strokeWidth: 3 } }
-                : { ...e, selected: false, style: { stroke: 'var(--muted-strong)', strokeWidth: 2 } }
-            ))
           }}
           style={{ background: 'var(--bg)' }}
         >
