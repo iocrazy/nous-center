@@ -270,16 +270,27 @@ def _enable_cross_gpu_offload(pipe: Any, *, compute_device: str, stash_device: s
 
 def _move_to_device(obj: Any, device: Any) -> Any:
     """Recursively move tensors in nested args/kwargs/outputs to `device`,
-    leaving non-tensors (and tensors already there) untouched."""
+    leaving non-tensors (and tensors already there) untouched.
+
+    dict-likes are mutated **in place** so transformers `ModelOutput` (a dict
+    subclass whose fields double as attributes — `output.hidden_states`) keeps
+    its type. Rebuilding as a plain dict drops the attribute access and breaks
+    diffusers' `output.hidden_states` use in encode_prompt."""
     import torch  # noqa: PLC0415
     if torch.is_tensor(obj):
         return obj.to(device) if obj.device != device else obj
-    if isinstance(obj, tuple):
-        return tuple(_move_to_device(o, device) for o in obj)
+    if isinstance(obj, dict):
+        for k in list(obj.keys()):
+            obj[k] = _move_to_device(obj[k], device)
+        return obj
     if isinstance(obj, list):
         return [_move_to_device(o, device) for o in obj]
-    if isinstance(obj, dict):
-        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, tuple):
+        moved = [_move_to_device(o, device) for o in obj]
+        try:
+            return type(obj)(moved)  # plain tuple; namedtuple needs *moved
+        except TypeError:
+            return type(obj)(*moved)
     return obj
 
 
@@ -321,6 +332,23 @@ def _place_components_per_device(
                 return _move_to_device(output, self.return_device)
             return output
 
+    def _wrap_method(module: Any, method_name: str, run_device: Any, return_device: Any) -> None:
+        """包住非 forward 入口(vae.decode / vae.encode):accelerate hook 只拦 forward,
+        而 diffusers 经 `vae.decode(latents)` 调用 → 绕过 forward hook → 权重在卡 X、输入在卡 Y
+        的 conv device mismatch。包方法:输入挪到组件卡,输出挪回 compute。"""
+        orig = getattr(module, method_name, None)
+        if orig is None or getattr(orig, "_per_component_wrapped", False):
+            return
+
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            args = _move_to_device(args, run_device)
+            kwargs = _move_to_device(kwargs, run_device)
+            out = orig(*args, **kwargs)
+            return _move_to_device(out, return_device) if return_device is not None else out
+
+        wrapped._per_component_wrapped = True  # type: ignore[attr-defined]
+        setattr(module, method_name, wrapped)
+
     for name, dev in comp_devices.items():
         module = getattr(pipe, name, None)
         if not isinstance(module, torch.nn.Module):
@@ -333,6 +361,10 @@ def _place_components_per_device(
         elif dev_t != compute_t:
             # 跨卡组件:输入挪到自己的卡,输出挪回 compute(主流回到锚点卡)。
             add_hook_to_module(module, _CrossDeviceHook(dev_t, compute_t), append=True)
+            # vae 经 .decode()/.encode() 方法调用(非 forward)→ 额外包方法对齐设备。
+            if name == "vae":
+                _wrap_method(module, "decode", dev_t, compute_t)
+                _wrap_method(module, "encode", dev_t, compute_t)
 
 
 class ModularImageBackend(InferenceAdapter):
