@@ -59,7 +59,8 @@ def _ssim(p1: Path, p2: Path) -> float | None:
     return float(ssim(a, b, channel_axis=2))
 
 
-async def _run(label: str, clip_dev: str, vae_dev: str) -> Path:
+async def _run(label: str, clip_dev: str, vae_dev: str,
+               clip_off: str = "none", vae_off: str = "none") -> Path:
     from src.services.gpu_allocator import GPUAllocator
     from src.services.inference.base import ImageRequest
     from src.services.inference.component_spec import ComponentSpec
@@ -74,8 +75,8 @@ async def _run(label: str, clip_dev: str, vae_dev: str) -> Path:
     components = {
         "diffusion_models": ComponentSpec(kind="diffusion_models", file=UNET, device=COMPUTE,
                                           dtype="bfloat16", adapter_arch="flux2", loras=[]),
-        "clip": ComponentSpec(kind="clip", file=CLIP, device=clip_dev, dtype="bfloat16"),
-        "vae": ComponentSpec(kind="vae", file=VAE, device=vae_dev, dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file=CLIP, device=clip_dev, dtype="bfloat16", offload=clip_off),
+        "vae": ComponentSpec(kind="vae", file=VAE, device=vae_dev, dtype="bfloat16", offload=vae_off),
     }
     mm = ModelManager(registry=_EmptyRegistry(), allocator=GPUAllocator())
     adapter = await mm.get_or_load_image_adapter(components, "Flux2KleinPipeline")
@@ -86,7 +87,7 @@ async def _run(label: str, clip_dev: str, vae_dev: str) -> Path:
     OUT_DIR.mkdir(exist_ok=True)
     out = OUT_DIR / f"smoke_pcd_{label}.png"
     out.write_bytes(res.data)
-    print(f"  [{label}] clip={clip_dev} vae={vae_dev} → {out.name} "
+    print(f"  [{label}] clip={clip_dev}({clip_off}) vae={vae_dev}({vae_off}) → {out.name} "
           f"({getattr(res.usage, 'latency_ms', None)}ms)")
     # 彻底释放,下个 case 重新装(cuda:1 上有 ~46GB 常驻,预算紧)。
     import gc
@@ -111,17 +112,26 @@ async def _run(label: str, clip_dev: str, vae_dev: str) -> Path:
 async def main() -> int:
     print(f"逐组件选卡 smoke:transformer={COMPUTE} (锚点);"
           f"baseline=全 {COMPUTE} / cross=clip {CLIP_DEV}+vae {VAE_DEV}")
-    # cross 先跑(cuda:1 最空时装 transformer);再跑 baseline。
-    cross = await _run("cross", CLIP_DEV, VAE_DEV)
-    base = await _run("baseline", COMPUTE, COMPUTE)
-    s = _ssim(base, cross)
+    # SMOKE_BASELINE=card → 跟「整模型单卡」比(需该卡能装下全模型);默认不跑(cuda:1 被
+    # 用户 vLLM/runner 占满)。核心验证:**逐组件 offload 不改输出** —— 同为逐组件跨卡放置,
+    # vae 在 VAE_DEV 上 forward(两 case 同卡同硬件),仅 test 把 vae 权重 offload=cpu(forward
+    # 时挪上卡)→ 数值应等价(SSIM ≈ 1.0)。放置正确性本身另由 baseline 模式 / 早先 0.9995 验。
+    ref = await _run("cross_resident", CLIP_DEV, VAE_DEV)
+    test = await _run("cross_vae_cpu_offload", CLIP_DEV, VAE_DEV, vae_off="cpu")
+    s = _ssim(ref, test)
+    base_card = os.environ.get("SMOKE_BASELINE")
+    base_ssim = None
+    if base_card:
+        base = await _run("baseline", base_card, base_card)
+        base_ssim = _ssim(base, ref)
     if s is None:
         print("PASS(出图无异常;装 scikit-image 看 SSIM)")
         return 0
-    print(f"SSIM(baseline, cross) = {s:.4f}")
-    ok = s >= 0.97
-    print("PASS — 逐组件跨卡出图与整模型单卡等价" if ok
-          else "FAIL — 跨卡放置出图偏差过大(SSIM < 0.97)")
+    print(f"SSIM(cross_resident, cross_vae_cpu_offload) = {s:.4f}  ← 逐组件 offload 正确性")
+    if base_ssim is not None:
+        print(f"SSIM(baseline 整模型单卡, cross_resident)   = {base_ssim:.4f}  ← 逐组件放置正确性")
+    ok = s >= 0.97 and (base_ssim is None or base_ssim >= 0.97)
+    print("PASS — 逐组件跨卡 + 逐组件 offload 出图等价" if ok else "FAIL — 偏差过大(SSIM < 0.97)")
     return 0 if ok else 1
 
 

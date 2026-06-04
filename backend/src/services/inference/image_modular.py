@@ -294,56 +294,86 @@ def _move_to_device(obj: Any, device: Any) -> Any:
     return obj
 
 
+def _offload_stash(offload: str) -> Any:
+    """逐组件 offload → stash 设备(权重闲时停哪):none→None(常驻);cpu→cpu;cuda:N→该卡。"""
+    import torch  # noqa: PLC0415
+    if not offload or offload == "none":
+        return None
+    if offload == "cpu":
+        return torch.device("cpu")
+    return torch.device(offload)
+
+
 def _place_components_per_device(
     pipe: Any, *, compute_device: str, comp_devices: dict[str, str],
+    comp_offloads: dict[str, str] | None = None,
 ) -> None:
-    """逐组件跨卡放置(2026-06-04 spec):每个组件常驻**自己选的卡**并在那张卡上 forward,
+    """逐组件跨卡放置 + 逐组件 offload(2026-06-04 spec):每个组件在**自己选的卡**上 forward,
     跨卡张量流由 forward 边界的 accelerate ModelHook 透明搬运 —— 不依赖 diffusers 内部
     对 mixed-device 的支持(那正是 2026-05-21 放弃逐组件跨卡的脆弱点)。
 
-    comp_devices: {"transformer": dev, "text_encoder": dev, "vae": dev}(都是解析后的具体卡)。
+    comp_devices:  {"transformer": dev, "text_encoder": dev, "vae": dev}(解析后的具体卡 = 各组件 compute 卡)。
+    comp_offloads: 各组件的 offload(none=常驻 compute 卡;cpu / cuda:N=权重 stash 那里,forward 时挪到 compute 卡)。
     compute_device = transformer 的卡 = denoise / latents 的锚点(pipe._execution_device)。
 
-    机制(在 nn.Module.forward 边界挂 hook,与上游 encode_prompt/__call__ 怎么调无关):
-      - 非锚点组件(text_encoder/vae):pre_forward 把输入挪到该组件自己的卡跑,post_forward
-        把输出挪回 compute 卡 —— 这样 pipe 主流(latents/embeds 流)始终在 compute 卡,
-        encode_prompt 即便把 token ids 挪到 compute,text_encoder 的 hook 也会再挪到它的卡。
-      - 锚点组件(transformer):只设 execution_device=compute(让 diffusers `_execution_device`
-        无歧义解析到 compute,latents/noise 分配在 compute),不改输出。
+    机制(在 nn.Module.forward 边界挂 hook,与上游 encode_prompt/__call__ 怎么调用无关):
+      - 非锚点组件(text_encoder/vae):pre_forward 把输入挪到该组件 compute 卡跑,post_forward
+        把输出挪回锚点卡 —— pipe 主流(latents/embeds 流)始终在锚点卡。
+      - 锚点组件(transformer):设 execution_device=compute(让 diffusers `_execution_device`
+        无歧义解析到 compute),输出不挪。
+      - offload(stash≠None):init 把权重停 stash;pre_forward 把权重挪到 compute 卡;post_forward
+        挪回 stash —— 等价 enable_model_cpu_offload / 跨卡 stash,但**逐组件**。
     """
     import torch  # noqa: PLC0415
     from accelerate.hooks import ModelHook, add_hook_to_module  # noqa: PLC0415
 
     compute_t = torch.device(compute_device)
+    comp_offloads = comp_offloads or {}
 
     class _CrossDeviceHook(ModelHook):
-        def __init__(self, run_device: Any, return_device: Any, execution_device: Any = None):
+        def __init__(self, run_device: Any, return_device: Any, *,
+                     stash_device: Any = None, execution_device: Any = None):
             self.run_device = torch.device(run_device)
             self.return_device = torch.device(return_device) if return_device is not None else None
+            self.stash_device = torch.device(stash_device) if stash_device is not None else None
             # diffusers `_execution_device` 扫描 `_hf_hook.execution_device`;只在锚点设值,
             # 其余设 None 让扫描跳过 → _execution_device 无歧义解析到 compute 卡。
             self.execution_device = torch.device(execution_device) if execution_device is not None else None
 
+        def init_hook(self, module: Any) -> Any:
+            if self.stash_device is not None:
+                module.to(self.stash_device)  # 权重停 stash
+            return module
+
         def pre_forward(self, module: Any, *args: Any, **kwargs: Any) -> Any:
+            if self.stash_device is not None:
+                module.to(self.run_device)    # 用前挪到 compute 卡
             return (_move_to_device(args, self.run_device), _move_to_device(kwargs, self.run_device))
 
         def post_forward(self, module: Any, output: Any) -> Any:
+            if self.stash_device is not None:
+                module.to(self.stash_device)  # 用后挪回 stash
             if self.return_device is not None:
                 return _move_to_device(output, self.return_device)
             return output
 
-    def _wrap_method(module: Any, method_name: str, run_device: Any, return_device: Any) -> None:
+    def _wrap_method(module: Any, method_name: str, run_device: Any, return_device: Any,
+                     stash_device: Any = None) -> None:
         """包住非 forward 入口(vae.decode / vae.encode):accelerate hook 只拦 forward,
-        而 diffusers 经 `vae.decode(latents)` 调用 → 绕过 forward hook → 权重在卡 X、输入在卡 Y
-        的 conv device mismatch。包方法:输入挪到组件卡,输出挪回 compute。"""
+        而 diffusers 经 `vae.decode(latents)` 调用 → 绕过 forward hook。包方法:(offload 时)权重
+        挪到 compute 卡 → 输入挪到 compute 卡 → 调原方法 → (offload 时)权重挪回 stash → 输出挪回锚点卡。"""
         orig = getattr(module, method_name, None)
         if orig is None or getattr(orig, "_per_component_wrapped", False):
             return
 
         def wrapped(*args: Any, **kwargs: Any) -> Any:
+            if stash_device is not None:
+                module.to(run_device)
             args = _move_to_device(args, run_device)
             kwargs = _move_to_device(kwargs, run_device)
             out = orig(*args, **kwargs)
+            if stash_device is not None:
+                module.to(stash_device)
             return _move_to_device(out, return_device) if return_device is not None else out
 
         wrapped._per_component_wrapped = True  # type: ignore[attr-defined]
@@ -354,17 +384,22 @@ def _place_components_per_device(
         if not isinstance(module, torch.nn.Module):
             continue
         dev_t = torch.device(dev)
-        module.to(dev_t)  # 常驻自己的卡
+        stash = _offload_stash(comp_offloads.get(name, "none"))
+        if stash is None:
+            module.to(dev_t)              # 常驻自己的 compute 卡
+        # else: 由 init_hook 停 stash(模块已 build 在 stash 上,init_hook = 确认)
         if name == "transformer":
-            # 锚点:固定 _execution_device=compute,不改输出(latents 留在 compute)。
-            add_hook_to_module(module, _CrossDeviceHook(compute_t, None, execution_device=compute_t), append=True)
-        elif dev_t != compute_t:
-            # 跨卡组件:输入挪到自己的卡,输出挪回 compute(主流回到锚点卡)。
-            add_hook_to_module(module, _CrossDeviceHook(dev_t, compute_t), append=True)
-            # vae 经 .decode()/.encode() 方法调用(非 forward)→ 额外包方法对齐设备。
+            # 锚点:run=compute,execution_device=compute,输出不挪。
+            add_hook_to_module(module, _CrossDeviceHook(
+                compute_t, None, stash_device=stash, execution_device=compute_t), append=True)
+        else:
+            # 非锚点:run=自己 compute 卡,输出挪回锚点卡。
+            add_hook_to_module(module, _CrossDeviceHook(
+                dev_t, compute_t, stash_device=stash), append=True)
+            # vae 经 .decode()/.encode() 方法调用(非 forward)→ 额外包方法(含 offload 权重搬运)。
             if name == "vae":
-                _wrap_method(module, "decode", dev_t, compute_t)
-                _wrap_method(module, "encode", dev_t, compute_t)
+                _wrap_method(module, "decode", dev_t, compute_t, stash)
+                _wrap_method(module, "encode", dev_t, compute_t, stash)
 
 
 class ModularImageBackend(InferenceAdapter):
@@ -389,6 +424,7 @@ class ModularImageBackend(InferenceAdapter):
         text_encoder_override: Any = None,
         vae_override: Any = None,
         comp_devices: dict[str, str] | None = None,
+        comp_offloads: dict[str, str] | None = None,
         **params: Any,
     ):
         # PR-A:删了 components_manager 参数(modular 才需要的;吞剩余 kwargs 兼容旧调用)。
@@ -398,8 +434,10 @@ class ModularImageBackend(InferenceAdapter):
         self.dtype = dtype
         self.pipeline_class = pipeline_class
         # 逐组件跨卡放置(2026-06-04):{"transformer":dev,"text_encoder":dev,"vae":dev}(解析后具体卡)。
-        # None 或三者同卡 = 整模型单卡(旧路径,零回归)。device(=transformer 卡)是 compute 锚点。
+        # None 或三者同卡且同 offload = 整模型单卡(旧路径,零回归)。device(=transformer 卡)是 compute 锚点。
         self.comp_devices = comp_devices or {}
+        # 逐组件 offload:{"transformer":off,"text_encoder":off,"vae":off}(none/cpu/cuda:N)。
+        self.comp_offloads = comp_offloads or {}
         # PR-D:权重 offload 策略 — "none"(全程 GPU)/ "cpu"(enable_model_cpu_offload,大模型塞小卡)。
         # "cuda:N" 跨卡 offload 留 PR-D2(需 accelerate 自定义 hook)。
         self.offload = offload
@@ -472,20 +510,19 @@ class ModularImageBackend(InferenceAdapter):
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
             # offload 时:在 enable_model_cpu_offload 之前量化(accelerate hooks 才看到量化后权重)。
             _quantize_fp8_weight_only(pipe)
-        # 逐组件跨卡放置(2026-06-04):任一组件落与 transformer 不同的卡 → 走逐组件路径。
-        # 全同卡(含全 auto→同 target)→ 落下面的整模型单卡 offload 路径(零回归)。
+        # 逐组件跨卡放置 + 逐组件 offload(2026-06-04):任一组件落与 transformer 不同的卡,
+        # **或**某组件 offload 跟整管线 offload 不同 → 走逐组件路径。全同卡且全同 offload
+        #(含全 auto→同 target、全 none)→ 落下面的整模型单卡 offload 路径(零回归)。
         import torch  # noqa: PLC0415
-        hetero = bool(self.comp_devices) and any(
-            torch.device(d) != torch.device(self.device) for d in self.comp_devices.values()
-        )
-        if hetero:
-            if self.offload != "none":
-                raise NotImplementedError(
-                    "逐组件跨卡放置暂只支持 offload=none(组件常驻各自卡);"
-                    "想 offload 大模型请把组件放同一张卡再用 offload=cpu/cuda:N。"
-                    "(逐组件放置 + offload 组合见 spec 2026-06-04 §5 后续项)")
+        same_card = (not self.comp_devices) or all(
+            torch.device(d) == torch.device(self.device) for d in self.comp_devices.values())
+        same_offload = all(
+            (self.comp_offloads.get(k, "none")) == self.offload for k in self.comp_devices)
+        homogeneous = same_card and same_offload
+        if not homogeneous:
             _place_components_per_device(
-                pipe, compute_device=self.device, comp_devices=self.comp_devices)
+                pipe, compute_device=self.device,
+                comp_devices=self.comp_devices, comp_offloads=self.comp_offloads)
             self._pipe = pipe
             self._model = pipe
             return pipe

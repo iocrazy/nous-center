@@ -921,6 +921,9 @@ class ModelManager:
         need_by_card: dict[str, int] = {}
         for k in ("diffusion_models", "clip", "vae"):
             spec = resolved[k]
+            # 逐组件 offload(cpu/cuda:N)的组件不常驻 compute 卡(forward 时才挪上来)→ 不计入该卡预算。
+            if (getattr(spec, "offload", "none") or "none") != "none":
+                continue
             dev = spec.device
             if not dev.startswith("cuda:"):  # cpu / auto(已解析)等不查
                 continue
@@ -955,7 +958,7 @@ class ModelManager:
         哪个字段变化导致 derived_id 不同。PR-D5 诊断 cache 命中率用。
 
         combo_key shape:
-          (pipeline_class, offload, transformer_key, clip_key, vae_key)
+          (pipeline_class, offload, comp_offloads, transformer_key, clip_key, vae_key)
         每个 component_key shape:
           (file, device, dtype, frozenset[(lora_name, strength), ...])
         """
@@ -969,12 +972,13 @@ class ModelManager:
                 "dtype": dtype,
                 "loras": sorted(f"{n}@{s}" for n, s in (loras or set())),
             }
-        if not isinstance(combo_key, tuple) or len(combo_key) < 5:
+        if not isinstance(combo_key, tuple) or len(combo_key) < 6:
             return {"raw": repr(combo_key)}
-        pclass, offload, t_key, c_key, v_key = combo_key
+        pclass, offload, comp_offloads, t_key, c_key, v_key = combo_key
         return {
             "pipeline_class": pclass,
             "offload": offload,
+            "comp_offloads": comp_offloads,
             "transformer": _explain_comp(t_key),
             "clip": _explain_comp(c_key),
             "vae": _explain_comp(v_key),
@@ -994,7 +998,7 @@ class ModelManager:
         evict_lru / loaded_model_ids / unload_model / get_pid_map 自动消费。
         """
         import hashlib
-        pipeline_class, offload, t_key, *_rest = combo_key
+        pipeline_class, _offload, _comp_offloads, t_key, *_rest = combo_key
         # transformer key shape: (file, device, dtype, frozenset(loras))
         t_file = (t_key[0] if isinstance(t_key, tuple) and t_key else "unknown") or "unknown"
         # 取文件名末段(/path/to/Flux2-Klein-9B-True-v2-bf16.safetensors → Flux2-...-bf16)
@@ -1122,32 +1126,28 @@ class ModelManager:
             explicit = (components[k].device or "auto") != "auto"
             if not explicit and resolved[k].device != target:
                 resolved[k] = resolved[k].model_copy(update={"device": target})
-        # 角色名对齐 pipe 子模块;传给 ModularImageBackend 做逐组件放置(全同卡 → 单卡路径)。
+        # 角色名对齐 pipe 子模块;传给 ModularImageBackend 做逐组件放置 + 逐组件 offload
+        #(全同卡且全同 offload → 单卡路径,零回归)。
         comp_devices = {
             "transformer": resolved["diffusion_models"].device,
             "text_encoder": resolved["clip"].device,
             "vae": resolved["vae"].device,
         }
-        # PR-A 边界(spec 2026-06-04 §5 后续项):引擎当前按**单一 offload**(transformer 节点上选的)
-        # 驱动整管线。clip/vae 节点若设了**不同于** transformer 的 offload → 清晰报错(逐组件
-        # offload 是后续项),避免静默忽略。逐组件**选卡**(offload=none)已完整支持。
-        for k in ("clip", "vae"):
-            ko = getattr(resolved[k], "offload", "none") or "none"
-            if ko not in ("none", offload):
-                raise RuntimeError(
-                    f"{k} 节点的 Offload={ko!r} 与 Diffusion Model 的 Offload={offload!r} 不同 —— "
-                    f"逐组件独立 offload 暂未支持(spec 2026-06-04 §5 后续项)。"
-                    f"要逐组件跨卡请各组件 Offload 设 None(常驻各自卡);"
-                    f"要整体 offload 请在三个 loader 用相同的 Offload。"
-                )
-        # LLM 卡保护:**逐卡**检查空闲显存(每张卡上落的组件之和 vs 该卡空闲)→ 装载前清晰报错。
-        # PR-D:offload=cpu 时跳过(accelerate hooks 按需挪 CPU,峰值远低于估算)。
+        comp_offloads = {
+            "transformer": getattr(resolved["diffusion_models"], "offload", "none") or "none",
+            "text_encoder": getattr(resolved["clip"], "offload", "none") or "none",
+            "vae": getattr(resolved["vae"], "offload", "none") or "none",
+        }
+        # LLM 卡保护:**逐卡**检查空闲显存(每张卡上**常驻**组件之和 vs 该卡空闲)→ 装载前清晰报错。
+        # 守卫内部跳过 offload!=none 的组件(它们 forward 时才挪上卡,不常驻)。
         # 粘性命中(sticky):预期 cache hit、不需新显存 → 跳过守卫(否则「卡已被自己占满」误判)。
-        if offload == "none" and not sticky:
+        if not sticky:
             self._guard_image_vram_per_card(resolved)
-        # combo_key 包含 offload:不同 offload 模式是不同的 pipe 实例(enable_model_cpu_offload 改了内部 hook,
-        # 不能复用为 offload=none 的 adapter)。
-        combo_key = (pipeline_class, offload) + tuple(
+        # combo_key 包含 offload(整管线)+ 逐组件 offload:不同 offload 模式是不同的 pipe 实例
+        #(hook 不同,不能跨 offload 复用);逐组件 offload 不进 to_component_key,故单列进 combo_key
+        # 避免「同 file/卡、不同 offload」误命中。
+        combo_key = (pipeline_class, offload,
+                     tuple(comp_offloads[r] for r in ("transformer", "text_encoder", "vae"))) + tuple(
             to_component_key(resolved[k]) for k in ("diffusion_models", "clip", "vae"))
         # PR-anima-6 engine 集成:pipeline_class="AnimaPipeline" → 走 AnimaImageBackend
         # (Anima 是 2B 自定义 DiT,跟 Flux2KleinPipeline 走不同路径)。
@@ -1156,7 +1156,7 @@ class ModelManager:
                 resolved, combo_key, target, _emit, offload)
         else:
             adapter = await self._get_or_load_modular_adapter(
-                resolved, combo_key, pipeline_class, target, _emit, offload, comp_devices)
+                resolved, combo_key, pipeline_class, target, _emit, offload, comp_devices, comp_offloads)
         # 记住这工作流落的卡 —— 下次 auto 粘回来(load 与 cache hit 都刷新,target 即当前卡)。
         if target.startswith("cuda:"):
             self._image_stick[stick_key] = int(target.split(":", 1)[1])
@@ -1478,7 +1478,7 @@ class ModelManager:
         }
         return {"state": "loaded", "key": state_key, "role": role, "resident": resident}
 
-    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none", comp_devices: dict | None = None):
+    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none", comp_devices: dict | None = None, comp_offloads: dict | None = None):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 
         与 legacy 共用 `_image_adapters` combo 缓存 + 四态事件(coarse:加载前 loading、
@@ -1514,33 +1514,51 @@ class ModelManager:
                     build_bridged_transformer,
                     build_bridged_vae,
                 )
-                # PR-D / PR-D2 + 逐组件选卡(2026-06-04):桥接 load_device ——
-                #   offload=cpu  → 'cpu'(enable_model_cpu_offload 接管;直接 cuda 会爆 34GB > 24GB)
-                #   offload=cuda:N → 'cuda:N'(stash 卡;hook 把组件移到 compute 时再倒)
-                #   offload=none → **各组件自己解析出的卡**(整模型单卡时三者 == target;
-                #                  逐组件跨卡时各落各的卡)。
+                # PR-D / PR-D2 + 逐组件选卡/offload(2026-06-04):桥接 load_device 按**各组件自己的
+                # offload**(非整管线 offload)——
+                #   offload=cpu  → 'cpu'(forward 时 hook 挪到 compute 卡)
+                #   offload=cuda:N → 'cuda:N'(stash 卡;hook forward 时挪到 compute 卡)
+                #   offload=none → 各组件自己解析出的卡(整模型单卡时三者 == target;逐组件跨卡各落各卡)。
+                def _comp_offload(role_key: str) -> str:
+                    return getattr(resolved[role_key], "offload", "none") or "none"
+
                 def _load_device_for(role_key: str) -> str:
-                    if offload == "cpu":
+                    o = _comp_offload(role_key)
+                    if o == "cpu":
                         return "cpu"
-                    if offload.startswith("cuda:"):
-                        return offload
+                    if o.startswith("cuda:"):
+                        return o
                     return resolved[role_key].device
-                # 逐组件 L1:命中复用、未命中 build + 存池(offload=none 才共享,见
-                # `_get_or_build_image_component`)。combo miss 但组件 L1 命中 = 部分复用
-                # (用户场景:A、B 共用 X-bf16+vaeZ,只各自 build 不同的 clip)。
+                # **L1 池化安全闸**:逐组件跨卡 / 逐组件 offload 路径会给模块挂 pipe-specific
+                # forward hook(_place_components_per_device)→ 跨 combo 共享同一被 hook 的模块
+                # 会冲突(不同锚点/double-hook)。**只有整模型单卡且全 offload=none(plain `pipe.to`,
+                # 无 per-component hook)才允许池化**;其余路径强制各自 build(传 sentinel 'hetero',
+                # `_get_or_build_image_component` 据 offload!=none 不入池)。
+                _same_card = all(
+                    (comp_devices or {}).get(r, target) == target
+                    for r in ("transformer", "text_encoder", "vae"))
+                _all_none = all(
+                    (comp_offloads or {}).get(r, "none") == "none"
+                    for r in ("transformer", "text_encoder", "vae"))
+                _poolable = _same_card and _all_none and offload == "none"
+
+                def _pool_arg(role_key: str) -> str:
+                    return "none" if _poolable else "hetero"
+                # 逐组件 L1:命中复用、未命中 build + 存池(仅可池化路径)。combo miss 但组件
+                # L1 命中 = 部分复用(用户场景:A、B 共用 X-bf16+vaeZ,只各自 build 不同的 clip)。
                 t_ov = c_ov = v_ov = None
                 if _is_standalone_single_file(resolved["diffusion_models"]):
                     t_ov = await self._get_or_build_image_component(
-                        "transformer", build_bridged_transformer,
-                        resolved["diffusion_models"], repo, _load_device_for("diffusion_models"), offload, model_id)
+                        "transformer", build_bridged_transformer, resolved["diffusion_models"],
+                        repo, _load_device_for("diffusion_models"), _pool_arg("diffusion_models"), model_id)
                 if _is_standalone_single_file(resolved["clip"]):
                     c_ov = await self._get_or_build_image_component(
-                        "text_encoder", build_bridged_text_encoder,
-                        resolved["clip"], repo, _load_device_for("clip"), offload, model_id)
+                        "text_encoder", build_bridged_text_encoder, resolved["clip"],
+                        repo, _load_device_for("clip"), _pool_arg("clip"), model_id)
                 if _is_standalone_single_file(resolved["vae"]):
                     v_ov = await self._get_or_build_image_component(
-                        "vae", build_bridged_vae,
-                        resolved["vae"], repo, _load_device_for("vae"), offload, model_id)
+                        "vae", build_bridged_vae, resolved["vae"],
+                        repo, _load_device_for("vae"), _pool_arg("vae"), model_id)
                 def _build_adapter():
                     return ModularImageBackend(
                         repo=repo,
@@ -1552,6 +1570,7 @@ class ModelManager:
                         text_encoder_override=c_ov,
                         vae_override=v_ov,
                         comp_devices=comp_devices,
+                        comp_offloads=comp_offloads,
                     )
 
                 # PR-D4 OOM 重试一次:加载 / _ensure_pipe 抛 CUDA OOM →
