@@ -9,6 +9,9 @@ vi.mock('../../api/components', () => ({
     { filename: 't5xxl.safetensors', abs_path: '/m/t5xxl.safetensors', size_mb: 9000, quant_type: 'fp8mixed', mtime: 0 },
   ] }),
   useComponentState: () => ({ state: 'cold' }),
+  // ClipStateDot 改为按 file 兜底匹配(PR-C):用 useAllComponentStates + loadedStateByFile。
+  useAllComponentStates: () => ({ data: [] }),
+  loadedStateByFile: () => ({}),
   componentStateKey: (x: { file?: string }) => `${x.file ?? ''}|`,
 }))
 

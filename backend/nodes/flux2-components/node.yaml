@@ -77,7 +77,9 @@ nodes:
     category: image
     badge: Loader
     badgeColor: "var(--accent)"
-    # 动态多 CLIP:clip_stack 每行自带状态点(多文件,节点级单 file 四态头不适配)。
+    # PR-C:componentRole=clip → 节点级**聚合**四态 header(ClipAggregateStatusHeader 读 clips[],
+    # 全 encoder loaded 才 loaded;任一 loading/failed 优先)。clip_stack 每行仍保留 per-row 状态点。
+    componentRole: clip
     inputs: []
     outputs:
       - { id: clip, type: CLIP, label: CLIP }

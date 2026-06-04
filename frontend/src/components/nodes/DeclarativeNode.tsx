@@ -9,7 +9,7 @@ import { useAgents } from '../../api/agents'
 import { apiFetch } from '../../api/client'
 import { useEnginesLiveSync, type EngineInfo } from '../../api/engines'
 import { useLoras } from '../../api/loras'
-import { useComponents, useComponentState, useSeedvr2DitModels, componentStateKey, type ComponentRole } from '../../api/components'
+import { useComponents, useComponentState, useAllComponentStates, loadedStateByFile, useSeedvr2DitModels, componentStateKey, type ComponentRole, type ComponentLoadState } from '../../api/components'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeNumberDrag, NodeTextarea } from './BaseNode'
 import NodeSelectPopover from './NodeSelectPopover'
 
@@ -255,12 +255,42 @@ const _STATE_VIS: Record<string, { label: string; color: string }> = {
 }
 
 export function ComponentStatusHeader({ data }: { data: Record<string, unknown> }) {
-  const key = componentStateKey({
-    file: data.file as string | undefined,
-    device: (data.device as string) || 'auto',
-    dtype: (data.dtype as string) || 'bfloat16',
-  })
-  const { state } = useComponentState(key)
+  const device = (data.device as string) || 'auto'
+  const file = data.file as string | undefined
+  const dtype = (data.dtype as string) || 'bfloat16'
+  // 显式选卡(cuda:N)用精确 state-key。device=auto 时前端不知道后端把 auto 解析到哪张卡
+  // (PR-A 逐组件放置:auto 跟随 transformer 卡,经 get_best_gpu),state-key 里的 'auto'
+  // 永远对不上后端注册的 `…|cuda:N|…` → 节点恒显「未加载」(PR-C 修的就是这个)。按 file
+  // 兜底匹配(同 #343 service UI loadedStateByFile,robust 于 device/dtype/lora)。
+  const exact = useComponentState(componentStateKey({ file, device, dtype }))
+  const { data: allStates } = useAllComponentStates()
+  const state: ComponentLoadState =
+    device === 'auto'
+      ? (file ? (loadedStateByFile(allStates)[file] ?? 'cold') : 'cold')
+      : exact.state
+  const vis = _STATE_VIS[state] ?? _STATE_VIS.cold
+  return (
+    <div className="flex items-center gap-1.5" style={{ fontSize: 9, color: 'var(--muted)', padding: '2px 10px 4px' }}>
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: vis.color, flexShrink: 0 }} />
+      <span style={{ color: vis.color }}>{vis.label}</span>
+    </div>
+  )
+}
+
+/** CLIP 节点级聚合四态:多 encoder → 取最差有意义态(任一 failed→failed;任一 loading→
+ * loading;全部非空 loaded→loaded;否则 cold)。device 跟随 transformer(auto),按 file 兜底。 */
+export function ClipAggregateStatusHeader({ data }: { data: Record<string, unknown> }) {
+  const clips = (Array.isArray(data.clips) ? data.clips : []) as { file?: string }[]
+  const { data: allStates } = useAllComponentStates()
+  const byFile = loadedStateByFile(allStates)
+  const files = clips.map((c) => c.file).filter((f): f is string => !!f)
+  const states = files.map((f) => byFile[f] ?? 'cold')
+  const state: ComponentLoadState =
+    files.length === 0 ? 'cold'
+      : states.includes('failed') ? 'failed'
+        : states.includes('loading') ? 'loading'
+          : states.every((s) => s === 'loaded') ? 'loaded'
+            : 'cold'
   const vis = _STATE_VIS[state] ?? _STATE_VIS.cold
   return (
     <div className="flex items-center gap-1.5" style={{ fontSize: 9, color: 'var(--muted)', padding: '2px 10px 4px' }}>
@@ -273,9 +303,11 @@ export function ComponentStatusHeader({ data }: { data: Record<string, unknown> 
 type ClipEntry = { file: string; weight_dtype: string }
 const _CLIP_DTYPES = ['default', 'bfloat16', 'fp8_e4m3']
 
-function ClipStateDot({ file, dtype }: { file: string; dtype: string }) {
-  const key = componentStateKey({ file: file || undefined, device: 'auto', dtype: dtype || 'bfloat16' })
-  const { state } = useComponentState(key)
+function ClipStateDot({ file }: { file: string }) {
+  // device 跟随 transformer(节点级 auto),前端无从得知解析后的卡 → 按 file 兜底匹配
+  // 组件状态(同 ComponentStatusHeader 的 auto 分支),否则 per-row 点恒「未加载」。
+  const { data: allStates } = useAllComponentStates()
+  const state = file ? (loadedStateByFile(allStates)[file] ?? 'cold') : 'cold'
   const vis = _STATE_VIS[state] ?? _STATE_VIS.cold
   return <span title={vis.label} style={{ width: 6, height: 6, borderRadius: 3, background: vis.color, flexShrink: 0 }} />
 }
@@ -307,7 +339,7 @@ export function ClipStackWidget({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
       {items.map((row, idx) => (
         <div key={idx} style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-          <ClipStateDot file={row.file} dtype={row.weight_dtype} />
+          <ClipStateDot file={row.file} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <ComponentSelectWidget value={row.file} onChange={(v) => setFile(idx, v)} role="clip" />
           </div>
@@ -756,7 +788,11 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
       inputs={portDef.inputs}
       outputs={portDef.outputs}
     >
-      {declDef.componentRole && <ComponentStatusHeader data={data as Record<string, unknown>} />}
+      {declDef.componentRole === 'clip'
+        ? <ClipAggregateStatusHeader data={data as Record<string, unknown>} />
+        : declDef.componentRole
+          ? <ComponentStatusHeader data={data as Record<string, unknown>} />
+          : null}
       {declDef.widgets.map((w) => (
         <NodeWidgetRow key={w.name} label={w.label} stretch={w.widget === 'textarea'}>
           <WidgetRenderer
