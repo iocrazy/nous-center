@@ -604,6 +604,22 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("Lane K: LLMRunner shutdown failed")
 
+        # vLLM 子进程是 model_manager 直接 spawn 的(VLLMAdapter._process / EngineCore),
+        # **不归** runner supervisors / llm_runner 管 —— 上面 stop 完它们,vLLM 仍活着。
+        # 不在此 force-unload,backend 退出后 vLLM 成 orphan 继续占显存:反复重启时每个
+        # ~40G 累积,把常驻 LLM 的卡占爆 → image 出图 OOM(真机实锤:Pro6000 被 2 个
+        # orphan vLLM + 当前 vLLM 占满,只剩 12G < 需 22.8G)。force-unload 走
+        # adapter.unload() → killpg 整个进程组,连 EngineCore worker 一起收。
+        # in-use 守卫仍强于 force(正在 infer 的不卸,避免 segfault)。
+        _mm = getattr(app.state, "model_manager", None)
+        if _mm is not None:
+            for mid in list(getattr(_mm, "loaded_model_ids", []) or []):
+                try:
+                    await _mm.unload_model(mid, force=True)
+                except Exception:
+                    logger.exception(
+                        "shutdown: force-unload %s failed (vLLM 可能 orphan)", mid)
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Nous Center", version="0.1.0", lifespan=lifespan)
