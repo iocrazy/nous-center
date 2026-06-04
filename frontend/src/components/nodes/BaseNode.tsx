@@ -3,6 +3,7 @@ import { Handle, Position, useUpdateNodeInternals, useReactFlow, useNodeId } fro
 import type { PortDef } from '../../models/workflow'
 import { useExecutionStore } from '../../stores/execution'
 import TextareaPortalEditor from './TextareaPortalEditor'
+import { PORT_TYPE_COLORS } from './portColors'
 
 // Per-state outline colors used by the BaseNode wrapper. Subscribed via
 // useExecutionStore so node_start / node_complete events from the workflow
@@ -24,25 +25,6 @@ const STATE_OUTLINE: Record<string, { border: string; shadow: string }> = {
   },
 }
 
-const PORT_TYPE_COLORS: Record<string, string> = {
-  text: 'var(--ok)',
-  audio: 'var(--info)',
-  control: 'var(--accent)',
-  any: 'var(--purple)',
-  // V1' Lane C / P4.3 — ComfyUI-style typed bundles for the component
-  // node set under backend/nodes/flux2-components/. Colors mirror the
-  // ComfyUI palette so users migrating workflows don't have to relearn
-  // which port is which.
-  image: 'rgba(20,184,166,0.85)',        // teal-cyan
-  MODEL: 'rgba(244,114,182,0.9)',        // pink
-  CLIP: 'rgba(234,179,8,0.9)',           // yellow
-  VAE: 'rgba(239,68,68,0.85)',           // red
-  CONDITIONING: 'rgba(251,146,60,0.9)',  // orange
-  LATENT: 'rgba(168,85,247,0.85)',       // purple
-  // SeedVR2 三节点(DiT/VAE 配置 bundle):DiT 配置走青绿、VAE 配置走红(呼应 flux2 VAE 红)。
-  seedvr2_dit: 'rgba(16,185,129,0.85)',  // emerald
-  seedvr2_vae: 'rgba(239,68,68,0.85)',   // red(同 VAE 家族)
-}
 
 interface BaseNodeProps {
   title: string

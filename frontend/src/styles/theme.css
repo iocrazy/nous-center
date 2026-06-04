@@ -109,14 +109,23 @@ body {
   background: var(--bg-accent) !important;
 }
 
-.react-flow__edge-path {
-  stroke: var(--muted-strong) !important;
+/* 连接 edge 由自定义 PortTypedEdge 组件(spec 2026-06-04 §2.2)inline 驱动
+ * stroke 颜色/宽度/流动动画 —— 旧的 `.react-flow__edge-path` 全局 `!important`
+ * 强制色已移除(否则会盖掉按 PortType 的着色)。hover/选中提亮走纯 CSS(不依赖
+ * inline,故 stroke-width 用 !important 盖过 inline 基础宽度)。 */
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 3 !important;
+  filter: brightness(1.25) drop-shadow(0 0 3px rgba(0, 0, 0, 0.45));
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3.5 !important;
+  filter: brightness(1.3) drop-shadow(0 0 4px rgba(255, 255, 255, 0.4));
 }
 
-.react-flow__edge.selected .react-flow__edge-path {
-  stroke: var(--accent) !important;
-  stroke-width: 3 !important;
-  filter: drop-shadow(0 0 4px var(--accent));
+@keyframes nous-edge-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
 }
 
 /* Style native select dropdown options */
