@@ -37,6 +37,7 @@ interface BaseNodeProps {
 
 export default function BaseNode({ title, badge, selected, inputs, outputs, children }: BaseNodeProps) {
   const [collapsed, setCollapsed] = useState(false)
+  const [hovered, setHovered] = useState(false)
   const nodeId = useNodeId()
   const updateNodeInternals = useUpdateNodeInternals()
   const { setNodes } = useReactFlow()
@@ -67,8 +68,21 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
     portRows.push({ input: inputs[i], output: outputs[i] })
   }
 
+  // 节点边框/阴影统一(PR-3):执行态(running/done/error) > 选中 > hover > 默认。
+  // hover 仅在无执行态且未选中时微亮边框,与选中态(accent)层级协调。
+  const borderColor = stateOutline?.border
+    ?? (selected ? 'var(--accent)' : hovered ? 'var(--border-strong)' : 'var(--border)')
+  const boxShadow = stateOutline?.shadow
+    ?? (selected
+      ? 'var(--shadow-md), 0 0 0 2px var(--accent-subtle)'
+      : hovered
+        ? 'var(--shadow-md), 0 0 0 1px var(--border-strong)'
+        : 'var(--shadow-md)')
+
   return (
     <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         minWidth: 180,
         width: '100%',
@@ -76,10 +90,9 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--card)',
-        border: `1px solid ${stateOutline?.border ?? (selected ? 'var(--accent)' : 'var(--border)')}`,
+        border: `1px solid ${borderColor}`,
         borderRadius: 8,
-        boxShadow: stateOutline?.shadow
-          ?? (selected ? 'var(--shadow-md), 0 0 0 2px var(--accent-subtle)' : 'var(--shadow-md)'),
+        boxShadow,
         transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
       }}
     >
@@ -97,8 +110,22 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
           cursor: 'pointer',
           userSelect: 'none',
           position: 'relative',
+          overflow: 'hidden',
         }}
       >
+        {/* 类目色条(PR-3):按节点 badge 色,给标题栏一个左侧类目视觉锚点。 */}
+        {badge && (
+          <span
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: 3,
+              background: badge.color,
+            }}
+          />
+        )}
         <span
           style={{
             fontSize: 8,
@@ -165,7 +192,16 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
                 }}
               />
               {!collapsed && (
-                <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>
+                <span
+                  style={{
+                    fontSize: 10,
+                    // 端口标签按类型着色(PR-3):与端口圆点 + 连线同色,强化类型系统视觉一致。
+                    color: PORT_TYPE_COLORS[row.input.type] ?? 'var(--muted)',
+                    fontWeight: 500,
+                    letterSpacing: 0.2,
+                    flexShrink: 0,
+                  }}
+                >
                   {row.input.label}
                 </span>
               )}
@@ -177,7 +213,9 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
                 <span
                   style={{
                     fontSize: 10,
-                    color: 'var(--muted)',
+                    color: PORT_TYPE_COLORS[row.output.type] ?? 'var(--muted)',
+                    fontWeight: 500,
+                    letterSpacing: 0.2,
                     marginLeft: 'auto',
                     textAlign: 'right',
                     flexShrink: 0,
