@@ -6,7 +6,6 @@ execute path resolves by name through the same grant-authz the OpenAI
 compat path uses. The publish endpoint moved to `workflow_publish.py`.
 """
 
-import time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
@@ -18,7 +17,6 @@ from src.api.deps_auth import verify_bearer_token_any
 from src.errors import NotFoundError
 from src.models.api_gateway import ApiKeyGrant
 from src.models.database import get_async_session
-from src.models.execution_task import ExecutionTask
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 
@@ -72,9 +70,7 @@ async def execute_service(
     (e.g. `/v1/apps/lessor/synthesize`) — currently treated as opaque
     metadata; the workflow always runs end to end.
     """
-    from src.services.workflow_executor import WorkflowExecutor, ExecutionError
-    from src.services.quota_gate import NoActiveGrant, consume_for_request
-    from src.services.resource_pack import QuotaExhausted
+    from src.services.workflow_service_runner import run_published_workflow
 
     _instance, api_key = auth
     admin_run = api_key is None
@@ -102,117 +98,10 @@ async def execute_service(
             else f"no active grant for service '{service_name}' on this key",
             code="service_not_found",
         )
-    if svc.status == "retired":
-        raise HTTPException(410, detail=f"Service '{service_name}' is retired")
-    if svc.status == "paused":
-        raise HTTPException(403, detail=f"Service '{service_name}' is paused")
-    # `deprecated` still serves but logs a warning (per v3 lifecycle spec).
 
-    snapshot = dict(svc.workflow_snapshot or {})
-    raw_nodes = snapshot.get("nodes", [])
-    # workflow_publish.py freezes nodes as a dict keyed by id (api-shape),
-    # while quick-provision and the live editor pass them as a list. The
-    # executor only understands the list shape, so we normalize back.
-    if isinstance(raw_nodes, dict):
-        nodes = [
-            {
-                "id": nid,
-                "type": (n.get("class_type") if isinstance(n, dict) else None) or n.get("type"),
-                "data": (n.get("inputs") if isinstance(n, dict) else None) or n.get("data") or {},
-            }
-            for nid, n in raw_nodes.items()
-        ]
-    else:
-        nodes = [dict(n) for n in raw_nodes]
-    edges = snapshot.get("edges", [])
-
-    # Merge exposed inputs from request body into the matching node data.
-    # Supports both v3 schema (key/input_name) and pre-v3 backfill rows
-    # that still carry the old (api_name/param_key) field names.
-    #
-    # Robustness: if the declared `slot` doesn't match the field a node
-    # actually reads (the publish dialog used to hard-code
-    # `input_name='value'` for everything, but text_input reads
-    # `data.text`), also write to the node's primary slot for that type.
-    # Otherwise the merge silently missed the field and the node returned
-    # its frozen snapshot value — the LLM answered the OLD prompt baked
-    # into publish, not the caller's new input.
-    NODE_PRIMARY_SLOT = {
-        "text_input": "text",
-        "text_output": "text",
-        "multimodal_input": "text",
-        "reference_audio": "audio",
-        "image_input": "image",
-    }
-    for param in (svc.exposed_inputs or []):
-        api_name = param.get("key") or param.get("api_name")
-        node_id = param.get("node_id")
-        slot = param.get("input_name") or param.get("param_key")
-        if api_name is None or node_id is None or slot is None:
-            continue
-        if api_name not in body:
-            continue
-        for node in nodes:
-            if str(node.get("id")) != str(node_id):
-                continue
-            data = node.setdefault("data", {})
-            data[slot] = body[api_name]
-            primary = NODE_PRIMARY_SLOT.get(str(node.get("type") or "").lower())
-            if primary and primary != slot:
-                data[primary] = body[api_name]
-
-    task = ExecutionTask(
-        workflow_name=svc.name,
-        status="running",
-        nodes_total=len(nodes),
-    )
-    session.add(task)
-    await session.commit()
-    await session.refresh(task)
-
-    start = time.monotonic()
-    # Lane K: 注入 runner_clients(group_id → RunnerClient)。image/tts/seedvr2 等 GPU
-    # 节点在 runner 子进程跑,executor 按 node_type→role→group 选 client。漏注入则含 GPU
-    # 节点的工作流经外部 /v1/apps 调用直接报「未注入 runner_client / runner_clients」
-    # ——LLM 节点在主进程不受影响,所以纯 LLM 工作流侥幸能跑,image 工作流必崩。
-    # 对齐 workflows.py UI 执行路径(同样从 app.state 取 runner_client[s])。
-    runner_client = getattr(request.app.state, "runner_client", None)
-    runner_clients = getattr(request.app.state, "runner_clients", None)
-    executor = WorkflowExecutor(
-        {"nodes": nodes, "edges": edges},
-        runner_client=runner_client,
-        runner_clients=runner_clients,
-    )
-
-    try:
-        result = await executor.execute()
-        elapsed = int((time.monotonic() - start) * 1000)
-        task.status = "completed"
-        task.result = result
-        task.duration_ms = elapsed
-        task.nodes_done = len(nodes)
-        task.current_node = None
-    except ExecutionError as e:
-        elapsed = int((time.monotonic() - start) * 1000)
-        task.status = "failed"
-        task.error = str(e)
-        task.duration_ms = elapsed
-        await session.commit()
-        raise HTTPException(500, str(e))
-
-    await session.commit()
-
-    # Quota: 1 call per request. Failures here are non-fatal — the work
-    # already happened — but exhaustion will block the next call. Admin
-    # bypass skips quota entirely (no key to charge).
-    if not admin_run:
-        try:
-            await consume_for_request(
-                session, api_key_id=api_key.id, service_id=svc.id, units=1,
-            )
-            await session.commit()
-        except (NoActiveGrant, QuotaExhausted):
-            pass
-
-    _ = action  # reserved
-    return result
+    # Flat body keys map directly onto exposed input keys (the v3 app
+    # contract). All execution wiring — node normalize, input merge,
+    # runner_clients injection, task record, quota — lives in the shared
+    # core so this external path can't drift from workflows.py (see #339).
+    _ = action  # reserved for future per-service routing
+    return await run_published_workflow(request, session, svc, body, api_key)

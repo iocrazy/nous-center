@@ -481,6 +481,116 @@ def _convert_audio(audio_bytes: bytes, src_fmt: str, dst_fmt: str, sample_rate: 
     return buf_out.read()
 
 
+# --- /v1/images/generations ---
+
+
+class ImageGenerationRequest(BaseModel):
+    model: str = Field(..., description="已发布的 image 服务名(= ServiceInstance.name)")
+    prompt: str
+    n: int = 1
+    # OpenAI 兼容字段。当前工作流用自身固定尺寸,size 暂作占位(不注入);
+    # response_format 先只支持 url(b64_json 留待后续读图字节编码)。
+    size: str | None = None
+    response_format: Literal["url", "b64_json"] = "url"
+
+
+def _pick_prompt_input_key(exposed_inputs: list | None) -> str | None:
+    """选承接 prompt 的 exposed input key:优先 string/text 类型,否则第一个。"""
+    if not exposed_inputs:
+        return None
+    for p in exposed_inputs:
+        if str(p.get("type", "")).lower() in ("string", "text", "str"):
+            return p.get("key") or p.get("api_name")
+    first = exposed_inputs[0]
+    return first.get("key") or first.get("api_name")
+
+
+def _extract_image_urls(result: dict) -> list[str]:
+    """从 executor result 各节点 output 里捞 image_url(产图终端节点 emit)。"""
+    urls: list[str] = []
+    outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
+    if isinstance(outputs, dict):
+        for node_out in outputs.values():
+            if isinstance(node_out, dict) and node_out.get("image_url"):
+                urls.append(node_out["image_url"])
+    return urls
+
+
+@router.post("/v1/images/generations")
+async def images_generations(
+    body: ImageGenerationRequest,
+    request: Request,
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """OpenAI / 火山(Ark)兼容的图像生成端点。
+
+    统一模态端点 + body.model 选模型 + API key grant 做 scope —— 跟
+    /v1/chat/completions 同一套设计(对齐火山:不是每个出图工作流一个 URL
+    路径,而是 model 参数指定服务 + key 的授权范围决定可访问哪些)。
+
+    内部 dispatch:body.model = 已发布 image 工作流服务名;prompt 注入其文本
+    exposed input;经共享执行核心 run_published_workflow(带 GPU runner_clients)
+    跑出图;产图终端节点的 image_url 转成 OpenAI {data:[{url}]}。
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import undefer
+
+    from src.models.api_gateway import ApiKeyGrant
+    from src.services.workflow_service_runner import run_published_workflow
+
+    _instance, api_key = auth
+    if api_key is None:
+        raise NotFoundError("request requires an API key", code="model_not_found")
+
+    # resolve image 服务:(key 的 active grant, model == service name) —— 与
+    # chat/completions 同款 M:N scope,这里直接 join + undefer 工作流快照。
+    stmt = (
+        select(ServiceInstance)
+        .options(
+            undefer(ServiceInstance.workflow_snapshot),
+            undefer(ServiceInstance.exposed_inputs),
+            undefer(ServiceInstance.exposed_outputs),
+        )
+        .join(ApiKeyGrant, ApiKeyGrant.service_id == ServiceInstance.id)
+        .where(
+            ApiKeyGrant.api_key_id == api_key.id,
+            ApiKeyGrant.status == "active",
+            ServiceInstance.name == body.model,
+        )
+    )
+    svc = (await session.execute(stmt)).scalar_one_or_none()
+    if svc is None:
+        raise NotFoundError(
+            f"no active grant for model '{body.model}' on this key",
+            code="model_not_found",
+        )
+
+    prompt_key = _pick_prompt_input_key(svc.exposed_inputs)
+    if prompt_key is None:
+        raise InvalidRequestError(
+            f"service '{body.model}' exposes no text input to receive the prompt",
+            code="no_prompt_input",
+        )
+
+    result = await run_published_workflow(
+        request, session, svc, {prompt_key: body.prompt}, api_key,
+    )
+
+    urls = _extract_image_urls(result)
+    if not urls:
+        raise APIError(
+            f"service '{body.model}' did not produce an image",
+            code="no_image_output",
+        )
+
+    base = str(request.base_url).rstrip("/")
+    abs_urls = [u if u.startswith("http") else base + u for u in urls]
+    # 工作流当前出单图;n 仅作 OpenAI 契约占位(>1 不重复采样,返回现有那张)。
+    data = [{"url": u} for u in abs_urls[: max(1, body.n)]]
+    return {"created": int(time.time()), "data": data}
+
+
 # --- /v1/models ---
 
 class ModelObject(BaseModel):
