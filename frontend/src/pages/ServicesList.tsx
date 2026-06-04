@@ -162,6 +162,7 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
                 svc={svc}
                 onOpen={() => goDetail(svc.id)}
                 onPlayground={() => goDetail(svc.id)}
+                onOpenWorkflow={(wfId) => navigate(`/workflows/${wfId}`)}
                 onDelete={() => handleDelete(svc)}
               />
             ))}
@@ -303,11 +304,13 @@ function ServiceCard({
   svc,
   onOpen,
   onPlayground,
+  onOpenWorkflow,
   onDelete,
 }: {
   svc: ServiceRow
   onOpen: () => void
   onPlayground: () => void
+  onOpenWorkflow: (workflowId: string) => void
   onDelete: () => void
 }) {
   const statusStyle = STATUS_STYLES[svc.status] ?? STATUS_STYLES.active
@@ -471,6 +474,7 @@ function ServiceCard({
             sourceType={svc.source_type}
             workflowId={svc.workflow_id}
             workflowName={svc.workflow_name}
+            onOpenWorkflow={onOpenWorkflow}
           />
           <Tag>v{svc.version}</Tag>
         </div>
@@ -580,10 +584,12 @@ function SourceTag({
   sourceType,
   workflowId,
   workflowName,
+  onOpenWorkflow,
 }: {
   sourceType: 'workflow' | 'preset' | 'model'
   workflowId?: string | null
   workflowName?: string | null
+  onOpenWorkflow?: (workflowId: string) => void
 }) {
   const isWorkflow = sourceType === 'workflow'
   // 显示 workflow 来源的具体名字 + 短 ID（trivial:xxx 的快速开通命名能让人
@@ -593,9 +599,39 @@ function SourceTag({
       ? `来自 ${workflowName}${workflowId ? ` #${shortId(workflowId)}` : ''}`
       : '来自 Workflow'
     : '快速开通'
+  // workflow 来源 + 有 id → 可点击跳到对应 workflow 编辑器。卡片主体是个 <button>,
+  // 嵌套 <a> 是非法 DOM,所以用 span + stopPropagation(拦掉卡片自身的 onOpen)。
+  const clickable = isWorkflow && !!workflowId && !!onOpenWorkflow
   return (
     <span
-      title={isWorkflow && workflowId ? `workflow_id=${workflowId}` : undefined}
+      role={clickable ? 'link' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={
+        clickable
+          ? (e) => {
+              e.stopPropagation()
+              onOpenWorkflow!(workflowId!)
+            }
+          : undefined
+      }
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onOpenWorkflow!(workflowId!)
+              }
+            }
+          : undefined
+      }
+      title={
+        clickable
+          ? `打开 workflow #${workflowId}`
+          : isWorkflow && workflowId
+            ? `workflow_id=${workflowId}`
+            : undefined
+      }
       style={{
         fontSize: 10,
         padding: '1px 7px',
@@ -610,6 +646,9 @@ function SourceTag({
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
         display: 'inline-block',
+        cursor: clickable ? 'pointer' : undefined,
+        textDecoration: clickable ? 'underline dotted' : undefined,
+        textUnderlineOffset: clickable ? 2 : undefined,
       }}
     >
       {label}
