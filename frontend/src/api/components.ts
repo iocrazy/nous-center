@@ -79,6 +79,48 @@ export function useComponentStateLiveSync(): void {
   })
 }
 
+/** All currently-tracked component load-states (runner L1 mirror). Live via
+ * /ws/models invalidation. Used by the service overview to ask "is this
+ * component file loaded?" — matched by file (state-key's first segment) so
+ * it's robust to device/dtype/lora resolution. Unlisted files → cold. */
+export function useAllComponentStates() {
+  const qc = useQueryClient()
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = `${proto}//${window.location.host}/ws/models`
+  useLiveChannel(url, {
+    onMessage: (data) => {
+      if (data.event === 'component_state_changed') {
+        qc.invalidateQueries({ queryKey: ['component-states-all'] })
+      }
+    },
+    onReconnect: () => qc.invalidateQueries({ queryKey: ['component-states-all'] }),
+  })
+  return useQuery({
+    queryKey: ['component-states-all'],
+    queryFn: async () =>
+      (await apiFetch<{ components: { key: string; state: ComponentLoadState; error: string | null }[] }>(
+        '/api/v1/models/components/state',
+      )).components,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  })
+}
+
+/** Map component file → best load-state across all (device/dtype/lora) variants.
+ * loaded > loading > failed > cold. The state-key format is file|device|dtype|lora. */
+export function loadedStateByFile(
+  states: { key: string; state: ComponentLoadState }[] | undefined,
+): Record<string, ComponentLoadState> {
+  const rank: Record<ComponentLoadState, number> = { loaded: 3, loading: 2, failed: 1, cold: 0 }
+  const out: Record<string, ComponentLoadState> = {}
+  for (const s of states ?? []) {
+    const file = s.key.split('|')[0]
+    if (!file) continue
+    if (!out[file] || rank[s.state] > rank[out[file]]) out[file] = s.state
+  }
+  return out
+}
+
 /** Live four-state for one component key. Seeds from GET /state on mount, then
  * tracks WS pushes. Unknown → 'cold'. */
 export function useComponentState(key: string): { state: ComponentLoadState; error: string | null } {

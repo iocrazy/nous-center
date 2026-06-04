@@ -20,6 +20,16 @@ export interface ExposedParam {
   param_key?: string
 }
 
+/** 静态枚举:该服务工作流依赖的一个模型/组件。加载状态前端实时叠加
+ *  (component 按 file 匹配组件状态;engine 按 engine_key 匹配 /v1/engines)。 */
+export interface ServiceModelRef {
+  kind: 'component' | 'engine'
+  role: string | null
+  label: string
+  file: string | null
+  engine_key: string | null
+}
+
 export interface ServiceRow {
   id: string
   name: string
@@ -35,6 +45,7 @@ export interface ServiceRow {
   snapshot_hash: string | null
   snapshot_schema_version: number
   version: number
+  models: ServiceModelRef[]
   created_at: string
   updated_at: string
 }

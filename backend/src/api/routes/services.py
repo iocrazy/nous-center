@@ -32,6 +32,7 @@ from src.api.response_cache import cached, invalidate
 from src.models.database import get_async_session
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
+from src.services.service_models import extract_service_models
 
 router = APIRouter(prefix="/api/v1", tags=["services"])
 
@@ -55,6 +56,16 @@ def _snapshot_hash(snapshot: dict) -> str:
 # ---------- Pydantic shapes ----------
 
 
+class ServiceModelRef(BaseModel):
+    """Static ref to a model/component a service depends on. Live load-state
+    is overlaid client-side (see src/services/service_models.py)."""
+    kind: str  # 'component' | 'engine'
+    role: str | None = None  # diffusion_models|clip|vae|checkpoint|llm|tts
+    label: str
+    file: str | None = None  # component abs path (matched by file)
+    engine_key: str | None = None  # registry engine key (matched by name)
+
+
 class ServiceOut(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -72,6 +83,8 @@ class ServiceOut(BaseModel):
     snapshot_hash: str | None = None
     snapshot_schema_version: int = 1
     version: int = 1
+    # 该服务工作流依赖的模型/组件(静态枚举;加载状态前端实时叠加)。
+    models: list[ServiceModelRef] = []
     created_at: datetime
     updated_at: datetime
 
@@ -163,6 +176,10 @@ async def list_services(
     stmt = (
         select(ServiceInstance, Workflow.name.label("workflow_name"))
         .outerjoin(Workflow, Workflow.id == ServiceInstance.workflow_id)
+        # un-defer snapshot so we can enumerate each service's model deps for
+        # the list-card「已加载 X/Y」badge. Single-admin infra has a handful of
+        # services + the response is @cached(ttl=30), so the cost is absorbed.
+        .options(undefer(ServiceInstance.workflow_snapshot))
         .order_by(ServiceInstance.created_at.desc())
     )
     if category:
@@ -174,6 +191,7 @@ async def list_services(
     for svc, wf_name in rows:
         item = ServiceOut.model_validate(svc)
         item.workflow_name = wf_name
+        item.models = [ServiceModelRef(**m) for m in extract_service_models(svc.workflow_snapshot)]
         out.append(item)
     return out
 
@@ -203,6 +221,7 @@ async def get_service(
     svc, wf_name = row
     out = ServiceDetailOut.model_validate(svc)
     out.workflow_name = wf_name
+    out.models = [ServiceModelRef(**m) for m in extract_service_models(svc.workflow_snapshot)]
     return out
 
 
