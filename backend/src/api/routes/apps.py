@@ -56,6 +56,7 @@ async def _auth_apps_run(
 async def execute_service(
     service_name: str,
     body: dict,
+    request: Request,
     action: str = "run",
     session: AsyncSession = Depends(get_async_session),
     auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_apps_run),
@@ -170,7 +171,18 @@ async def execute_service(
     await session.refresh(task)
 
     start = time.monotonic()
-    executor = WorkflowExecutor({"nodes": nodes, "edges": edges})
+    # Lane K: 注入 runner_clients(group_id → RunnerClient)。image/tts/seedvr2 等 GPU
+    # 节点在 runner 子进程跑,executor 按 node_type→role→group 选 client。漏注入则含 GPU
+    # 节点的工作流经外部 /v1/apps 调用直接报「未注入 runner_client / runner_clients」
+    # ——LLM 节点在主进程不受影响,所以纯 LLM 工作流侥幸能跑,image 工作流必崩。
+    # 对齐 workflows.py UI 执行路径(同样从 app.state 取 runner_client[s])。
+    runner_client = getattr(request.app.state, "runner_client", None)
+    runner_clients = getattr(request.app.state, "runner_clients", None)
+    executor = WorkflowExecutor(
+        {"nodes": nodes, "edges": edges},
+        runner_client=runner_client,
+        runner_clients=runner_clients,
+    )
 
     try:
         result = await executor.execute()
