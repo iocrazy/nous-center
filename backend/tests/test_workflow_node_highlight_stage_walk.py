@@ -110,6 +110,48 @@ async def test_progress_redirected_to_stage_node():
     assert "ksm" in starts
 
 
+class _StagedClientWithTimings:
+    """同 _StagedClient,但 NodeResult.outputs.meta 带逐组件 stage_latency_ms
+    (image_modular 真路径塞的 dit_denoise / vae_decode 各自耗时)。"""
+    async def run_node(self, spec, *, on_progress=None, workflow_name=""):
+        for stage, step in [("text_encode", 1), ("dit_denoise", 1),
+                            ("dit_denoise", 4)]:
+            if on_progress is not None:
+                on_progress(P.NodeProgress(
+                    task_id=spec.task_id, node_id=spec.node_id, progress=0.5,
+                    stage=stage, step=step, total_steps=4))
+        return P.NodeResult(
+            task_id=spec.task_id, node_id=spec.node_id, status="completed",
+            outputs={
+                "image_url": "/files/x.png", "media_type": "image/png",
+                "meta": {"stage_latency_ms": {"dit_denoise": 2800, "vae_decode": 350}},
+            },
+            error=None, duration_ms=3200)
+
+
+@pytest.mark.asyncio
+async def test_stage_latency_drives_per_node_duration():
+    """VAE decode 真计时:KSampler 完成事件 duration_ms = denoise-only(2800),
+    VAE Decode(dispatch 终端)完成事件 duration_ms = decode-only(350,非 0)。
+    修「KSampler 吃掉 denoise+decode / VAE Decode 恒 0s」。"""
+    captured: list[dict] = []
+
+    async def on_progress(ev):
+        captured.append(ev)
+
+    ex = WorkflowExecutor(_chain_workflow(), on_progress=on_progress,
+                          runner_clients={"image": _StagedClientWithTimings()}, task_id=9)
+    await ex.execute()
+    await asyncio.sleep(0.05)
+
+    completes = {
+        e["node_id"]: e.get("duration_ms")
+        for e in captured if e["type"] == "node_complete"
+    }
+    assert completes.get("ksm") == 2800  # KSampler 显纯 denoise
+    assert completes.get("dec") == 350   # VAE Decode 显真 decode 时长(非 0)
+
+
 @pytest.mark.asyncio
 async def test_model_load_stage_broadcast_before_denoise(monkeypatch):
     """Bug 2:dispatch 前广播 stage=model_load 任务进度,任务面板加载阶段显示「加载模型中…」;

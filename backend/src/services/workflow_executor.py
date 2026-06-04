@@ -242,13 +242,26 @@ class WorkflowExecutor:
                     "progress": round((i / total) * 100),
                 })
 
+            # 逐组件时长(VAE decode 真计时,spec 2026-06-04):image dispatch 把 dit_denoise /
+            # vae_decode 各自耗时塞 InferenceResult.metadata.stage_latency_ms,经 runner outputs["meta"]
+            # 流到这里。据此让 KSampler 显**纯 denoise**、VAE Decode(dispatch 终端节点)显**真
+            # decode 时长**(修「VAE Decode 恒 0s」—— 旧版 dec 无 duration_ms 兜底算 0)。
+            stage_lat: dict[str, Any] = {}
             try:
                 output = await self._run_node_routed(node, inputs)
                 self._outputs[node_id] = output
+                if isinstance(output, dict) and isinstance(output.get("meta"), dict):
+                    _sl = output["meta"].get("stage_latency_ms")
+                    if isinstance(_sl, dict):
+                        stage_lat = _sl
                 # stage-walk:dispatch 收尾时 active 可能停在非 VAE 节点(如末 stage 没发
                 # vae_decode)→ 补完成它;VAE dispatch 节点由下方通用 node_complete 收口。
                 if stage_walk and self._active_stage_node and self._active_stage_node != node_id and self._on_progress:
-                    await self._on_progress({"type": "node_complete", "node_id": self._active_stage_node})
+                    evt: dict[str, Any] = {"type": "node_complete", "node_id": self._active_stage_node}
+                    dit_ms = stage_lat.get("dit_denoise")
+                    if isinstance(dit_ms, (int, float)):
+                        evt["duration_ms"] = int(dit_ms)  # KSampler 显纯 denoise
+                    await self._on_progress(evt)
                 self._cur_stage_walk = None
                 self._active_stage_node = None
             except Exception as e:
@@ -279,7 +292,12 @@ class WorkflowExecutor:
                 if isinstance(output, dict):
                     if "usage" in output:
                         complete_event["usage"] = output["usage"]
-                    if "duration_ms" in output:
+                    # VAE decode 真计时:dispatch 终端(flux2_vae_decode)节点的时长 = decode-only
+                    # (stage_lat.vae_decode);无则回退老的 output["duration_ms"](tts 等)。
+                    dec_ms = stage_lat.get("vae_decode")
+                    if isinstance(dec_ms, (int, float)):
+                        complete_event["duration_ms"] = int(dec_ms)
+                    elif "duration_ms" in output:
                         complete_event["duration_ms"] = output["duration_ms"]
                     if output.get("cached"):
                         complete_event["cached"] = True
