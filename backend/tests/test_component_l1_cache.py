@@ -27,13 +27,17 @@ class _EmptyRegistry(ModelRegistry):
 
 
 def _comps(unet_dev="cuda:1", clip_file="/m/clipY.safe"):
-    """A 用 clipY,B 用 clipW(只 clip 不同)→ 验 transformer/vae 复用、clip 各建。"""
+    """A 用 clipY,B 用 clipW(只 clip 不同)→ 验 transformer/vae 复用、clip 各建。
+
+    整模型单卡(clip/vae 跟 unet 同卡):L1 池化只在「同卡 + 全 offload=none」的可池化路径
+    生效(逐组件跨卡/offload 会给模块挂 pipe-specific hook,跨 combo 共享不安全 → 不入池)。
+    所以这些 bookkeeping 测试用同卡 comps,跑在可池化路径上。"""
     return {
         "diffusion_models": ComponentSpec(
             kind="diffusion_models", file="/m/X-bf16.safe",
             device=unet_dev, dtype="bfloat16", adapter_arch="flux2"),
-        "clip": ComponentSpec(kind="clip", file=clip_file, device="cuda:0", dtype="bfloat16"),
-        "vae":  ComponentSpec(kind="vae",  file="/m/vaeZ.safe", device="cuda:2", dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file=clip_file, device=unet_dev, dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file="/m/vaeZ.safe", device=unet_dev, dtype="bfloat16"),
     }
 
 
@@ -188,18 +192,11 @@ async def test_different_load_device_not_shared(l1):
     """同文件落不同卡(offload=none → load_device=compute 卡 = unet device)→ 不同 L1 key,
     各建各的。验 _l1_component_key 用真实 load_device 而非 spec.device。
 
-    逐组件选卡(2026-06-04):vae 用 'auto' → 跟随 transformer 卡。两 combo 的 unet 落不同卡
-    (cuda:1 vs cuda:2)→ vae 也落不同卡 → 不共享。(原版 vae 显式 cuda:2,现已被尊重为
-    逐组件固定卡,两 combo 反而共享 —— 故改用 auto 来覆盖「跟随卡变化」这条语义。)"""
+    整模型单卡 _comps 里 vae 跟 unet 同卡,两 combo unet 落不同卡(cuda:1 vs cuda:2)→
+    vae 也落不同卡 → 不共享。"""
     mm, calls = l1
-
-    def _vae_follows(unet_dev):
-        c = _comps(unet_dev=unet_dev)
-        c["vae"] = c["vae"].model_copy(update={"device": "auto"})
-        return c
-
-    await mm.get_or_load_image_adapter(_vae_follows("cuda:1"), "Flux2KleinPipeline")
-    await mm.get_or_load_image_adapter(_vae_follows("cuda:2"), "Flux2KleinPipeline")
+    await mm.get_or_load_image_adapter(_comps(unet_dev="cuda:1"), "Flux2KleinPipeline")
+    await mm.get_or_load_image_adapter(_comps(unet_dev="cuda:2"), "Flux2KleinPipeline")
     # 两 combo 的 vaeZ 落到不同 compute 卡(cuda:1 vs cuda:2)→ 不共享
     assert len(calls["vae"]) == 2
     devs = {c["device"] for c in calls["vae"]}

@@ -51,7 +51,7 @@ async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
     # 无 GPU / 查询失败 → free=None → 跳过保护(不阻塞)。modular 装配 stub 让流程走通。
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
         return object()
 
     monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
@@ -91,7 +91,7 @@ async def test_explicit_per_component_cards_honored(mm, monkeypatch):
     seen = {}
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
         seen["resolved"] = resolved
         seen["comp_devices"] = comp_devices
         return object()
@@ -109,7 +109,7 @@ async def test_auto_clip_vae_follow_unet_card(mm, monkeypatch):
     seen = {}
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
         seen["comp_devices"] = comp_devices
         return object()
 
