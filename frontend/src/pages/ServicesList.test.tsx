@@ -28,6 +28,18 @@ vi.mock('../components/services/CreateServiceDialog', () => ({
   default: () => null,
 }))
 
+// ModelBadge pulls live engine/component status (useQuery + ws) — stub it so
+// these navigation tests don't need a QueryClientProvider.
+vi.mock('../api/serviceModels', () => ({
+  useServiceModelStatus: () => ({ refs: [], total: 0, loaded: 0, loading: 0, failed: 0 }),
+  MODEL_STATE_VIS: {
+    loaded: { label: '已加载', color: '' },
+    loading: { label: '加载中', color: '' },
+    failed: { label: '失败', color: '' },
+    cold: { label: '未加载', color: '' },
+  },
+}))
+
 function makeService(over: Partial<ServiceRow> = {}): ServiceRow {
   return {
     id: '1234567890',
@@ -44,6 +56,7 @@ function makeService(over: Partial<ServiceRow> = {}): ServiceRow {
     snapshot_hash: 'sha256:abc',
     snapshot_schema_version: 1,
     version: 1,
+    models: [],
     created_at: '2026-04-23T00:00:00Z',
     updated_at: '2026-04-23T00:00:00Z',
     ...over,

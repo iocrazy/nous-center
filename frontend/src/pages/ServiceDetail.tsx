@@ -20,8 +20,10 @@ import {
   useService,
   type ExposedParam,
   type ServiceDetail as ServiceDetailT,
+  type ServiceModelRef,
   type ServiceStatus,
 } from '../api/services'
+import { useServiceModelStatus, MODEL_STATE_VIS, MODEL_ROLE_LABEL } from '../api/serviceModels'
 import {
   useApiKeys,
   useAddGrant,
@@ -250,22 +252,86 @@ function Tabs({
 
 function OverviewTab({ svc }: { svc: ServiceDetailT }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-      <Panel title="基本信息">
-        <KV k="ID" v={svc.id} />
-        <KV k="类型" v={svc.type} />
-        <KV k="状态" v={svc.status} />
-        <KV k="创建时间" v={new Date(svc.created_at).toLocaleString()} />
-        <KV k="更新时间" v={new Date(svc.updated_at).toLocaleString()} />
-      </Panel>
-      <Panel title="发布快照">
-        <KV k="hash" v={svc.snapshot_hash ?? '—'} mono />
-        <KV k="schema 版本" v={String(svc.snapshot_schema_version)} />
-        <KV k="服务版本" v={`v${svc.version}`} />
-        <KV k="入参数量" v={String(svc.exposed_inputs.length)} />
-        <KV k="出参数量" v={String(svc.exposed_outputs.length)} />
-      </Panel>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        <Panel title="基本信息">
+          <KV k="ID" v={svc.id} />
+          <KV k="类型" v={svc.type} />
+          <KV k="状态" v={svc.status} />
+          <KV k="创建时间" v={new Date(svc.created_at).toLocaleString()} />
+          <KV k="更新时间" v={new Date(svc.updated_at).toLocaleString()} />
+        </Panel>
+        <Panel title="发布快照">
+          <KV k="hash" v={svc.snapshot_hash ?? '—'} mono />
+          <KV k="schema 版本" v={String(svc.snapshot_schema_version)} />
+          <KV k="服务版本" v={`v${svc.version}`} />
+          <KV k="入参数量" v={String(svc.exposed_inputs.length)} />
+          <KV k="出参数量" v={String(svc.exposed_outputs.length)} />
+        </Panel>
+      </div>
+      <ModelsPanel models={svc.models} />
     </div>
+  )
+}
+
+function ModelsPanel({ models }: { models: ServiceModelRef[] }) {
+  const { refs, total, loaded, loading, failed } = useServiceModelStatus(models)
+  return (
+    <Panel title={`模型 — 已加载 ${loaded}/${total}${loading ? ` · 加载中 ${loading}` : ''}${failed ? ` · 失败 ${failed}` : ''}`}>
+      {total === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 14px' }}>
+          — 该服务的工作流未引用可追踪的模型/组件 —
+        </div>
+      ) : (
+        <div>
+          {refs.map((r, i) => {
+            const vis = MODEL_STATE_VIS[r.state]
+            return (
+              <div
+                key={`${r.kind}:${r.file ?? r.engine_key ?? i}`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 14px',
+                  borderTop: i === 0 ? 'none' : '1px solid var(--border)',
+                  fontSize: 12,
+                }}
+              >
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: vis.color, flexShrink: 0 }} />
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: 'var(--muted)',
+                    width: 78,
+                    flexShrink: 0,
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.4,
+                  }}
+                >
+                  {(r.role && MODEL_ROLE_LABEL[r.role]) ?? r.kind}
+                </span>
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    color: 'var(--text)',
+                    fontFamily: 'var(--mono, monospace)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={r.file ?? r.engine_key ?? r.label}
+                >
+                  {r.label}
+                </span>
+                <span style={{ fontSize: 11, color: vis.color, flexShrink: 0 }}>{vis.label}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </Panel>
   )
 }
 

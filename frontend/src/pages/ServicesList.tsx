@@ -16,10 +16,12 @@ import {
   useDeleteService,
   useServices,
   type ServiceCategory,
+  type ServiceModelRef,
   type ServiceRow,
 } from '../api/services'
 import CreateServiceDialog from '../components/services/CreateServiceDialog'
 import { useToastStore } from '../stores/toast'
+import { useServiceModelStatus, MODEL_STATE_VIS } from '../api/serviceModels'
 
 type FilterTab = 'all' | ServiceCategory
 
@@ -477,6 +479,7 @@ function ServiceCard({
             onOpenWorkflow={onOpenWorkflow}
           />
           <Tag>v{svc.version}</Tag>
+          <ModelBadge models={svc.models} />
         </div>
 
         <div
@@ -652,6 +655,39 @@ function SourceTag({
       }}
     >
       {label}
+    </span>
+  )
+}
+
+function ModelBadge({ models }: { models: ServiceModelRef[] }) {
+  const { total, loaded, loading, failed } = useServiceModelStatus(models)
+  if (total === 0) return null
+  // 全加载=绿 / 有加载中=黄 / 有失败=红 / 否则灰。
+  const vis =
+    failed > 0
+      ? MODEL_STATE_VIS.failed
+      : loading > 0
+        ? MODEL_STATE_VIS.loading
+        : loaded === total
+          ? MODEL_STATE_VIS.loaded
+          : MODEL_STATE_VIS.cold
+  return (
+    <span
+      title={`模型 已加载 ${loaded}/${total}${loading ? ` · 加载中 ${loading}` : ''}${failed ? ` · 失败 ${failed}` : ''}`}
+      style={{
+        fontSize: 10,
+        padding: '1px 7px',
+        borderRadius: 10,
+        background: 'var(--bg)',
+        color: vis.color,
+        border: '1px solid var(--border)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: vis.color, flexShrink: 0 }} />
+      模型 {loaded}/{total}
     </span>
   )
 }

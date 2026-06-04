@@ -73,6 +73,7 @@ function makeSvc(over: Partial<ServiceRow> = {}): ServiceRow {
     snapshot_hash: 'sha256:x',
     snapshot_schema_version: 1,
     version: 1,
+    models: [],
     created_at: '2026-04-23T00:00:00Z',
     updated_at: '2026-04-23T00:00:00Z',
     ...over,
