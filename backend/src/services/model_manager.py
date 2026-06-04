@@ -910,6 +910,45 @@ class ModelManager:
         # 1.3x 余量(激活/中间张量;含 VAE decode 峰值的粗略 headroom);bytes → MB
         return int(total / (1024 * 1024) * 1.3)
 
+    def _guard_image_vram_per_card(self, resolved: dict) -> None:
+        """逐卡 LLM 卡保护(逐组件选卡 spec 2026-06-04):按各组件落的卡分组,
+        估每张卡上组件之和,空闲不足则装载前清晰报错(不静默 OOM)。
+
+        逐组件跨卡时三组件可能分散到不同卡 —— 旧版只查 transformer 卡会漏查
+        clip/vae 落的卡。任一文件不存在(stub 测试)→ 跳过(无法估)。
+        """
+        import os  # noqa: PLC0415
+        need_by_card: dict[str, int] = {}
+        for k in ("diffusion_models", "clip", "vae"):
+            spec = resolved[k]
+            dev = spec.device
+            if not dev.startswith("cuda:"):  # cpu / auto(已解析)等不查
+                continue
+            try:
+                sz = os.path.getsize(spec.file)
+            except OSError:
+                continue
+            if k in ("diffusion_models", "clip") and (spec.dtype or "").lower().startswith("fp8"):
+                sz //= 2
+            if k == "diffusion_models":
+                for lora in (getattr(spec, "loras", None) or []):
+                    lp = getattr(lora, "path", None)
+                    if lp:
+                        try:
+                            sz += os.path.getsize(lp)
+                        except OSError:
+                            pass
+            need_by_card[dev] = need_by_card.get(dev, 0) + sz
+        for dev, need_bytes in need_by_card.items():
+            free_mb = self._free_vram_mb(dev)
+            need_mb = int(need_bytes / (1024 * 1024) * 1.3)
+            if free_mb is not None and free_mb < need_mb:
+                raise RuntimeError(
+                    f"{dev} 空闲显存不足({free_mb}MB < 约需 {need_mb}MB)—— "
+                    f"该卡可能被常驻 LLM / 其它组件占用。换张卡(device)、用更低精度(fp8)、"
+                    f"把组件分到别的卡,或启用 offload=cpu(让大模型自动倒换 CPU)。"
+                )
+
     @staticmethod
     def _explain_image_combo_key(combo_key: tuple) -> dict:
         """把 combo_key 拆成 readable dict 用于日志/调试,让 cache miss 时一眼看出
@@ -1075,25 +1114,37 @@ class ModelManager:
         if sticky:
             resolved["diffusion_models"] = resolved["diffusion_models"].model_copy(
                 update={"device": f"cuda:{self._image_stick[stick_key]}"})
-        # 整模型单卡不变式(spec 2026-05-21 rev 2):device=auto 会让三组件各自 resolve
-        # 到不同卡 —— 以 unet 解析出的卡为准,强制 clip/vae 落同一张卡。
+        # 逐组件选卡(spec 2026-06-04):device=auto 让三组件各自 resolve 到不同卡。
+        # **auto 跟随 transformer 卡**(整模型单卡的零回归默认),**显式选卡则保留**
+        # (逐组件跨卡 —— 把 clip/vae 放与 transformer 不同的卡)。
         target = resolved["diffusion_models"].device
         for k in ("clip", "vae"):
-            if resolved[k].device != target:
+            explicit = (components[k].device or "auto") != "auto"
+            if not explicit and resolved[k].device != target:
                 resolved[k] = resolved[k].model_copy(update={"device": target})
-        # LLM 卡保护:目标卡空闲显存不足(常驻 LLM 占着)→ 装载前清晰报错,不静默 OOM。
-        # PR-D:offload=cpu 时跳过这检查 — accelerate hooks 会按需挪 CPU,峰值 VRAM 远低于估算。
-        # 粘性命中(sticky):预期 cache hit、不需新显存 —— 跳过守卫,否则「卡已被自己占满」
-        # 会误判 OOM。真需重载(被 evict 过)时下游 OOM-retry 兜底。
-        if offload == "none" and not sticky:
-            free_mb = self._free_vram_mb(target)
-            need_mb = self._estimate_image_vram_mb(resolved)
-            if free_mb is not None and need_mb is not None and free_mb < need_mb:
+        # 角色名对齐 pipe 子模块;传给 ModularImageBackend 做逐组件放置(全同卡 → 单卡路径)。
+        comp_devices = {
+            "transformer": resolved["diffusion_models"].device,
+            "text_encoder": resolved["clip"].device,
+            "vae": resolved["vae"].device,
+        }
+        # PR-A 边界(spec 2026-06-04 §5 后续项):引擎当前按**单一 offload**(transformer 节点上选的)
+        # 驱动整管线。clip/vae 节点若设了**不同于** transformer 的 offload → 清晰报错(逐组件
+        # offload 是后续项),避免静默忽略。逐组件**选卡**(offload=none)已完整支持。
+        for k in ("clip", "vae"):
+            ko = getattr(resolved[k], "offload", "none") or "none"
+            if ko not in ("none", offload):
                 raise RuntimeError(
-                    f"{target} 空闲显存不足({free_mb}MB < 约需 {need_mb}MB)—— "
-                    f"该卡可能被常驻 LLM 占用。换张卡(device)、用更低精度(fp8)、"
-                    f"或启用 offload=cpu(让大模型自动倒换 CPU)。"
+                    f"{k} 节点的 Offload={ko!r} 与 Diffusion Model 的 Offload={offload!r} 不同 —— "
+                    f"逐组件独立 offload 暂未支持(spec 2026-06-04 §5 后续项)。"
+                    f"要逐组件跨卡请各组件 Offload 设 None(常驻各自卡);"
+                    f"要整体 offload 请在三个 loader 用相同的 Offload。"
                 )
+        # LLM 卡保护:**逐卡**检查空闲显存(每张卡上落的组件之和 vs 该卡空闲)→ 装载前清晰报错。
+        # PR-D:offload=cpu 时跳过(accelerate hooks 按需挪 CPU,峰值远低于估算)。
+        # 粘性命中(sticky):预期 cache hit、不需新显存 → 跳过守卫(否则「卡已被自己占满」误判)。
+        if offload == "none" and not sticky:
+            self._guard_image_vram_per_card(resolved)
         # combo_key 包含 offload:不同 offload 模式是不同的 pipe 实例(enable_model_cpu_offload 改了内部 hook,
         # 不能复用为 offload=none 的 adapter)。
         combo_key = (pipeline_class, offload) + tuple(
@@ -1105,7 +1156,7 @@ class ModelManager:
                 resolved, combo_key, target, _emit, offload)
         else:
             adapter = await self._get_or_load_modular_adapter(
-                resolved, combo_key, pipeline_class, target, _emit, offload)
+                resolved, combo_key, pipeline_class, target, _emit, offload, comp_devices)
         # 记住这工作流落的卡 —— 下次 auto 粘回来(load 与 cache hit 都刷新,target 即当前卡)。
         if target.startswith("cuda:"):
             self._image_stick[stick_key] = int(target.split(":", 1)[1])
@@ -1427,7 +1478,7 @@ class ModelManager:
         }
         return {"state": "loaded", "key": state_key, "role": role, "resident": resident}
 
-    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none"):
+    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none", comp_devices: dict | None = None):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 
         与 legacy 共用 `_image_adapters` combo 缓存 + 四态事件(coarse:加载前 loading、
@@ -1463,16 +1514,17 @@ class ModelManager:
                     build_bridged_transformer,
                     build_bridged_vae,
                 )
-                # PR-D / PR-D2:桥接 load_device 按 offload 模式选 ——
-                #   cpu  → 'cpu'(enable_model_cpu_offload 接管;直接 cuda 加载会爆 34GB > 24GB)
-                #   cuda:N → 'cuda:N'(stash 卡;hook 把组件移到 compute 时再倒)
-                #   none → target(compute 卡;全程在那)
-                if offload == "cpu":
-                    load_device = "cpu"
-                elif offload.startswith("cuda:"):
-                    load_device = offload  # stash 卡
-                else:
-                    load_device = target
+                # PR-D / PR-D2 + 逐组件选卡(2026-06-04):桥接 load_device ——
+                #   offload=cpu  → 'cpu'(enable_model_cpu_offload 接管;直接 cuda 会爆 34GB > 24GB)
+                #   offload=cuda:N → 'cuda:N'(stash 卡;hook 把组件移到 compute 时再倒)
+                #   offload=none → **各组件自己解析出的卡**(整模型单卡时三者 == target;
+                #                  逐组件跨卡时各落各的卡)。
+                def _load_device_for(role_key: str) -> str:
+                    if offload == "cpu":
+                        return "cpu"
+                    if offload.startswith("cuda:"):
+                        return offload
+                    return resolved[role_key].device
                 # 逐组件 L1:命中复用、未命中 build + 存池(offload=none 才共享,见
                 # `_get_or_build_image_component`)。combo miss 但组件 L1 命中 = 部分复用
                 # (用户场景:A、B 共用 X-bf16+vaeZ,只各自 build 不同的 clip)。
@@ -1480,15 +1532,15 @@ class ModelManager:
                 if _is_standalone_single_file(resolved["diffusion_models"]):
                     t_ov = await self._get_or_build_image_component(
                         "transformer", build_bridged_transformer,
-                        resolved["diffusion_models"], repo, load_device, offload, model_id)
+                        resolved["diffusion_models"], repo, _load_device_for("diffusion_models"), offload, model_id)
                 if _is_standalone_single_file(resolved["clip"]):
                     c_ov = await self._get_or_build_image_component(
                         "text_encoder", build_bridged_text_encoder,
-                        resolved["clip"], repo, load_device, offload, model_id)
+                        resolved["clip"], repo, _load_device_for("clip"), offload, model_id)
                 if _is_standalone_single_file(resolved["vae"]):
                     v_ov = await self._get_or_build_image_component(
                         "vae", build_bridged_vae,
-                        resolved["vae"], repo, load_device, offload, model_id)
+                        resolved["vae"], repo, _load_device_for("vae"), offload, model_id)
                 def _build_adapter():
                     return ModularImageBackend(
                         repo=repo,
@@ -1499,6 +1551,7 @@ class ModelManager:
                         transformer_override=t_ov,
                         text_encoder_override=c_ov,
                         vae_override=v_ov,
+                        comp_devices=comp_devices,
                     )
 
                 # PR-D4 OOM 重试一次:加载 / _ensure_pipe 抛 CUDA OOM →

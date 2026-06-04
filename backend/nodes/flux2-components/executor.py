@@ -51,13 +51,15 @@ async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
         raise RuntimeError("Load Checkpoint: 未选整模型(file 空)—— 在 diffusers/ 放 HF-layout 模型")
     device = data.get("device") or _AUTO
     dtype = data.get("weight_dtype") or _DEFAULT_DTYPE
+    offload = data.get("offload") or "none"  # 三件同卡同 offload(便捷节点)
     return {
         "model": {"_type": "flux2_model", "spec": {
             "kind": "diffusion_models", "file": _first_safetensors(repo, "transformer"),
-            "device": device, "dtype": dtype, "adapter_arch": "flux2"}, "loras": []},
-        "clip": {"_type": "flux2_clip", "type": "flux2",
+            "device": device, "dtype": dtype, "adapter_arch": "flux2"}, "loras": [], "offload": offload},
+        "clip": {"_type": "flux2_clip", "type": "flux2", "device": device, "offload": offload,
                  "encoders": [{"kind": "clip", "file": _first_safetensors(repo, "text_encoder"), "dtype": dtype}]},
-        "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": _first_safetensors(repo, "vae"), "dtype": dtype}},
+        "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": _first_safetensors(repo, "vae"),
+                                               "dtype": dtype, "device": device, "offload": offload}},
     }
 
 
@@ -84,8 +86,9 @@ async def exec_load_diffusion_model(data: dict, inputs: dict) -> dict:
 
 async def exec_load_clip(data: dict, inputs: dict) -> dict:
     """CLIP —— 动态多编码器(clip_stack:每条 file + weight_dtype)+ type(架构)。
-    无 device:跟随上游 transformer 的卡(整模型单卡)。多编码器执行 gated(runner
-    _build_request 拦,见 spec §4.3)。兜底旧单 file 格式(PR-1/PR-2 期存的 workflow)。"""
+    逐组件选卡(2026-06-04):node 级 device/offload(套用所有 encoder);device=auto 跟随
+    transformer 卡(零回归)。多编码器执行 gated(runner _build_request 拦,见 spec §4.3)。
+    兜底旧单 file 格式(PR-1/PR-2 期存的 workflow)。"""
     clips = data.get("clips")
     if not clips and data.get("file"):  # back-compat:PR-1/PR-2 单 file
         clips = [{"file": data["file"], "weight_dtype": data.get("weight_dtype")}]
@@ -93,12 +96,15 @@ async def exec_load_clip(data: dict, inputs: dict) -> dict:
         {"kind": "clip", "file": c["file"], "dtype": c.get("weight_dtype") or _DEFAULT_DTYPE}
         for c in (clips or []) if c.get("file")
     ]
-    return {"clip": {"_type": "flux2_clip", "type": data.get("type") or "flux2", "encoders": encoders}}
+    return {"clip": {"_type": "flux2_clip", "type": data.get("type") or "flux2", "encoders": encoders,
+                     "device": data.get("device") or _AUTO, "offload": data.get("offload") or "none"}}
 
 
 async def exec_load_vae(data: dict, inputs: dict) -> dict:
-    """VAE —— 组件描述符。无 device:跟随 transformer 卡。"""
-    spec = {"kind": "vae", "file": data["file"], "dtype": data.get("weight_dtype") or _DEFAULT_DTYPE}
+    """VAE —— 组件描述符。逐组件选卡(2026-06-04):device=auto 跟随 transformer 卡(零回归),
+    显式选卡则落该卡;offload 同 Diffusion Model。"""
+    spec = {"kind": "vae", "file": data["file"], "dtype": data.get("weight_dtype") or _DEFAULT_DTYPE,
+            "device": data.get("device") or _AUTO, "offload": data.get("offload") or "none"}
     return {"vae": {"_type": "flux2_vae", "spec": spec}}
 
 

@@ -339,8 +339,9 @@ def _build_request(node: P.RunNode):
         from src.services.inference.component_spec import ComponentSpec
 
         # 细粒度图 dispatch 终端(flux2_vae_decode):inputs 带嵌套 latent + vae。
-        # 摊平成 ImageRequest;整模型单卡 —— clip/vae 的 device 强制 = unet 的 device
-        # (Load Diffusion Model 上选的卡;clip/vae 跟随)。spec 2026-05-21 rev 2。
+        # 摊平成 ImageRequest。逐组件选卡(spec 2026-06-04):clip/vae 用各自节点的 device/offload
+        # (默认 auto/none → get_or_load_image_adapter 把 auto 解析成跟随 transformer 卡 = 零回归;
+        # 显式选卡则逐组件落各自卡)。不再强制 clip/vae 同 transformer 卡。
         latent = node.inputs.get("latent")
         vae_d = node.inputs.get("vae")
         if (isinstance(latent, dict) and latent.get("_type") == "flux2_latent"
@@ -348,7 +349,8 @@ def _build_request(node: P.RunNode):
             model_d = latent["model"]
             cond_d = latent["conditioning"]
             unet_spec = dict(model_d["spec"])
-            device = unet_spec["device"]
+            unet_offload = str(model_d.get("offload") or "none")
+            unet_spec["offload"] = unet_offload  # 让 unet ComponentSpec 带上(与全局 offload 一致)
             encoders = cond_d["clip"]["encoders"]
             if len(encoders) != 1:
                 clip_type = cond_d["clip"].get("type", "?")
@@ -356,10 +358,13 @@ def _build_request(node: P.RunNode):
                     f"多编码器架构 '{clip_type}'({len(encoders)} 个 encoder)执行未就绪 —— "
                     f"需对应多编码器模型 backend(见 spec 2026-05-21 §9);"
                     f"当前可用 flux2/qwen 单编码器")
+            clip_d = cond_d["clip"]
             clip_spec = dict(encoders[0])
-            clip_spec["device"] = device
-            vae_spec = dict(vae_d["spec"])
-            vae_spec["device"] = device
+            clip_spec["device"] = clip_d.get("device") or "auto"
+            clip_spec["offload"] = str(clip_d.get("offload") or "none")
+            vae_spec = dict(vae_d["spec"])  # executor 已写 device/offload;旧快照兜底 auto/none
+            vae_spec.setdefault("device", "auto")
+            vae_spec.setdefault("offload", "none")
             lseed = latent.get("seed")
             # PR-anima-6:adapter_arch="anima" → pipeline_class="AnimaPipeline"(走 AnimaImageBackend);
             # 默认 "flux2" → "Flux2KleinPipeline"(走 ModularImageBackend)。
@@ -375,7 +380,7 @@ def _build_request(node: P.RunNode):
                 cfg_scale=float(latent.get("cfg_scale") or 4.0),
                 sampler_name=str(latent.get("sampler_name") or "euler"),
                 scheduler=str(latent.get("scheduler") or "normal"),
-                offload=str(model_d.get("offload") or "none"),
+                offload=unet_offload,
                 seed=int(lseed) if lseed not in (None, "") else None,
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),

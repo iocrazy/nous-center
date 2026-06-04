@@ -120,6 +120,7 @@ async def test_load_clip_single_via_clips():
     assert out["clip"] == {
         "_type": "flux2_clip", "type": "flux2",
         "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "default"}],
+        "device": "auto", "offload": "none",
     }
 
 
@@ -133,7 +134,7 @@ async def test_load_clip_multi_encoder():
     assert out["clip"] == {"_type": "flux2_clip", "type": "flux1", "encoders": [
         {"kind": "clip", "file": "/m/clipL.safe", "dtype": "bfloat16"},
         {"kind": "clip", "file": "/m/t5.safe", "dtype": "fp8_e4m3"},
-    ]}
+    ], "device": "auto", "offload": "none"}
 
 
 @pytest.mark.asyncio
@@ -148,7 +149,8 @@ async def test_load_clip_legacy_single_file_fallback():
 async def test_load_vae_descriptor():
     executors = _load_executors()
     out = await executors["flux2_load_vae"]({"file": "/m/v.safe", "weight_dtype": "bfloat16"}, {})
-    assert out["vae"] == {"_type": "flux2_vae", "spec": {"kind": "vae", "file": "/m/v.safe", "dtype": "bfloat16"}}
+    assert out["vae"] == {"_type": "flux2_vae", "spec": {
+        "kind": "vae", "file": "/m/v.safe", "dtype": "bfloat16", "device": "auto", "offload": "none"}}
 
 
 # --- Load LoRA 串联(带 path)-------------------------------------------------

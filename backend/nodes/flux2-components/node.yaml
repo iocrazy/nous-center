@@ -24,6 +24,17 @@ nodes:
       - { name: file,         label: "整模型", widget: component_select, role: checkpoint }
       - { name: weight_dtype, label: "精度", widget: select, options: [default, bfloat16, float16, fp8_e4m3], default: bfloat16 }
       - { name: device,       label: "显卡", widget: select, options: [auto, "cuda:0", "cuda:1", "cuda:2"], default: auto }
+      # 三件同卡同 offload(便捷节点)。
+      - name: offload
+        label: "Offload"
+        widget: select
+        default: none
+        options:
+          - { value: none,     label: "None",          description: "不 offload — 常驻所选卡,最快" }
+          - { value: cpu,      label: "CPU offload",   description: "不用时挪 CPU — 慢 3-5× 但塞得下大模型" }
+          - { value: "cuda:0", label: "GPU stash → cuda:0", description: "跨卡 offload:权重常驻 cuda:0,forward 时挪到所选卡" }
+          - { value: "cuda:1", label: "GPU stash → cuda:1", description: "跨卡 offload:权重常驻 cuda:1,forward 时挪到所选卡" }
+          - { value: "cuda:2", label: "GPU stash → cuda:2", description: "跨卡 offload:权重常驻 cuda:2,forward 时挪到所选卡" }
 
   flux2_load_diffusion_model:
     label: "Load Diffusion Model"
@@ -72,6 +83,19 @@ nodes:
       - { id: clip, type: CLIP, label: CLIP }
     widgets:
       - { name: clips, label: "CLIP", widget: clip_stack }
+      # 逐组件选卡(2026-06-04):device=该 CLIP 节点(所有 encoder)落哪张卡;
+      # auto=跟随 Diffusion Model 卡(旧默认,零回归)。offload 同 Diffusion Model。
+      - { name: device,  label: "显卡", widget: select, options: [auto, "cuda:0", "cuda:1", "cuda:2"], default: auto }
+      - name: offload
+        label: "Offload"
+        widget: select
+        default: none
+        options:
+          - { value: none,     label: "None",          description: "不 offload — 常驻所选卡,最快" }
+          - { value: cpu,      label: "CPU offload",   description: "不用时挪 CPU — 慢但塞得下大编码器" }
+          - { value: "cuda:0", label: "GPU stash → cuda:0", description: "跨卡 stash:权重常驻 cuda:0,forward 时挪到所选卡" }
+          - { value: "cuda:1", label: "GPU stash → cuda:1", description: "跨卡 stash:权重常驻 cuda:1,forward 时挪到所选卡" }
+          - { value: "cuda:2", label: "GPU stash → cuda:2", description: "跨卡 stash:权重常驻 cuda:2,forward 时挪到所选卡" }
       - { name: type,  label: "架构", widget: select, options: [flux2, flux1, sdxl, sd3, qwen], default: flux2 }
 
   flux2_load_vae:
@@ -86,6 +110,18 @@ nodes:
     widgets:
       - { name: file,         label: "文件", widget: component_select, role: vae }
       - { name: weight_dtype, label: "精度", widget: select, options: [default, bfloat16, float16], default: bfloat16 }
+      # 逐组件选卡(2026-06-04):auto=跟随 Diffusion Model 卡(旧默认,零回归)。
+      - { name: device,  label: "显卡", widget: select, options: [auto, "cuda:0", "cuda:1", "cuda:2"], default: auto }
+      - name: offload
+        label: "Offload"
+        widget: select
+        default: none
+        options:
+          - { value: none,     label: "None",          description: "不 offload — 常驻所选卡,最快" }
+          - { value: cpu,      label: "CPU offload",   description: "不用时挪 CPU — 慢但塞得下" }
+          - { value: "cuda:0", label: "GPU stash → cuda:0", description: "跨卡 stash:权重常驻 cuda:0,forward 时挪到所选卡" }
+          - { value: "cuda:1", label: "GPU stash → cuda:1", description: "跨卡 stash:权重常驻 cuda:1,forward 时挪到所选卡" }
+          - { value: "cuda:2", label: "GPU stash → cuda:2", description: "跨卡 stash:权重常驻 cuda:2,forward 时挪到所选卡" }
 
   flux2_load_lora:
     label: "Load LoRA"

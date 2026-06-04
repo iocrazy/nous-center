@@ -184,8 +184,9 @@ async def test_emits_component_events(stubbed):
 
     comps = _comps()
     await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline", on_event=_on_event)
-    unet_dev = mm._resolve_component_device(comps["diffusion_models"]).device
-    keys = {component_state_key(comps[k].model_copy(update={"device": unet_dev})) for k in ("diffusion_models", "clip", "vae")}
+    # 逐组件选卡(2026-06-04):clip/vae 显式不同卡被尊重 → 四态事件按**各组件自己解析的卡**
+    # 算 state_key(不再统一到 unet 卡)。
+    keys = {component_state_key(mm._resolve_component_device(comps[k])) for k in ("diffusion_models", "clip", "vae")}
     loaded = {k for (k, s, _e) in events if s == "loaded"}
     loading = {k for (k, s, _e) in events if s == "loading"}
     assert keys <= loaded and keys <= loading

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from src.services.inference.base import LoRASpec
 
 _DEVICE_RE = re.compile(r"^(cpu|auto|cuda:(0|[1-9]\d*))$")
+_OFFLOAD_RE = re.compile(r"^(none|cpu|cuda:(0|[1-9]\d*))$")
 
 
 class ComponentSpec(BaseModel):
@@ -28,9 +29,24 @@ class ComponentSpec(BaseModel):
     file: str = Field(..., description="Absolute path resolved by component_scanner")
     device: str = Field(..., description="'auto' | 'cpu' | 'cuda:N'")
     dtype: str = Field(..., description="'bfloat16' | 'float16' | 'fp8_e4m3'")
+    # 逐组件放置/卸载策略(逐组件跨卡 spec 2026-06-04):none=常驻 device;cpu=不用时挪 CPU
+    # (enable_model_cpu_offload 等价,塞大模型);cuda:N=跨卡 stash。**不进** to_component_key /
+    # component_state_key —— offload 是放置策略,不改变「加载了哪个权重」的身份。
+    offload: str = Field("none", description="'none' | 'cpu' | 'cuda:N'")
     loras: list[LoRASpec] = Field(default_factory=list)
     adapter_arch: str | None = Field(None, description="unet only: 'flux2' | 'flux1'")
     clip_arch: str | None = Field(None, description="clip only: 'flux2' | 'flux1' | 'sdxl' | 'qwen'")
+
+    @field_validator("offload")
+    @classmethod
+    def _validate_offload(cls, v: str) -> str:
+        v = v or "none"
+        if not _OFFLOAD_RE.match(v):
+            raise ValueError(f"offload must match none|cpu|cuda:N (no leading zero) — got {v!r}")
+        if v.startswith("cuda:"):
+            idx = int(v.split(":", 1)[1])
+            return f"cuda:{idx}"
+        return v
 
     @field_validator("device")
     @classmethod

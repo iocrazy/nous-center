@@ -28,10 +28,11 @@ def _granular_inputs(unet_dev="cuda:1", loras=None):
 def test_granular_flatten_single_card():
     req = _build_request(_node(_granular_inputs(unet_dev="cuda:1")))
     assert req.components is not None
-    # 整模型单卡:clip/vae 的 device 被覆盖成 unet 的 device
+    # 逐组件选卡(2026-06-04):runner 不再强制 clip/vae 同卡。描述符无显式 device →
+    # clip/vae 带 'auto'(下游 get_or_load_image_adapter 把 auto 解析成跟随 transformer 卡 = 零回归)。
     assert req.components["diffusion_models"].device == "cuda:1"
-    assert req.components["clip"].device == "cuda:1"
-    assert req.components["vae"].device == "cuda:1"
+    assert req.components["clip"].device == "auto"
+    assert req.components["vae"].device == "auto"
     assert req.components["clip"].file == "/m/c.safe"
     assert req.prompt == "a cat"
     assert (req.width, req.height, req.steps, req.seed) == (768, 768, 9, 42)

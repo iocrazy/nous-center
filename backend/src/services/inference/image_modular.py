@@ -268,6 +268,73 @@ def _enable_cross_gpu_offload(pipe: Any, *, compute_device: str, stash_device: s
         prev_user_hook = UserCpuOffloadHook(model=model, hook=hook)
 
 
+def _move_to_device(obj: Any, device: Any) -> Any:
+    """Recursively move tensors in nested args/kwargs/outputs to `device`,
+    leaving non-tensors (and tensors already there) untouched."""
+    import torch  # noqa: PLC0415
+    if torch.is_tensor(obj):
+        return obj.to(device) if obj.device != device else obj
+    if isinstance(obj, tuple):
+        return tuple(_move_to_device(o, device) for o in obj)
+    if isinstance(obj, list):
+        return [_move_to_device(o, device) for o in obj]
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    return obj
+
+
+def _place_components_per_device(
+    pipe: Any, *, compute_device: str, comp_devices: dict[str, str],
+) -> None:
+    """逐组件跨卡放置(2026-06-04 spec):每个组件常驻**自己选的卡**并在那张卡上 forward,
+    跨卡张量流由 forward 边界的 accelerate ModelHook 透明搬运 —— 不依赖 diffusers 内部
+    对 mixed-device 的支持(那正是 2026-05-21 放弃逐组件跨卡的脆弱点)。
+
+    comp_devices: {"transformer": dev, "text_encoder": dev, "vae": dev}(都是解析后的具体卡)。
+    compute_device = transformer 的卡 = denoise / latents 的锚点(pipe._execution_device)。
+
+    机制(在 nn.Module.forward 边界挂 hook,与上游 encode_prompt/__call__ 怎么调无关):
+      - 非锚点组件(text_encoder/vae):pre_forward 把输入挪到该组件自己的卡跑,post_forward
+        把输出挪回 compute 卡 —— 这样 pipe 主流(latents/embeds 流)始终在 compute 卡,
+        encode_prompt 即便把 token ids 挪到 compute,text_encoder 的 hook 也会再挪到它的卡。
+      - 锚点组件(transformer):只设 execution_device=compute(让 diffusers `_execution_device`
+        无歧义解析到 compute,latents/noise 分配在 compute),不改输出。
+    """
+    import torch  # noqa: PLC0415
+    from accelerate.hooks import ModelHook, add_hook_to_module  # noqa: PLC0415
+
+    compute_t = torch.device(compute_device)
+
+    class _CrossDeviceHook(ModelHook):
+        def __init__(self, run_device: Any, return_device: Any, execution_device: Any = None):
+            self.run_device = torch.device(run_device)
+            self.return_device = torch.device(return_device) if return_device is not None else None
+            # diffusers `_execution_device` 扫描 `_hf_hook.execution_device`;只在锚点设值,
+            # 其余设 None 让扫描跳过 → _execution_device 无歧义解析到 compute 卡。
+            self.execution_device = torch.device(execution_device) if execution_device is not None else None
+
+        def pre_forward(self, module: Any, *args: Any, **kwargs: Any) -> Any:
+            return (_move_to_device(args, self.run_device), _move_to_device(kwargs, self.run_device))
+
+        def post_forward(self, module: Any, output: Any) -> Any:
+            if self.return_device is not None:
+                return _move_to_device(output, self.return_device)
+            return output
+
+    for name, dev in comp_devices.items():
+        module = getattr(pipe, name, None)
+        if not isinstance(module, torch.nn.Module):
+            continue
+        dev_t = torch.device(dev)
+        module.to(dev_t)  # 常驻自己的卡
+        if name == "transformer":
+            # 锚点:固定 _execution_device=compute,不改输出(latents 留在 compute)。
+            add_hook_to_module(module, _CrossDeviceHook(compute_t, None, execution_device=compute_t), append=True)
+        elif dev_t != compute_t:
+            # 跨卡组件:输入挪到自己的卡,输出挪回 compute(主流回到锚点卡)。
+            add_hook_to_module(module, _CrossDeviceHook(dev_t, compute_t), append=True)
+
+
 class ModularImageBackend(InferenceAdapter):
     """图像引擎(标准 diffusers Flux2KleinPipeline);class 名是历史包袱(原 ModularPipeline,见模块 docstring)。
 
@@ -289,6 +356,7 @@ class ModularImageBackend(InferenceAdapter):
         transformer_override: Any = None,
         text_encoder_override: Any = None,
         vae_override: Any = None,
+        comp_devices: dict[str, str] | None = None,
         **params: Any,
     ):
         # PR-A:删了 components_manager 参数(modular 才需要的;吞剩余 kwargs 兼容旧调用)。
@@ -297,6 +365,9 @@ class ModularImageBackend(InferenceAdapter):
         self.repo = repo
         self.dtype = dtype
         self.pipeline_class = pipeline_class
+        # 逐组件跨卡放置(2026-06-04):{"transformer":dev,"text_encoder":dev,"vae":dev}(解析后具体卡)。
+        # None 或三者同卡 = 整模型单卡(旧路径,零回归)。device(=transformer 卡)是 compute 锚点。
+        self.comp_devices = comp_devices or {}
         # PR-D:权重 offload 策略 — "none"(全程 GPU)/ "cpu"(enable_model_cpu_offload,大模型塞小卡)。
         # "cuda:N" 跨卡 offload 留 PR-D2(需 accelerate 自定义 hook)。
         self.offload = offload
@@ -369,7 +440,24 @@ class ModularImageBackend(InferenceAdapter):
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
             # offload 时:在 enable_model_cpu_offload 之前量化(accelerate hooks 才看到量化后权重)。
             _quantize_fp8_weight_only(pipe)
-        # PR-D / PR-D2:offload 策略。
+        # 逐组件跨卡放置(2026-06-04):任一组件落与 transformer 不同的卡 → 走逐组件路径。
+        # 全同卡(含全 auto→同 target)→ 落下面的整模型单卡 offload 路径(零回归)。
+        import torch  # noqa: PLC0415
+        hetero = bool(self.comp_devices) and any(
+            torch.device(d) != torch.device(self.device) for d in self.comp_devices.values()
+        )
+        if hetero:
+            if self.offload != "none":
+                raise NotImplementedError(
+                    "逐组件跨卡放置暂只支持 offload=none(组件常驻各自卡);"
+                    "想 offload 大模型请把组件放同一张卡再用 offload=cpu/cuda:N。"
+                    "(逐组件放置 + offload 组合见 spec 2026-06-04 §5 后续项)")
+            _place_components_per_device(
+                pipe, compute_device=self.device, comp_devices=self.comp_devices)
+            self._pipe = pipe
+            self._model = pipe
+            return pipe
+        # PR-D / PR-D2:offload 策略(整模型单卡)。
         #   none      → 普通 .to(device),全程在 device。最快。
         #   cpu       → enable_model_cpu_offload(gpu_id=N):accelerate hooks 不用时挪 CPU。慢 3-5×。
         #   cuda:N    → 跨卡 stash:三大组件常驻 cuda:N,forward 前 to(device) 后 to(stash)。
