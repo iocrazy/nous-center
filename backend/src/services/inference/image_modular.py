@@ -737,6 +737,12 @@ class ModularImageBackend(InferenceAdapter):
         pt.stage("text_encode", step=0, total_steps=total_steps)
 
         t = time.monotonic()
+        # 逐组件时长(VAE decode 真计时,spec 2026-06-04):在 step 回调里打 denoise 首/末步
+        # 时间戳,pipe() 返回后算 dit_denoise(首→末步)与 vae_decode(末步→pipe 返回 = 内嵌
+        # decode 段)各自耗时,塞 InferenceResult.metadata.stage_latency_ms。executor 据此让
+        # KSampler 显纯 denoise、VAE Decode 显真 decode 时长(修「VAE Decode 恒 0s」)。
+        # **纯记时间戳,不改 pipe / 生成 / decode → 出图字节不变(smoke SSIM=1.0)**。
+        _stage_ts: dict[str, float] = {}
         cfg = float(req.cfg_scale)
         # cfg → guidance_scale。标准 Flux2KleinPipeline(is_distilled=False):cfg>1 → 跑 cond+uncond 真 CFG
         # (cfg=1 退化单次前向);negative 走 **预编码 negative_prompt_embeds**(klein __call__ 无 negative 字符串
@@ -784,6 +790,10 @@ class ModularImageBackend(InferenceAdapter):
                     if latents is not None:
                         from src.services.inference.latent_preview import latent_to_preview_data_uri  # noqa: PLC0415
                         preview_url = latent_to_preview_data_uri(latents)
+                # 逐组件时长:记 denoise 首/末步时间戳(callback 在每步**末**触发)。
+                _now = time.monotonic()
+                _stage_ts.setdefault("denoise_first", _now)
+                _stage_ts["denoise_last"] = _now
                 # PR-4:ProgressTracker.step 算 latency 滑窗(16)+ ETA + emit。
                 pt.step(i + 1, total_steps, stage="dit_denoise", preview_url=preview_url)
                 return cb_kwargs
@@ -796,6 +806,16 @@ class ModularImageBackend(InferenceAdapter):
         # → cancel_flag 永不置位、中途取消失效 ③ 慢卡长 denoise >ping_timeout 触发 watchdog
         # 介入。丢 to_thread 让事件循环空闲:进度实时 flush、Abort 可读、cancel 生效。
         out = await asyncio.to_thread(lambda: pipe(**call_kwargs))
+        t_pipe_end = time.monotonic()
+        # 逐组件时长:denoise=首→末步;vae_decode=末步→pipe 返回(内嵌 decode 段)。
+        # 只在 step 回调真跑过(Flux2Klein + 有 progress/cancel)时算 —— 其余路径(ERNIE
+        # fallback / smoke 无回调)留空,metadata 不带 stage_latency_ms,行为/出图不变。
+        stage_latency_ms: dict[str, int] = {}
+        if "denoise_first" in _stage_ts:
+            stage_latency_ms["dit_denoise"] = max(
+                0, int((_stage_ts["denoise_last"] - _stage_ts["denoise_first"]) * 1000))
+            stage_latency_ms["vae_decode"] = max(
+                0, int((t_pipe_end - _stage_ts["denoise_last"]) * 1000))
         # PR-4:vae_decode 用 stage(progress=1.0) — 不调 finish(避免 _finished=True 阻塞
         # 测试场景下手动触发 step_cb;production 中 stage 行为等同 finish:progress=1/eta=0)。
         # Flux2 标准 pipe 里 VAE decode 已在 pipe() 内嵌跑完,这里发的是「post-denoise 收尾」一帧。
@@ -817,6 +837,8 @@ class ModularImageBackend(InferenceAdapter):
                 "height": req.height,
                 "seed": req.seed,
                 "engine": ("flux2klein" if self.pipeline_class == "Flux2KleinPipeline" else "modular"),
+                # 逐组件时长(空 dict 时不影响下游;executor 据此给 KSampler/VAE Decode 真时长)。
+                **({"stage_latency_ms": stage_latency_ms} if stage_latency_ms else {}),
             },
             usage=UsageMeter(image_count=1, latency_ms=latency_ms),
         )
