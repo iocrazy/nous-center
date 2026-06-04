@@ -1140,15 +1140,22 @@ class ModelManager:
         }
         # LLM 卡保护:**逐卡**检查空闲显存(每张卡上**常驻**组件之和 vs 该卡空闲)→ 装载前清晰报错。
         # 守卫内部跳过 offload!=none 的组件(它们 forward 时才挪上卡,不常驻)。
-        # 粘性命中(sticky):预期 cache hit、不需新显存 → 跳过守卫(否则「卡已被自己占满」误判)。
-        if not sticky:
-            self._guard_image_vram_per_card(resolved)
         # combo_key 包含 offload(整管线)+ 逐组件 offload:不同 offload 模式是不同的 pipe 实例
         #(hook 不同,不能跨 offload 复用);逐组件 offload 不进 to_component_key,故单列进 combo_key
-        # 避免「同 file/卡、不同 offload」误命中。
+        # 避免「同 file/卡、不同 offload」误命中。**上移到守卫前**:据此判断 combo 是否已加载。
         combo_key = (pipeline_class, offload,
                      tuple(comp_offloads[r] for r in ("transformer", "text_encoder", "vae"))) + tuple(
             to_component_key(resolved[k]) for k in ("diffusion_models", "clip", "vae"))
+        # LLM 卡保护守卫的跳过条件:
+        #  ① 粘性命中(sticky:device=auto 二次跑,预期 cache hit、不需新显存);
+        #  ② **combo 已加载**(显式选卡 re-run:组件已在该卡上,守卫却按「全新装载」从文件大小
+        #     估需求 → free 因 combo 已占而偏低 → 误判「卡被自己占满」拦截合法复用。本 session
+        #     真机踩:combo 驻 cuda:1 38G + qwen36 常驻 → 改 seed re-run 被守卫拦死,被迫跨卡折腾)。
+        # 已加载 = 纯 cache hit、零新显存 → 跳守卫安全(best-effort 读 _models,锁外;并发同 combo
+        # 装载中漏判最多多跑一次守卫,与旧行为一致,不会误放真 OOM)。
+        already_loaded = self._models.get(self._derive_image_model_id(combo_key)) is not None
+        if not sticky and not already_loaded:
+            self._guard_image_vram_per_card(resolved)
         # PR-anima-6 engine 集成:pipeline_class="AnimaPipeline" → 走 AnimaImageBackend
         # (Anima 是 2B 自定义 DiT,跟 Flux2KleinPipeline 走不同路径)。
         if pipeline_class == "AnimaPipeline":
