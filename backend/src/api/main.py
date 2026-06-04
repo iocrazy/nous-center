@@ -298,8 +298,13 @@ async def lifespan(app: FastAPI):
                     gpu_free_probe=gpu_probe,
                 )
                 logger.info(
+                    # rep_model_key 是 llm group 的「代表标识」(取 llm_specs[0].id),
+                    # **不是启动加载目标** —— 它 status 一直 unloaded。实际加载由
+                    # published 工作流依赖(_load_wf_deps)/ resident preload / 手动决定。
+                    # 旧文案打 `model_key=%s` 易被误读成「启动加载了这个模型」(排查
+                    # startup 自动加载时踩过坑,见 memory project_startup_model_load_paths)。
                     "Lane K: LLMRunner instantiated (group=%s, gpus=%s, "
-                    "model_key=%s, adapter_present=%s)",
+                    "rep_model_key=%s [group 代表标识,非启动加载目标], adapter_present=%s)",
                     group.id, group.gpus, rep_model_key, rep_adapter is not None,
                 )
             else:
