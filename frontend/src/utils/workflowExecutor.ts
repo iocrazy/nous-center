@@ -170,7 +170,7 @@ async function executeOnBackend(workflow: Workflow): Promise<{ task_id: string }
   // Open a progress channel. Server pushes node_start/complete/error into
   // this bucket; ws must be connected BEFORE the POST so events aren't lost.
   const channelId = `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-  const ws = await openProgressChannel(channelId)
+  const ws = await openProgressChannel(channelId, workflow.nodes)
 
   // Lane S（异步契约）:/execute 入队即返回 202 { task_id };结果与进度经上面的
   // progress WS(node_start/complete/error → execution store + window event)+ TaskPanel
@@ -197,16 +197,50 @@ async function executeOnBackend(workflow: Workflow): Promise<{ task_id: string }
 }
 
 
-function openProgressChannel(channelId: string): Promise<WebSocket> {
+// PR-1 逐组件进度(spec 2026-06-04-workflow-node-progress):image 链(load→encode→
+// denoise→decode)被 runner 摊平成 VAE Decode 节点 dispatch 的**一次** infer,所以三个
+// stage 的 node_progress 都挂在末端 vae_decode 节点 → 只 VAE Decode 亮,Encode Prompt /
+// KSampler 不亮。按 stage 把 node_id 重映射到图里对应类型的逻辑节点,让各节点显示自己阶段
+// 的进度/耗时。唯一匹配才映射(多个同类型节点歧义 → 保留原 dispatch 节点)。
+const STAGE_TO_NODE_TYPE: Record<string, string> = {
+  text_encode: 'flux2_encode_prompt',
+  dit_denoise: 'flux2_ksampler',
+  vae_decode: 'flux2_vae_decode',
+}
+
+function openProgressChannel(channelId: string, nodes: WorkflowNode[] = []): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/workflow/${channelId}`)
     const exec = useExecutionStore.getState()
     ws.onopen = () => resolve(ws)
     ws.onerror = (e) => reject(new Error(`ws open failed: ${String(e)}`))
+    // 当前 stage 映射到的逻辑节点;stage 切换时给前一个补 node_complete(清其进度条),
+    // 给新的补 node_start(清重置),让接力像独立节点依次跑。
+    let lastStageNodeId: string | null = null
+    const fireSynthetic = (type: string, nodeId: string) =>
+      window.dispatchEvent(new CustomEvent('node-progress', { detail: { type, node_id: nodeId } }))
     ws.onmessage = (ev) => {
       try {
         const d = JSON.parse(ev.data)
+        // stage→逻辑节点重映射(仅 node_progress 带 stage 时)。
+        if (d?.type === 'node_progress' && typeof d.stage === 'string') {
+          const targetType = STAGE_TO_NODE_TYPE[d.stage]
+          const matches = targetType ? nodes.filter((n) => n.type === targetType) : []
+          if (matches.length === 1 && matches[0].id !== d.node_id) {
+            const mappedId = matches[0].id
+            if (lastStageNodeId !== mappedId) {
+              if (lastStageNodeId) {
+                fireSynthetic('node_complete', lastStageNodeId)
+                exec.clearNodeState(lastStageNodeId)
+              }
+              fireSynthetic('node_start', mappedId)
+              exec.setNodeState(mappedId, 'running')
+              lastStageNodeId = mappedId
+            }
+            d.node_id = mappedId
+          }
+        }
         // Dispatch window CustomEvent so DeclarativeNode / TextOutputNode
         // can pick up node_stream / node_complete for streaming text + stats.
         window.dispatchEvent(new CustomEvent('node-progress', { detail: d }))
@@ -233,6 +267,12 @@ function openProgressChannel(channelId: string): Promise<WebSocket> {
         } else if (d.type === 'node_error') {
           exec.setNodeState(d.node_id, 'error')
         } else if (d.type === 'complete') {
+          // 给最后一个 stage 映射节点补收尾(否则其进度条残留)。
+          if (lastStageNodeId) {
+            fireSynthetic('node_complete', lastStageNodeId)
+            exec.clearNodeState(lastStageNodeId)
+            lastStageNodeId = null
+          }
           exec.setProgress(100)
           exec.setCurrentNode(null, null)
           ws.close()  // 异步执行结束 → 关进度 WS(executeOnBackend 已不在 finally 关它)
