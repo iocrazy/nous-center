@@ -275,9 +275,11 @@ def test_explain_image_combo_key_unpacks_all_components():
     PR-D5 诊断字段稳定性用 — 直接读 backend log 比 sha256 hash 易诊断 100×。"""
     from src.services.model_manager import ModelManager
 
+    # combo_key shape(逐组件 offload 后):(pipeline_class, offload, comp_offloads, t_key, c_key, v_key)
     combo = (
         "Flux2KleinPipeline",
         "none",
+        ("none", "none", "none"),
         ("/m/flux2.safetensors", "cuda:1", "bfloat16", frozenset()),
         ("/m/qwen3.safetensors", "cuda:1", "bfloat16", frozenset()),
         ("/m/vae.safetensors", "cuda:1", "bfloat16", frozenset({("turbo", 0.8)})),
@@ -285,6 +287,7 @@ def test_explain_image_combo_key_unpacks_all_components():
     out = ModelManager._explain_image_combo_key(combo)
     assert out["pipeline_class"] == "Flux2KleinPipeline"
     assert out["offload"] == "none"
+    assert out["comp_offloads"] == ("none", "none", "none")
     assert out["transformer"]["file"] == "/m/flux2.safetensors"
     assert out["transformer"]["dtype"] == "bfloat16"
     assert out["vae"]["loras"] == ["turbo@0.8"]
