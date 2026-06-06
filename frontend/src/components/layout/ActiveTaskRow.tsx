@@ -78,6 +78,24 @@ function formatMs(ms: number): string {
   return `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`
 }
 
+/** 整体进度(对齐 ComfyUI「总进度」):跨 stage 加权成单条 0-100%。denoise 是耗时主体
+ * → 占 5-95%(按 step 推进);model_load 是不定态(返回 null → 进度条走滑动动画,不造假 %)。
+ * 这是工作流**总**进度;画布各节点自己的进度(KSampler 步进条等)是**每节点**进度,两层并存。 */
+function overallPercent(
+  stage: string | null,
+  step: { done: number; total: number } | null,
+): number | null {
+  if (!stage) return null
+  const frac = step && step.total > 0 ? step.done / step.total : 0
+  switch (stage) {
+    case 'model_load': return null // 不定态(加载中,无可测百分比)
+    case 'text_encode': return 5
+    case 'dit_denoise': return Math.min(95, Math.round(5 + 90 * frac))
+    case 'vae_decode': return 97
+    default: return null
+  }
+}
+
 function getMetaLine(t: ExecutionTask): string {
   // 通用 meta 行 — 优先展示尺寸/seed/cfg(image),其它 service 用 workflow_id 等做兜底。
   const w = t.image_width, h = t.image_height
@@ -112,6 +130,10 @@ export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
   // (「加载模型中…」),否则加载期间 RUNNING 卡一片空白。其余阶段仍要求 step 才显示。
   const isIndeterminate = stage === 'model_load'
   const showL3 = isRunning && stage != null && (step != null || isIndeterminate)
+
+  // 整体进度条(ComfyUI「总进度」):running 全程显示。determinate(有 % → 绿条按比例填充)
+  // 或 indeterminate(model_load / 还没出 stage → 滑动动画,不造假 %)。
+  const overallPct = overallPercent(stage, step)
 
   return (
     <div className="relative flex gap-2.5">
@@ -241,6 +263,45 @@ export default function ActiveTaskRow({ task }: { task: ExecutionTask }) {
               {step && etaMs != null && etaMs > 0 && (
                 <> · ETA {formatMs(etaMs)}</>
               )}
+            </span>
+          </div>
+        )}
+
+        {/* 整体进度条(ComfyUI「总进度」):running 全程一条总进度。determinate 按 % 填充 +
+            右侧显数字;indeterminate(加载中/未出 stage)走滑动动画不造假 %。 */}
+        {isRunning && (
+          <div className="mt-2 flex items-center gap-2">
+            <div
+              className="flex-1 overflow-hidden rounded-full"
+              style={{ height: 4, background: 'var(--tp-border)' }}
+            >
+              {overallPct != null ? (
+                <div
+                  style={{
+                    width: `${overallPct}%`,
+                    height: '100%',
+                    background: 'var(--status-running)',
+                    borderRadius: 999,
+                    transition: 'width 0.3s ease',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: '30%',
+                    height: '100%',
+                    background: 'var(--status-running)',
+                    borderRadius: 999,
+                    animation: 'nous-indeterminate 1.1s ease-in-out infinite',
+                  }}
+                />
+              )}
+            </div>
+            <span
+              className="text-[10px] font-mono tabular-nums shrink-0"
+              style={{ color: 'var(--tp-text-muted)', minWidth: 30, textAlign: 'right' }}
+            >
+              {overallPct != null ? `${overallPct}%` : '···'}
             </span>
           </div>
         )}
