@@ -46,6 +46,30 @@ async def test_insufficient_vram_raises_clear_error(mm, monkeypatch, tmp_path):
         await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline")
 
 
+def test_guard_skips_pooled_components(mm, monkeypatch, tmp_path):
+    """组件已在 runner L1 池 → 守卫不计入该卡(combo 装配复用、不需新显存)。
+    修用户报告:节点四态显「已加载」但 combo cache miss 时,守卫按全新载入估满尺寸 → 误拦显存不足。"""
+    u = tmp_path / "u.safe"
+    u.write_bytes(b"\0" * 40_000_000)  # 40MB → 约需 ~50MB
+    spec = ComponentSpec(kind="diffusion_models", file=str(u), device="cuda:1", dtype="bfloat16", adapter_arch="flux2")
+    comps = {
+        "diffusion_models": spec,
+        "clip": ComponentSpec(kind="clip", file=str(u), device="cuda:0", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(u), device="cuda:2", dtype="bfloat16"),
+    }
+    monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: 1 if dev == "cuda:1" else 90000)
+    # 未入池 → 该卡空闲不足 → 拦
+    with pytest.raises(RuntimeError, match="显存不足"):
+        mm._guard_image_vram_per_card(comps)
+    # transformer 放进 L1 池(模拟已加载)→ 该卡不再计入 → 不拦
+    key = mm._l1_component_key(spec, "cuda:1")
+    mm._components[key] = {
+        "module": object(), "role": "transformer", "key": key,
+        "refs": set(), "resident": False, "device": "cuda:1",
+    }
+    mm._guard_image_vram_per_card(comps)  # 不应抛
+
+
 @pytest.mark.asyncio
 async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
     # 无 GPU / 查询失败 → free=None → 跳过保护(不阻塞)。modular 装配 stub 让流程走通。

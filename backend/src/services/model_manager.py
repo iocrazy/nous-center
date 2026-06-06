@@ -927,6 +927,13 @@ class ModelManager:
             dev = spec.device
             if not dev.startswith("cuda:"):  # cpu / auto(已解析)等不查
                 continue
+            # **该组件已在 runner L1 池(本卡常驻)→ combo 装配会复用、不需新显存 → 不计入。**
+            # 修用户报告:节点四态显「已加载」(组件确在池里)但 combo 是 cache miss(装配过的 pipe
+            # 没缓存),守卫按「全新载入」估满模型尺寸 → 把本可复用的载入误拦成显存不足。
+            # 用真实 _components 池判(非主进程 four-state 镜像 —— 镜像可能 stale;池里真有=能复用,
+            # 池里没有=确要新载,即便镜像显已加载也得拦,避免静默 OOM)。
+            if self._l1_component_key(spec, dev) in self._components:
+                continue
             try:
                 sz = os.path.getsize(spec.file)
             except OSError:
