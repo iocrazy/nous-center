@@ -26,15 +26,21 @@ async def test_get_inference_usage_sqlite_does_not_crash(tmp_path, monkeypatch):
 
     monkeypatch.setattr(usage_service, "get_session_factory", lambda: sf)
 
+    # 显式 start/end 框住 2026-05-30 的数据 —— 否则默认窗口是「now-7天」,随系统日期推移
+    # 这条固定日期的数据会滑出窗口(2026-06-06 跑时 now-7d 刚好卡在 05-30 → DataCount 0)。
+    win_start = datetime(2026, 5, 29, tzinfo=timezone.utc)
+    win_end = datetime(2026, 5, 31, tzinfo=timezone.utc)
+
     # 早先这里对 SQLite 抛 date_trunc 不支持 → 现在 strftime 分支正常返回
-    res = await usage_service.get_inference_usage(interval="day", columnar=True)
+    res = await usage_service.get_inference_usage(
+        interval="day", columnar=True, start=win_start, end=win_end)
     assert res["DataCount"] == 1
     row = res["Data"][0]
     assert row[0] == "2026-05-30"  # strftime day bucket(字符串,_iso_bucket 原样返回)
     assert int(row[2]) == 10 and int(row[3]) == 5
 
     # 非 columnar 也不崩
-    res2 = await usage_service.get_inference_usage(interval="hour")
+    res2 = await usage_service.get_inference_usage(interval="hour", start=win_start, end=win_end)
     assert res2["data"][0]["hour"].startswith("2026-05-30 12:00")
 
     await engine.dispose()
