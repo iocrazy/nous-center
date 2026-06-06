@@ -199,7 +199,7 @@ function ModelSelectWidget({
       value: e.name,
       label: e.display_name,
       description: '已加载',
-      color: 'var(--ok)',
+      loaded: true,  // → 绿点 + 「只看已加载」筛选
     })),
     // 未加载:置灰不可选(同旧原生 select 的 disabled 语义)。
     ...unloaded.map((e) => ({
@@ -208,6 +208,7 @@ function ModelSelectWidget({
       description: '未加载',
       color: 'var(--muted)',
       disabled: true,
+      loaded: false,
     })),
   ]
   return (
@@ -227,6 +228,9 @@ export function ComponentSelectWidget({
   role,
 }: { value: string; onChange: (v: string) => void; role: ComponentRole }) {
   const { data: components } = useComponents(role)
+  // 已加载状态(按 file 兜底,同 ComponentStatusHeader)→ 下拉标绿点 + 「只看已加载」筛选。
+  const { data: allStates } = useAllComponentStates()
+  const byFile = loadedStateByFile(allStates)
   const opts = (components ?? []).map((c) => {
     // 同名不同目录的文件(如各模型的 diffusion_pytorch_model.safetensors)在下拉里会看着
     // 一样 —— 副标题附上量化类型 + 末两级目录(模型目录/子目录)区分。
@@ -234,7 +238,12 @@ export function ComponentSelectWidget({
     const ctx = parts.slice(-3, -1).join('/')
     const quant = c.quant_type && c.quant_type !== 'bf16' ? c.quant_type : ''
     const description = [quant, ctx].filter(Boolean).join(' — ')
-    return { value: c.abs_path, label: c.filename, description: description || undefined }
+    return {
+      value: c.abs_path,
+      label: c.filename,
+      description: description || undefined,
+      loaded: byFile[c.abs_path] === 'loaded',
+    }
   })
   return (
     <NodeSelectPopover

@@ -17,6 +17,9 @@ export interface SelectOption {
   color?: string
   /** 置灰不可选(如 model_select 里「未加载」的模型)。点击无效,样式淡化。 */
   disabled?: boolean
+  /** 该项对应的模型/组件是否已在显存。任一 option 带此字段 → 下拉顶部出现「只看已加载」筛选,
+   * 且已加载项标绿点。undefined = 无加载语义(dtype/device 等下拉不显示筛选)。 */
+  loaded?: boolean
 }
 
 export interface NodeSelectPopoverProps {
@@ -39,8 +42,16 @@ export function NodeSelectPopover({
   width = '100%',
 }: NodeSelectPopoverProps) {
   const [open, setOpen] = useState(false)
+  const [onlyLoaded, setOnlyLoaded] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const current = options.find((o) => o.value === value)
+  // 任一 option 带 loaded 语义 → 显示「只看已加载」筛选(模型/组件下拉);否则不显示(dtype/device)。
+  const hasLoadedInfo = options.some((o) => o.loaded !== undefined)
+  const loadedCount = options.filter((o) => o.loaded).length
+  // 筛选时保留当前选中项(否则选了未加载的会从列表消失,看不到选中态)。
+  const shownOptions = onlyLoaded && hasLoadedInfo
+    ? options.filter((o) => o.loaded || o.value === value)
+    : options
 
   useEffect(() => {
     if (!open) return
@@ -139,7 +150,42 @@ export function NodeSelectPopover({
             zIndex: 1000,
           }}
         >
-          {options.map((opt) => {
+          {/* 「只看已加载」筛选(仅模型/组件下拉有 loaded 语义时显示) */}
+          {hasLoadedInfo && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setOnlyLoaded((v) => !v) }}
+              className="nodrag"
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '5px 8px',
+                marginBottom: 4,
+                background: onlyLoaded ? 'var(--accent-subtle)' : 'transparent',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                cursor: 'pointer',
+                color: 'var(--text)',
+                fontFamily: 'var(--font)',
+                fontSize: fs,
+                position: 'sticky',
+                top: -4,
+              }}
+            >
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--ok)', flexShrink: 0 }} />
+              <span style={{ flex: 1, textAlign: 'left' }}>只看已加载</span>
+              <span style={{ color: 'var(--muted)', fontSize: 10 }}>{loadedCount}</span>
+              {onlyLoaded && <Check size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />}
+            </button>
+          )}
+          {shownOptions.length === 0 && (
+            <div style={{ padding: '8px', fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
+              无已加载项
+            </div>
+          )}
+          {shownOptions.map((opt) => {
             const selected = opt.value === value
             const disabled = !!opt.disabled
             return (
@@ -189,12 +235,17 @@ export function NodeSelectPopover({
                     justifyContent: 'center',
                   }}
                 >
-                  {opt.color ? (
+                  {selected ? (
+                    <Check size={12} style={{ color: 'var(--accent)' }} />
+                  ) : opt.loaded ? (
+                    <span
+                      title="已加载"
+                      style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--ok)' }}
+                    />
+                  ) : opt.color ? (
                     <span
                       style={{ width: 8, height: 8, borderRadius: '50%', background: opt.color }}
                     />
-                  ) : selected ? (
-                    <Check size={12} style={{ color: 'var(--accent)' }} />
                   ) : null}
                 </span>
                 <span

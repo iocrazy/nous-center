@@ -4,6 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('../../api/client', () => ({ apiFetch: vi.fn() }))
 vi.mock('../../api/useLiveChannel', () => ({ useLiveChannel: vi.fn() }))
+// ComponentSelectWidget 现在读 useAllComponentStates 标「已加载」—— stub 成空,保留
+// useComponents/loadedStateByFile 真实(否则全局 apiFetch mock 把 {components} 当 states 喂崩)。
+vi.mock('../../api/components', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/components')>()),
+  useAllComponentStates: () => ({ data: [] }),
+}))
 import { apiFetch } from '../../api/client'
 import { ComponentSelectWidget } from './DeclarativeNode'
 
