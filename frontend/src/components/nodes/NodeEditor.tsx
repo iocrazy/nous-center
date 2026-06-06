@@ -345,6 +345,8 @@ export default function NodeEditor() {
           edgeTypes={edgeTypes}
           deleteKeyCode={['Backspace', 'Delete']}
           edgesReconnectable
+          minZoom={0.15}
+          maxZoom={8}
           fitView
           fitViewOptions={{ padding: 0.1, minZoom: 0.5, maxZoom: 1.5 }}
           defaultEdgeOptions={{
@@ -359,6 +361,8 @@ export default function NodeEditor() {
           <MiniMap
             nodeColor={() => 'var(--muted-strong)'}
             style={{ background: 'var(--bg-accent)' }}
+            pannable
+            zoomable
           />
         </ReactFlow>
       </div>
