@@ -128,6 +128,12 @@ body {
   }
 }
 
+/* 任务面板整体进度条:不定态阶段(model_load / 无 step)的滑动指示段。 */
+@keyframes nous-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+
 /* Style native select dropdown options */
 select option {
   background: var(--bg-elevated);
