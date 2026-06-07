@@ -15,6 +15,9 @@ class Workflow(Base):
     description: Mapped[str | None] = mapped_column(Text, default=None)
     nodes: Mapped[list] = mapped_column(JSON, default=list)
     edges: Mapped[list] = mapped_column(JSON, default=list)
+    # 节点分组(ComfyUI 式可视框,不入执行图)—— 纯展示:{id,title,x,y,width,height,color}。
+    # 执行器只读 nodes/edges,groups 永不参与拓扑/派发。
+    groups: Mapped[list] = mapped_column(JSON, default=list)
     is_template: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="draft")
 

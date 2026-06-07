@@ -184,12 +184,26 @@ export interface WorkflowEdge {
   targetHandle: string
 }
 
+/** 节点分组(ComfyUI 式可视框):纯展示,不入执行图。拖动组头移动框内节点。
+ * 坐标/尺寸都是画布(flow)坐标系像素。 */
+export interface WorkflowGroup {
+  id: string
+  title: string
+  x: number
+  y: number
+  width: number
+  height: number
+  /** 边框/标题色(CSS color)。 */
+  color: string
+}
+
 export interface Workflow {
   id: string
   name: string
   description?: string
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
+  groups?: WorkflowGroup[]
   is_template?: boolean
   status?: 'draft' | 'published'
 }

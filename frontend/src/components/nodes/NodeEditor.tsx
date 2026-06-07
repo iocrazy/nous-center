@@ -1,5 +1,5 @@
 import { useCallback, useRef, useMemo, useEffect, useState } from 'react'
-import { Copy, Ban, Trash2 } from 'lucide-react'
+import { Copy, Ban, Trash2, Group } from 'lucide-react'
 import {
   ReactFlow,
   Background,
@@ -18,6 +18,7 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { nodeTypes } from './nodeTypes'
+import GroupLayer from './GroupLayer'
 import PortTypedEdge from '../edges/PortTypedEdge'
 import { PORT_TYPE_COLORS } from './portColors'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -66,6 +67,7 @@ export default function NodeEditor() {
   const storeAddNodesWithEdges = useWorkspaceStore((s) => s.addNodesWithEdges)
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
   const updateNode = useWorkspaceStore((s) => s.updateNode)
+  const storeAddGroup = useWorkspaceStore((s) => s.addGroup)
   const undo = useWorkspaceStore((s) => s.undo)
   const redo = useWorkspaceStore((s) => s.redo)
   const { activePanel, activeOverlay, panelWidth } = usePanelStore()
@@ -381,6 +383,33 @@ export default function NodeEditor() {
     ])
   }, [setNodes, setEdges, storeAddNodesWithEdges])
 
+  // 选中节点打包成分组框(对齐 ComfyUI Ctrl+G)。按 position 包围盒(节点高度未知 →
+  // 估算尺寸 + padding 兜框,用户可再缩放)。供 Ctrl+G 和右键菜单复用。
+  const groupSelected = useCallback(() => {
+    const selected = nodesRef.current.filter((n) => n.selected)
+    if (selected.length === 0) return
+    const PAD = 28
+    const NODE_W = 320
+    const NODE_H = 160
+    const xs = selected.map((n) => n.position.x)
+    const ys = selected.map((n) => n.position.y)
+    const minX = Math.min(...xs)
+    const minY = Math.min(...ys)
+    const maxX = Math.max(...selected.map((n) => n.position.x + ((n as any).width ?? (n.style as any)?.width ?? NODE_W)))
+    const maxY = Math.max(...ys.map((y) => y + NODE_H))
+    const palette = ['#a855f7', '#3b82f6', '#22c55e', '#f59e0b', '#ec4899']
+    const idx = (workflow.groups?.length ?? 0) % palette.length
+    storeAddGroup({
+      id: crypto.randomUUID().slice(0, 8),
+      title: '分组',
+      x: minX - PAD,
+      y: minY - PAD - 26,
+      width: maxX - minX + PAD * 2,
+      height: maxY - minY + PAD * 2 + 26,
+      color: palette[idx],
+    })
+  }, [workflow.groups, storeAddGroup])
+
   // 复制 Ctrl/Cmd+C / 粘贴 Ctrl/Cmd+V / 原地复制 Ctrl/Cmd+D。
   // 与 undo/redo 同样:focus 在 input/textarea/contenteditable 时放行原生行为。
   // Ctrl+V 仅在 in-app 剪贴板有节点时接管 —— 否则放行(让 MultimodalInputNode
@@ -417,11 +446,16 @@ export default function NodeEditor() {
           const anyOn = selected.some((n) => !(n.data as any)?.bypassed)
           for (const n of selected) updateNode(n.id, { bypassed: anyOn })
         }
+      } else if (k === 'g') {
+        if (nodesRef.current.some((n) => n.selected)) {
+          e.preventDefault()
+          groupSelected()
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [copySelection, pasteClipboard, updateNode])
+  }, [copySelection, pasteClipboard, updateNode, groupSelected])
 
   // m09: 画布模式下左节点库 + 右属性面板**常驻**。overlay 视图
   // （dashboard / services / 设置 等）下两边都隐藏。
@@ -475,8 +509,11 @@ export default function NodeEditor() {
           }}
           onNodeContextMenu={(event, node) => {
             event.preventDefault()
-            // 右键即选中该节点(便于「复制」读选区),并在指针处弹菜单。
-            setNodes((nds) => nds.map((n) => ({ ...n, selected: n.id === node.id })))
+            // 右键:若该节点已在多选内,保留整个选区(分组/复制作用于整组);否则单选它。
+            setNodes((nds) => {
+              const alreadyInSel = nds.find((n) => n.id === node.id)?.selected && nds.filter((n) => n.selected).length > 1
+              return alreadyInSel ? nds : nds.map((n) => ({ ...n, selected: n.id === node.id }))
+            })
             const bounds = reactFlowWrapper.current?.getBoundingClientRect()
             setCtxMenu({
               x: event.clientX - (bounds?.left ?? 0),
@@ -502,6 +539,7 @@ export default function NodeEditor() {
           style={{ background: 'var(--bg)' }}
         >
           <Background color="rgba(255,255,255,0.03)" gap={20} />
+          <GroupLayer />
           <Controls />
           <MiniMap
             nodeColor={() => 'var(--muted-strong)'}
@@ -543,10 +581,10 @@ export default function NodeEditor() {
             >
               {item(<Ban size={13} />, isBypassed ? '取消旁路' : '旁路 (Ctrl+B)', () => updateNode(ctxMenu.nodeId, { bypassed: !isBypassed }))}
               {item(<Copy size={13} />, '复制 (Ctrl+D)', () => {
-                setNodes((nds) => nds.map((n) => ({ ...n, selected: n.id === ctxMenu.nodeId })))
-                // 选中态在下一帧才稳定 → 延后一拍再 copy+paste
+                // 延后一拍:选中态(右键已设)在下一帧稳定后再 copy+paste
                 setTimeout(() => { copySelection(); pasteClipboard() }, 0)
               })}
+              {item(<Group size={13} />, '分组 (Ctrl+G)', () => { setTimeout(() => groupSelected(), 0) })}
               {item(<Trash2 size={13} />, '删除', () => {
                 setNodes((nds) => nds.filter((n) => n.id !== ctxMenu.nodeId))
                 storeRemoveNode(ctxMenu.nodeId)
