@@ -151,6 +151,34 @@ class ZImageTurboArchAdapter:
         return {"normal"}
 
 
+class QwenImageEditArchAdapter:
+    """Qwen-Image-Edit-2511(20B DiT + Qwen2.5-VL-7B encoder)via diffusers QwenImageEditPlusPipeline
+    (P2 角度控制,spec 2026-06-07)。
+
+    **非 distilled** —— CFG 旋钮是 `true_cfg_scale`(默认 4.0,非 guidance_scale;真 API 确认见
+    pipeline_qwenimage_edit_plus.py)。编辑类(needs_image_input)。支持 negative_prompt 字符串。
+    默认 40 步(README 推荐;__call__ 默认 50,取 40 平衡速度)。采样器 FlowMatchEuler。
+    "Plus" 变体支持多参考图(image= 可传 list)。"""
+
+    def supports_cfg(self) -> bool:
+        return True
+
+    def supports_negative_prompt(self) -> bool:
+        return True
+
+    def default_steps(self) -> int:
+        return 40
+
+    def default_guidance_scale(self) -> float:
+        return 4.0  # → true_cfg_scale(引擎对 qwen 映射)
+
+    def supported_samplers(self) -> set[str]:
+        return {"euler"}
+
+    def supported_schedulers(self) -> set[str]:
+        return {"normal"}
+
+
 DEFAULT_IMAGE_ARCH = "flux2"
 
 IMAGE_ARCH_REGISTRY: dict[str, ImageArchSpec] = {
@@ -159,6 +187,9 @@ IMAGE_ARCH_REGISTRY: dict[str, ImageArchSpec] = {
     "anima": ImageArchSpec("anima", "AnimaPipeline", "anima", FluxKleinArchAdapter()),
     # Z-Image-Turbo 文生图(P1):走 ModularImageBackend 的 ZImagePipeline 分支。
     "z-image": ImageArchSpec("z-image", "ZImagePipeline", "modular", ZImageTurboArchAdapter()),
+    # Qwen-Image-Edit-2511 角度控制/编辑(P2):needs_image_input=True;走 QwenImageEditPlusPipeline 分支。
+    "qwen-edit": ImageArchSpec("qwen-edit", "QwenImageEditPlusPipeline", "modular",
+                               QwenImageEditArchAdapter(), needs_image_input=True),
 }
 
 
