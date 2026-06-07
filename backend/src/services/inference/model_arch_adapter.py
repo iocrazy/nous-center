@@ -125,12 +125,40 @@ class ImageArchSpec:
     needs_image_input: bool = False
 
 
+class ZImageTurboArchAdapter:
+    """Z-Image-Turbo(Tongyi-MAI,6B distilled)via diffusers ZImagePipeline(P1,spec 2026-06-07)。
+
+    distilled:guidance_scale 必须 0(非零掉质量,HF README + 真机冒烟验);8 步即收敛;
+    无 negative。HF-layout 整模型,from_pretrained。采样器:FlowMatchEuler(Z-Image 不走 Flux2 的
+    sigma 注入路径,故 schedulers 只声明 normal)。"""
+
+    def supports_cfg(self) -> bool:
+        return False
+
+    def supports_negative_prompt(self) -> bool:
+        return False
+
+    def default_steps(self) -> int:
+        return 8
+
+    def default_guidance_scale(self) -> float:
+        return 0.0  # distilled — 必须 0
+
+    def supported_samplers(self) -> set[str]:
+        return {"euler"}
+
+    def supported_schedulers(self) -> set[str]:
+        return {"normal"}
+
+
 DEFAULT_IMAGE_ARCH = "flux2"
 
 IMAGE_ARCH_REGISTRY: dict[str, ImageArchSpec] = {
     "flux2": ImageArchSpec("flux2", "Flux2KleinPipeline", "modular", FluxKleinArchAdapter()),
     # anima 走 AnimaImageBackend(自定义 DiT),caps 占位(不经 ModularImageBackend 采样器校验)。
     "anima": ImageArchSpec("anima", "AnimaPipeline", "anima", FluxKleinArchAdapter()),
+    # Z-Image-Turbo 文生图(P1):走 ModularImageBackend 的 ZImagePipeline 分支。
+    "z-image": ImageArchSpec("z-image", "ZImagePipeline", "modular", ZImageTurboArchAdapter()),
 }
 
 

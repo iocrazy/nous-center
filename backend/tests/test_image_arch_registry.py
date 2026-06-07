@@ -38,3 +38,13 @@ def test_model_arch_registry_derived_backcompat():
 def test_registry_has_flux2_and_anima():
     assert set(IMAGE_ARCH_REGISTRY) >= {"flux2", "anima"}
     assert all(s.adapter in ("modular", "anima") for s in IMAGE_ARCH_REGISTRY.values())
+
+
+def test_zimage_arch_registered():
+    """P1:z-image → ZImagePipeline,走 modular 后端,distilled(guidance 0 / 8 步)。"""
+    s = arch_spec_by_name("z-image")
+    assert s.pipeline_class == "ZImagePipeline"
+    assert s.adapter == "modular"
+    assert arch_spec_by_pipeline("ZImagePipeline").arch == "z-image"
+    assert s.caps.default_guidance_scale() == 0.0
+    assert s.caps.default_steps() == 8

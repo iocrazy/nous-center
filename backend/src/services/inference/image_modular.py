@@ -48,6 +48,14 @@ def _import_klein_pipeline() -> tuple[Any, Any, Any]:
     return Flux2KleinPipeline, AutoTokenizer, FlowMatchEulerDiscreteScheduler
 
 
+def _import_zimage_pipeline() -> Any:
+    """Lazy import Z-Image pipeline(D2:diffusers import 只在本文件)。Z-Image-Turbo 是
+    distilled(guidance=0,8 步),HF-layout 整模型,走标准 from_pretrained。测试 monkeypatch 注入 fake。"""
+    from diffusers import ZImagePipeline  # noqa: PLC0415
+
+    return ZImagePipeline
+
+
 def _import_flow_schedulers() -> dict:
     """Lazy import diffusers flow-matching scheduler 类(PR-2 采样器选择;D2 隔离)。
 
@@ -497,14 +505,17 @@ class ModularImageBackend(InferenceAdapter):
     def _ensure_pipe(self) -> Any:
         if self._pipe is not None:
             return self._pipe
-        # PR-A:diffusers modular 退役。Flux2 → 标准 Flux2KleinPipeline。
-        # 非 Flux2 架构(ERNIE / Qwen-Image / AuraFlow 等)留待 PR-C 经 ImageArchSpec 注册表统一接入。
-        if self.pipeline_class != "Flux2KleinPipeline":
+        # 多架构(spec 2026-06-07):按 pipeline_class 选 builder。Flux2=comfy 单文件桥接/HF-layout;
+        # Z-Image=HF-layout 整模型 from_pretrained。fp8/逐组件放置/offload 之后共享(都作用于
+        # pipe.transformer/text_encoder/vae,两架构组件名一致)。其余架构(ERNIE/Qwen-Edit…)后续接入。
+        if self.pipeline_class == "Flux2KleinPipeline":
+            pipe = self._build_klein_pipe()
+        elif self.pipeline_class == "ZImagePipeline":
+            pipe = self._build_zimage_pipe()
+        else:
             raise NotImplementedError(
-                f"pipeline_class {self.pipeline_class!r} 暂未接入;Flux2KleinPipeline 之外的架构"
-                f"(ERNIE / Qwen-Image / AuraFlow 等)需经 PR-C 的 ImageArchSpec 注册表加入"
-                f"(见 plans/2026-05-26-image-engine-ux-consolidation.md)。")
-        pipe = self._build_klein_pipe()
+                f"pipeline_class {self.pipeline_class!r} 暂未接入;已支持 Flux2KleinPipeline / "
+                f"ZImagePipeline。新架构在 IMAGE_ARCH_REGISTRY 注册并在此加 builder 分支。")
         if _wants_fp8(self.dtype):
             # fp8 weight-only(torchao):transformer + text_encoder 权重 fp8 存储,省 ~½ 显存,
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
@@ -581,6 +592,15 @@ class ModularImageBackend(InferenceAdapter):
         if overrides:
             pipe.register_modules(**overrides)
         return pipe
+
+    def _build_zimage_pipe(self) -> Any:
+        """Z-Image-Turbo:HF-layout 整模型,标准 `ZImagePipeline.from_pretrained`(无单文件桥接)。
+        组件名 transformer/text_encoder/vae 与 Flux2 一致 → 之后的 fp8/逐组件放置/offload 共享。
+        真机冒烟验过(smoke_zimage.py:load 10.4s / infer 2.6s / 8 步出真图)。"""
+        zimage_cls = _import_zimage_pipeline()
+        # low_cpu_mem_usage=False:对齐 HF README(Z-Image 加载建议),避免 meta-init 与本仓桥接路径冲突。
+        return zimage_cls.from_pretrained(
+            self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
 
     def _apply_loras(self, loras: list) -> None:
         """LoRA(含 ComfyUI 格式)接 Flux2Klein modular pipe(经 Flux2LoraLoaderMixin,
@@ -744,6 +764,10 @@ class ModularImageBackend(InferenceAdapter):
         # **纯记时间戳,不改 pipe / 生成 / decode → 出图字节不变(smoke SSIM=1.0)**。
         _stage_ts: dict[str, float] = {}
         cfg = float(req.cfg_scale)
+        # Z-Image-Turbo 是 distilled:**guidance_scale 必须 0**(非零掉质量,HF README + 冒烟验)。
+        # 忽略请求的 cfg。其余架构(Flux2)按下方 cfg→guidance 逻辑。
+        if self.pipeline_class == "ZImagePipeline":
+            cfg = 0.0
         # cfg → guidance_scale。标准 Flux2KleinPipeline(is_distilled=False):cfg>1 → 跑 cond+uncond 真 CFG
         # (cfg=1 退化单次前向);negative 走 **预编码 negative_prompt_embeds**(klein __call__ 无 negative 字符串
         # 入参,内部 do_cfg 时用它做 true-CFG)。真模型 A/B 已证 cfg/negative 生效(spike_true_cfg.py)。
