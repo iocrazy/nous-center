@@ -22,7 +22,8 @@ import { PORT_TYPE_COLORS } from './portColors'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
-import { NODE_DEFS, type NodeType, type PortType } from '../../models/workflow'
+import { NODE_DEFS, type NodeType, type PortType, type WorkflowNode, type WorkflowEdge } from '../../models/workflow'
+import { buildPastedGraph } from '../../utils/pasteGraph'
 import NodeLibraryPanel from '../panels/NodeLibraryPanel'
 import NodePropertyPanel from '../panels/NodePropertyPanel'
 import WorkflowsPanel from '../panels/WorkflowsPanel'
@@ -61,6 +62,7 @@ export default function NodeEditor() {
   const storeAddEdge = useWorkspaceStore((s) => s.addEdge)
   const storeRemoveEdge = useWorkspaceStore((s) => s.removeEdge)
   const storeAddNode = useWorkspaceStore((s) => s.addNode)
+  const storeAddNodesWithEdges = useWorkspaceStore((s) => s.addNodesWithEdges)
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
   const undo = useWorkspaceStore((s) => s.undo)
   const redo = useWorkspaceStore((s) => s.redo)
@@ -150,9 +152,19 @@ export default function NodeEditor() {
   const [nodes, setNodes, onNodesChangeInternal] = useNodesState(rfNodes)
   const [edges, setEdges, onEdgesChangeInternal] = useEdgesState(rfEdges)
 
-  // Keep a ref to always access latest React Flow nodes (avoids stale closures)
+  // Keep a ref to always access latest React Flow nodes/edges (avoids stale closures)
   const nodesRef = useRef(nodes)
   nodesRef.current = nodes
+  const edgesRef = useRef(edges)
+  edgesRef.current = edges
+
+  // 复制/粘贴剪贴板(模块外不共享 —— 仅本会话内存;跨 tab 粘贴可用,因为是 ref
+  // 持有的纯数据)。pasteSeq 让连续粘贴递增偏移,避免叠在同一处。
+  const clipboardRef = useRef<{
+    nodes: Array<{ id: string; type: string; data: Record<string, unknown>; position: { x: number; y: number }; style?: unknown; width?: number; height?: number }>
+    edges: Array<{ source: string; sourceHandle: string; target: string; targetHandle: string }>
+  } | null>(null)
+  const pasteSeqRef = useRef(0)
 
   // Sync Zustand store changes back to React Flow, preserving resize dimensions
   // AND selection state. rfNodes 从 store 重建时不带 `selected`,若不在这里保留,
@@ -290,6 +302,108 @@ export default function NodeEditor() {
     },
     [setNodes, storeAddNode],
   )
+
+  // 复制选中节点(+ 它们之间的内部连线)到剪贴板。深拷贝 data 防共享引用;
+  // 保留原 id 以便粘贴时按 id 映射重连内部边。
+  const copySelection = useCallback(() => {
+    const selected = nodesRef.current.filter((n) => n.selected)
+    if (selected.length === 0) return false
+    const selectedIds = new Set(selected.map((n) => n.id))
+    clipboardRef.current = {
+      nodes: selected.map((n) => ({
+        id: n.id,
+        type: n.type ?? '',
+        data: structuredClone(n.data ?? {}) as Record<string, unknown>,
+        position: { ...n.position },
+        style: (n as any).style,
+        width: (n as any).width,
+        height: (n as any).height,
+      })),
+      // 只带「两端都在选区内」的边 —— 跨选区边粘贴后无对应端点。
+      edges: edgesRef.current
+        .filter((e) => selectedIds.has(e.source) && selectedIds.has(e.target))
+        .map((e) => ({
+          source: e.source,
+          sourceHandle: e.sourceHandle ?? '',
+          target: e.target,
+          targetHandle: e.targetHandle ?? '',
+        })),
+    }
+    pasteSeqRef.current = 0
+    return true
+  }, [])
+
+  // 粘贴:用纯函数 buildPastedGraph 发新 id、偏移落位、内部边重连(逻辑在
+  // utils/pasteGraph.ts,有单测)。走 store 批量 addNodesWithEdges(单次 undo),
+  // 并即时 setNodes/setEdges 选中新节点。
+  const pasteClipboard = useCallback(() => {
+    const clip = clipboardRef.current
+    if (!clip || clip.nodes.length === 0) return
+    pasteSeqRef.current += 1
+    const { nodes: pn, edges: pe } = buildPastedGraph(clip, 40 * pasteSeqRef.current, () =>
+      crypto.randomUUID().slice(0, 8),
+    )
+    const newNodes = pn.map((n) => {
+      const node: any = { id: n.id, type: n.type, position: n.position, data: n.data, style: n.style ?? { width: 320 } }
+      if (n.width != null) node.width = n.width
+      if (n.height != null) node.height = n.height
+      return node as WorkflowNode
+    })
+    const newEdges: WorkflowEdge[] = pe.map((e) => ({
+      id: e.id, source: e.source, sourceHandle: e.sourceHandle, target: e.target, targetHandle: e.targetHandle,
+    }))
+
+    storeAddNodesWithEdges(newNodes, newEdges)
+    // 即时渲染 + 选中粘贴出来的节点(取消原选区),方便接着拖动。
+    setNodes((nds) => [
+      ...nds.map((n) => ({ ...n, selected: false })),
+      ...newNodes.map((n) => ({
+        id: n.id,
+        type: n.type,
+        position: n.position,
+        data: n.data,
+        style: (n as any).style ?? { width: 320 },
+        selected: true,
+      } as Node)),
+    ])
+    setEdges((eds) => [
+      ...eds,
+      ...newEdges.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle, target: e.target, targetHandle: e.targetHandle, type: 'portTyped' } as Edge)),
+    ])
+  }, [setNodes, setEdges, storeAddNodesWithEdges])
+
+  // 复制 Ctrl/Cmd+C / 粘贴 Ctrl/Cmd+V / 原地复制 Ctrl/Cmd+D。
+  // 与 undo/redo 同样:focus 在 input/textarea/contenteditable 时放行原生行为。
+  // Ctrl+V 仅在 in-app 剪贴板有节点时接管 —— 否则放行(让 MultimodalInputNode
+  // 的图片粘贴等原生 paste 正常工作)。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const tgt = e.target as HTMLElement | null
+      if (tgt) {
+        const tag = tgt.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tgt.isContentEditable) return
+      }
+      const k = e.key.toLowerCase()
+      if (k === 'c') {
+        copySelection()
+      } else if (k === 'v') {
+        if (clipboardRef.current && clipboardRef.current.nodes.length > 0) {
+          e.preventDefault()
+          pasteClipboard()
+        }
+      } else if (k === 'd') {
+        if (nodesRef.current.some((n) => n.selected)) {
+          e.preventDefault()
+          copySelection()
+          pasteClipboard()
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [copySelection, pasteClipboard])
 
   // m09: 画布模式下左节点库 + 右属性面板**常驻**。overlay 视图
   // （dashboard / services / 设置 等）下两边都隐藏。
