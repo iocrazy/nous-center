@@ -14,7 +14,7 @@ type FeatureId = 'text2img' | 'enhance' | 'edit' | 'angle'
 const FEATURES: { id: FeatureId; label: string; icon: typeof ImageIcon; ready: boolean }[] = [
   { id: 'text2img', label: '文生图', icon: ImageIcon, ready: true },
   { id: 'edit', label: '图片编辑', icon: Wand2, ready: true },
-  { id: 'enhance', label: '细节增强', icon: Sparkles, ready: false },
+  { id: 'enhance', label: '细节增强', icon: Sparkles, ready: true },
   { id: 'angle', label: '角度控制', icon: Box, ready: false },
 ]
 
@@ -62,7 +62,8 @@ export default function Studio() {
       <div style={{ flex: 1, overflow: 'auto' }}>
         {feature === 'text2img' && <Text2ImagePanel />}
         {feature === 'edit' && <ImageEditPanel />}
-        {(feature === 'enhance' || feature === 'angle') && (
+        {feature === 'enhance' && <EnhancePanel />}
+        {feature === 'angle' && (
           <ComingSoon label={FEATURES.find((f) => f.id === feature)?.label ?? ''} />
         )}
       </div>
@@ -480,6 +481,107 @@ function ImageEditPanel() {
   )
 }
 
+function EnhancePanel() {
+  const toast = useToastStore((s) => s.add)
+  const [upload, setUpload] = useState<{ dataUri: string; width: number; height: number } | null>(null)
+  const [resolution, setResolution] = useState(1440)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  const pickFile = async (file: File | undefined) => {
+    if (!file) return
+    try { setUpload(await readUpload(file)) } catch (e) { toast((e as Error).message, 'error') }
+  }
+
+  const run = () => {
+    if (running) return
+    if (!upload) { toast('先上传一张要增强的图', 'info'); return }
+    setRunning(true)
+    setResult(null)
+    const wf = buildSeedVR2Workflow({ imageDataUri: upload.dataUri, resolution })
+    submitImageWorkflow(wf, {
+      onImage: (url) => { setResult(url); setRunning(false) },
+      onError: (msg) => { toast(msg, 'error'); setRunning(false) },
+      onTimeout: () => setRunning(false),
+      toast,
+      ignoreImageFrom: 'img',
+    })
+  }
+
+  return (
+    <div style={{ maxWidth: 1100, margin: '0 auto', padding: 24 }}>
+      <div style={{ background: 'var(--bg-accent)', border: '1px solid var(--border)', borderRadius: 12, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            细节增强 · 本地 SeedVR2(超分)
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            style={{
+              width: 200, minHeight: 160, flexShrink: 0, borderRadius: 10, cursor: 'pointer',
+              border: `1px ${upload ? 'solid' : 'dashed'} var(--border)`, background: 'var(--bg)',
+              color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              overflow: 'hidden', padding: 0,
+            }}
+          >
+            {upload ? (
+              <img src={upload.dataUri} alt="待增强" style={{ maxWidth: '100%', maxHeight: 260, display: 'block' }} />
+            ) : (
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <Upload size={22} /> 点击上传图片
+              </span>
+            )}
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => pickFile(e.target.files?.[0])} />
+
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, justifyContent: 'center' }}>
+            <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>
+              SeedVR2 一步超分:放大并补充细节(无需 prompt)。{upload && ` 原图 ${upload.width}×${upload.height}。`}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, flexWrap: 'wrap' }}>
+              <Field label={`目标分辨率(短边 ${resolution}px)`}>
+                <input
+                  type="range" min={512} max={2160} step={16} value={resolution}
+                  onChange={(e) => setResolution(Number(e.target.value))}
+                  style={{ width: 200 }}
+                />
+              </Field>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={run}
+                disabled={running}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 22px',
+                  background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: 8,
+                  fontSize: 14, fontWeight: 600, cursor: running ? 'wait' : 'pointer', opacity: running ? 0.7 : 1,
+                }}
+              >
+                {running ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                {running ? '本地增强中…' : '本地增强'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {(running || result) && (
+        <div style={{ marginTop: 18, display: 'flex', gap: 16, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <ComparePane label="原图" src={upload?.dataUri ?? null} />
+          <ComparePane label="增强后" src={result} loading={running && !result} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ComparePane({ label, src, loading }: { label: string; src: string | null; loading?: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -530,4 +632,23 @@ function buildFlux2EditWorkflow(
     { id: 'e7', source: 'dec', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
   ]
   return { name: '创作台·图片编辑(Flux2)', nodes, edges } as unknown as Workflow
+}
+
+/** 客户端搭 SeedVR2 细节增强(超分)工作流图:image_input(上传图)→ seedvr2_upscale → image_output。
+ *  dit/vae loader 不连 → runner 用默认 DiT/VAE(见 seedvr2/node.yaml「不连则用默认」)。
+ *  seedvr2_upscale 是 dispatch 节点(role=upscale),runner 构 UpscaleRequest 跑 SeedVR2 一步超分。 */
+function buildSeedVR2Workflow(
+  { imageDataUri, resolution }: { imageDataUri: string; resolution: number },
+): Workflow {
+  const nodes = [
+    { id: 'img', type: 'image_input' as const, position: { x: 0, y: 0 }, data: { image: imageDataUri } },
+    { id: 'up', type: 'seedvr2_upscale' as const, position: { x: 320, y: 0 },
+      data: { resolution, max_resolution: 0, color_correction: 'lab' } },
+    { id: 'out', type: 'image_output' as const, position: { x: 640, y: 0 }, data: {} },
+  ]
+  const edges = [
+    { id: 'e1', source: 'img', sourceHandle: 'image', target: 'up', targetHandle: 'image' },
+    { id: 'e2', source: 'up', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
+  ]
+  return { name: '创作台·细节增强(SeedVR2)', nodes, edges } as unknown as Workflow
 }
