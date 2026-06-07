@@ -56,6 +56,15 @@ def _import_zimage_pipeline() -> Any:
     return ZImagePipeline
 
 
+def _import_qwen_edit_pipeline() -> Any:
+    """Lazy import Qwen-Image-Edit-2511 pipeline(D2:diffusers import 只在本文件)。编辑类
+    (needs_image_input),HF-layout 整模型,标准 from_pretrained。CFG 旋钮 true_cfg_scale(非
+    guidance_scale)。测试 monkeypatch 注入 fake。"""
+    from diffusers import QwenImageEditPlusPipeline  # noqa: PLC0415
+
+    return QwenImageEditPlusPipeline
+
+
 def _decode_input_image(src: str) -> Any:
     """输入图(编辑/img2img)src(本地路径 或 base64 data URI)→ PIL.Image(RGB)。
     runner 已把节点签名 URL 解析成本地路径再塞 req.input_image;data URI 分支兜底直传场景。
@@ -526,10 +535,12 @@ class ModularImageBackend(InferenceAdapter):
             pipe = self._build_klein_pipe()
         elif self.pipeline_class == "ZImagePipeline":
             pipe = self._build_zimage_pipe()
+        elif self.pipeline_class == "QwenImageEditPlusPipeline":
+            pipe = self._build_qwen_edit_pipe()
         else:
             raise NotImplementedError(
                 f"pipeline_class {self.pipeline_class!r} 暂未接入;已支持 Flux2KleinPipeline / "
-                f"ZImagePipeline。新架构在 IMAGE_ARCH_REGISTRY 注册并在此加 builder 分支。")
+                f"ZImagePipeline / QwenImageEditPlusPipeline。新架构在 IMAGE_ARCH_REGISTRY 注册并在此加 builder 分支。")
         if _wants_fp8(self.dtype):
             # fp8 weight-only(torchao):transformer + text_encoder 权重 fp8 存储,省 ~½ 显存,
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
@@ -614,6 +625,16 @@ class ModularImageBackend(InferenceAdapter):
         zimage_cls = _import_zimage_pipeline()
         # low_cpu_mem_usage=False:对齐 HF README(Z-Image 加载建议),避免 meta-init 与本仓桥接路径冲突。
         return zimage_cls.from_pretrained(
+            self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
+
+    def _build_qwen_edit_pipe(self) -> Any:
+        """Qwen-Image-Edit-2511:HF-layout 整模型,标准 `QwenImageEditPlusPipeline.from_pretrained`。
+        编辑类(needs_image_input)—— infer 经通用 image= 注入路径喂输入图。组件名 transformer/
+        text_encoder/vae 与 Flux2/Z-Image 一致 → fp8/逐组件放置/offload 共享。CFG 走 true_cfg_scale
+        (infer 对 qwen 映射,非 guidance_scale)。20B DiT + Qwen2.5-VL-7B encoder,显存大(逐组件
+        选卡/offload 见 [[project_image_vram_guard_arc]])。"""
+        qwen_cls = _import_qwen_edit_pipeline()
+        return qwen_cls.from_pretrained(
             self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
 
     def _apply_loras(self, loras: list) -> None:
@@ -793,6 +814,15 @@ class ModularImageBackend(InferenceAdapter):
             guidance_scale=cfg,
             generator=gen,
         )
+        # Qwen-Image-Edit-2511:CFG 旋钮是 **true_cfg_scale**(非 guidance_scale;后者是 embedded
+        # guidance,非 distilled 该模型用 None)。negative 走字符串入参(__call__ 原生支持,不像 Flux2 要预编码)。
+        # 真 API 确认:pipeline_qwenimage_edit_plus.py __call__(image=, true_cfg_scale=4.0, guidance_scale=None)。
+        if self.pipeline_class == "QwenImageEditPlusPipeline":
+            call_kwargs.pop("guidance_scale", None)
+            call_kwargs["true_cfg_scale"] = cfg
+            _neg = (getattr(req, "negative_prompt", "") or "").strip()
+            if _neg:
+                call_kwargs["negative_prompt"] = _neg
         # 输入图(编辑/img2img/多参考):pipeline __call__ 接受 `image=` 才注入 —— Flux2(可选编辑)/
         # Qwen-Image-Edit(必需)接受;纯文生图 pipeline(Z-Image)不接受 → 跳过(忽略 input_image,不崩)。
         # 多参考:逗号分隔多路径 → list[PIL](Flux2 / Qwen-Edit "Plus" 支持多图);单图 → 单 PIL。

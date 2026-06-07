@@ -48,3 +48,18 @@ def test_zimage_arch_registered():
     assert arch_spec_by_pipeline("ZImagePipeline").arch == "z-image"
     assert s.caps.default_guidance_scale() == 0.0
     assert s.caps.default_steps() == 8
+    assert s.needs_image_input is False  # 纯文生图
+
+
+def test_qwen_edit_arch_registered():
+    """P2:qwen-edit → QwenImageEditPlusPipeline,走 modular,编辑类(needs_image_input),
+    非 distilled(CFG 经 true_cfg_scale,default 4.0 / 40 步)。"""
+    s = arch_spec_by_name("qwen-edit")
+    assert s.pipeline_class == "QwenImageEditPlusPipeline"
+    assert s.adapter == "modular"
+    assert s.needs_image_input is True
+    assert arch_spec_by_pipeline("QwenImageEditPlusPipeline").arch == "qwen-edit"
+    assert s.caps.supports_cfg() is True
+    assert s.caps.default_guidance_scale() == 4.0
+    assert s.caps.default_steps() == 40
+    assert "QwenImageEditPlusPipeline" in MODEL_ARCH_REGISTRY
