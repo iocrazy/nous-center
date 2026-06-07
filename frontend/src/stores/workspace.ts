@@ -79,6 +79,9 @@ interface WorkspaceState {
   setWorkflow: (wf: Workflow) => void
   updateNode: (nodeId: string, data: Record<string, unknown>) => void
   addNode: (node: WorkflowNode) => void
+  /** Batch-insert nodes + edges as ONE history step (复制粘贴 / 模板插入)。
+   * 逐个 addNode/addEdge 会压多条 undo 记录,粘贴一组要一次撤销。 */
+  addNodesWithEdges: (nodes: WorkflowNode[], edges: WorkflowEdge[]) => void
   removeNode: (nodeId: string) => void
   addEdge: (edge: WorkflowEdge) => void
   removeEdge: (edgeId: string) => void
@@ -208,6 +211,26 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               ...pushHistory(t),
               isDirty: true,
               workflow: { ...t.workflow, nodes: [...t.workflow.nodes, node] },
+            }
+          : t
+      ),
+    }))
+    get().markDirty()
+  },
+
+  addNodesWithEdges: (nodes, edges) => {
+    if (nodes.length === 0 && edges.length === 0) return
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === s.activeTabId
+          ? {
+              ...pushHistory(t),
+              isDirty: true,
+              workflow: {
+                ...t.workflow,
+                nodes: [...t.workflow.nodes, ...nodes],
+                edges: [...t.workflow.edges, ...edges],
+              },
             }
           : t
       ),
