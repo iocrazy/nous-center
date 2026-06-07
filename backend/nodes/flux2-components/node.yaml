@@ -172,6 +172,10 @@ nodes:
     inputs:
       - { id: model,         type: MODEL,        label: MODEL }
       - { id: conditioning,  type: CONDITIONING, label: CONDITIONING }
+      # 可选输入图(编辑/img2img/多参考,spec 2026-06-07):接 image_input(上传图)或 flux2_vae_decode
+      # (链式编辑)的 image 端口。连了 → 编辑模式(Flux2 多参考 / Qwen-Image-Edit);不连 → 纯文生图。
+      # 引擎按 pipeline 是否支持 image= 决定注入(Z-Image 不支持 → 忽略);零回归。
+      - { id: image,         type: image,        label: "输入图(可选)", optional: true }
     outputs:
       - { id: latent, type: LATENT, label: LATENT }
     widgets:

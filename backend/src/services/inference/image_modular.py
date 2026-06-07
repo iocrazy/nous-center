@@ -56,6 +56,20 @@ def _import_zimage_pipeline() -> Any:
     return ZImagePipeline
 
 
+def _decode_input_image(src: str) -> Any:
+    """输入图(编辑/img2img)src(本地路径 或 base64 data URI)→ PIL.Image(RGB)。
+    runner 已把节点签名 URL 解析成本地路径再塞 req.input_image;data URI 分支兜底直传场景。
+    与 image_seedvr2._decode_image 同语义(故意不跨模块复用 —— 各引擎自含,blast radius 隔离)。"""
+    import base64  # noqa: PLC0415
+
+    from PIL import Image  # noqa: PLC0415
+
+    if src.startswith("data:"):
+        _, _, b64 = src.partition(",")
+        return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    return Image.open(src).convert("RGB")
+
+
 def _import_flow_schedulers() -> dict:
     """Lazy import diffusers flow-matching scheduler 类(PR-2 采样器选择;D2 隔离)。
 
@@ -779,6 +793,21 @@ class ModularImageBackend(InferenceAdapter):
             guidance_scale=cfg,
             generator=gen,
         )
+        # 输入图(编辑/img2img/多参考):pipeline __call__ 接受 `image=` 才注入 —— Flux2(可选编辑)/
+        # Qwen-Image-Edit(必需)接受;纯文生图 pipeline(Z-Image)不接受 → 跳过(忽略 input_image,不崩)。
+        # 多参考:逗号分隔多路径 → list[PIL](Flux2 / Qwen-Edit "Plus" 支持多图);单图 → 单 PIL。
+        input_image = getattr(req, "input_image", None)
+        if input_image:
+            import inspect  # noqa: PLC0415
+            if "image" in inspect.signature(pipe.__call__).parameters:
+                parts = [p.strip() for p in str(input_image).split(",") if p.strip()] \
+                    if not str(input_image).startswith("data:") else [str(input_image)]
+                imgs = [_decode_input_image(p) for p in parts] or [_decode_input_image(str(input_image))]
+                call_kwargs["image"] = imgs if len(imgs) > 1 else imgs[0]
+            else:
+                import logging  # noqa: PLC0415
+                logging.getLogger(__name__).warning(
+                    "pipeline %s 不接受 image= 入参,忽略 input_image(纯文生图架构)", self.pipeline_class)
         # injected scheduler(simple/sgm_uniform/ddim_uniform/linear_quadratic/kl_optimal):
         # diffusers FlowMatch 原生无对应 use_*_sigmas,手动算 sigma 传 pipe(sigmas=...)。
         # pipe 期望不含末尾 0(它自己 append),compute_sigmas 返回含末尾 0 → 去掉末尾 0。

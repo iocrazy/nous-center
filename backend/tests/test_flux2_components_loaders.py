@@ -196,6 +196,49 @@ async def test_load_lora_rejects_non_model_input():
         await executors["flux2_load_lora"]({"lora_name": "x"}, {"model": {"_type": "voxcpm2"}})
 
 
+def _ks_inputs(extra=None):
+    """KSampler 必需的 MODEL + CONDITIONING 上游(flux2 架构兼容)。"""
+    inp = {
+        "model": {"_type": "flux2_model",
+                  "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": "auto",
+                           "dtype": "bfloat16", "adapter_arch": "flux2"}, "loras": []},
+        "conditioning": {"_type": "flux2_conditioning",
+                         "clip": {"_type": "flux2_clip", "type": "flux2",
+                                  "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "default"}]},
+                         "text": "a cat", "negative": ""},
+    }
+    if extra:
+        inp.update(extra)
+    return inp
+
+
+@pytest.mark.asyncio
+async def test_ksampler_no_image_omits_input_image():
+    """无 image 端口连接(纯文生图)→ latent 不含 input_image(零回归)。"""
+    executors = _load_executors()
+    out = await executors["flux2_ksampler"]({"steps": 8}, _ks_inputs())
+    assert "input_image" not in out["latent"]
+
+
+@pytest.mark.asyncio
+async def test_ksampler_carries_image_url_into_latent():
+    """image 端口接 image_input(产 image_url)→ merge 把 image_url 拷进 inputs →
+    exec 写进 latent.input_image,供 runner 解析。"""
+    executors = _load_executors()
+    out = await executors["flux2_ksampler"](
+        {"steps": 8}, _ks_inputs({"image_url": "/files/images/2026-06-07/abc.png?token=x"}))
+    assert out["latent"]["input_image"] == "/files/images/2026-06-07/abc.png?token=x"
+
+
+@pytest.mark.asyncio
+async def test_ksampler_image_key_fallback():
+    """上游若按 handle 'image' 透传(非 image_url)→ inputs.get('image') 兜底。"""
+    executors = _load_executors()
+    out = await executors["flux2_ksampler"](
+        {"steps": 8}, _ks_inputs({"image": "/tmp/ref.png"}))
+    assert out["latent"]["input_image"] == "/tmp/ref.png"
+
+
 # Load Checkpoint resolver(model_key→三描述符)由 test_flux2_checkpoint_resolve.py 覆盖。
 
 
