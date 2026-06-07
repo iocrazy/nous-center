@@ -9,6 +9,7 @@
  * (workflow editor 内不引导用户跳回顶部点击)。
  */
 import { useEffect, useCallback, useState } from 'react'
+import { Play, Loader, Square } from 'lucide-react'
 import PublishDialog from '../workflow/PublishDialog'
 import { useLocation } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -18,6 +19,7 @@ import { executeWorkflow } from '../../utils/workflowExecutor'
 import { nextSeed, type SeedControlMode } from '../../utils/seedControl'
 import { useToastStore } from '../../stores/toast'
 import { useUnpublishWorkflow } from '../../api/workflows'
+import { useTasks, useCancelTask } from '../../api/tasks'
 import { useNotificationStore } from '../../stores/notifications'
 
 export default function WorkflowCanvasToolbar() {
@@ -31,6 +33,24 @@ export default function WorkflowCanvasToolbar() {
   const toast = useToastStore((s) => s.add)
   const unpublishWf = useUnpublishWorkflow()
   const requestNotifyPermission = useNotificationStore((s) => s.requestPermission)
+
+  // 运行中断:image/plugin 工作流 /execute 入队即返回 202,store 的 isRunning 不持续
+  // 整个后端跑(succeed() 在 enqueue 后立刻置 false)。真正「有任务在跑」的权威来源
+  // 是 task list —— 找 running/queued 的任务,提供 Stop(对齐 ComfyUI Interrupt)。
+  // 后端 cancel 端点对 running 任务是**真打断**(cancel_flag + diffusers callback 步边界
+  // raise CancelledError),不只是改 DB 状态。
+  const { data: tasks } = useTasks()
+  const cancelTask = useCancelTask()
+  const activeTask = tasks?.find((t) => t.status === 'running' || t.status === 'queued')
+  const runDisabled = isRunning || !!activeTask
+
+  const handleStop = () => {
+    if (!activeTask) return
+    cancelTask.mutate(activeTask.id, {
+      onSuccess: () => toast('已请求中止当前任务', 'info'),
+      onError: (e) => toast(e instanceof Error ? e.message : '中止失败', 'error'),
+    })
+  }
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const isPublished = activeTab?.workflow?.status === 'published'
@@ -151,9 +171,36 @@ export default function WorkflowCanvasToolbar() {
       >
         Clear
       </ToolbarBtn>
-      <ToolbarBtn primary onClick={handleRun} disabled={isRunning}>
-        {isRunning ? '⏳ Running...' : '▶ Run'}
+      <ToolbarBtn primary onClick={handleRun} disabled={runDisabled}>
+        <span className="inline-flex items-center gap-1">
+          {runDisabled ? (
+            <Loader size={12} style={{ animation: 'spin 1s linear infinite' }} />
+          ) : (
+            <Play size={12} />
+          )}
+          {runDisabled ? 'Running…' : 'Run'}
+        </span>
       </ToolbarBtn>
+      {activeTask && (
+        <button
+          onClick={handleStop}
+          disabled={cancelTask.isPending}
+          title="中止当前运行(对齐 ComfyUI Interrupt)"
+          className="px-2.5 py-1 rounded text-xs transition-colors"
+          style={{
+            border: '1px solid var(--err, #ef4444)',
+            background: 'transparent',
+            color: 'var(--err, #ef4444)',
+            cursor: cancelTask.isPending ? 'wait' : 'pointer',
+            opacity: cancelTask.isPending ? 0.6 : 1,
+          }}
+        >
+          <span className="inline-flex items-center gap-1">
+            <Square size={11} />
+            {cancelTask.isPending ? '中止中…' : 'Stop'}
+          </span>
+        </button>
+      )}
       {activeTab?.workflow && (
         isPublished ? (
           <button
