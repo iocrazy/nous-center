@@ -100,6 +100,8 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE memory_entries ALTER COLUMN instance_id DROP NOT NULL",
                     "CREATE INDEX IF NOT EXISTS idx_mem_key_created ON memory_entries (api_key_id, created_at)",
                     "CREATE INDEX IF NOT EXISTS idx_mem_key_ctx_cat ON memory_entries (api_key_id, context_key, category)",
+                    # 节点分组(ComfyUI 式可视框,不入执行图)。旧表补列,默认空 []。
+                    "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS groups JSONB DEFAULT '[]'::jsonb",
                 ):
                     try:
                         await conn.execute(text(_ddl))

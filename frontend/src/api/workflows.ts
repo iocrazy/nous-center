@@ -11,6 +11,7 @@ export interface WorkflowSummary {
   generated_for_service_id: string | null
   nodes: any[]
   edges: any[]
+  groups?: any[]
   created_at: string
   updated_at: string
 }

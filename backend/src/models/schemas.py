@@ -352,6 +352,7 @@ class WorkflowCreate(BaseModel):
     description: str | None = None
     nodes: list = []
     edges: list = []
+    groups: list = []
     is_template: bool = False
 
 
@@ -360,6 +361,7 @@ class WorkflowUpdate(BaseModel):
     description: str | None = None
     nodes: list | None = None
     edges: list | None = None
+    groups: list | None = None
     is_template: bool | None = None
 
 
@@ -371,6 +373,7 @@ class WorkflowOut(BaseModel):
     description: str | None
     nodes: list
     edges: list
+    groups: list = []
     is_template: bool
     status: str
     auto_generated: bool = False

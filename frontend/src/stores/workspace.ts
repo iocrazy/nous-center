@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import type { Workflow, WorkflowNode, WorkflowEdge } from '../models/workflow'
+import type { Workflow, WorkflowNode, WorkflowEdge, WorkflowGroup } from '../models/workflow'
 import { uid } from '../utils/uid'
 import { apiFetch } from '../api/client'
 import type { WorkflowFull } from '../api/workflows'
@@ -85,6 +85,10 @@ interface WorkspaceState {
   removeNode: (nodeId: string) => void
   addEdge: (edge: WorkflowEdge) => void
   removeEdge: (edgeId: string) => void
+  // 节点分组(ComfyUI 式可视框)。add/remove 压 history;update(拖动/缩放频繁)不压。
+  addGroup: (group: WorkflowGroup) => void
+  updateGroup: (groupId: string, patch: Partial<WorkflowGroup>) => void
+  removeGroup: (groupId: string) => void
   markDirty: (tabId?: string) => void
 
   // Undo / redo (structural changes only — add/remove node + edge)
@@ -148,6 +152,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       description: wf.description ?? undefined,
       nodes: wf.nodes,
       edges: wf.edges,
+      groups: wf.groups ?? [],
       is_template: wf.is_template,
       status: wf.status as 'draft' | 'published',
     }
@@ -290,6 +295,59 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     get().markDirty()
   },
 
+  addGroup: (group) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === s.activeTabId
+          ? {
+              ...pushHistory(t),
+              isDirty: true,
+              workflow: { ...t.workflow, groups: [...(t.workflow.groups ?? []), group] },
+            }
+          : t
+      ),
+    }))
+    get().markDirty()
+  },
+
+  updateGroup: (groupId, patch) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === s.activeTabId
+          ? {
+              ...t,
+              isDirty: true,
+              workflow: {
+                ...t.workflow,
+                groups: (t.workflow.groups ?? []).map((g) =>
+                  g.id === groupId ? { ...g, ...patch } : g
+                ),
+              },
+            }
+          : t
+      ),
+    }))
+    get().markDirty()
+  },
+
+  removeGroup: (groupId) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === s.activeTabId
+          ? {
+              ...pushHistory(t),
+              isDirty: true,
+              workflow: {
+                ...t.workflow,
+                groups: (t.workflow.groups ?? []).filter((g) => g.id !== groupId),
+              },
+            }
+          : t
+      ),
+    }))
+    get().markDirty()
+  },
+
   undo: () => {
     const t = get().tabs.find((x) => x.id === get().activeTabId)
     if (!t || t.past.length === 0) return
@@ -368,7 +426,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           // Existing workflow — PATCH
           await apiFetch(`/api/v1/workflows/${current.dbId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ name: current.name, nodes: current.workflow.nodes, edges: current.workflow.edges }),
+            body: JSON.stringify({ name: current.name, nodes: current.workflow.nodes, edges: current.workflow.edges, groups: current.workflow.groups ?? [] }),
           })
           set((s) => ({
             tabs: s.tabs.map((t) =>
@@ -383,6 +441,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               name: current.workflow.name || current.name,
               nodes: current.workflow.nodes,
               edges: current.workflow.edges,
+              groups: current.workflow.groups ?? [],
             }),
           })
           set((s) => ({
