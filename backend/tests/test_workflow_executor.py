@@ -126,6 +126,55 @@ async def test_prompt_template_substitution():
     assert result["outputs"]["n2"]["text"] == "Write a Python tutorial"
 
 
+@pytest.mark.asyncio
+async def test_bypass_passes_input_through_and_skips_execution():
+    """节点旁路(ComfyUI bypass):data.bypassed 的节点不执行,上游 inputs 原样透传。
+
+    text_input("Python") -> prompt_template[bypassed] -> output。模板**不应**生效,
+    output 拿到的是透传的原文 "Python",而非 "Write a Python tutorial"。"""
+    wf = {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "Python"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "prompt_template", "data": {"template": "Write a {text} tutorial", "bypassed": True}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "text", "target": "n3", "targetHandle": "text"},
+        ],
+    }
+    executor = WorkflowExecutor(wf)
+    result = await executor.execute()
+    # 旁路 → 模板没套用,原文透传
+    assert result["outputs"]["n2"]["text"] == "Python"
+
+
+@pytest.mark.asyncio
+async def test_bypass_emits_node_complete_with_flag():
+    """旁路节点发 node_complete 且带 bypassed=True(前端据此显示「已旁路」)。"""
+    events: list[dict] = []
+
+    async def on_progress(ev):
+        events.append(ev)
+
+    wf = {
+        "nodes": [
+            {"id": "n1", "type": "text_input", "data": {"text": "x"}, "position": {"x": 0, "y": 0}},
+            {"id": "n2", "type": "prompt_template", "data": {"template": "{text}!", "bypassed": True}, "position": {"x": 200, "y": 0}},
+            {"id": "n3", "type": "output", "data": {}, "position": {"x": 400, "y": 0}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+            {"id": "e2", "source": "n2", "sourceHandle": "text", "target": "n3", "targetHandle": "text"},
+        ],
+    }
+    executor = WorkflowExecutor(wf, on_progress=on_progress)
+    await executor.execute()
+    bypass_events = [e for e in events if e.get("node_id") == "n2" and e.get("bypassed")]
+    assert len(bypass_events) == 1
+    assert bypass_events[0]["type"] == "node_complete"
+
+
 # --- llm tests ---
 
 

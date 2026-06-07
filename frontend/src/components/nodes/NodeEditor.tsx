@@ -1,4 +1,5 @@
-import { useCallback, useRef, useMemo, useEffect } from 'react'
+import { useCallback, useRef, useMemo, useEffect, useState } from 'react'
+import { Copy, Ban, Trash2 } from 'lucide-react'
 import {
   ReactFlow,
   Background,
@@ -64,6 +65,7 @@ export default function NodeEditor() {
   const storeAddNode = useWorkspaceStore((s) => s.addNode)
   const storeAddNodesWithEdges = useWorkspaceStore((s) => s.addNodesWithEdges)
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
+  const updateNode = useWorkspaceStore((s) => s.updateNode)
   const undo = useWorkspaceStore((s) => s.undo)
   const redo = useWorkspaceStore((s) => s.redo)
   const { activePanel, activeOverlay, panelWidth } = usePanelStore()
@@ -72,6 +74,8 @@ export default function NodeEditor() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
   const setSelectedNodeId = useSelectionStore((s) => s.setSelectedNodeId)
+  // 节点右键菜单(承载 旁路/复制/删除,让快捷键功能可发现)。坐标为画布容器内像素。
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
 
   // Cmd/Ctrl+Z undo; Cmd/Ctrl+Shift+Z (or Ctrl+Y) redo. Swallow when the
   // event target is an input/textarea/contenteditable so native text edit
@@ -115,7 +119,12 @@ export default function NodeEditor() {
         style: (n as any).style ?? { width: 320 },
         ...((n as any).width != null ? { width: (n as any).width } : {}),
         ...((n as any).height != null ? { height: (n as any).height } : {}),
-        className: nodeStates[n.id] ? NODE_STATE_CLASS[nodeStates[n.id]] : undefined,
+        // 旁路态(node-bypassed)叠加在执行态之上 —— 旁路节点不会进入 running,
+        // 故一般只会单独出现;两者都在时类名都挂,CSS 旁路优先(灰显)。
+        className: [
+          nodeStates[n.id] ? NODE_STATE_CLASS[nodeStates[n.id]] : '',
+          n.data?.bypassed ? 'node-bypassed' : '',
+        ].filter(Boolean).join(' ') || undefined,
       })),
     [workflow.nodes, nodeStates],
   )
@@ -399,11 +408,20 @@ export default function NodeEditor() {
           copySelection()
           pasteClipboard()
         }
+      } else if (k === 'b') {
+        // 旁路/取消旁路选中节点(对齐 ComfyUI Ctrl+B)。整组按「是否全已旁路」翻转:
+        // 有任一未旁路 → 全部旁路;否则全部取消旁路。flag 落 node.data.bypassed。
+        const selected = nodesRef.current.filter((n) => n.selected)
+        if (selected.length > 0) {
+          e.preventDefault()
+          const anyOn = selected.some((n) => !(n.data as any)?.bypassed)
+          for (const n of selected) updateNode(n.id, { bypassed: anyOn })
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [copySelection, pasteClipboard])
+  }, [copySelection, pasteClipboard, updateNode])
 
   // m09: 画布模式下左节点库 + 右属性面板**常驻**。overlay 视图
   // （dashboard / services / 设置 等）下两边都隐藏。
@@ -455,6 +473,19 @@ export default function NodeEditor() {
             setEdges((eds) => eds.filter((e) => e.id !== edge.id))
             storeRemoveEdge(edge.id)
           }}
+          onNodeContextMenu={(event, node) => {
+            event.preventDefault()
+            // 右键即选中该节点(便于「复制」读选区),并在指针处弹菜单。
+            setNodes((nds) => nds.map((n) => ({ ...n, selected: n.id === node.id })))
+            const bounds = reactFlowWrapper.current?.getBoundingClientRect()
+            setCtxMenu({
+              x: event.clientX - (bounds?.left ?? 0),
+              y: event.clientY - (bounds?.top ?? 0),
+              nodeId: node.id,
+            })
+          }}
+          onPaneClick={() => setCtxMenu(null)}
+          onMoveStart={() => setCtxMenu(null)}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           deleteKeyCode={['Backspace', 'Delete']}
@@ -480,6 +511,50 @@ export default function NodeEditor() {
           />
         </ReactFlow>
       </div>
+
+      {/* 节点右键菜单(旁路/复制/删除)*/}
+      {ctxMenu && (() => {
+        const ctxNode = workflow.nodes.find((n) => n.id === ctxMenu.nodeId)
+        const isBypassed = !!ctxNode?.data?.bypassed
+        const close = () => setCtxMenu(null)
+        const item = (icon: React.ReactNode, label: string, onClick: () => void, danger?: boolean) => (
+          <button
+            type="button"
+            onClick={() => { onClick(); close() }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left"
+            style={{ color: danger ? 'var(--err, #ef4444)' : 'var(--text)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            {icon}
+            <span>{label}</span>
+          </button>
+        )
+        return (
+          <>
+            {/* 点击空白关闭(覆盖全画布的透明层)*/}
+            <div className="absolute inset-0 z-30" onClick={close} onContextMenu={(e) => { e.preventDefault(); close() }} />
+            <div
+              className="absolute z-40 py-1 rounded-md"
+              style={{
+                top: ctxMenu.y, left: ctxMenu.x, minWidth: 140,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-md)',
+              }}
+            >
+              {item(<Ban size={13} />, isBypassed ? '取消旁路' : '旁路 (Ctrl+B)', () => updateNode(ctxMenu.nodeId, { bypassed: !isBypassed }))}
+              {item(<Copy size={13} />, '复制 (Ctrl+D)', () => {
+                setNodes((nds) => nds.map((n) => ({ ...n, selected: n.id === ctxMenu.nodeId })))
+                // 选中态在下一帧才稳定 → 延后一拍再 copy+paste
+                setTimeout(() => { copySelection(); pasteClipboard() }, 0)
+              })}
+              {item(<Trash2 size={13} />, '删除', () => {
+                setNodes((nds) => nds.filter((n) => n.id !== ctxMenu.nodeId))
+                storeRemoveNode(ctxMenu.nodeId)
+              }, true)}
+            </div>
+          </>
+        )
+      })()}
 
       {/* m09: 节点属性面板（画布模式常驻右侧；overlay 视图下隐藏） */}
       {showPropertyPanel && <NodePropertyPanel />}

@@ -334,6 +334,14 @@ export async function executeWorkflow(workflow: Workflow): Promise<ExecutionResu
   for (let i = 0; i < sorted.length; i++) {
     const node = sorted[i]
     const inputs = getInputs(node.id, edges, outputs)
+
+    // 节点旁路(对齐后端 executor / ComfyUI bypass):跳过执行,上游 inputs 原样透传。
+    if (node.data?.bypassed) {
+      outputs.set(node.id, inputs)
+      exec.clearNodeState(node.id)
+      continue
+    }
+
     const executor = nodeExecutors[node.type]
     if (!executor) throw new Error(`未知节点类型: ${node.type}`)
 

@@ -200,6 +200,14 @@ input[type="number"] {
   border-radius: 8px;
 }
 
+/* 旁路(ComfyUI bypass):紫色虚线框 + 内容淡化,一眼区分「这个节点不参与执行」。 */
+.react-flow__node.node-bypassed > div {
+  outline: 1.5px dashed var(--purple) !important;
+  outline-offset: 1px;
+  border-radius: 8px;
+  opacity: 0.5;
+}
+
 @keyframes node-pulse {
   0%, 100% { outline-color: var(--ok); }
   50% { outline-color: transparent; }

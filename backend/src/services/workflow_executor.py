@@ -225,6 +225,24 @@ class WorkflowExecutor:
             node = self._node_map[node_id]
             inputs = self._get_inputs(node_id)
 
+            # 节点旁路(对齐 ComfyUI bypass):跳过执行,把上游 inputs 原样作为 outputs
+            # 透传 —— 同名 handle(LoRA 的 model/clip 进出同名)直通下游;类型变化节点
+            # (Encode CLIP→CONDITIONING)下游 _get_inputs 找不到对应 handle → 走兜底,
+            # 下游缺该输入(= ComfyUI 旁路语义,不在此报错)。flag 存 node.data.bypassed,
+            # 旁路节点执行前即 skip → 该 key 永不进 merge_inputs / ImageRequest。
+            if node.get("data", {}).get("bypassed"):
+                self._outputs[node_id] = dict(inputs)
+                if self._on_progress:
+                    await self._on_progress({
+                        "type": "node_complete",
+                        "node_id": node_id,
+                        "step": i + 1,
+                        "total": total,
+                        "progress": round(((i + 1) / total) * 100),
+                        "bypassed": True,
+                    })
+                continue
+
             # Bug 1:image dispatch 节点高亮"走链" —— node_start 落到加载节点(而非一律
             # 落 VAE dispatch 终端);后续按 stage 在 _forward_progress 里迁移。
             stage_walk = self._compute_image_stage_walk(node)
