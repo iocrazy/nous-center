@@ -839,11 +839,25 @@ class ModelManager:
 
     def _component_need_mb(self, spec) -> int:
         """估该组件载入需多少显存(MB):优先真实文件大小×1.3,拿不到回退 _VRAM_EST_MB 表。
-        (anima 2B ~10GB ≠ Flux2 9B 18GB,套固定表会误判。)"""
+        (anima 2B ~10GB ≠ Flux2 9B 18GB,套固定表会误判。)
+
+        **分片整模型(...-00001-of-00005.safetensors):spec.file 只是第 1 片**,真实需求 = 整个
+        组件所有分片之和。否则 6GB 片 ×1.3 严重低估 38GB transformer → auto 挑 24GB 小卡 → 加载到
+        一半 OOM(2026-06-08 Qwen-Image-Edit 角度控制真机逮到:54GB 模型被 auto 派到 cuda:0/3090)。"""
         need = self._VRAM_EST_MB.get(spec.kind, 8000)
         try:
             import os
-            sz_mb = int(os.path.getsize(spec.file) / (1024 * 1024) * 1.3)
+            import re
+            f = spec.file
+            sz_bytes = os.path.getsize(f)
+            # 分片?把同组件所有分片大小加总(sibling -NNNNN-of-NNNNN.safetensors)。
+            if re.search(r"-\d+-of-\d+\.safetensors$", os.path.basename(f)):
+                import glob
+                pattern = re.sub(r"-\d+-of-\d+\.safetensors$", "-*-of-*.safetensors", f)
+                shards = glob.glob(pattern)
+                if shards:
+                    sz_bytes = sum(os.path.getsize(s) for s in shards)
+            sz_mb = int(sz_bytes / (1024 * 1024) * 1.3)
             if sz_mb > 0:
                 need = sz_mb
         except (OSError, AttributeError, TypeError):
