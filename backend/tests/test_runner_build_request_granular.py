@@ -11,7 +11,7 @@ def _node(inputs):
     return P.RunNode(task_id=1, node_id="dec", node_type="image", model_key=None, inputs=inputs)
 
 
-def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2"):
+def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2", input_image=None):
     model = {"_type": "flux2_model",
              "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": unet_dev, "dtype": "fp8_e4m3", "adapter_arch": arch},
              "loras": loras or []}
@@ -21,6 +21,8 @@ def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2"):
             "text": "a cat", "negative": ""}
     latent = {"_type": "flux2_latent", "model": model, "conditioning": cond,
               "width": 768, "height": 768, "steps": 9, "cfg_scale": 4.0, "seed": 42}
+    if input_image is not None:
+        latent["input_image"] = input_image
     vae = {"_type": "flux2_vae", "spec": {"kind": "vae", "file": "/m/v.safe", "dtype": "default"}}
     return {"latent": latent, "vae": vae, "url_ttl_seconds": "3600"}
 
@@ -44,6 +46,31 @@ def test_granular_zimage_arch_routes_to_zimage_pipeline():
     req = _build_request(_node(_granular_inputs(arch="z-image")))
     assert req.pipeline_class == "ZImagePipeline"
     assert req.components["diffusion_models"].adapter_arch == "z-image"
+
+
+def test_granular_no_input_image_is_none():
+    """无 input_image 字段(纯文生图,默认)→ req.input_image is None(零回归)。"""
+    req = _build_request(_node(_granular_inputs()))
+    assert req.input_image is None
+
+
+def test_granular_input_image_local_path_passthrough():
+    """latent.input_image = 本地路径(非 /files/ 签名 URL)→ _resolve 原样过 → req.input_image。"""
+    req = _build_request(_node(_granular_inputs(input_image="/tmp/foo.png")))
+    assert req.input_image == "/tmp/foo.png"
+
+
+def test_granular_input_image_data_uri_passthrough():
+    """data URI 也原样过(交给引擎 _decode_input_image),不当作签名 URL 解析。"""
+    uri = "data:image/png;base64,AAAA"
+    req = _build_request(_node(_granular_inputs(input_image=uri)))
+    assert req.input_image == uri
+
+
+def test_granular_input_image_multi_comma_resolved_each():
+    """多参考图(逗号分隔)→ 每路各自 resolve,再逗号拼回(本地路径原样)。"""
+    req = _build_request(_node(_granular_inputs(input_image="/tmp/a.png, /tmp/b.png")))
+    assert req.input_image == "/tmp/a.png,/tmp/b.png"
 
 
 def test_granular_carries_loras():

@@ -366,6 +366,16 @@ def _build_request(node: P.RunNode):
             vae_spec.setdefault("device", "auto")
             vae_spec.setdefault("offload", "none")
             lseed = latent.get("seed")
+            # 输入图(编辑/img2img/多参考,spec 2026-06-07):KSampler 的 image 端口接 image_input
+            # → executor 把签名 URL 写进 latent["input_image"](多图逗号分隔)。这里把 URL 解析回
+            # runner/backend 共享的本地路径(避免 base64 大图过 msgpack pipe;同 upscale 路径)。
+            # None / 空 = 纯文生图(零回归)。
+            input_image_raw = latent.get("input_image")
+            input_image_resolved: str | None = None
+            if input_image_raw:
+                urls = [u.strip() for u in str(input_image_raw).split(",") if u.strip()]
+                resolved = [_resolve_input_image_path(u) for u in urls]
+                input_image_resolved = ",".join(resolved) if resolved else None
             # 多架构注册表(spec 2026-06-07 P0):adapter_arch → pipeline_class。加新架构
             # (z-image / qwen-edit)= 往 IMAGE_ARCH_REGISTRY 注册一条,不用改这里的派发。
             from src.services.inference.model_arch_adapter import arch_spec_by_name  # noqa: PLC0415
@@ -382,6 +392,7 @@ def _build_request(node: P.RunNode):
                 scheduler=str(latent.get("scheduler") or "normal"),
                 offload=unet_offload,
                 seed=int(lseed) if lseed not in (None, "") else None,
+                input_image=input_image_resolved,
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
                     "clip": ComponentSpec(**clip_spec),

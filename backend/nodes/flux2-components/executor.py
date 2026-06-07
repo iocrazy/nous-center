@@ -180,7 +180,12 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
     _check_arch_compat(unet_arch, clip_type)
     raw_seed = data.get("seed")
     seed = int(raw_seed) if raw_seed not in (None, "") else None
-    return {"latent": {
+    # 输入图(编辑/img2img/多参考,spec 2026-06-07):可选 image 端口接 image_input(产 image_url)
+    # 或 flux2_vae_decode(产 image_url)。merge 把上游 image 端口的 image_url 拷进 inputs。
+    # 多图(多参考):上游多路 → inputs 取到的可能是单 url;前端多图先并成逗号串(后续多端口再扩)。
+    # 端口未连 = None → 纯文生图(零回归)。runner 把 URL 解析回本地路径再塞 ImageRequest.input_image。
+    input_image = inputs.get("image_url") or inputs.get("image")
+    latent: dict = {
         "_type": "flux2_latent", "model": model, "conditioning": cond,
         # round5:空串 widget(default: "")→ 默认值,不 int("")/float("") 崩
         "width": int(data.get("width") or 1024), "height": int(data.get("height") or 1024),
@@ -188,7 +193,10 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
         "sampler_name": data.get("sampler_name") or "euler",
         "scheduler": data.get("scheduler") or "normal",
         "seed": seed,
-    }}
+    }
+    if input_image:
+        latent["input_image"] = str(input_image)
+    return {"latent": latent}
 
 
 # flux2_vae_decode 不在此 —— 它走 dispatch(node_routing.DISPATCH_NODE_TYPES),

@@ -103,6 +103,11 @@ class ImageRequest(InferenceRequest):
     # 但让大模型塞进小显存,如 True-v2 bf16 进 3090 24GB)。cuda:N 跨卡 offload 留 PR-D2。
     offload: str = "none"
     loras: list[LoRASpec] = Field(default_factory=list)
+    # 输入图(编辑/img2img):本地磁盘路径或 base64 data URI。None = 纯文生图(零回归)。
+    # 编辑类架构(Flux2 多参考编辑 / Qwen-Image-Edit)消费;引擎按 pipeline 是否支持 image=
+    # 决定是否注入(见 model_arch_adapter.ImageArchSpec.needs_image_input)。runner 把节点传来的
+    # 签名 URL 经 _resolve_input_image_path 解析成本地路径再塞这里(避免 base64 大图过 msgpack pipe)。
+    input_image: str | None = None
     # PR-4: component path. When set, the runner routes through
     # ModelManager.get_or_load_image_adapter instead of model_key. None ⇒
     # legacy model_key path (back-compat).
