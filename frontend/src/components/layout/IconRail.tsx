@@ -12,6 +12,7 @@ import {
   Monitor,
   ListTodo,
   LogOut,
+  Palette,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
@@ -40,6 +41,7 @@ const OVERLAY_ROUTES: Record<OverlayId, string> = {
   'service-detail': '/services',
   'workflows-list': '/workflows',
   usage: '/usage',
+  studio: '/studio',
 }
 
 // Workflow goes through the overlay nav now (v3 m08 list); the in-canvas
@@ -49,6 +51,7 @@ const PANEL_ITEMS: { id: PanelId; icon: typeof GitBranch; label: string }[] = []
 
 const TOP_NAVS: { id: OverlayId; icon: typeof LayoutDashboard; label: string }[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { id: 'studio', icon: Palette, label: '创作台' },
   { id: 'services', icon: Activity, label: '服务' },
   { id: 'workflows-list', icon: GitBranch, label: 'Workflow' },
 ]

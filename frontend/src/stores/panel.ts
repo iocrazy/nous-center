@@ -16,6 +16,7 @@ export type OverlayId =
   | 'service-detail'   // v3 服务详情（id 从 URL 取）
   | 'workflows-list'   // v3 m08 列表（vs canvas at /workflows/:id）
   | 'usage'            // v3 新
+  | 'studio'           // 创作台:本地图像功能测试页(文生图/增强/编辑/角度,对齐 Infinite-Canvas)
 
 /** TaskPanel 模式:dock=右侧抽屉(全高,modal-ish),float=右下角浮窗(可拖拽,不阻塞操作)。
  *  对齐 ComfyUI「停靠 / 悬浮」两态。localStorage 持久。 */
