@@ -11,6 +11,7 @@ adapters in ~50 LOC each.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 
@@ -100,9 +101,56 @@ class FluxKleinArchAdapter:
         }
 
 
-# Registry — key is the diffusers Pipeline class name as returned by
-# Pipeline.__class__.__name__ (or read from model_index.json _class_name).
-# PR-2 only registers FluxKlein; future PRs add more entries.
+# ---- 多架构注册表(spec 2026-06-07 P0:ImageArchSpec)----------------------------
+#
+# 把「加一个图像架构」从「改散落多处(runner 派发 if-elif / model_manager 选适配器 /
+# 采样器能力)」收成「往 IMAGE_ARCH_REGISTRY 注册一条」。现有 flux2 / anima 迁入,行为不变。
+
+
+@dataclass(frozen=True)
+class ImageArchSpec:
+    """一个图像模型架构的派发 + 能力声明(spec 2026-06-07 P0)。
+
+    arch: 描述符里的 `adapter_arch`(loader 节点选的 / runner 读的),如 "flux2" / "anima" / "z-image"。
+    pipeline_class: diffusers 的 Pipeline 类名(runner 据此选,引擎据此 from_pretrained / 校验)。
+    adapter: 走哪个后端引擎 —— "modular"(ModularImageBackend,Flux2/Z-Image/Qwen-Edit 等标准
+             diffusers pipeline)/ "anima"(AnimaImageBackend,自定义 DiT)。
+    caps: 采样器/CFG/步数等能力(ModularImageBackend 的采样器校验消费;anima 不经此校验)。
+    needs_image_input: 编辑类架构(qwen-edit / flux2 多参考编辑)需要输入图。
+    """
+    arch: str
+    pipeline_class: str
+    adapter: str
+    caps: ModelArchAdapter
+    needs_image_input: bool = False
+
+
+DEFAULT_IMAGE_ARCH = "flux2"
+
+IMAGE_ARCH_REGISTRY: dict[str, ImageArchSpec] = {
+    "flux2": ImageArchSpec("flux2", "Flux2KleinPipeline", "modular", FluxKleinArchAdapter()),
+    # anima 走 AnimaImageBackend(自定义 DiT),caps 占位(不经 ModularImageBackend 采样器校验)。
+    "anima": ImageArchSpec("anima", "AnimaPipeline", "anima", FluxKleinArchAdapter()),
+}
+
+
+def arch_spec_by_name(arch: str | None) -> ImageArchSpec:
+    """按 adapter_arch 名取架构(未知 / None → 默认 flux2,零回归)。"""
+    return IMAGE_ARCH_REGISTRY.get(arch or DEFAULT_IMAGE_ARCH,
+                                   IMAGE_ARCH_REGISTRY[DEFAULT_IMAGE_ARCH])
+
+
+def arch_spec_by_pipeline(pipeline_class: str) -> ImageArchSpec | None:
+    """按 diffusers pipeline_class 反查架构(model_manager 据此选 modular/anima 适配器)。"""
+    for s in IMAGE_ARCH_REGISTRY.values():
+        if s.pipeline_class == pipeline_class:
+            return s
+    return None
+
+
+# 采样器能力注册表 —— 由 IMAGE_ARCH_REGISTRY 派生(pipeline_class → caps),向后兼容
+# image_modular `_validate_sampler_scheduler` 的既有按 pipeline_class 查法,无需改它。
+# key 是 diffusers Pipeline 类名(Pipeline.__class__.__name__ / model_index.json _class_name)。
 MODEL_ARCH_REGISTRY: dict[str, ModelArchAdapter] = {
-    "Flux2KleinPipeline": FluxKleinArchAdapter(),
+    s.pipeline_class: s.caps for s in IMAGE_ARCH_REGISTRY.values()
 }

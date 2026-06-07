@@ -1,0 +1,40 @@
+"""ImageArchSpec 多架构注册表(spec 2026-06-07 P0):arch↔pipeline_class 派发 + 能力。"""
+from src.services.inference.model_arch_adapter import (
+    DEFAULT_IMAGE_ARCH,
+    IMAGE_ARCH_REGISTRY,
+    MODEL_ARCH_REGISTRY,
+    arch_spec_by_name,
+    arch_spec_by_pipeline,
+)
+
+
+def test_arch_by_name_flux2_default_and_unknown():
+    assert arch_spec_by_name("flux2").pipeline_class == "Flux2KleinPipeline"
+    assert arch_spec_by_name(None).arch == DEFAULT_IMAGE_ARCH  # None → flux2(零回归)
+    assert arch_spec_by_name("nope").arch == "flux2"           # 未知 → flux2 兜底
+
+
+def test_arch_by_name_anima():
+    s = arch_spec_by_name("anima")
+    assert s.pipeline_class == "AnimaPipeline"
+    assert s.adapter == "anima"
+
+
+def test_arch_by_pipeline_reverse_lookup():
+    assert arch_spec_by_pipeline("Flux2KleinPipeline").arch == "flux2"
+    assert arch_spec_by_pipeline("Flux2KleinPipeline").adapter == "modular"
+    assert arch_spec_by_pipeline("AnimaPipeline").adapter == "anima"
+    assert arch_spec_by_pipeline("NoSuchPipeline") is None
+
+
+def test_model_arch_registry_derived_backcompat():
+    # 派生的 caps 注册表保留 Flux2KleinPipeline(image_modular 采样器校验按 pipeline_class 查)。
+    assert "Flux2KleinPipeline" in MODEL_ARCH_REGISTRY
+    caps = MODEL_ARCH_REGISTRY["Flux2KleinPipeline"]
+    assert "euler" in caps.supported_samplers()
+    assert "karras" in caps.supported_schedulers()
+
+
+def test_registry_has_flux2_and_anima():
+    assert set(IMAGE_ARCH_REGISTRY) >= {"flux2", "anima"}
+    assert all(s.adapter in ("modular", "anima") for s in IMAGE_ARCH_REGISTRY.values())
