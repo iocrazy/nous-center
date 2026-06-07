@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ImageIcon, Sparkles, Wand2, Scan, Box, Loader2, Monitor, Cloud } from 'lucide-react'
+import { ImageIcon, Sparkles, Wand2, Scan, Box, Loader2, Monitor, Cloud, Upload } from 'lucide-react'
 import { useComponents } from '../api/components'
 import { executeWorkflow } from '../utils/workflowExecutor'
 import type { Workflow } from '../models/workflow'
@@ -13,8 +13,8 @@ type FeatureId = 'text2img' | 'enhance' | 'edit' | 'angle'
 
 const FEATURES: { id: FeatureId; label: string; icon: typeof ImageIcon; ready: boolean }[] = [
   { id: 'text2img', label: '文生图', icon: ImageIcon, ready: true },
+  { id: 'edit', label: '图片编辑', icon: Wand2, ready: true },
   { id: 'enhance', label: '细节增强', icon: Sparkles, ready: false },
-  { id: 'edit', label: '图片编辑', icon: Wand2, ready: false },
   { id: 'angle', label: '角度控制', icon: Box, ready: false },
 ]
 
@@ -60,9 +60,9 @@ export default function Studio() {
 
       {/* 主区 */}
       <div style={{ flex: 1, overflow: 'auto' }}>
-        {feature === 'text2img' ? (
-          <Text2ImagePanel />
-        ) : (
+        {feature === 'text2img' && <Text2ImagePanel />}
+        {feature === 'edit' && <ImageEditPanel />}
+        {(feature === 'enhance' || feature === 'angle') && (
           <ComingSoon label={FEATURES.find((f) => f.id === feature)?.label ?? ''} />
         )}
       </div>
@@ -112,37 +112,16 @@ function Text2ImagePanel() {
     const seed = Math.floor(Math.random() * 1_000_000_000_000)
     lastSeed.current = seed
     const wf = buildZImageWorkflow({ ckpt, prompt: prompt.trim(), width, height, seed })
-
-    let settled = false
-    const onProgress = (ev: Event) => {
-      const d = (ev as CustomEvent).detail
-      if (settled) return
-      if (d?.type === 'node_complete' && d?.image_url) {
-        settled = true
-        const url = String(d.image_url)
+    submitImageWorkflow(wf, {
+      onImage: (url) => {
         setResult(url)
         setGallery((g) => [{ url, prompt: prompt.trim(), seed }, ...g].slice(0, 24))
         setRunning(false)
-      } else if (d?.type === 'node_error') {
-        settled = true
-        toast(`生成失败:${d.error ?? d.detail ?? '未知错误'}`, 'error')
-        setRunning(false)
-      }
-    }
-    window.addEventListener('node-progress', onProgress as EventListener)
-    try {
-      await executeWorkflow(wf)
-      toast('已入队本地生成…', 'info')
-    } catch (err) {
-      settled = true
-      toast(`提交失败:${(err as Error).message ?? err}`, 'error')
-      setRunning(false)
-    }
-    // 兜底:90s 没出图 → 解绑(防泄漏);真结果靠 WS。
-    setTimeout(() => {
-      window.removeEventListener('node-progress', onProgress as EventListener)
-      if (!settled) setRunning(false)
-    }, 90_000)
+      },
+      onError: (msg) => { toast(msg, 'error'); setRunning(false) },
+      onTimeout: () => setRunning(false),
+      toast,
+    })
   }
 
   return (
@@ -300,4 +279,244 @@ function buildZImageWorkflow(
     { id: 'e5', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
   ]
   return { name: '创作台·文生图(Z-Image)', nodes, edges } as unknown as Workflow
+}
+
+/** 提交工作流 → 监听 WS 'node-progress' 拿 image_url → 回调。两个 panel 共用,避免重复 WS 接线。 */
+function submitImageWorkflow(
+  wf: Workflow,
+  h: {
+    onImage: (url: string) => void
+    onError: (msg: string) => void
+    onTimeout: () => void
+    toast: (m: string, t?: 'info' | 'error' | 'success') => void
+  },
+): void {
+  let settled = false
+  const unbind = () => window.removeEventListener('node-progress', onProgress as EventListener)
+  const onProgress = (ev: Event) => {
+    const d = (ev as CustomEvent).detail
+    if (settled) return
+    if (d?.type === 'node_complete' && d?.image_url) {
+      settled = true; unbind(); h.onImage(String(d.image_url))
+    } else if (d?.type === 'node_error') {
+      settled = true; unbind(); h.onError(`生成失败:${d.error ?? d.detail ?? '未知错误'}`)
+    }
+  }
+  window.addEventListener('node-progress', onProgress as EventListener)
+  executeWorkflow(wf)
+    .then(() => h.toast('已入队本地生成…', 'info'))
+    .catch((err: unknown) => {
+      settled = true; unbind(); h.onError(`提交失败:${(err as Error)?.message ?? err}`)
+    })
+  // 兜底:120s 没出图 → 解绑防泄漏(编辑大图 + 首次装模型可能久);真结果靠 WS。
+  setTimeout(() => { unbind(); if (!settled) h.onTimeout() }, 120_000)
+}
+
+/** 读上传文件 → { dataUri, width, height }(snap 宽高到 64 的倍数,clamp 512..2048,Flux2 友好)。 */
+function readUpload(file: File): Promise<{ dataUri: string; width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('读取文件失败'))
+    reader.onload = () => {
+      const dataUri = String(reader.result)
+      const img = new Image()
+      img.onerror = () => reject(new Error('无法解析图片'))
+      img.onload = () => {
+        const snap = (n: number) => Math.max(512, Math.min(2048, Math.round(n / 64) * 64))
+        resolve({ dataUri, width: snap(img.naturalWidth || 1024), height: snap(img.naturalHeight || 1024) })
+      }
+      img.src = dataUri
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+function ImageEditPanel() {
+  const toast = useToastStore((s) => s.add)
+  const { data: checkpoints } = useComponents('checkpoint')
+  const [prompt, setPrompt] = useState('')
+  const [ckpt, setCkpt] = useState<string>('')
+  const [upload, setUpload] = useState<{ dataUri: string; width: number; height: number } | null>(null)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  // 编辑走 Flux2(多参考编辑;Flux2KleinPipeline 接受 image=)。默认挑 Flux2 整模型。
+  const fluxCandidates = useMemo(
+    () => (checkpoints ?? []).filter((c) => /flux/i.test(c.filename) || /flux/i.test(c.abs_path)),
+    [checkpoints],
+  )
+  useEffect(() => {
+    if (ckpt) return
+    const pick = fluxCandidates[0] ?? (checkpoints ?? [])[0]
+    if (pick) setCkpt(pick.abs_path)
+  }, [ckpt, fluxCandidates, checkpoints])
+
+  const pickFile = async (file: File | undefined) => {
+    if (!file) return
+    try { setUpload(await readUpload(file)) } catch (e) { toast((e as Error).message, 'error') }
+  }
+
+  const run = () => {
+    if (running) return
+    if (!upload) { toast('先上传一张要编辑的图', 'info'); return }
+    if (!prompt.trim()) { toast('描述你想怎么改这张图', 'info'); return }
+    if (!ckpt) { toast('没找到可用的 Flux2 整模型(在 diffusers/ 放 Flux2-klein-9B)', 'error'); return }
+    setRunning(true)
+    setResult(null)
+    const seed = Math.floor(Math.random() * 1_000_000_000_000)
+    const wf = buildFlux2EditWorkflow({
+      ckpt, prompt: prompt.trim(), imageDataUri: upload.dataUri,
+      width: upload.width, height: upload.height, seed,
+    })
+    submitImageWorkflow(wf, {
+      onImage: (url) => { setResult(url); setRunning(false) },
+      onError: (msg) => { toast(msg, 'error'); setRunning(false) },
+      onTimeout: () => setRunning(false),
+      toast,
+    })
+  }
+
+  return (
+    <div style={{ maxWidth: 1100, margin: '0 auto', padding: 24 }}>
+      <div style={{ background: 'var(--bg-accent)', border: '1px solid var(--border)', borderRadius: 12, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            图片编辑 · 本地 Flux2(参考编辑)
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
+          {/* 上传区 */}
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            style={{
+              width: 200, minHeight: 200, flexShrink: 0, borderRadius: 10, cursor: 'pointer',
+              border: `1px ${upload ? 'solid' : 'dashed'} var(--border)`, background: 'var(--bg)',
+              color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              overflow: 'hidden', padding: 0,
+            }}
+          >
+            {upload ? (
+              <img src={upload.dataUri} alt="待编辑" style={{ maxWidth: '100%', maxHeight: 260, display: 'block' }} />
+            ) : (
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <Upload size={22} /> 点击上传图片
+              </span>
+            )}
+          </button>
+          <input
+            ref={fileRef} type="file" accept="image/*" hidden
+            onChange={(e) => pickFile(e.target.files?.[0])}
+          />
+
+          {/* 控制 */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="描述编辑指令,如「把背景换成雪景」「让它变成夜晚」…"
+              rows={3}
+              style={{
+                width: '100%', resize: 'vertical', background: 'var(--bg)', color: 'var(--text)',
+                border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px',
+                fontSize: 15, lineHeight: 1.5, outline: 'none',
+              }}
+            />
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, flexWrap: 'wrap' }}>
+              <Field label="模型(Flux2 整模型)">
+                <select value={ckpt} onChange={(e) => setCkpt(e.target.value)} style={selectStyle}>
+                  {(checkpoints ?? []).length === 0 && <option value="">无可用整模型</option>}
+                  {(checkpoints ?? []).map((c) => (
+                    <option key={c.abs_path} value={c.abs_path}>{c.filename}</option>
+                  ))}
+                </select>
+              </Field>
+              {upload && (
+                <Field label="输出尺寸(跟随原图)">
+                  <span style={{ fontSize: 12, color: 'var(--text)' }}>{upload.width} × {upload.height}</span>
+                </Field>
+              )}
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={run}
+                disabled={running}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 22px',
+                  background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: 8,
+                  fontSize: 14, fontWeight: 600, cursor: running ? 'wait' : 'pointer', opacity: running ? 0.7 : 1,
+                }}
+              >
+                {running ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
+                {running ? '本地编辑中…' : '本地编辑'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 前后对比 */}
+      {(running || result) && (
+        <div style={{ marginTop: 18, display: 'flex', gap: 16, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <ComparePane label="原图" src={upload?.dataUri ?? null} />
+          <ComparePane label="编辑后" src={result} loading={running && !result} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ComparePane({ label, src, loading }: { label: string; src: string | null; loading?: boolean }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</span>
+      <div style={{
+        width: 360, height: 360, borderRadius: 12, border: '1px solid var(--border)',
+        background: 'var(--bg-accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
+      }}>
+        {src ? (
+          <img src={src} alt={label} style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }} />
+        ) : loading ? (
+          <div style={{ color: 'var(--muted)', fontSize: 13, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+            <Loader2 size={22} className="animate-spin" /> 本地引擎编辑中…
+          </div>
+        ) : (
+          <span style={{ color: 'var(--muted)', fontSize: 12 }}>—</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 客户端搭 Flux2 图片编辑工作流图:image_input(上传图)+ checkpoint[arch=flux2] → encode →
+ *  ksampler(image 端口接上传图)→ vae_decode。引擎把输入图注入 Flux2KleinPipeline image=(参考编辑)。 */
+function buildFlux2EditWorkflow(
+  { ckpt, prompt, imageDataUri, width, height, seed }:
+  { ckpt: string; prompt: string; imageDataUri: string; width: number; height: number; seed: number },
+): Workflow {
+  const nodes = [
+    { id: 'img', type: 'image_input' as const, position: { x: 0, y: 240 },
+      data: { image: imageDataUri } },
+    { id: 'ckpt', type: 'flux2_load_checkpoint' as const, position: { x: 0, y: 0 },
+      data: { file: ckpt, weight_dtype: 'bfloat16', device: 'auto', offload: 'none', adapter_arch: 'flux2' } },
+    { id: 'enc', type: 'flux2_encode_prompt' as const, position: { x: 320, y: 0 },
+      data: { text: prompt, negative_prompt: '' } },
+    { id: 'ks', type: 'flux2_ksampler' as const, position: { x: 640, y: 0 },
+      data: { width, height, steps: 20, cfg_scale: 4.0, sampler_name: 'euler', scheduler: 'normal', seed: String(seed) } },
+    { id: 'dec', type: 'flux2_vae_decode' as const, position: { x: 960, y: 0 }, data: {} },
+  ]
+  const edges = [
+    { id: 'e1', source: 'ckpt', sourceHandle: 'clip', target: 'enc', targetHandle: 'clip' },
+    { id: 'e2', source: 'ckpt', sourceHandle: 'model', target: 'ks', targetHandle: 'model' },
+    { id: 'e3', source: 'enc', sourceHandle: 'conditioning', target: 'ks', targetHandle: 'conditioning' },
+    { id: 'e4', source: 'img', sourceHandle: 'image', target: 'ks', targetHandle: 'image' },
+    { id: 'e5', source: 'ckpt', sourceHandle: 'vae', target: 'dec', targetHandle: 'vae' },
+    { id: 'e6', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
+  ]
+  return { name: '创作台·图片编辑(Flux2)', nodes, edges } as unknown as Workflow
 }
