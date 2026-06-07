@@ -46,7 +46,8 @@ async def test_insufficient_vram_raises_clear_error(mm, monkeypatch, tmp_path):
         await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline")
 
 
-def test_guard_skips_pooled_components(mm, monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_guard_skips_pooled_components(mm, monkeypatch, tmp_path):
     """组件已在 runner L1 池 → 守卫不计入该卡(combo 装配复用、不需新显存)。
     修用户报告:节点四态显「已加载」但 combo cache miss 时,守卫按全新载入估满尺寸 → 误拦显存不足。"""
     u = tmp_path / "u.safe"
@@ -58,16 +59,90 @@ def test_guard_skips_pooled_components(mm, monkeypatch, tmp_path):
         "vae":  ComponentSpec(kind="vae",  file=str(u), device="cuda:2", dtype="bfloat16"),
     }
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: 1 if dev == "cuda:1" else 90000)
-    # 未入池 → 该卡空闲不足 → 拦
+    # 未入池 + 无可驱逐(_models 空)→ 该卡空闲不足、腾不出 → 拦
     with pytest.raises(RuntimeError, match="显存不足"):
-        mm._guard_image_vram_per_card(comps)
+        await mm._guard_image_vram_per_card(comps)
     # transformer 放进 L1 池(模拟已加载)→ 该卡不再计入 → 不拦
     key = mm._l1_component_key(spec, "cuda:1")
     mm._components[key] = {
         "module": object(), "role": "transformer", "key": key,
         "refs": set(), "resident": False, "device": "cuda:1",
     }
-    mm._guard_image_vram_per_card(comps)  # 不应抛
+    await mm._guard_image_vram_per_card(comps)  # 不应抛
+
+
+@pytest.mark.asyncio
+async def test_guard_evicts_lru_to_fit(mm, monkeypatch, tmp_path):
+    """先腾后载(spec 2026-06-07):卡空闲不足但有可驱逐的空闲 adapter → 守卫 evict 腾够后放行,不报错。"""
+    u = tmp_path / "u.safe"
+    u.write_bytes(b"\0" * 40_000_000)  # ~50MB need
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(u), device="cuda:1", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(u), device="cuda:0", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(u), device="cuda:2", dtype="bfloat16"),
+    }
+    # cuda:1 一开始满(10MB),evict 一次后腾到充足(90000MB);别的卡始终充足。
+    state = {"freed": False}
+    evicted = []
+
+    def _free(dev):
+        if dev == "cuda:1":
+            return 90000 if state["freed"] else 10
+        return 90000
+    monkeypatch.setattr(mm, "_free_vram_mb", _free)
+
+    async def _fake_evict(gpu_index=None):
+        if gpu_index == 1 and not state["freed"]:
+            state["freed"] = True
+            evicted.append(gpu_index)
+            return "image:old:1"
+        return None
+    monkeypatch.setattr(mm, "evict_lru", _fake_evict)
+
+    await mm._guard_image_vram_per_card(comps)  # evict 后放行,不抛
+    assert evicted == [1]  # 确实驱逐了一次 cuda:1 的 LRU
+
+
+@pytest.mark.asyncio
+async def test_guard_raises_when_nothing_evictable(mm, monkeypatch, tmp_path):
+    """卡满且无可驱逐(全 resident/in-use/被 vLLM 占)→ evict 返回 None → 仍清晰报错。"""
+    u = tmp_path / "u.safe"
+    u.write_bytes(b"\0" * 40_000_000)
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(u), device="cuda:1", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(u), device="cuda:0", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(u), device="cuda:2", dtype="bfloat16"),
+    }
+    monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: 10 if dev == "cuda:1" else 90000)
+
+    async def _no_evict(gpu_index=None):
+        return None
+    monkeypatch.setattr(mm, "evict_lru", _no_evict)
+
+    with pytest.raises(RuntimeError, match="已尝试驱逐空闲模型仍不足|显存不足"):
+        await mm._guard_image_vram_per_card(comps)
+
+
+@pytest.mark.asyncio
+async def test_guard_no_evict_when_fits(mm, monkeypatch, tmp_path):
+    """够装 → 不调 evict(零回归)。"""
+    u = tmp_path / "u.safe"
+    u.write_bytes(b"\0" * 40_000_000)
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(u), device="cuda:1", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(u), device="cuda:0", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(u), device="cuda:2", dtype="bfloat16"),
+    }
+    monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: 90000)  # 都充足
+    called = []
+
+    async def _evict(gpu_index=None):
+        called.append(gpu_index)
+        return None
+    monkeypatch.setattr(mm, "evict_lru", _evict)
+
+    await mm._guard_image_vram_per_card(comps)
+    assert called == []  # 够装,不该驱逐
 
 
 @pytest.mark.asyncio
@@ -94,7 +169,10 @@ async def test_guard_skipped_when_combo_already_loaded(mm, monkeypatch):
     monkeypatch.setattr(mm, "_derive_image_model_id", lambda combo_key: "already-loaded-combo")
     mm._models["already-loaded-combo"] = object()
     guard_calls: list = []
-    monkeypatch.setattr(mm, "_guard_image_vram_per_card", lambda resolved: guard_calls.append(True))
+
+    async def _spy_guard(resolved):  # 守卫现为 async,mock 也得 async(否则被 await 时报错)
+        guard_calls.append(True)
+    monkeypatch.setattr(mm, "_guard_image_vram_per_card", _spy_guard)
 
     async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
         return "stub-adapter"

@@ -910,9 +910,32 @@ class ModelManager:
         # 1.3x 余量(激活/中间张量;含 VAE decode 峰值的粗略 headroom);bytes → MB
         return int(total / (1024 * 1024) * 1.3)
 
-    def _guard_image_vram_per_card(self, resolved: dict) -> None:
-        """逐卡 LLM 卡保护(逐组件选卡 spec 2026-06-04):按各组件落的卡分组,
-        估每张卡上组件之和,空闲不足则装载前清晰报错(不静默 OOM)。
+    # 守卫腾显存时给 forward 留的余量(MB):腾到刚好 = need 仍可能 activation OOM。
+    # 对照 ComfyUI minimum_inference_memory + EXTRA_RESERVED_VRAM(spec 2026-06-07)。
+    _GUARD_RESERVE_MB = 1024
+
+    async def _free_image_vram_on_card(self, card: str, need_mb: int) -> int | None:
+        """按卡 LRU 驱逐空闲 image adapter,直到该卡空闲 ≥ need_mb 或无可驱逐(对照 ComfyUI
+        free_memory,spec 2026-06-07)。复用 evict_lru(gpu_index)(只驱逐 非resident/非引用/
+        非in-use 的 adapter;vLLM/LLM 不在 image _models → 天然不被驱逐)。返回最终空闲 MB
+        (None=查不到 → 调用方按「不阻塞」处理)。"""
+        if not card.startswith("cuda:"):
+            return None
+        idx = int(card.split(":")[1])
+        free = self._free_vram_mb(card)
+        while free is not None and free < need_mb:
+            evicted = await self.evict_lru(gpu_index=idx)
+            if evicted is None:  # 该卡已无可驱逐(只剩 resident / in-use / vLLM)
+                break
+            logger.info("守卫先腾后载:为装载 evict 了 %s,腾后 %s 空闲≈%sMB",
+                        evicted, card, self._free_vram_mb(card))
+            free = self._free_vram_mb(card)
+        return free
+
+    async def _guard_image_vram_per_card(self, resolved: dict) -> None:
+        """逐卡 LLM 卡保护(逐组件选卡 spec 2026-06-04 + 先腾后载 spec 2026-06-07):
+        按各组件落的卡分组估需求,**空闲不足时先按卡 LRU 驱逐空闲 image adapter 腾地方
+        (对照 ComfyUI free_memory),腾够再放行;腾不出才清晰报错(不静默 OOM)。**
 
         逐组件跨卡时三组件可能分散到不同卡 —— 旧版只查 transformer 卡会漏查
         clip/vae 落的卡。任一文件不存在(stub 测试)→ 跳过(无法估)。
@@ -950,12 +973,13 @@ class ModelManager:
                             pass
             need_by_card[dev] = need_by_card.get(dev, 0) + sz
         for dev, need_bytes in need_by_card.items():
-            free_mb = self._free_vram_mb(dev)
             need_mb = int(need_bytes / (1024 * 1024) * 1.3)
+            # 先腾后载:空闲不足时按卡 LRU 驱逐空闲 adapter 腾地方(留 reserve 余量),腾完再看。
+            free_mb = await self._free_image_vram_on_card(dev, need_mb + self._GUARD_RESERVE_MB)
             if free_mb is not None and free_mb < need_mb:
                 raise RuntimeError(
-                    f"{dev} 空闲显存不足({free_mb}MB < 约需 {need_mb}MB)—— "
-                    f"该卡可能被常驻 LLM / 其它组件占用。换张卡(device)、用更低精度(fp8)、"
+                    f"{dev} 空闲显存不足({free_mb}MB < 约需 {need_mb}MB,已尝试驱逐空闲模型仍不足)—— "
+                    f"该卡可能被常驻 LLM / 正在使用的模型占满。换张卡(device)、用更低精度(fp8)、"
                     f"把组件分到别的卡,或启用 offload=cpu(让大模型自动倒换 CPU)。"
                 )
 
@@ -1162,7 +1186,7 @@ class ModelManager:
         # 装载中漏判最多多跑一次守卫,与旧行为一致,不会误放真 OOM)。
         already_loaded = self._models.get(self._derive_image_model_id(combo_key)) is not None
         if not sticky and not already_loaded:
-            self._guard_image_vram_per_card(resolved)
+            await self._guard_image_vram_per_card(resolved)
         # PR-anima-6 engine 集成:pipeline_class="AnimaPipeline" → 走 AnimaImageBackend
         # (Anima 是 2B 自定义 DiT,跟 Flux2KleinPipeline 走不同路径)。
         if pipeline_class == "AnimaPipeline":
