@@ -1236,9 +1236,12 @@ class ModelManager:
         already_loaded = self._models.get(self._derive_image_model_id(combo_key)) is not None
         if not already_loaded:
             await self._guard_image_vram_per_card(resolved)
-        # PR-anima-6 engine 集成:pipeline_class="AnimaPipeline" → 走 AnimaImageBackend
-        # (Anima 是 2B 自定义 DiT,跟 Flux2KleinPipeline 走不同路径)。
-        if pipeline_class == "AnimaPipeline":
+        # 多架构注册表(spec 2026-06-07 P0):按 pipeline_class 反查架构选后端引擎。
+        # adapter="anima" → AnimaImageBackend(2B 自定义 DiT);其余(flux2/z-image/qwen-edit…)
+        # → ModularImageBackend(标准 diffusers pipeline)。加新架构不用改这里。
+        from src.services.inference.model_arch_adapter import arch_spec_by_pipeline  # noqa: PLC0415
+        _arch = arch_spec_by_pipeline(pipeline_class)
+        if _arch is not None and _arch.adapter == "anima":
             adapter = await self._get_or_load_anima_adapter(
                 resolved, combo_key, target, _emit, offload)
         else:

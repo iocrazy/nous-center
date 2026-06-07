@@ -366,10 +366,10 @@ def _build_request(node: P.RunNode):
             vae_spec.setdefault("device", "auto")
             vae_spec.setdefault("offload", "none")
             lseed = latent.get("seed")
-            # PR-anima-6:adapter_arch="anima" → pipeline_class="AnimaPipeline"(走 AnimaImageBackend);
-            # 默认 "flux2" → "Flux2KleinPipeline"(走 ModularImageBackend)。
-            arch = unet_spec.get("adapter_arch") or "flux2"
-            pipeline_class = "AnimaPipeline" if arch == "anima" else "Flux2KleinPipeline"
+            # 多架构注册表(spec 2026-06-07 P0):adapter_arch → pipeline_class。加新架构
+            # (z-image / qwen-edit)= 往 IMAGE_ARCH_REGISTRY 注册一条,不用改这里的派发。
+            from src.services.inference.model_arch_adapter import arch_spec_by_name  # noqa: PLC0415
+            pipeline_class = arch_spec_by_name(unet_spec.get("adapter_arch")).pipeline_class
             return ImageRequest(
                 request_id=f"task-{node.task_id}",
                 prompt=str(cond_d.get("text", "")),
