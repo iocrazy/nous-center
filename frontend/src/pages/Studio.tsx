@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ImageIcon, Sparkles, Wand2, Scan, Box, Loader2, Monitor, Cloud, Upload } from 'lucide-react'
+import { ImageIcon, Sparkles, Wand2, Box, Loader2, Monitor, Cloud, Upload } from 'lucide-react'
 import { useComponents } from '../api/components'
 import { executeWorkflow } from '../utils/workflowExecutor'
 import type { Workflow } from '../models/workflow'
@@ -15,7 +15,7 @@ const FEATURES: { id: FeatureId; label: string; icon: typeof ImageIcon; ready: b
   { id: 'text2img', label: '文生图', icon: ImageIcon, ready: true },
   { id: 'edit', label: '图片编辑', icon: Wand2, ready: true },
   { id: 'enhance', label: '细节增强', icon: Sparkles, ready: true },
-  { id: 'angle', label: '角度控制', icon: Box, ready: false },
+  { id: 'angle', label: '角度控制', icon: Box, ready: true },
 ]
 
 interface GalleryItem { url: string; prompt: string; seed: number }
@@ -63,20 +63,8 @@ export default function Studio() {
         {feature === 'text2img' && <Text2ImagePanel />}
         {feature === 'edit' && <ImageEditPanel />}
         {feature === 'enhance' && <EnhancePanel />}
-        {feature === 'angle' && (
-          <ComingSoon label={FEATURES.find((f) => f.id === feature)?.label ?? ''} />
-        )}
+        {feature === 'angle' && <AnglePanel />}
       </div>
-    </div>
-  )
-}
-
-function ComingSoon({ label }: { label: string }) {
-  return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, color: 'var(--muted)' }}>
-      <Scan size={28} />
-      <div style={{ fontSize: 14 }}>「{label}」引擎接入中</div>
-      <div style={{ fontSize: 12 }}>P2/P3 上线后这里就能用本地引擎跑</div>
     </div>
   )
 }
@@ -582,6 +570,156 @@ function EnhancePanel() {
   )
 }
 
+const ANGLE_PRESETS: { label: string; prompt: string }[] = [
+  { label: '左前 45°', prompt: 'rotate the camera to show the subject from a 45-degree front-left angle, keep the same subject and style' },
+  { label: '右前 45°', prompt: 'rotate the camera to show the subject from a 45-degree front-right angle, keep the same subject and style' },
+  { label: '左侧面', prompt: 'show the subject from the left side profile view, keep the same subject and style' },
+  { label: '右侧面', prompt: 'show the subject from the right side profile view, keep the same subject and style' },
+  { label: '背面', prompt: 'show the subject from the back / rear view, keep the same subject and style' },
+  { label: '俯视', prompt: 'show the subject from a top-down bird\'s-eye view, keep the same subject and style' },
+  { label: '仰视', prompt: 'show the subject from a low worm\'s-eye angle looking up, keep the same subject and style' },
+]
+
+function AnglePanel() {
+  const toast = useToastStore((s) => s.add)
+  const { data: checkpoints } = useComponents('checkpoint')
+  const [ckpt, setCkpt] = useState<string>('')
+  const [upload, setUpload] = useState<{ dataUri: string; width: number; height: number } | null>(null)
+  const [angleIdx, setAngleIdx] = useState(0)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  // 角度控制走 Qwen-Image-Edit-2511(编辑类,needs_image_input)。自动挑 Qwen-Edit 整模型。
+  const qwenCandidates = useMemo(
+    () => (checkpoints ?? []).filter((c) => /qwen.*image.*edit|qwen.*edit/i.test(c.filename) || /qwen.*image.*edit/i.test(c.abs_path)),
+    [checkpoints],
+  )
+  useEffect(() => {
+    if (ckpt) return
+    const pick = qwenCandidates[0] ?? (checkpoints ?? [])[0]
+    if (pick) setCkpt(pick.abs_path)
+  }, [ckpt, qwenCandidates, checkpoints])
+
+  const pickFile = async (file: File | undefined) => {
+    if (!file) return
+    try { setUpload(await readUpload(file)) } catch (e) { toast((e as Error).message, 'error') }
+  }
+
+  const run = () => {
+    if (running) return
+    if (!upload) { toast('先上传一张图', 'info'); return }
+    if (!ckpt) { toast('没找到 Qwen-Image-Edit 整模型(在 diffusers/ 放 Qwen-Image-Edit-2511)', 'error'); return }
+    setRunning(true)
+    setResult(null)
+    const seed = Math.floor(Math.random() * 1_000_000_000_000)
+    const wf = buildQwenEditWorkflow({
+      ckpt, prompt: ANGLE_PRESETS[angleIdx].prompt, imageDataUri: upload.dataUri,
+      width: upload.width, height: upload.height, seed,
+    })
+    submitImageWorkflow(wf, {
+      onImage: (url) => { setResult(url); setRunning(false) },
+      onError: (msg) => { toast(msg, 'error'); setRunning(false) },
+      onTimeout: () => setRunning(false),
+      toast,
+      ignoreImageFrom: 'img',
+    })
+  }
+
+  return (
+    <div style={{ maxWidth: 1100, margin: '0 auto', padding: 24 }}>
+      <div style={{ background: 'var(--bg-accent)', border: '1px solid var(--border)', borderRadius: 12, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            角度控制 · 本地 Qwen-Image-Edit
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            style={{
+              width: 200, minHeight: 200, flexShrink: 0, borderRadius: 10, cursor: 'pointer',
+              border: `1px ${upload ? 'solid' : 'dashed'} var(--border)`, background: 'var(--bg)',
+              color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              overflow: 'hidden', padding: 0,
+            }}
+          >
+            {upload ? (
+              <img src={upload.dataUri} alt="原图" style={{ maxWidth: '100%', maxHeight: 260, display: 'block' }} />
+            ) : (
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <Upload size={22} /> 点击上传图片
+              </span>
+            )}
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => pickFile(e.target.files?.[0])} />
+
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Field label="目标视角">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {ANGLE_PRESETS.map((a, i) => (
+                  <button
+                    key={a.label}
+                    type="button"
+                    onClick={() => setAngleIdx(i)}
+                    style={{
+                      padding: '7px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+                      border: '1px solid var(--border)',
+                      background: i === angleIdx ? 'var(--text)' : 'var(--bg)',
+                      color: i === angleIdx ? 'var(--bg)' : 'var(--text)',
+                      fontWeight: i === angleIdx ? 600 : 400,
+                    }}
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, flexWrap: 'wrap' }}>
+              <Field label="模型(Qwen-Edit 整模型)">
+                <select value={ckpt} onChange={(e) => setCkpt(e.target.value)} style={selectStyle}>
+                  {(checkpoints ?? []).length === 0 && <option value="">无可用整模型</option>}
+                  {(checkpoints ?? []).map((c) => (
+                    <option key={c.abs_path} value={c.abs_path}>{c.filename}</option>
+                  ))}
+                </select>
+              </Field>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={run}
+                disabled={running}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 22px',
+                  background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: 8,
+                  fontSize: 14, fontWeight: 600, cursor: running ? 'wait' : 'pointer', opacity: running ? 0.7 : 1,
+                }}
+              >
+                {running ? <Loader2 size={16} className="animate-spin" /> : <Box size={16} />}
+                {running ? '本地生成中…' : '本地生成'}
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+              Qwen-Image-Edit 改相机视角,保持主体不变。20B 模型,首次加载较久。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {(running || result) && (
+        <div style={{ marginTop: 18, display: 'flex', gap: 16, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <ComparePane label="原图" src={upload?.dataUri ?? null} />
+          <ComparePane label={ANGLE_PRESETS[angleIdx].label} src={result} loading={running && !result} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ComparePane({ label, src, loading }: { label: string; src: string | null; loading?: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -651,4 +789,34 @@ function buildSeedVR2Workflow(
     { id: 'e2', source: 'up', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
   ]
   return { name: '创作台·细节增强(SeedVR2)', nodes, edges } as unknown as Workflow
+}
+
+/** 客户端搭 Qwen-Image-Edit-2511 编辑/角度工作流图:image_input + checkpoint[arch=qwen-edit] →
+ *  encode → ksampler(image 端口)→ vae_decode → image_output。引擎对 qwen-edit 走 true_cfg_scale
+ *  (40 步),把输入图注入 QwenImageEditPlusPipeline image=。角度控制 = 视角 prompt。 */
+function buildQwenEditWorkflow(
+  { ckpt, prompt, imageDataUri, width, height, seed }:
+  { ckpt: string; prompt: string; imageDataUri: string; width: number; height: number; seed: number },
+): Workflow {
+  const nodes = [
+    { id: 'img', type: 'image_input' as const, position: { x: 0, y: 240 }, data: { image: imageDataUri } },
+    { id: 'ckpt', type: 'flux2_load_checkpoint' as const, position: { x: 0, y: 0 },
+      data: { file: ckpt, weight_dtype: 'bfloat16', device: 'auto', offload: 'none', adapter_arch: 'qwen-edit' } },
+    { id: 'enc', type: 'flux2_encode_prompt' as const, position: { x: 320, y: 0 },
+      data: { text: prompt, negative_prompt: '' } },
+    { id: 'ks', type: 'flux2_ksampler' as const, position: { x: 640, y: 0 },
+      data: { width, height, steps: 40, cfg_scale: 4.0, sampler_name: 'euler', scheduler: 'normal', seed: String(seed) } },
+    { id: 'dec', type: 'flux2_vae_decode' as const, position: { x: 960, y: 0 }, data: {} },
+    { id: 'out', type: 'image_output' as const, position: { x: 1280, y: 0 }, data: {} },
+  ]
+  const edges = [
+    { id: 'e1', source: 'ckpt', sourceHandle: 'clip', target: 'enc', targetHandle: 'clip' },
+    { id: 'e2', source: 'ckpt', sourceHandle: 'model', target: 'ks', targetHandle: 'model' },
+    { id: 'e3', source: 'enc', sourceHandle: 'conditioning', target: 'ks', targetHandle: 'conditioning' },
+    { id: 'e4', source: 'img', sourceHandle: 'image', target: 'ks', targetHandle: 'image' },
+    { id: 'e5', source: 'ckpt', sourceHandle: 'vae', target: 'dec', targetHandle: 'vae' },
+    { id: 'e6', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
+    { id: 'e7', source: 'dec', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
+  ]
+  return { name: '创作台·角度控制(Qwen-Image-Edit)', nodes, edges } as unknown as Workflow
 }
