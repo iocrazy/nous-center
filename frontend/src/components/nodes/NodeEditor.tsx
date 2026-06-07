@@ -41,6 +41,7 @@ import NodePackagesOverlay from '../overlays/NodePackagesOverlay'
 import ServicesList from '../../pages/ServicesList'
 import ServiceDetailRoute from '../../pages/ServiceDetailRoute'
 import WorkflowsList from '../../pages/WorkflowsList'
+import Studio from '../../pages/Studio'
 import UsagePage from '../../pages/UsagePage'
 import ApiKeysList from '../../pages/ApiKeysList'
 import ApiKeyDetail from '../../pages/ApiKeyDetail'
@@ -612,6 +613,7 @@ export default function NodeEditor() {
       {activeOverlay === 'service-detail' && <ServiceDetailRoute />}
       {activeOverlay === 'workflows-list' && <WorkflowsList />}
       {activeOverlay === 'usage' && <UsagePage />}
+      {activeOverlay === 'studio' && <Studio />}
 
       {/* PR-3g(2026-05-28 任务面板重置收尾):删 QueueProgressOverlay 老画布右上浮窗
           (PR-170 时代方案)。任务进度统一由 GlobalTopbar 任务下拉 + Active/History
