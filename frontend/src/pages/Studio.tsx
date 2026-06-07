@@ -270,6 +270,8 @@ function buildZImageWorkflow(
     { id: 'ks', type: 'flux2_ksampler' as const, position: { x: 640, y: 0 },
       data: { width, height, steps: 8, cfg_scale: 1.0, sampler_name: 'euler', scheduler: 'normal', seed: String(seed) } },
     { id: 'dec', type: 'flux2_vae_decode' as const, position: { x: 960, y: 0 }, data: {} },
+    // image_output 是 executeWorkflow 必需的输出节点(否则抛「工作流缺少输出节点」)。
+    { id: 'out', type: 'image_output' as const, position: { x: 1280, y: 0 }, data: {} },
   ]
   const edges = [
     { id: 'e1', source: 'ckpt', sourceHandle: 'clip', target: 'enc', targetHandle: 'clip' },
@@ -277,11 +279,14 @@ function buildZImageWorkflow(
     { id: 'e3', source: 'enc', sourceHandle: 'conditioning', target: 'ks', targetHandle: 'conditioning' },
     { id: 'e4', source: 'ckpt', sourceHandle: 'vae', target: 'dec', targetHandle: 'vae' },
     { id: 'e5', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
+    { id: 'e6', source: 'dec', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
   ]
   return { name: '创作台·文生图(Z-Image)', nodes, edges } as unknown as Workflow
 }
 
-/** 提交工作流 → 监听 WS 'node-progress' 拿 image_url → 回调。两个 panel 共用,避免重复 WS 接线。 */
+/** 提交工作流 → 监听 WS 'node-progress' 拿 image_url → 回调。两个 panel 共用,避免重复 WS 接线。
+ *  ignoreImageFrom:要忽略其 node_complete.image_url 的输入节点 id —— image_input(上传图)节点会
+ *  把上传图回显成一个 node_complete(写盘签 URL),不能当成最终出图(否则编辑模式抓到的是原图)。 */
 function submitImageWorkflow(
   wf: Workflow,
   h: {
@@ -289,6 +294,7 @@ function submitImageWorkflow(
     onError: (msg: string) => void
     onTimeout: () => void
     toast: (m: string, t?: 'info' | 'error' | 'success') => void
+    ignoreImageFrom?: string
   },
 ): void {
   let settled = false
@@ -296,6 +302,8 @@ function submitImageWorkflow(
   const onProgress = (ev: Event) => {
     const d = (ev as CustomEvent).detail
     if (settled) return
+    // 跳过输入源节点(image_input)的回显 —— 它不是生成结果。
+    if (d?.node_type === 'image_input' || (h.ignoreImageFrom && d?.node_id === h.ignoreImageFrom)) return
     if (d?.type === 'node_complete' && d?.image_url) {
       settled = true; unbind(); h.onImage(String(d.image_url))
     } else if (d?.type === 'node_error') {
@@ -374,6 +382,7 @@ function ImageEditPanel() {
       onError: (msg) => { toast(msg, 'error'); setRunning(false) },
       onTimeout: () => setRunning(false),
       toast,
+      ignoreImageFrom: 'img',  // image_input 节点 id(见 buildFlux2EditWorkflow)
     })
   }
 
@@ -509,6 +518,7 @@ function buildFlux2EditWorkflow(
     { id: 'ks', type: 'flux2_ksampler' as const, position: { x: 640, y: 0 },
       data: { width, height, steps: 20, cfg_scale: 4.0, sampler_name: 'euler', scheduler: 'normal', seed: String(seed) } },
     { id: 'dec', type: 'flux2_vae_decode' as const, position: { x: 960, y: 0 }, data: {} },
+    { id: 'out', type: 'image_output' as const, position: { x: 1280, y: 0 }, data: {} },
   ]
   const edges = [
     { id: 'e1', source: 'ckpt', sourceHandle: 'clip', target: 'enc', targetHandle: 'clip' },
@@ -517,6 +527,7 @@ function buildFlux2EditWorkflow(
     { id: 'e4', source: 'img', sourceHandle: 'image', target: 'ks', targetHandle: 'image' },
     { id: 'e5', source: 'ckpt', sourceHandle: 'vae', target: 'dec', targetHandle: 'vae' },
     { id: 'e6', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
+    { id: 'e7', source: 'dec', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
   ]
   return { name: '创作台·图片编辑(Flux2)', nodes, edges } as unknown as Workflow
 }
