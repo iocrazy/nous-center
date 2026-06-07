@@ -44,7 +44,8 @@ async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
 
     data['file'] = `diffusers/<model>/` 目录(component_select role=checkpoint 选的整模型)。
     解析 <dir>/{transformer,text_encoder,vae} 各首文件,三件同 device/dtype。
-    注:adapter_arch 暂固定 flux2(引擎当前只支持 Flux2;ERNIE 等多架构是 future)。
+    adapter_arch 选架构(flux2 / z-image …):z-image 整模型走 ZImagePipeline.from_pretrained
+    (引擎据 repo 整体加载,各组件文件仅用于推 repo + 四态;spec 2026-06-07 P1)。
     """
     repo = data.get("file")
     if not repo:
@@ -52,10 +53,11 @@ async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
     device = data.get("device") or _AUTO
     dtype = data.get("weight_dtype") or _DEFAULT_DTYPE
     offload = data.get("offload") or "none"  # 三件同卡同 offload(便捷节点)
+    arch = data.get("adapter_arch") or "flux2"
     return {
         "model": {"_type": "flux2_model", "spec": {
             "kind": "diffusion_models", "file": _first_safetensors(repo, "transformer"),
-            "device": device, "dtype": dtype, "adapter_arch": "flux2"}, "loras": [], "offload": offload},
+            "device": device, "dtype": dtype, "adapter_arch": arch}, "loras": [], "offload": offload},
         "clip": {"_type": "flux2_clip", "type": "flux2", "device": device, "offload": offload,
                  "encoders": [{"kind": "clip", "file": _first_safetensors(repo, "text_encoder"), "dtype": dtype}]},
         "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": _first_safetensors(repo, "vae"),

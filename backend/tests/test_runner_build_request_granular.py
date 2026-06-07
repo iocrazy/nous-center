@@ -11,9 +11,9 @@ def _node(inputs):
     return P.RunNode(task_id=1, node_id="dec", node_type="image", model_key=None, inputs=inputs)
 
 
-def _granular_inputs(unet_dev="cuda:1", loras=None):
+def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2"):
     model = {"_type": "flux2_model",
-             "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": unet_dev, "dtype": "fp8_e4m3", "adapter_arch": "flux2"},
+             "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": unet_dev, "dtype": "fp8_e4m3", "adapter_arch": arch},
              "loras": loras or []}
     cond = {"_type": "flux2_conditioning",
             "clip": {"_type": "flux2_clip", "type": "flux2",
@@ -37,6 +37,13 @@ def test_granular_flatten_single_card():
     assert req.prompt == "a cat"
     assert (req.width, req.height, req.steps, req.seed) == (768, 768, 9, 42)
     assert req.pipeline_class == "Flux2KleinPipeline"
+
+
+def test_granular_zimage_arch_routes_to_zimage_pipeline():
+    """adapter_arch='z-image' → ImageRequest.pipeline_class='ZImagePipeline'(P1,经注册表派发)。"""
+    req = _build_request(_node(_granular_inputs(arch="z-image")))
+    assert req.pipeline_class == "ZImagePipeline"
+    assert req.components["diffusion_models"].adapter_arch == "z-image"
 
 
 def test_granular_carries_loras():
