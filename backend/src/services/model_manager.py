@@ -837,13 +837,9 @@ class ModelManager:
 
     _VRAM_EST_MB = {"diffusion_models": 18000, "clip": 6000, "vae": 1000}
 
-    def _resolve_component_device(self, spec):
-        """Resolve device='auto' → 'cuda:N' via allocator. Returns a NEW spec
-        (model_copy keeps validators) so the original descriptor is untouched."""
-        if spec.device != "auto":
-            return spec
-        # 优先用真实文件大小(×1.3)估需求 —— 比固定 _VRAM_EST_MB 表准:anima 2B(~10GB)≠
-        # Flux2 9B(18GB),套固定表会把 anima 当 18GB 误拦/落错卡。拿不到文件则回退表。
+    def _component_need_mb(self, spec) -> int:
+        """估该组件载入需多少显存(MB):优先真实文件大小×1.3,拿不到回退 _VRAM_EST_MB 表。
+        (anima 2B ~10GB ≠ Flux2 9B 18GB,套固定表会误判。)"""
         need = self._VRAM_EST_MB.get(spec.kind, 8000)
         try:
             import os
@@ -852,7 +848,50 @@ class ModelManager:
                 need = sz_mb
         except (OSError, AttributeError, TypeError):
             pass
-        idx = self._allocator.get_best_gpu(need)
+        return need
+
+    def _evictable_mb_on_card(self, idx: int) -> int:
+        """该卡上「可驱逐」image adapter 的估计显存之和(非常驻/未被引用/未在 infer)——
+        = 守卫「先腾后载」能从这张卡腾出来的量。已加载在用的 combo 自身也算可驱逐(若没在
+        infer),所以 auto 粘性命中(combo 已驻该卡)时该卡 effective free 仍判为「装得下」。"""
+        total = 0
+        for mid, e in self._models.items():
+            if e.gpu_index != idx:
+                continue
+            if e.spec.resident or self._references.get(mid) or mid in self._in_use:
+                continue
+            total += max(0, int(getattr(e.spec, "vram_mb", 0) or 0))
+        return total
+
+    def _card_effective_free_mb(self, idx: int) -> int | None:
+        """该卡「真空闲 + 可驱逐空间」(None=查不到 free)。守卫先腾后载后实际能用的量。"""
+        free = self._free_vram_mb(f"cuda:{idx}")
+        if free is None:
+            return None
+        return free + self._evictable_mb_on_card(idx)
+
+    def _resolve_auto_card(self, need_mb: int) -> int:
+        """**只增强 auto**(spec 2026-06-07):先按「真空闲」挑(allocator,守组隔离);没卡有
+        真空闲装得下,再按「真空闲 + 可驱逐空间」挑(守卫会先腾后载);都不行返回 -1(退 CPU)。
+        显式选卡不走这(尊重用户选的卡)。"""
+        idx = self._allocator.get_best_gpu(need_mb)
+        if idx >= 0:
+            return idx
+        # 没卡有真空闲装得下 → 看哪张卡「腾掉空闲 adapter 后」装得下,挑 free+evictable 最大的。
+        best, best_eff = -1, -1
+        for i in {e.gpu_index for e in self._models.values()
+                  if e.gpu_index is not None and e.gpu_index >= 0}:
+            eff = self._card_effective_free_mb(i)
+            if eff is not None and eff >= need_mb and eff > best_eff:
+                best, best_eff = i, eff
+        return best
+
+    def _resolve_component_device(self, spec):
+        """Resolve device='auto' → 'cuda:N'(算上可驱逐空间)。Returns a NEW spec
+        (model_copy keeps validators) so the original descriptor is untouched."""
+        if spec.device != "auto":
+            return spec
+        idx = self._resolve_auto_card(self._component_need_mb(spec))
         resolved = f"cuda:{idx}" if idx >= 0 else "cpu"
         return spec.model_copy(update={"device": resolved})
 
@@ -1147,8 +1186,19 @@ class ModelManager:
         sticky = (components["diffusion_models"].device == "auto"
                   and stick_key in self._image_stick)
         if sticky:
-            resolved["diffusion_models"] = resolved["diffusion_models"].model_copy(
-                update={"device": f"cuda:{self._image_stick[stick_key]}"})
+            stuck = self._image_stick[stick_key]
+            # **不粘到已满的卡**(只增强 auto,spec 2026-06-07):粘的卡「真空闲+可驱逐」仍装不下
+            # → 弃粘,改用上面 _resolve_auto_card 挑的卡(并让守卫在新卡上跑)。combo 已驻该卡时
+            # 它自身算可驱逐 → effective free 判得下 → 仍粘(cache hit 不被破坏,触发重载)。
+            need_dm = self._component_need_mb(resolved["diffusion_models"])
+            eff = self._card_effective_free_mb(stuck)
+            if eff is None or eff >= need_dm:
+                resolved["diffusion_models"] = resolved["diffusion_models"].model_copy(
+                    update={"device": f"cuda:{stuck}"})
+            else:
+                sticky = False
+                logger.info("auto 粘性放置弃用:cuda:%s 腾完仍装不下 ~%sMB → 改落 %s",
+                            stuck, need_dm, resolved["diffusion_models"].device)
         # 逐组件选卡(spec 2026-06-04):device=auto 让三组件各自 resolve 到不同卡。
         # **auto 跟随 transformer 卡**(整模型单卡的零回归默认),**显式选卡则保留**
         # (逐组件跨卡 —— 把 clip/vae 放与 transformer 不同的卡)。
@@ -1177,15 +1227,14 @@ class ModelManager:
         combo_key = (pipeline_class, offload,
                      tuple(comp_offloads[r] for r in ("transformer", "text_encoder", "vae"))) + tuple(
             to_component_key(resolved[k]) for k in ("diffusion_models", "clip", "vae"))
-        # LLM 卡保护守卫的跳过条件:
-        #  ① 粘性命中(sticky:device=auto 二次跑,预期 cache hit、不需新显存);
-        #  ② **combo 已加载**(显式选卡 re-run:组件已在该卡上,守卫却按「全新装载」从文件大小
-        #     估需求 → free 因 combo 已占而偏低 → 误判「卡被自己占满」拦截合法复用。本 session
-        #     真机踩:combo 驻 cuda:1 38G + qwen36 常驻 → 改 seed re-run 被守卫拦死,被迫跨卡折腾)。
-        # 已加载 = 纯 cache hit、零新显存 → 跳守卫安全(best-effort 读 _models,锁外;并发同 combo
-        # 装载中漏判最多多跑一次守卫,与旧行为一致,不会误放真 OOM)。
+        # LLM 卡保护守卫的跳过条件:**仅 combo 已加载**(精确 cache hit:同 combo_key 已在
+        # _models)→ 零新显存,跳守卫安全。
+        # 注:旧版还把「sticky」也算跳过条件(假设粘性=cache hit),但 sticky 现在只是「落卡偏好」
+        # (可能粘到需 evict 才装得下的卡)→ 不能跳守卫,否则漏了先腾后载会 OOM。已加载用精确的
+        # already_loaded 判;sticky 命中真 cache 时 already_loaded 也为 True,照样跳。
+        # (best-effort 读 _models,锁外;并发同 combo 装载中漏判最多多跑一次守卫,不会误放真 OOM。)
         already_loaded = self._models.get(self._derive_image_model_id(combo_key)) is not None
-        if not sticky and not already_loaded:
+        if not already_loaded:
             await self._guard_image_vram_per_card(resolved)
         # PR-anima-6 engine 集成:pipeline_class="AnimaPipeline" → 走 AnimaImageBackend
         # (Anima 是 2B 自定义 DiT,跟 Flux2KleinPipeline 走不同路径)。
