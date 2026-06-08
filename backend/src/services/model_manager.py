@@ -864,6 +864,25 @@ class ModelManager:
             pass
         return need
 
+    def _colocated_auto_footprint_mb(self, components: dict) -> int:
+        """transformer(lead)device=auto 选卡用的**整模型同卡 footprint**(MB):会跟 transformer
+        同卡常驻的所有组件 need 之和 = device=auto 且 offload=none 的组件(auto 组件下游被强制跟
+        transformer 卡;offload!=none 的组件 forward 时才上卡、不常驻 → 不计)。
+
+        修 2026-06-08 真机 OOM 根因:旧逻辑对每个组件**各自**按 `_component_need_mb`(单件)选卡 →
+        transformer 单件估值小、让 24G 小卡看着够 → get_best_gpu 选小卡 → clip/vae 强制跟卡 →
+        整模型(transformer+clip+vae)压小卡 OOM(Flux2 派 3090)。按整模型 footprint 选卡后,
+        auto 会路由到「真空闲+可驱逐」装得下整模型的大卡(如驱逐 Z-Image 残留后的 Pro6000)。"""
+        total = 0
+        for k in ("diffusion_models", "clip", "vae"):
+            s = components.get(k)
+            if s is None or s.device != "auto":
+                continue
+            if (getattr(s, "offload", "none") or "none") != "none":
+                continue
+            total += self._component_need_mb(s)
+        return total
+
     def _evictable_mb_on_card(self, idx: int) -> int:
         """该卡上「可驱逐」image adapter 的估计显存之和(非常驻/未被引用/未在 infer)——
         = 守卫「先腾后载」能从这张卡腾出来的量。已加载在用的 combo 自身也算可驱逐(若没在
@@ -1191,7 +1210,18 @@ class ModelManager:
             if on_event is not None:
                 await on_event(component_state_key(spec), state, error)
 
-        resolved = {k: self._resolve_component_device(s) for k, s in components.items()}
+        # 整模型同卡 footprint 选卡(修 2026-06-08 真机 OOM 根因,见 _colocated_auto_footprint_mb):
+        # transformer(lead)device=auto 时按「会同卡常驻组件之和」选卡,不是 transformer 单件 ——
+        # 否则单件估值让小卡看着够、clip/vae 强制跟卡后整模型压小卡 OOM。clip/vae 仍逐件 resolve
+        # (下游强制跟 transformer 卡,其 resolve 结果会被覆盖,保留以兼容显式跨卡)。
+        _auto_fp = self._colocated_auto_footprint_mb(components)
+        resolved = {}
+        for k, s in components.items():
+            if k == "diffusion_models" and s.device == "auto":
+                idx = self._resolve_auto_card(_auto_fp)
+                resolved[k] = s.model_copy(update={"device": f"cuda:{idx}" if idx >= 0 else "cpu"})
+            else:
+                resolved[k] = self._resolve_component_device(s)
         # device=auto 粘性放置(#199 根治):同一工作流(同 file/dtype/loras)二次跑,把
         # diffusion_models 的 auto 解析粘回上次落的卡 —— 否则 get_best_gpu 按「此刻最空」
         # 会翻卡(run1 占了 A,run2 落 B)→ combo_key 变 → cache miss → 同模型重载(70G 累积)。
@@ -1204,7 +1234,9 @@ class ModelManager:
             # **不粘到已满的卡**(只增强 auto,spec 2026-06-07):粘的卡「真空闲+可驱逐」仍装不下
             # → 弃粘,改用上面 _resolve_auto_card 挑的卡(并让守卫在新卡上跑)。combo 已驻该卡时
             # 它自身算可驱逐 → effective free 判得下 → 仍粘(cache hit 不被破坏,触发重载)。
-            need_dm = self._component_need_mb(resolved["diffusion_models"])
+            # 粘卡可行性也按整模型 footprint 判(与上面选卡一致)——否则按单件判「粘卡装得下」、
+            # 实际整模型装不下,又回到误派小卡。
+            need_dm = _auto_fp
             eff = self._card_effective_free_mb(stuck)
             if eff is None or eff >= need_dm:
                 resolved["diffusion_models"] = resolved["diffusion_models"].model_copy(

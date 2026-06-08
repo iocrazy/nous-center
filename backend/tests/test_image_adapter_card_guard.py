@@ -321,3 +321,77 @@ def test_is_standalone_single_file(tmp_path):
     (hf.parent / "config.json").write_text("{}")
     assert not _is_standalone_single_file(
         ComponentSpec(kind="diffusion_models", file=str(hf), device="cuda:0", dtype="bfloat16"))
+
+
+# --- 整模型同卡 footprint 选卡(2026-06-08 真机 OOM 根因)---
+
+
+def test_colocated_auto_footprint_sums_auto_offload_none(mm, tmp_path):
+    """transformer auto 选卡的 footprint = 会同卡常驻(auto + offload=none)组件 need 之和,
+    不是 transformer 单件。clip/vae auto 会强制跟 transformer 卡 → 必须计入。"""
+    t = tmp_path / "t.safe"
+    t.write_bytes(b"\0" * 20_000_000)
+    c = tmp_path / "c.safe"
+    c.write_bytes(b"\0" * 12_000_000)
+    v = tmp_path / "v.safe"
+    v.write_bytes(b"\0" * 8_000_000)
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(t), device="auto", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(c), device="auto", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(v), device="auto", dtype="bfloat16"),
+    }
+    whole = sum(mm._component_need_mb(comps[k]) for k in ("diffusion_models", "clip", "vae"))
+    assert mm._colocated_auto_footprint_mb(comps) == whole
+    # transformer 单件远小于整模型 → 正是误派小卡的根因。
+    assert mm._component_need_mb(comps["diffusion_models"]) < whole
+
+
+def test_colocated_footprint_excludes_offloaded_and_explicit(mm, tmp_path):
+    """offload!=none 的组件 forward 时才上卡、不常驻 → 不计入；显式选别的卡的组件也不跟随 → 不计入。"""
+    t = tmp_path / "t.safe"
+    t.write_bytes(b"\0" * 20_000_000)
+    c = tmp_path / "c.safe"
+    c.write_bytes(b"\0" * 12_000_000)
+    v = tmp_path / "v.safe"
+    v.write_bytes(b"\0" * 8_000_000)
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(t), device="auto", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(c), device="auto", dtype="bfloat16", offload="cpu"),  # offload → 不常驻
+        "vae":  ComponentSpec(kind="vae",  file=str(v), device="cuda:0", dtype="bfloat16"),  # 显式别的卡 → 不跟随
+    }
+    # 只有 transformer(auto+offload none)计入。
+    assert mm._colocated_auto_footprint_mb(comps) == mm._component_need_mb(comps["diffusion_models"])
+
+
+@pytest.mark.asyncio
+async def test_auto_transformer_card_uses_whole_model_footprint(mm, monkeypatch, tmp_path):
+    """真机根因复现:transformer device=auto 时,选卡的 need 必须是整模型 footprint,
+    不是 transformer 单件。否则 transformer 单件估值让小卡看着够 → get_best_gpu 选小卡 →
+    clip/vae 强制跟卡 → 整模型压小卡 OOM(2026-06-08 Flux2 派 3090 OOM)。"""
+    t = tmp_path / "t.safe"
+    t.write_bytes(b"\0" * 20_000_000)
+    c = tmp_path / "c.safe"
+    c.write_bytes(b"\0" * 12_000_000)
+    v = tmp_path / "v.safe"
+    v.write_bytes(b"\0" * 8_000_000)
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(t), device="auto", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(c), device="auto", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(v), device="auto", dtype="bfloat16"),
+    }
+    seen_need: list[int] = []
+    monkeypatch.setattr(mm, "_resolve_auto_card", lambda need: seen_need.append(need) or 1)
+    monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)  # 跳守卫
+
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
+        return object()
+    monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
+
+    await mm.get_or_load_image_adapter(comps, "Flux2KleinPipeline")
+
+    whole = sum(mm._component_need_mb(comps[k]) for k in ("diffusion_models", "clip", "vae"))
+    trans_only = mm._component_need_mb(comps["diffusion_models"])
+    # transformer(dict 首位)的 auto 选卡按整模型 footprint,非单件。
+    assert seen_need, "_resolve_auto_card 应被调用"
+    assert seen_need[0] == whole, f"transformer 选卡 need 应为整模型 footprint {whole},实际 {seen_need[0]}"
+    assert seen_need[0] != trans_only, "不能再用 transformer 单件 need 选卡(根因)"
