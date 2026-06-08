@@ -4,7 +4,7 @@ import { apiFetch } from './client'
 // ---------- shared types ----------
 
 export type ServiceStatus = 'active' | 'paused' | 'deprecated' | 'retired'
-export type ServiceCategory = 'llm' | 'tts' | 'vl' | 'app'
+export type ServiceCategory = 'llm' | 'tts' | 'vl' | 'app' | 'image'
 
 export interface ExposedParam {
   key?: string
