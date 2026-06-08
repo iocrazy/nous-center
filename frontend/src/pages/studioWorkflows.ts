@@ -108,6 +108,59 @@ export function buildQwenEditWorkflow(
   return { name: '创作台·角度控制(Qwen-Image-Edit)', nodes, edges } as unknown as Workflow
 }
 
+// --- 链式采样(跨模型 A-ref,spec 2026-06-08-multi-sampling-cross-model)---
+// stage1 文生图;stage2..N 把上一段出图作「参考编辑条件」喂下一段(引擎对 Flux2-Klein/Qwen-Edit
+// 注入 image=,多参考编辑;Z-Image 无 image= 会忽略)。真机验过 Z-Image→Flux2-Klein→Flux2-Klein
+// 三采样链(零引擎改:vae_decode.image_url → 下游 ks.image → input_image → 引擎 image= 注入)。
+
+export interface ChainStage {
+  ckpt: string   // 整模型 abs_path(flux2_load_checkpoint.file 必须绝对路径,非裸名)
+  arch: string   // 'z-image' | 'flux2' | 'qwen-edit'
+  prompt: string
+  steps: number
+  cfg: number
+}
+
+/** 搭跨模型链式采样图。返回 workflow + 每段终端(flux2_vae_decode)节点 id,供 UI 逐段收集出图。
+ *  第 i 段(i>0)的 ksampler.image ← 第 i-1 段 vae_decode.image(跨段接力关键边)。 */
+export function buildChainWorkflow(
+  stages: ChainStage[],
+  { width, height, seed }: { width: number; height: number; seed: number },
+): { workflow: Workflow; stageTerminals: string[] } {
+  const nodes: unknown[] = []
+  const edges: unknown[] = []
+  const terminals: string[] = []
+  stages.forEach((st, i) => {
+    const c = `c${i}`, e = `e${i}`, k = `k${i}`, d = `d${i}`
+    const y = i * 360
+    nodes.push(
+      { id: c, type: 'flux2_load_checkpoint', position: { x: 0, y },
+        data: { file: st.ckpt, weight_dtype: 'bfloat16', device: 'auto', offload: 'none', adapter_arch: st.arch } },
+      { id: e, type: 'flux2_encode_prompt', position: { x: 320, y },
+        data: { text: st.prompt, negative_prompt: '' } },
+      { id: k, type: 'flux2_ksampler', position: { x: 640, y },
+        data: { width, height, steps: st.steps, cfg_scale: st.cfg, sampler_name: 'euler', scheduler: 'normal', seed: String(seed + i) } },
+      { id: d, type: 'flux2_vae_decode', position: { x: 960, y }, data: {} },
+    )
+    edges.push(
+      { id: `${c}-clip`, source: c, sourceHandle: 'clip', target: e, targetHandle: 'clip' },
+      { id: `${c}-model`, source: c, sourceHandle: 'model', target: k, targetHandle: 'model' },
+      { id: `${e}-cond`, source: e, sourceHandle: 'conditioning', target: k, targetHandle: 'conditioning' },
+      { id: `${c}-vae`, source: c, sourceHandle: 'vae', target: d, targetHandle: 'vae' },
+      { id: `${k}-latent`, source: k, sourceHandle: 'latent', target: d, targetHandle: 'latent' },
+    )
+    // 跨段接力:上一段 decode 出图 → 本段 ksampler.image(参考编辑条件)。
+    if (i > 0) {
+      edges.push({ id: `chain-${i}`, source: `d${i - 1}`, sourceHandle: 'image', target: k, targetHandle: 'image' })
+    }
+    terminals.push(d)
+  })
+  const last = terminals[terminals.length - 1]
+  nodes.push({ id: 'out', type: 'image_output', position: { x: 1280, y: (stages.length - 1) * 360 }, data: {} })
+  edges.push({ id: 'out-edge', source: last, sourceHandle: 'image', target: 'out', targetHandle: 'image' })
+  return { workflow: { name: '创作台·链式采样', nodes, edges } as unknown as Workflow, stageTerminals: terminals }
+}
+
 /** 发布为模板工作流图(占位参数;exposed 输入在调用时由 caller 覆盖)。 */
 export function buildFeatureWorkflow(feature: FeatureId, ckpt: string): Workflow {
   switch (feature) {
