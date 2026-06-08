@@ -68,6 +68,7 @@ export default function NodeEditor() {
   const storeRemoveEdge = useWorkspaceStore((s) => s.removeEdge)
   const storeAddNode = useWorkspaceStore((s) => s.addNode)
   const storeAddNodesWithEdges = useWorkspaceStore((s) => s.addNodesWithEdges)
+  const storeSpliceNodeOnEdge = useWorkspaceStore((s) => s.spliceNodeOnEdge)
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
   const updateNode = useWorkspaceStore((s) => s.updateNode)
   const storeAddGroup = useWorkspaceStore((s) => s.addGroup)
@@ -395,11 +396,41 @@ export default function NodeEditor() {
         y: event.clientY - bounds.top,
       })
       const id = crypto.randomUUID().slice(0, 8)
+
+      // 拖节点到连线上 → 自动插入(借鉴 ComfyUI/tldraw)。落点命中某条边、且该节点有
+      // 与边端口类型匹配的输入口+输出口(pass-through 类如提示模板)→ 删原边、串 source→新→target。
+      const els = document.elementsFromPoint(event.clientX, event.clientY)
+      let hitEdgeId: string | null = null
+      for (const el of els) {
+        const g = (el as HTMLElement).closest?.('.react-flow__edge')
+        if (g) { hitEdgeId = g.getAttribute('data-id'); break }
+      }
+      const targetEdge = hitEdgeId ? workflow.edges.find((e) => e.id === hitEdgeId) : null
+      if (targetEdge) {
+        const portType = getPortType(nodeTypeById[targetEdge.source] ?? '', targetEdge.sourceHandle)
+        const inH = portType ? firstInputHandle(type, portType) : undefined
+        const outH = portType ? firstOutputHandle(type, portType) : undefined
+        if (portType && inH && outH) {
+          const e1: WorkflowEdge = { id: crypto.randomUUID().slice(0, 8), source: targetEdge.source, sourceHandle: targetEdge.sourceHandle, target: id, targetHandle: inH }
+          const e2: WorkflowEdge = { id: crypto.randomUUID().slice(0, 8), source: id, sourceHandle: outH, target: targetEdge.target, targetHandle: targetEdge.targetHandle }
+          storeSpliceNodeOnEdge({ id, type, position, data: {} }, targetEdge.id, [e1, e2])
+          setEdges((eds) => [
+            ...eds.filter((e) => e.id !== targetEdge.id),
+            ...[e1, e2].map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle, target: e.target, targetHandle: e.targetHandle, type: 'portTyped' } as Edge)),
+          ])
+          setNodes((nds) => [
+            ...nds.map((n) => ({ ...n, selected: false })),
+            { id, type, position, data: {}, style: { width: 320 }, selected: true } as Node,
+          ])
+          return
+        }
+      }
+
       const newNode: Node = { id, type, position, data: {}, style: { width: 320 } }
       setNodes((nds) => [...nds, newNode])
       storeAddNode({ id, type, position, data: {} })
     },
-    [setNodes, storeAddNode],
+    [setNodes, setEdges, storeAddNode, storeSpliceNodeOnEdge, workflow.edges, nodeTypeById],
   )
 
   // 复制选中节点(+ 它们之间的内部连线)到剪贴板。深拷贝 data 防共享引用;

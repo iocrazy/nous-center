@@ -64,6 +64,35 @@ describe('workspace store — round3 #1/#2', () => {
     expect(useWorkspaceStore.getState().getActiveWorkflow().edges).toHaveLength(1)
   })
 
+  it('spliceNodeOnEdge:删原边 + 加节点 + 两条新边,单次 undo 全恢复', () => {
+    const api = useWorkspaceStore.getState()
+    api.addTab('splice-test')
+    api.setWorkflow({
+      id: 'w3', name: 'w3',
+      nodes: [
+        { id: 'a', type: 'text_input', data: {}, position: { x: 0, y: 0 } },
+        { id: 'b', type: 'text_output', data: {}, position: { x: 200, y: 0 } },
+      ],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'text', target: 'b', targetHandle: 'text' }],
+    })
+    api.spliceNodeOnEdge(
+      { id: 'c', type: 'prompt_template', data: {}, position: { x: 100, y: 0 } },
+      'e1',
+      [
+        { id: 'e2', source: 'a', sourceHandle: 'text', target: 'c', targetHandle: 'text' },
+        { id: 'e3', source: 'c', sourceHandle: 'text', target: 'b', targetHandle: 'text' },
+      ],
+    )
+    let wf = useWorkspaceStore.getState().getActiveWorkflow()
+    expect(wf.nodes.map((n) => n.id).sort()).toEqual(['a', 'b', 'c'])
+    expect(wf.edges.map((e) => e.id).sort()).toEqual(['e2', 'e3']) // e1 删,e2/e3 加
+    // 单次 undo 全恢复(节点 c 去掉,原边 e1 回来)
+    api.undo()
+    wf = useWorkspaceStore.getState().getActiveWorkflow()
+    expect(wf.nodes.map((n) => n.id).sort()).toEqual(['a', 'b'])
+    expect(wf.edges.map((e) => e.id)).toEqual(['e1'])
+  })
+
   it('per-tab autosave:编辑 tab B 不取消 tab A 的 pending save', async () => {
     vi.useFakeTimers()
     const api = useWorkspaceStore.getState()
