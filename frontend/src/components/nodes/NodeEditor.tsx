@@ -261,6 +261,32 @@ export default function NodeEditor() {
     [setEdges, storeAddEdge],
   )
 
+  // 在落点建一个与起点端口连好的节点(参数化,供「菜单选中」和「拖出输出口自动建终端」复用)。
+  const spawnConnectedNode = useCallback((
+    type: NodeType, portType: PortType,
+    fromNodeId: string, fromHandle: string | null, handleType: 'source' | 'target',
+    flowX: number, flowY: number,
+  ) => {
+    const id = crypto.randomUUID().slice(0, 8)
+    // source 拖出 → 新节点放落点;target 拖出(从输入口) → 左移一个节点宽,让输出口对齐落点。
+    const position = { x: handleType === 'source' ? flowX : flowX - 320, y: flowY - 20 }
+    const newNode: WorkflowNode = { id, type, position, data: {} }
+    let edge: WorkflowEdge | null = null
+    if (handleType === 'source') {
+      const th = firstInputHandle(type, portType)
+      if (th) edge = { id: crypto.randomUUID().slice(0, 8), source: fromNodeId, sourceHandle: fromHandle ?? '', target: id, targetHandle: th }
+    } else {
+      const sh = firstOutputHandle(type, portType)
+      if (sh) edge = { id: crypto.randomUUID().slice(0, 8), source: id, sourceHandle: sh, target: fromNodeId, targetHandle: fromHandle ?? '' }
+    }
+    storeAddNodesWithEdges([newNode], edge ? [edge] : [])
+    setNodes((nds) => [
+      ...nds.map((n) => ({ ...n, selected: false })),
+      { id, type, position, data: {}, style: { width: 320 }, selected: true } as Node,
+    ])
+    if (edge) setEdges((eds) => addEdge({ id: edge!.id, source: edge!.source, sourceHandle: edge!.sourceHandle, target: edge!.target, targetHandle: edge!.targetHandle, type: 'portTyped' }, eds))
+  }, [setNodes, setEdges, storeAddNodesWithEdges])
+
   // 端口拖到空白建节点(借鉴 Infinite-Canvas):记起点 → 落 pane 上则弹兼容节点菜单。
   const onConnectStart = useCallback(
     (_e: unknown, params: { nodeId: string | null; handleId: string | null; handleType: 'source' | 'target' | null }) => {
@@ -287,43 +313,36 @@ export default function NodeEditor() {
     const fromNode = nodesRef.current.find((n) => n.id === start.nodeId)
     const portType = getPortType(fromNode?.type ?? '', start.handleId)
     if (!portType) return
+    const flow = rfi.screenToFlowPosition({ x: clientX, y: clientY })
+    // 从**输出口**拖到空白 + 该类型有专属终端输出节点 → 直接建它+连好(免菜单,
+    // 借鉴 Infinite-Canvas「从生成器拖出自动建 Output」)。image→图像输出 / audio→输出播放 /
+    // text→文本输出。其余情况(输入口拖出、或无终端节点)仍走兼容节点菜单。
+    const TERMINAL_OUTPUT: Partial<Record<PortType, NodeType>> = {
+      image: 'image_output', audio: 'output', text: 'text_output',
+    }
+    if (start.handleType === 'source' && TERMINAL_OUTPUT[portType] && NODE_DEFS[TERMINAL_OUTPUT[portType]!]) {
+      spawnConnectedNode(TERMINAL_OUTPUT[portType]!, portType, start.nodeId, start.handleId, 'source', flow.x, flow.y)
+      return
+    }
     const choices = start.handleType === 'source'
       ? choicesAcceptingInput(portType)
       : choicesProvidingOutput(portType)
     if (choices.length === 0) return
-    const flow = rfi.screenToFlowPosition({ x: clientX, y: clientY })
     setCreateMenu({
       x: clientX - bounds.left, y: clientY - bounds.top,
       flowX: flow.x, flowY: flow.y,
       fromNodeId: start.nodeId, fromHandle: start.handleId, handleType: start.handleType,
       portType, choices,
     })
-  }, [])
+  }, [spawnConnectedNode])
 
-  // 菜单选中 → 在落点建节点 + 按 portType 连边(单次 undo);选中新节点。
+  // 菜单选中 → 用 spawnConnectedNode 在落点建节点并连好(单次 undo);关菜单。
   const createConnectedNode = useCallback((type: NodeType) => {
     const m = createMenu
     if (!m) return
-    const id = crypto.randomUUID().slice(0, 8)
-    // source 拖出 → 新节点放落点;target 拖出(从输入口) → 左移一个节点宽,让输出口对齐落点。
-    const position = { x: m.handleType === 'source' ? m.flowX : m.flowX - 320, y: m.flowY - 20 }
-    const newNode: WorkflowNode = { id, type, position, data: {} }
-    let edge: WorkflowEdge | null = null
-    if (m.handleType === 'source') {
-      const th = firstInputHandle(type, m.portType)
-      if (th) edge = { id: crypto.randomUUID().slice(0, 8), source: m.fromNodeId, sourceHandle: m.fromHandle ?? '', target: id, targetHandle: th }
-    } else {
-      const sh = firstOutputHandle(type, m.portType)
-      if (sh) edge = { id: crypto.randomUUID().slice(0, 8), source: id, sourceHandle: sh, target: m.fromNodeId, targetHandle: m.fromHandle ?? '' }
-    }
-    storeAddNodesWithEdges([newNode], edge ? [edge] : [])
-    setNodes((nds) => [
-      ...nds.map((n) => ({ ...n, selected: false })),
-      { id, type, position, data: {}, style: { width: 320 }, selected: true } as Node,
-    ])
-    if (edge) setEdges((eds) => addEdge({ id: edge!.id, source: edge!.source, sourceHandle: edge!.sourceHandle, target: edge!.target, targetHandle: edge!.targetHandle, type: 'portTyped' }, eds))
+    spawnConnectedNode(type, m.portType, m.fromNodeId, m.fromHandle, m.handleType, m.flowX, m.flowY)
     setCreateMenu(null)
-  }, [createMenu, setNodes, setEdges, storeAddNodesWithEdges])
+  }, [createMenu, spawnConnectedNode])
 
   // 画布右键菜单选中 → 在光标 flow 坐标处建节点(无连接)。
   const createNodeAt = useCallback((type: NodeType, flowX: number, flowY: number) => {
