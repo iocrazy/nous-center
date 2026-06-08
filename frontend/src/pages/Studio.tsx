@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ImageIcon, Sparkles, Wand2, Box, Loader2, Monitor, Cloud, Upload, Share2 } from 'lucide-react'
+import { ImageIcon, Sparkles, Wand2, Box, Loader2, Monitor, Cloud, Upload, Share2, Layers, Plus, Trash2 } from 'lucide-react'
 import { useComponents } from '../api/components'
 import { executeWorkflow } from '../utils/workflowExecutor'
 import type { Workflow } from '../models/workflow'
@@ -8,20 +8,22 @@ import { useCreateWorkflow } from '../api/workflows'
 import { usePublishWorkflow } from '../api/services'
 import {
   buildZImageWorkflow, buildFlux2EditWorkflow, buildSeedVR2Workflow, buildQwenEditWorkflow,
-  buildFeatureWorkflow, FEATURE_PUBLISH, type FeatureId as PublishFeatureId,
+  buildFeatureWorkflow, buildChainWorkflow, FEATURE_PUBLISH,
+  type FeatureId as PublishFeatureId, type ChainStage,
 } from './studioWorkflows'
 
 // 创作台:对齐 Infinite-Canvas 的「统一创作控制台」,但引擎是 nous 本地(不外接 ComfyUI)。
 // 客户端搭 z-image 工作流图 → /api/v1/workflows/execute(admin cookie 鉴权)→ WS 拿 image_url。
 // 四功能:文生图(Z-Image,已通)/ 细节增强 / 图片编辑 / 角度控制(后三个随 P2/P3 引擎上线接)。
 
-type FeatureId = 'text2img' | 'enhance' | 'edit' | 'angle'
+type FeatureId = 'text2img' | 'enhance' | 'edit' | 'angle' | 'chain'
 
 const FEATURES: { id: FeatureId; label: string; icon: typeof ImageIcon; ready: boolean }[] = [
   { id: 'text2img', label: '文生图', icon: ImageIcon, ready: true },
   { id: 'edit', label: '图片编辑', icon: Wand2, ready: true },
   { id: 'enhance', label: '细节增强', icon: Sparkles, ready: true },
   { id: 'angle', label: '角度控制', icon: Box, ready: true },
+  { id: 'chain', label: '链式采样', icon: Layers, ready: true },
 ]
 
 interface GalleryItem { url: string; prompt: string; seed: number }
@@ -70,6 +72,7 @@ export default function Studio() {
         {feature === 'edit' && <ImageEditPanel />}
         {feature === 'enhance' && <EnhancePanel />}
         {feature === 'angle' && <AnglePanel />}
+        {feature === 'chain' && <ChainSamplePanel />}
       </div>
     </div>
   )
@@ -391,6 +394,42 @@ function submitImageWorkflow(
     })
   // 兜底:120s 没出图 → 解绑防泄漏(编辑大图 + 首次装模型可能久);真结果靠 WS。
   setTimeout(() => { unbind(); if (!settled) h.onTimeout() }, 120_000)
+}
+
+/** 链式采样提交:每段终端(flux2_vae_decode)各 emit 一个 node_complete.image_url —— 按终端 id
+ *  映射回段序号,逐段回调 onStage(i,url);最终段完成才 onDone。多终端,不能用 submitImageWorkflow
+ *  (它抓第一个 image_url 就 settle = 只拿到第一段)。 */
+function submitChainWorkflow(
+  wf: Workflow,
+  terminals: string[],
+  h: {
+    onStage: (i: number, url: string) => void
+    onDone: () => void
+    onError: (msg: string) => void
+    onTimeout: () => void
+    toast: (m: string, t?: 'info' | 'error' | 'success') => void
+  },
+): void {
+  let settled = false
+  const lastId = terminals[terminals.length - 1]
+  const idx = new Map(terminals.map((t, i) => [t, i]))
+  const unbind = () => window.removeEventListener('node-progress', onProgress as EventListener)
+  const onProgress = (ev: Event) => {
+    const d = (ev as CustomEvent).detail
+    if (settled) return
+    if (d?.type === 'node_complete' && d?.image_url && idx.has(d.node_id)) {
+      h.onStage(idx.get(d.node_id)!, String(d.image_url))
+      if (d.node_id === lastId) { settled = true; unbind(); h.onDone() }
+    } else if (d?.type === 'node_error') {
+      settled = true; unbind(); h.onError(`生成失败:${d.error ?? d.detail ?? '未知错误'}`)
+    }
+  }
+  window.addEventListener('node-progress', onProgress as EventListener)
+  executeWorkflow(wf)
+    .then(() => h.toast('已入队链式采样…', 'info'))
+    .catch((err: unknown) => { settled = true; unbind(); h.onError(`提交失败:${(err as Error)?.message ?? err}`) })
+  // 链多段 + 可能多模型首装,放宽到 300s。
+  setTimeout(() => { unbind(); if (!settled) h.onTimeout() }, 300_000)
 }
 
 /** 读上传文件 → { dataUri, width, height }(snap 宽高到 64 的倍数,clamp 512..2048,Flux2 友好)。 */
@@ -831,6 +870,189 @@ function ComparePane({ label, src, loading }: { label: string; src: string | nul
           <span style={{ color: 'var(--muted)', fontSize: 12 }}>—</span>
         )}
       </div>
+    </div>
+  )
+}
+
+// 链式采样架构选项 + 自动挑 checkpoint 的正则(对齐各 panel 的选模型正则)。
+const ARCH_OPTIONS: { arch: string; label: string; re: RegExp; canRef: boolean }[] = [
+  { arch: 'z-image', label: 'Z-Image(文生图)', re: /z[-_ ]?image/i, canRef: false },
+  { arch: 'flux2', label: 'Flux2-Klein(参考编辑)', re: /flux2|flux[-_ ]?klein/i, canRef: true },
+  { arch: 'qwen-edit', label: 'Qwen-Edit(参考编辑)', re: /qwen.*edit/i, canRef: true },
+]
+
+interface ChainStageUI extends ChainStage { result: string | null }
+
+/** 链式采样(跨模型 A-ref):多段采样,每段把上一段出图作参考编辑条件喂下一段。
+ *  真机已验 Z-Image→Flux2-Klein→Flux2-Klein 三采样(零引擎改;spec 2026-06-08-multi-sampling-cross-model)。 */
+function ChainSamplePanel() {
+  const toast = useToastStore((s) => s.add)
+  const { data: checkpoints } = useComponents('checkpoint')
+  const [width, setWidth] = useState(1024)
+  const [height, setHeight] = useState(1024)
+  const [running, setRunning] = useState(false)
+  const [stages, setStages] = useState<ChainStageUI[]>([
+    { ckpt: '', arch: 'z-image', prompt: '', steps: 8, cfg: 1, result: null },
+    { ckpt: '', arch: 'flux2', prompt: '', steps: 20, cfg: 4, result: null },
+  ])
+
+  // 按 arch 自动挑一个 checkpoint(abs_path),用户可改。
+  const pickCkpt = (arch: string): string => {
+    const opt = ARCH_OPTIONS.find((o) => o.arch === arch)
+    const list = checkpoints ?? []
+    const hit = opt ? list.find((c) => opt.re.test(c.filename) || opt.re.test(c.abs_path)) : undefined
+    return (hit ?? list[0])?.abs_path ?? ''
+  }
+  // checkpoints 加载后,给未选 ckpt 的段填默认。
+  useEffect(() => {
+    if (!checkpoints?.length) return
+    setStages((prev) => prev.map((s) => (s.ckpt ? s : { ...s, ckpt: pickCkpt(s.arch) })))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkpoints])
+
+  const setStage = (i: number, patch: Partial<ChainStageUI>) =>
+    setStages((prev) => prev.map((s, j) => (j === i ? { ...s, ...patch } : s)))
+  const addStage = () => setStages((prev) => [
+    ...prev,
+    { ckpt: pickCkpt('flux2'), arch: 'flux2', prompt: '', steps: 20, cfg: 4, result: null },
+  ])
+  const removeStage = (i: number) => setStages((prev) => prev.filter((_, j) => j !== i))
+
+  const run = async () => {
+    if (running) return
+    if (stages.length < 2) { toast('链式采样至少 2 段', 'info'); return }
+    if (stages.some((s) => !s.prompt.trim())) { toast('每段都要填提示词', 'info'); return }
+    if (stages.some((s) => !s.ckpt)) { toast('有段没选到整模型(在 diffusers/ 放对应模型)', 'error'); return }
+    setRunning(true)
+    setStages((prev) => prev.map((s) => ({ ...s, result: null })))
+    const seed = Math.floor(Math.random() * 1_000_000_000)
+    const chainStages: ChainStage[] = stages.map((s) => ({
+      ckpt: s.ckpt, arch: s.arch, prompt: s.prompt.trim(), steps: s.steps, cfg: s.cfg }))
+    const { workflow, stageTerminals } = buildChainWorkflow(chainStages, { width, height, seed })
+    submitChainWorkflow(workflow, stageTerminals, {
+      onStage: (i, url) => setStage(i, { result: url }),
+      onDone: () => { setRunning(false); toast('链式采样完成', 'success') },
+      onError: (msg) => { toast(msg, 'error'); setRunning(false) },
+      onTimeout: () => setRunning(false),
+      toast,
+    })
+  }
+
+  return (
+    <div style={{ maxWidth: 1100, margin: '0 auto', padding: 24 }}>
+      <div style={{ background: 'var(--bg-accent)', border: '1px solid var(--border)', borderRadius: 12, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            跨模型链式采样 · 本地引擎
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Field label="尺寸">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <NumBox value={width} onChange={setWidth} />
+                <span style={{ color: 'var(--muted)' }}>×</span>
+                <NumBox value={height} onChange={setHeight} />
+              </div>
+            </Field>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 14, lineHeight: 1.5 }}>
+          第 1 段文生图,后续每段把上一段的出图作「参考编辑」喂下一段(Flux2-Klein / Qwen-Edit 生效;
+          Z-Image 无参考编辑能力会忽略上一段图)。
+        </div>
+
+        {stages.map((s, i) => {
+          const opt = ARCH_OPTIONS.find((o) => o.arch === s.arch)
+          const refHint = i > 0 && opt && !opt.canRef
+          return (
+            <div key={i} style={{
+              border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 10, background: 'var(--bg)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{
+                  width: 22, height: 22, borderRadius: 11, background: 'var(--text)', color: 'var(--bg)',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700,
+                }}>{i + 1}</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>
+                  {i === 0 ? '起始(文生图)' : `第 ${i + 1} 段(参考编辑上一段)`}
+                </span>
+                <div style={{ flex: 1 }} />
+                {stages.length > 2 && (
+                  <button type="button" onClick={() => removeStage(i)} title="删除该段"
+                    style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 4 }}>
+                    <Trash2 size={15} />
+                  </button>
+                )}
+              </div>
+              <textarea
+                value={s.prompt}
+                onChange={(e) => setStage(i, { prompt: e.target.value })}
+                placeholder={i === 0 ? '描述起始画面…' : '描述本段如何改造上一段出图…'}
+                rows={2}
+                style={{
+                  width: '100%', resize: 'vertical', background: 'var(--bg-accent)', color: 'var(--text)',
+                  border: '1px solid var(--border)', borderRadius: 8, padding: '9px 12px', fontSize: 14, outline: 'none',
+                }}
+              />
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+                <Field label="架构">
+                  <select value={s.arch} onChange={(e) => setStage(i, { arch: e.target.value, ckpt: pickCkpt(e.target.value) })} style={selectStyle}>
+                    {ARCH_OPTIONS.map((o) => <option key={o.arch} value={o.arch}>{o.label}</option>)}
+                  </select>
+                </Field>
+                <Field label="模型(整模型)">
+                  <select value={s.ckpt} onChange={(e) => setStage(i, { ckpt: e.target.value })} style={selectStyle}>
+                    {(checkpoints ?? []).length === 0 && <option value="">无可用整模型</option>}
+                    {(checkpoints ?? []).map((c) => (
+                      <option key={c.abs_path} value={c.abs_path}>{c.filename}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="步数">
+                  <NumBox value={s.steps} onChange={(v) => setStage(i, { steps: v })} />
+                </Field>
+                <Field label="CFG">
+                  <NumBox value={s.cfg} onChange={(v) => setStage(i, { cfg: v })} />
+                </Field>
+              </div>
+              {refHint && (
+                <div style={{ fontSize: 11, color: 'var(--danger, #e5484d)', marginTop: 8 }}>
+                  Z-Image 不接受参考图 —— 这段会忽略上一段出图,只按提示词文生图。要接力请选 Flux2-Klein / Qwen-Edit。
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+          <button type="button" onClick={addStage}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px',
+              background: 'var(--bg)', color: 'var(--text)', border: '1px dashed var(--border)',
+              borderRadius: 8, fontSize: 13, cursor: 'pointer',
+            }}>
+            <Plus size={15} /> 添加一段
+          </button>
+          <div style={{ flex: 1 }} />
+          <button type="button" onClick={run} disabled={running}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 22px',
+              background: 'var(--text)', color: 'var(--bg)', border: 'none', borderRadius: 8,
+              fontSize: 14, fontWeight: 600, cursor: running ? 'wait' : 'pointer', opacity: running ? 0.7 : 1,
+            }}>
+            {running ? <Loader2 size={16} className="animate-spin" /> : <Layers size={16} />}
+            {running ? '链式采样中…' : `运行 ${stages.length} 段链`}
+          </button>
+        </div>
+      </div>
+
+      {/* 逐段结果(横向接力展示) */}
+      {(running || stages.some((s) => s.result)) && (
+        <div style={{ marginTop: 18, display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+          {stages.map((s, i) => (
+            <ComparePane key={i} label={`第 ${i + 1} 段`} src={s.result} loading={running && !s.result} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
