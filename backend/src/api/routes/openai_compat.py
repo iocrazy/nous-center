@@ -10,7 +10,7 @@ from typing import Literal
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.deps_auth import verify_bearer_token_any
 from src.config import get_settings, load_model_configs
@@ -485,8 +485,17 @@ def _convert_audio(audio_bytes: bytes, src_fmt: str, dst_fmt: str, sample_rate: 
 
 
 class ImageGenerationRequest(BaseModel):
+    # extra="allow":火山式额外参数(如 SeedVR2 的 resolution)随 body 透传,
+    # 按服务 exposed_inputs 的 key 通用合并注入(见 handler)。
+    model_config = ConfigDict(extra="allow")
+
     model: str = Field(..., description="已发布的 image 服务名(= ServiceInstance.name)")
-    prompt: str
+    # prompt 可选:图生图/编辑有 prompt,但纯超分(SeedVR2 细节增强)无 prompt。
+    prompt: str | None = None
+    # 输入图(图生图/编辑/超分):base64 data URI('data:image/...;base64,...')。
+    # 对齐火山 Seedream:image 字段接 URL 或 base64;本轮先吃 base64(URL 下载留 follow-up)。
+    # 多图传 list(火山多参考),当前 image_input 节点只消费单图。
+    image: str | list[str] | None = None
     n: int = 1
     # OpenAI 兼容字段。当前工作流用自身固定尺寸,size 暂作占位(不注入);
     # response_format 先只支持 url(b64_json 留待后续读图字节编码)。
@@ -505,14 +514,65 @@ def _pick_prompt_input_key(exposed_inputs: list | None) -> str | None:
     return first.get("key") or first.get("api_name")
 
 
-def _extract_image_urls(result: dict) -> list[str]:
-    """从 executor result 各节点 output 里捞 image_url(产图终端节点 emit)。"""
-    urls: list[str] = []
+# 输入源节点:其 output 含 image_url 但那是上传图的回显(image_input executor 落盘签 URL),
+# 不是生成结果。外部端点扫 result 捞图时必须跳过,否则把输入图误当输出返回(#372 的外部路径版)。
+_INPUT_SOURCE_NODE_TYPES = {"image_input"}
+
+
+def _input_source_node_ids(snapshot: dict | None) -> set[str]:
+    """从 snapshot 找出输入源节点 id(api-shape dict / editor-shape list 都认)。"""
+    if not isinstance(snapshot, dict):
+        return set()
+    ids: set[str] = set()
+    nodes = snapshot.get("nodes")
+    if isinstance(nodes, dict):
+        for nid, n in nodes.items():
+            t = (n.get("class_type") or n.get("type")) if isinstance(n, dict) else None
+            if t in _INPUT_SOURCE_NODE_TYPES:
+                ids.add(str(nid))
+    elif isinstance(nodes, list):
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            if (n.get("type") or n.get("class_type")) in _INPUT_SOURCE_NODE_TYPES:
+                ids.add(str(n.get("id")))
+    return ids
+
+
+def _extract_image_urls(
+    result: dict,
+    snapshot: dict | None = None,
+    exposed_outputs: list | None = None,
+) -> list[str]:
+    """从 executor result 捞产图终端的 image_url。
+
+    1) 优先按 exposed_outputs 声明的 node_id 取(发布契约把输出指向产图终端
+       dec=flux2_vae_decode / up=seedvr2_upscale)——精确、不依赖遍历顺序。
+    2) 兜底扫全部节点 output,但跳过 image_input 类型节点的 echo(否则把上传图
+       当输出返回,#372 外部路径版)。snapshot 缺省时退化为「扫全部」,与老服务兼容。
+    """
     outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
-    if isinstance(outputs, dict):
-        for node_out in outputs.values():
-            if isinstance(node_out, dict) and node_out.get("image_url"):
-                urls.append(node_out["image_url"])
+    if not isinstance(outputs, dict):
+        return []
+
+    declared = [
+        str(p.get("node_id")) for p in (exposed_outputs or [])
+        if isinstance(p, dict) and p.get("node_id") is not None
+    ]
+    urls: list[str] = []
+    for nid in declared:
+        node_out = outputs.get(nid)
+        if isinstance(node_out, dict) and node_out.get("image_url"):
+            urls.append(node_out["image_url"])
+    if urls:
+        return urls
+
+    input_ids = _input_source_node_ids(snapshot)
+    for nid, node_out in outputs.items():
+        if str(nid) in input_ids:
+            continue
+        if isinstance(node_out, dict) and node_out.get("image_url"):
+            urls.append(node_out["image_url"])
     return urls
 
 
@@ -529,9 +589,11 @@ async def images_generations(
     /v1/chat/completions 同一套设计(对齐火山:不是每个出图工作流一个 URL
     路径,而是 model 参数指定服务 + key 的授权范围决定可访问哪些)。
 
-    内部 dispatch:body.model = 已发布 image 工作流服务名;prompt 注入其文本
-    exposed input;经共享执行核心 run_published_workflow(带 GPU runner_clients)
-    跑出图;产图终端节点的 image_url 转成 OpenAI {data:[{url}]}。
+    内部 dispatch:body.model = 已发布 image 工作流服务名;body 里命中服务
+    exposed_inputs key 的字段(prompt/image/resolution...)通用合并注入(文生图
+    =prompt;编辑/角度=image+prompt;超分=image+resolution 无 prompt);经共享
+    执行核心 run_published_workflow(带 GPU runner_clients)跑出图;产图终端
+    节点的 image_url 转成 OpenAI {data:[{url}]}。
     """
     from sqlalchemy import select
     from sqlalchemy.orm import undefer
@@ -566,18 +628,38 @@ async def images_generations(
             code="model_not_found",
         )
 
-    prompt_key = _pick_prompt_input_key(svc.exposed_inputs)
-    if prompt_key is None:
+    # 通用参数合并(火山式):body 里任意字段命中服务 exposed_inputs 的 key → 注入对应
+    # 节点。prompt / image / resolution / negative_prompt 走同一套,SeedVR2 无 prompt 也
+    # 不报错。这取代了原「只塞单个文本 prompt」的逻辑(那条让带图/无 prompt 的服务发不出去)。
+    exposed = svc.exposed_inputs or []
+    exposed_keys = {(p.get("key") or p.get("api_name")) for p in exposed}
+    exposed_keys.discard(None)
+    body_fields = body.model_dump(exclude_none=True)  # 含 extra 透传字段(resolution 等)
+    inputs: dict = {k: body_fields[k] for k in exposed_keys if k in body_fields}
+
+    # OpenAI 兼容兜底:服务的文本输入 key 不字面叫 'prompt' 时,把 body.prompt 注进文本输入。
+    if body.prompt is not None:
+        prompt_key = _pick_prompt_input_key(exposed)
+        if prompt_key and prompt_key not in inputs:
+            inputs[prompt_key] = body.prompt
+
+    if not inputs:
         raise InvalidRequestError(
-            f"service '{body.model}' exposes no text input to receive the prompt",
-            code="no_prompt_input",
+            f"service '{body.model}' received no inputs matching its exposed schema "
+            f"(exposed keys: {sorted(k for k in exposed_keys)})",
+            code="no_matching_input",
         )
 
+    # 在执行前抓出 snapshot / exposed_outputs —— run_published_workflow 内部多次 commit
+    # 会 expire ORM 属性,事后再访问会触发 lazy 重载 → MissingGreenlet。
+    snapshot = svc.workflow_snapshot
+    out_params = svc.exposed_outputs
+
     result = await run_published_workflow(
-        request, session, svc, {prompt_key: body.prompt}, api_key,
+        request, session, svc, inputs, api_key,
     )
 
-    urls = _extract_image_urls(result)
+    urls = _extract_image_urls(result, snapshot, out_params)
     if not urls:
         raise APIError(
             f"service '{body.model}' did not produce an image",
