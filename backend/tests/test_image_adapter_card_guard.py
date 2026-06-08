@@ -395,3 +395,60 @@ async def test_auto_transformer_card_uses_whole_model_footprint(mm, monkeypatch,
     assert seen_need, "_resolve_auto_card 应被调用"
     assert seen_need[0] == whole, f"transformer 选卡 need 应为整模型 footprint {whole},实际 {seen_need[0]}"
     assert seen_need[0] != trans_only, "不能再用 transformer 单件 need 选卡(根因)"
+
+
+# --- 分片求和口径统一(2026-06-08 真机:vram_mb 只算第 1 片 → 退 CPU hang)---
+
+
+def test_component_bytes_sums_shards(tmp_path):
+    """_component_bytes:单文件返回字节;分片返回同组件所有 sibling 分片之和(非只第 1 片)。"""
+    from src.services.model_manager import ModelManager
+    single = tmp_path / "x.safetensors"
+    single.write_bytes(b"\0" * 1000)
+    assert ModelManager._component_bytes(str(single)) == 1000
+    for i in (1, 2, 3):
+        (tmp_path / f"model-0000{i}-of-00003.safetensors").write_bytes(b"\0" * 1000)
+    first = tmp_path / "model-00001-of-00003.safetensors"
+    assert ModelManager._component_bytes(str(first)) == 3000  # 求和,非 1000(第 1 片)
+
+
+def test_estimate_vram_sums_shards(mm, tmp_path):
+    """分片整模型的 vram 估算(= 记录的 vram_mb = 可驱逐空间)必须求和所有分片。
+    只算第 1 片 → 可驱逐空间低估 → effective free 不足 → auto 退 CPU(2026-06-08 真机根因)。"""
+    for i in (1, 2, 3):
+        (tmp_path / f"t-0000{i}-of-00003.safetensors").write_bytes(b"\0" * 10_000_000)  # 3×10MB=30MB
+    c = tmp_path / "c.safe"
+    c.write_bytes(b"\0" * 6_000_000)
+    v = tmp_path / "v.safe"
+    v.write_bytes(b"\0" * 1_000_000)
+    resolved = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(tmp_path / "t-00001-of-00003.safetensors"), device="cuda:1", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(c), device="cuda:1", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(v), device="cuda:1", dtype="bfloat16"),
+    }
+    est = mm._estimate_image_vram_mb(resolved)
+    # 全分片:(30+6+1)MB ×1.3
+    assert est == int((30_000_000 + 6_000_000 + 1_000_000) / (1024 * 1024) * 1.3)
+    # 不能是只第 1 片 (10+6+1)MB ×1.3
+    assert est != int((10_000_000 + 6_000_000 + 1_000_000) / (1024 * 1024) * 1.3)
+
+
+@pytest.mark.asyncio
+async def test_guard_need_sums_shards(mm, monkeypatch, tmp_path):
+    """守卫 per-card need 也分片求和:3×15MB 分片 transformer 落 cuda:1,该卡空闲只够 1 片不够整体
+    → 无可驱逐 → 报错(若只算第 1 片会误判够装、放过 → 后续 OOM)。"""
+    for i in (1, 2, 3):
+        (tmp_path / f"t-0000{i}-of-00003.safetensors").write_bytes(b"\0" * 15_000_000)  # 共 45MB→~55MB
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(tmp_path / "t-00001-of-00003.safetensors"), device="cuda:1", dtype="bfloat16", adapter_arch="flux2"),
+        "clip": ComponentSpec(kind="clip", file=str(tmp_path / "t-00001-of-00003.safetensors"), device="cuda:0", dtype="bfloat16"),
+        "vae":  ComponentSpec(kind="vae",  file=str(tmp_path / "t-00001-of-00003.safetensors"), device="cuda:2", dtype="bfloat16"),
+    }
+    # cuda:1 空闲 ~25MB:够 1 片(~19MB)但不够整 transformer(~55MB)→ 须拦。
+    monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: 25 if dev == "cuda:1" else 90000)
+
+    async def _no_evict(gpu_index=None):
+        return None
+    monkeypatch.setattr(mm, "evict_lru", _no_evict)
+    with pytest.raises(RuntimeError, match="显存不足|cuda:1"):
+        await mm._guard_image_vram_per_card(comps)
