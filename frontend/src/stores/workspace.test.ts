@@ -25,6 +25,45 @@ describe('workspace store — round3 #1/#2', () => {
     expect(Array.isArray(wf.edges)).toBe(true)
   })
 
+  it('removeEdge 后 undo 恢复该边(删边 undo 回归)', () => {
+    const api = useWorkspaceStore.getState()
+    api.addTab('undo-edge-test')
+    api.setWorkflow({
+      id: 'w', name: 'w',
+      nodes: [
+        { id: 'a', type: 'text_input', data: {}, position: { x: 0, y: 0 } },
+        { id: 'b', type: 'text_output', data: {}, position: { x: 100, y: 0 } },
+      ],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'text', target: 'b', targetHandle: 'text' }],
+    })
+    expect(useWorkspaceStore.getState().getActiveWorkflow().edges).toHaveLength(1)
+    api.removeEdge('e1')
+    expect(useWorkspaceStore.getState().getActiveWorkflow().edges).toHaveLength(0)
+    api.undo()
+    const edges = useWorkspaceStore.getState().getActiveWorkflow().edges
+    expect(edges).toHaveLength(1)
+    expect(edges[0].id).toBe('e1')
+  })
+
+  it('removeNode 后 undo 恢复节点 + 其连边', () => {
+    const api = useWorkspaceStore.getState()
+    api.addTab('undo-node-test')
+    api.setWorkflow({
+      id: 'w2', name: 'w2',
+      nodes: [
+        { id: 'a', type: 'text_input', data: {}, position: { x: 0, y: 0 } },
+        { id: 'b', type: 'text_output', data: {}, position: { x: 100, y: 0 } },
+      ],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'text', target: 'b', targetHandle: 'text' }],
+    })
+    api.removeNode('b')
+    expect(useWorkspaceStore.getState().getActiveWorkflow().nodes).toHaveLength(1)
+    expect(useWorkspaceStore.getState().getActiveWorkflow().edges).toHaveLength(0)
+    api.undo()
+    expect(useWorkspaceStore.getState().getActiveWorkflow().nodes).toHaveLength(2)
+    expect(useWorkspaceStore.getState().getActiveWorkflow().edges).toHaveLength(1)
+  })
+
   it('per-tab autosave:编辑 tab B 不取消 tab A 的 pending save', async () => {
     vi.useFakeTimers()
     const api = useWorkspaceStore.getState()
