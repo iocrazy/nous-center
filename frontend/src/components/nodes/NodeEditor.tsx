@@ -20,7 +20,7 @@ import '@xyflow/react/dist/style.css'
 import { nodeTypes } from './nodeTypes'
 import GroupLayer from './GroupLayer'
 import NodeCreateMenu from './NodeCreateMenu'
-import { choicesAcceptingInput, choicesProvidingOutput, firstInputHandle, firstOutputHandle, type NodeChoice } from './nodeChoices'
+import { choicesAcceptingInput, choicesProvidingOutput, firstInputHandle, firstOutputHandle, getAllChoices, type NodeChoice } from './nodeChoices'
 import PortTypedEdge from '../edges/PortTypedEdge'
 import { PORT_TYPE_COLORS } from './portColors'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -88,6 +88,8 @@ export default function NodeEditor() {
     fromNodeId: string; fromHandle: string | null; handleType: 'source' | 'target'
     portType: PortType; choices: NodeChoice[]
   } | null>(null)
+  // 画布空白右键 → 光标处快捷建节点(无连接,借鉴 Infinite-Canvas 的 create 菜单)。
+  const [paneMenu, setPaneMenu] = useState<{ x: number; y: number; flowX: number; flowY: number } | null>(null)
 
   // Cmd/Ctrl+Z undo; Cmd/Ctrl+Shift+Z (or Ctrl+Y) redo. Swallow when the
   // event target is an input/textarea/contenteditable so native text edit
@@ -321,6 +323,18 @@ export default function NodeEditor() {
     if (edge) setEdges((eds) => addEdge({ id: edge!.id, source: edge!.source, sourceHandle: edge!.sourceHandle, target: edge!.target, targetHandle: edge!.targetHandle, type: 'portTyped' }, eds))
     setCreateMenu(null)
   }, [createMenu, setNodes, setEdges, storeAddNodesWithEdges])
+
+  // 画布右键菜单选中 → 在光标 flow 坐标处建节点(无连接)。
+  const createNodeAt = useCallback((type: NodeType, flowX: number, flowY: number) => {
+    const id = crypto.randomUUID().slice(0, 8)
+    const position = { x: flowX, y: flowY }
+    setNodes((nds) => [
+      ...nds.map((n) => ({ ...n, selected: false })),
+      { id, type, position, data: {}, style: { width: 320 }, selected: true } as Node,
+    ])
+    storeAddNode({ id, type, position, data: {} })
+    setPaneMenu(null)
+  }, [setNodes, storeAddNode])
 
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
@@ -597,8 +611,18 @@ export default function NodeEditor() {
               nodeId: node.id,
             })
           }}
-          onPaneClick={() => setCtxMenu(null)}
-          onMoveStart={() => setCtxMenu(null)}
+          onPaneClick={() => { setCtxMenu(null); setPaneMenu(null) }}
+          onMoveStart={() => { setCtxMenu(null); setPaneMenu(null) }}
+          onPaneContextMenu={(event) => {
+            event.preventDefault()
+            const rfi = reactFlowInstance.current
+            const bounds = reactFlowWrapper.current?.getBoundingClientRect()
+            if (!rfi || !bounds) return
+            const me = event as unknown as MouseEvent
+            const flow = rfi.screenToFlowPosition({ x: me.clientX, y: me.clientY })
+            setCtxMenu(null)
+            setPaneMenu({ x: me.clientX - bounds.left, y: me.clientY - bounds.top, flowX: flow.x, flowY: flow.y })
+          }}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           deleteKeyCode={['Backspace', 'Delete']}
@@ -679,6 +703,18 @@ export default function NodeEditor() {
           title={createMenu.handleType === 'source' ? '连接到…' : '从…连入'}
           onPick={(type) => createConnectedNode(type)}
           onClose={() => setCreateMenu(null)}
+        />
+      )}
+
+      {/* 画布右键 → 光标处快捷建节点菜单 */}
+      {paneMenu && (
+        <NodeCreateMenu
+          x={paneMenu.x}
+          y={paneMenu.y}
+          choices={getAllChoices()}
+          title="添加节点"
+          onPick={(type) => createNodeAt(type, paneMenu.flowX, paneMenu.flowY)}
+          onClose={() => setPaneMenu(null)}
         />
       )}
 
