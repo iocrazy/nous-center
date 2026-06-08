@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ImageIcon, Sparkles, Wand2, Box, Loader2, Monitor, Cloud, Upload } from 'lucide-react'
+import { ImageIcon, Sparkles, Wand2, Box, Loader2, Monitor, Cloud, Upload, Share2 } from 'lucide-react'
 import { useComponents } from '../api/components'
 import { executeWorkflow } from '../utils/workflowExecutor'
 import type { Workflow } from '../models/workflow'
 import { useToastStore } from '../stores/toast'
+import { useCreateWorkflow } from '../api/workflows'
+import { usePublishWorkflow } from '../api/services'
+import {
+  buildZImageWorkflow, buildFlux2EditWorkflow, buildSeedVR2Workflow, buildQwenEditWorkflow,
+  buildFeatureWorkflow, FEATURE_PUBLISH, type FeatureId as PublishFeatureId,
+} from './studioWorkflows'
 
 // 创作台:对齐 Infinite-Canvas 的「统一创作控制台」,但引擎是 nous 本地(不外接 ComfyUI)。
 // 客户端搭 z-image 工作流图 → /api/v1/workflows/execute(admin cookie 鉴权)→ WS 拿 image_url。
@@ -69,6 +75,108 @@ export default function Studio() {
   )
 }
 
+// 按功能自动挑整模型(同各 panel 的选模型正则);enhance(SeedVR2)用默认 DiT/VAE 无需 checkpoint。
+const CKPT_MATCH: Record<PublishFeatureId, RegExp | null> = {
+  text2img: /z[-_ ]?image/i,
+  edit: /flux/i,
+  angle: /qwen[-_ ]?image[-_ ]?edit/i,
+  enhance: null,
+}
+
+/** 「发布为服务」按钮 + 弹窗:存工作流(模板)→ publish(带 exposed schema)→ 外部 /v1/images/generations 可调。
+ *  自包含:按功能自动挑 checkpoint(无需 panel 传参),schema 来自 studioWorkflows.FEATURE_PUBLISH。 */
+function PublishServiceButton({ feature }: { feature: PublishFeatureId }) {
+  const toast = useToastStore((s) => s.add)
+  const { data: checkpoints } = useComponents('checkpoint')
+  const createWf = useCreateWorkflow()
+  const publish = usePublishWorkflow()
+  const conf = FEATURE_PUBLISH[feature]
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState(conf.defaultName)
+  const busy = createWf.isPending || publish.isPending
+
+  const re = CKPT_MATCH[feature]
+  const ckpt = useMemo(() => {
+    if (re == null) return '' // enhance 不需要整模型
+    const hit = (checkpoints ?? []).find((c) => re.test(c.filename) || re.test(c.abs_path))
+    return hit?.abs_path ?? ''
+  }, [checkpoints, re])
+
+  const doPublish = async () => {
+    if (!/^[a-z][a-z0-9-]{1,62}$/.test(name)) { toast('服务名须匹配 ^[a-z][a-z0-9-]{1,62}$', 'error'); return }
+    if (re != null && !ckpt) { toast('没找到该功能可用的整模型(检查 diffusers/ 目录)', 'error'); return }
+    try {
+      const wf = buildFeatureWorkflow(feature, ckpt) as unknown as { nodes: unknown[]; edges: unknown[] }
+      const created = await createWf.mutateAsync({ name: conf.label, nodes: wf.nodes as never[], edges: wf.edges as never[] })
+      await publish.mutateAsync({
+        workflowId: created.id,
+        body: {
+          name, label: conf.label, category: conf.category,
+          exposed_inputs: conf.exposed_inputs, exposed_outputs: conf.exposed_outputs,
+        },
+      })
+      toast(`已发布服务「${name}」—— 外部 POST /v1/images/generations(model=${name})可调用`, 'success')
+      setOpen(false)
+    } catch (e) {
+      toast(`发布失败:${(e as Error)?.message ?? e}`, 'error')
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => { setName(conf.defaultName); setOpen(true) }}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px',
+          borderRadius: 8, fontSize: 12.5, border: '1px solid var(--border)',
+          background: 'var(--bg-accent)', color: 'var(--text)', cursor: 'pointer',
+        }}
+      >
+        <Share2 size={14} /> 发布为服务
+      </button>
+      {open && (
+        <div
+          onClick={() => !busy && setOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: 420, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>发布「{conf.label}」为服务</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14 }}>
+              冻结当前工作流为外部 API 服务,经 POST /v1/images/generations 调用(model=服务名)。
+              {re != null && !ckpt && <span style={{ color: 'var(--danger, #e5484d)' }}> 未找到整模型!</span>}
+            </div>
+            <label style={{ fontSize: 12, color: 'var(--muted)' }}>服务名(小写字母/数字/连字符)</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={busy}
+              style={{ width: '100%', marginTop: 6, marginBottom: 8, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-accent)', color: 'var(--text)', fontSize: 13 }}
+            />
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 16 }}>
+              暴露入参:{conf.exposed_inputs.map((p) => p.key).join(' / ')}
+              {conf.category === 'image' && '(category=image)'}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" onClick={() => !busy && setOpen(false)} disabled={busy}
+                style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: busy ? 'default' : 'pointer', fontSize: 13 }}>
+                取消
+              </button>
+              <button type="button" onClick={doPublish} disabled={busy}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: 'var(--text)', color: 'var(--bg)', cursor: busy ? 'default' : 'pointer', fontSize: 13, fontWeight: 600 }}>
+                {busy && <Loader2 size={14} className="animate-spin" />} 发布
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 function Text2ImagePanel() {
   const toast = useToastStore((s) => s.add)
   const { data: checkpoints } = useComponents('checkpoint')
@@ -121,9 +229,12 @@ function Text2ImagePanel() {
           <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
             统一创作控制台 · 本地引擎
           </span>
-          <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
-          </span>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+            <PublishServiceButton feature="text2img" />
+            <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
+            </span>
+          </div>
         </div>
         <textarea
           value={prompt}
@@ -246,33 +357,6 @@ function NumBox({ value, onChange }: { value: number; onChange: (v: number) => v
   )
 }
 
-/** 客户端搭 Z-Image 文生图工作流图(checkpoint[arch=z-image]→encode→ksampler→vae_decode)。
- *  端口 handle 用 node.yaml 里的端口 id(model/clip/vae/conditioning/latent)。 */
-function buildZImageWorkflow(
-  { ckpt, prompt, width, height, seed }: { ckpt: string; prompt: string; width: number; height: number; seed: number },
-): Workflow {
-  const nodes = [
-    { id: 'ckpt', type: 'flux2_load_checkpoint' as const, position: { x: 0, y: 0 },
-      data: { file: ckpt, weight_dtype: 'bfloat16', device: 'auto', offload: 'none', adapter_arch: 'z-image' } },
-    { id: 'enc', type: 'flux2_encode_prompt' as const, position: { x: 320, y: 0 },
-      data: { text: prompt, negative_prompt: '' } },
-    { id: 'ks', type: 'flux2_ksampler' as const, position: { x: 640, y: 0 },
-      data: { width, height, steps: 8, cfg_scale: 1.0, sampler_name: 'euler', scheduler: 'normal', seed: String(seed) } },
-    { id: 'dec', type: 'flux2_vae_decode' as const, position: { x: 960, y: 0 }, data: {} },
-    // image_output 是 executeWorkflow 必需的输出节点(否则抛「工作流缺少输出节点」)。
-    { id: 'out', type: 'image_output' as const, position: { x: 1280, y: 0 }, data: {} },
-  ]
-  const edges = [
-    { id: 'e1', source: 'ckpt', sourceHandle: 'clip', target: 'enc', targetHandle: 'clip' },
-    { id: 'e2', source: 'ckpt', sourceHandle: 'model', target: 'ks', targetHandle: 'model' },
-    { id: 'e3', source: 'enc', sourceHandle: 'conditioning', target: 'ks', targetHandle: 'conditioning' },
-    { id: 'e4', source: 'ckpt', sourceHandle: 'vae', target: 'dec', targetHandle: 'vae' },
-    { id: 'e5', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
-    { id: 'e6', source: 'dec', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
-  ]
-  return { name: '创作台·文生图(Z-Image)', nodes, edges } as unknown as Workflow
-}
-
 /** 提交工作流 → 监听 WS 'node-progress' 拿 image_url → 回调。两个 panel 共用,避免重复 WS 接线。
  *  ignoreImageFrom:要忽略其 node_complete.image_url 的输入节点 id —— image_input(上传图)节点会
  *  把上传图回显成一个 node_complete(写盘签 URL),不能当成最终出图(否则编辑模式抓到的是原图)。 */
@@ -382,9 +466,12 @@ function ImageEditPanel() {
           <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
             图片编辑 · 本地 Flux2(参考编辑)
           </span>
-          <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
-          </span>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+            <PublishServiceButton feature="edit" />
+            <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
+            </span>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
@@ -504,9 +591,12 @@ function EnhancePanel() {
           <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
             细节增强 · 本地 SeedVR2(超分)
           </span>
-          <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
-          </span>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+            <PublishServiceButton feature="enhance" />
+            <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
+            </span>
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
           <button
@@ -633,9 +723,12 @@ function AnglePanel() {
           <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
             角度控制 · 本地 Qwen-Image-Edit
           </span>
-          <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
-          </span>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+            <PublishServiceButton feature="angle" />
+            <span style={{ fontSize: 11, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              系统就绪 <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--ok)' }} />
+            </span>
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
           <button
@@ -742,81 +835,4 @@ function ComparePane({ label, src, loading }: { label: string; src: string | nul
   )
 }
 
-/** 客户端搭 Flux2 图片编辑工作流图:image_input(上传图)+ checkpoint[arch=flux2] → encode →
- *  ksampler(image 端口接上传图)→ vae_decode。引擎把输入图注入 Flux2KleinPipeline image=(参考编辑)。 */
-function buildFlux2EditWorkflow(
-  { ckpt, prompt, imageDataUri, width, height, seed }:
-  { ckpt: string; prompt: string; imageDataUri: string; width: number; height: number; seed: number },
-): Workflow {
-  const nodes = [
-    { id: 'img', type: 'image_input' as const, position: { x: 0, y: 240 },
-      data: { image: imageDataUri } },
-    { id: 'ckpt', type: 'flux2_load_checkpoint' as const, position: { x: 0, y: 0 },
-      data: { file: ckpt, weight_dtype: 'bfloat16', device: 'auto', offload: 'none', adapter_arch: 'flux2' } },
-    { id: 'enc', type: 'flux2_encode_prompt' as const, position: { x: 320, y: 0 },
-      data: { text: prompt, negative_prompt: '' } },
-    { id: 'ks', type: 'flux2_ksampler' as const, position: { x: 640, y: 0 },
-      data: { width, height, steps: 20, cfg_scale: 4.0, sampler_name: 'euler', scheduler: 'normal', seed: String(seed) } },
-    { id: 'dec', type: 'flux2_vae_decode' as const, position: { x: 960, y: 0 }, data: {} },
-    { id: 'out', type: 'image_output' as const, position: { x: 1280, y: 0 }, data: {} },
-  ]
-  const edges = [
-    { id: 'e1', source: 'ckpt', sourceHandle: 'clip', target: 'enc', targetHandle: 'clip' },
-    { id: 'e2', source: 'ckpt', sourceHandle: 'model', target: 'ks', targetHandle: 'model' },
-    { id: 'e3', source: 'enc', sourceHandle: 'conditioning', target: 'ks', targetHandle: 'conditioning' },
-    { id: 'e4', source: 'img', sourceHandle: 'image', target: 'ks', targetHandle: 'image' },
-    { id: 'e5', source: 'ckpt', sourceHandle: 'vae', target: 'dec', targetHandle: 'vae' },
-    { id: 'e6', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
-    { id: 'e7', source: 'dec', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
-  ]
-  return { name: '创作台·图片编辑(Flux2)', nodes, edges } as unknown as Workflow
-}
-
-/** 客户端搭 SeedVR2 细节增强(超分)工作流图:image_input(上传图)→ seedvr2_upscale → image_output。
- *  dit/vae loader 不连 → runner 用默认 DiT/VAE(见 seedvr2/node.yaml「不连则用默认」)。
- *  seedvr2_upscale 是 dispatch 节点(role=upscale),runner 构 UpscaleRequest 跑 SeedVR2 一步超分。 */
-function buildSeedVR2Workflow(
-  { imageDataUri, resolution }: { imageDataUri: string; resolution: number },
-): Workflow {
-  const nodes = [
-    { id: 'img', type: 'image_input' as const, position: { x: 0, y: 0 }, data: { image: imageDataUri } },
-    { id: 'up', type: 'seedvr2_upscale' as const, position: { x: 320, y: 0 },
-      data: { resolution, max_resolution: 0, color_correction: 'lab' } },
-    { id: 'out', type: 'image_output' as const, position: { x: 640, y: 0 }, data: {} },
-  ]
-  const edges = [
-    { id: 'e1', source: 'img', sourceHandle: 'image', target: 'up', targetHandle: 'image' },
-    { id: 'e2', source: 'up', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
-  ]
-  return { name: '创作台·细节增强(SeedVR2)', nodes, edges } as unknown as Workflow
-}
-
-/** 客户端搭 Qwen-Image-Edit-2511 编辑/角度工作流图:image_input + checkpoint[arch=qwen-edit] →
- *  encode → ksampler(image 端口)→ vae_decode → image_output。引擎对 qwen-edit 走 true_cfg_scale
- *  (40 步),把输入图注入 QwenImageEditPlusPipeline image=。角度控制 = 视角 prompt。 */
-function buildQwenEditWorkflow(
-  { ckpt, prompt, imageDataUri, width, height, seed }:
-  { ckpt: string; prompt: string; imageDataUri: string; width: number; height: number; seed: number },
-): Workflow {
-  const nodes = [
-    { id: 'img', type: 'image_input' as const, position: { x: 0, y: 240 }, data: { image: imageDataUri } },
-    { id: 'ckpt', type: 'flux2_load_checkpoint' as const, position: { x: 0, y: 0 },
-      data: { file: ckpt, weight_dtype: 'bfloat16', device: 'auto', offload: 'none', adapter_arch: 'qwen-edit' } },
-    { id: 'enc', type: 'flux2_encode_prompt' as const, position: { x: 320, y: 0 },
-      data: { text: prompt, negative_prompt: '' } },
-    { id: 'ks', type: 'flux2_ksampler' as const, position: { x: 640, y: 0 },
-      data: { width, height, steps: 40, cfg_scale: 4.0, sampler_name: 'euler', scheduler: 'normal', seed: String(seed) } },
-    { id: 'dec', type: 'flux2_vae_decode' as const, position: { x: 960, y: 0 }, data: {} },
-    { id: 'out', type: 'image_output' as const, position: { x: 1280, y: 0 }, data: {} },
-  ]
-  const edges = [
-    { id: 'e1', source: 'ckpt', sourceHandle: 'clip', target: 'enc', targetHandle: 'clip' },
-    { id: 'e2', source: 'ckpt', sourceHandle: 'model', target: 'ks', targetHandle: 'model' },
-    { id: 'e3', source: 'enc', sourceHandle: 'conditioning', target: 'ks', targetHandle: 'conditioning' },
-    { id: 'e4', source: 'img', sourceHandle: 'image', target: 'ks', targetHandle: 'image' },
-    { id: 'e5', source: 'ckpt', sourceHandle: 'vae', target: 'dec', targetHandle: 'vae' },
-    { id: 'e6', source: 'ks', sourceHandle: 'latent', target: 'dec', targetHandle: 'latent' },
-    { id: 'e7', source: 'dec', sourceHandle: 'image', target: 'out', targetHandle: 'image' },
-  ]
-  return { name: '创作台·角度控制(Qwen-Image-Edit)', nodes, edges } as unknown as Workflow
-}
+// 四功能的 build 函数 + 发布 schema 已抽到 ./studioWorkflows(纯模块,可测,防 schema 漂移)。
