@@ -1,82 +1,12 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import FloatingPanel from '../layout/FloatingPanel'
-import { NODE_DEFS, type NodeType } from '../../models/workflow'
-import { PLUGIN_CATEGORIES } from '../../models/nodeRegistry'
+import { NODE_DEFS } from '../../models/workflow'
+import { getMergedCategories } from '../nodes/nodeChoices'
 
-// m09 v3: 5 个固定分组对齐 mockup（输入 / AI / 逻辑 / 音频 / 输出）。
-// 旧版按"who 注册了它"切（io / tts / declarative），不符合 user mental
-// model。现在按"做什么"切，跟 mockup 1:1。
-
-interface NodeCategory {
-  name: string
-  label: string
-  color: string
-  nodes: { type: NodeType; dotColor: string }[]
-}
-
-const BUILTIN_CATEGORIES: NodeCategory[] = [
-  {
-    name: 'input',
-    label: '输入',
-    color: 'var(--ok)',
-    nodes: [
-      { type: 'text_input', dotColor: 'var(--ok)' },
-      { type: 'multimodal_input', dotColor: 'var(--purple)' },
-      { type: 'ref_audio', dotColor: 'var(--accent-2)' },
-    ],
-  },
-  {
-    name: 'ai',
-    label: 'AI 节点',
-    color: 'var(--purple)',
-    nodes: [
-      { type: 'llm', dotColor: 'var(--purple)' },
-      { type: 'prompt_template', dotColor: 'var(--purple)' },
-      { type: 'agent', dotColor: 'var(--purple)' },
-    ],
-  },
-  {
-    name: 'logic',
-    label: '逻辑',
-    color: 'var(--accent)',
-    nodes: [
-      { type: 'if_else', dotColor: 'var(--accent)' },
-      { type: 'python_exec', dotColor: 'var(--accent-2)' },
-    ],
-  },
-  {
-    name: 'audio',
-    label: '音频处理',
-    color: 'var(--info)',
-    nodes: [
-      { type: 'tts_engine', dotColor: 'var(--accent)' },
-      { type: 'resample', dotColor: 'var(--info)' },
-      { type: 'concat', dotColor: 'var(--info)' },
-      { type: 'mixer', dotColor: 'var(--info)' },
-      { type: 'bgm_mix', dotColor: 'var(--purple)' },
-    ],
-  },
-  {
-    // 收敛后:image_generate + 组件加载(Family B)已删;细粒度图节点(flux2-components)
-    // 由 plugin defs 以 category:image merge 进本「图像」组。
-    name: 'image',
-    label: '图像',
-    color: 'var(--info)',
-    nodes: [
-      { type: 'image_output', dotColor: 'var(--info)' },
-    ],
-  },
-  {
-    name: 'output',
-    label: '输出',
-    color: 'var(--info)',
-    nodes: [
-      { type: 'text_output', dotColor: 'var(--info)' },
-      { type: 'output', dotColor: 'var(--info)' },
-    ],
-  },
-]
+// m09 v3: 固定分组对齐 mockup（输入 / AI / 逻辑 / 音频 / 图像 / 输出），plugin
+// 节点按 category merge 进同名组。分类与端口口径统一抽到 ../nodes/nodeChoices.ts,
+// 与「端口拖出建节点」「右键建节点」菜单共用,避免分叉。
 
 export default function NodeLibraryPanel() {
   const [search, setSearch] = useState('')
@@ -87,45 +17,7 @@ export default function NodeLibraryPanel() {
     e.dataTransfer.effectAllowed = 'move'
   }
 
-  // V1' Lane C / P4: plugin packages whose `category` matches a builtin
-  // group (e.g. flux2-components advertises `category: image`) get merged
-  // into that builtin group instead of becoming a parallel `plugin:image`
-  // section. Otherwise the sidebar showed "图像 (2)" and "IMAGE (8)"
-  // side-by-side after Lane C P3 landed, which split the discovery surface.
-  // Plugins whose category doesn't match any builtin still render as a
-  // dedicated section below — that path stays unchanged.
-  // Build a per-render snapshot of merged categories. We must not mutate
-  // BUILTIN_CATEGORIES.nodes in place — React re-runs this function on
-  // every render and a naïve push() would accumulate duplicates each tick.
-  const mergedBuiltins: NodeCategory[] = BUILTIN_CATEGORIES.map((c) => ({
-    ...c,
-    nodes: [...c.nodes],
-  }))
-  const mergedByName: Record<string, NodeCategory> = {}
-  for (const c of mergedBuiltins) mergedByName[c.name] = c
-
-  const standalonePluginCats: NodeCategory[] = []
-  for (const c of PLUGIN_CATEGORIES) {
-    const rawName = c.name.startsWith('plugin:') ? c.name.slice('plugin:'.length) : c.name
-    const target = mergedByName[rawName]
-    if (target) {
-      // Append plugin nodes that aren't already declared by the builtin
-      // (don't double-list when names happen to clash).
-      const existing = new Set(target.nodes.map((n) => n.type))
-      for (const n of c.nodes) if (!existing.has(n.type)) target.nodes.push(n)
-    } else {
-      standalonePluginCats.push({
-        name: c.name,
-        label: c.label || c.name,
-        color: c.color,
-        nodes: c.nodes,
-      })
-    }
-  }
-  const allCategories: NodeCategory[] = [
-    ...mergedBuiltins,
-    ...standalonePluginCats,
-  ]
+  const allCategories = getMergedCategories()
 
   return (
     <FloatingPanel

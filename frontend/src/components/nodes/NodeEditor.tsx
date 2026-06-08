@@ -19,6 +19,8 @@ import '@xyflow/react/dist/style.css'
 
 import { nodeTypes } from './nodeTypes'
 import GroupLayer from './GroupLayer'
+import NodeCreateMenu from './NodeCreateMenu'
+import { choicesAcceptingInput, choicesProvidingOutput, firstInputHandle, firstOutputHandle, type NodeChoice } from './nodeChoices'
 import PortTypedEdge from '../edges/PortTypedEdge'
 import { PORT_TYPE_COLORS } from './portColors'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -79,6 +81,13 @@ export default function NodeEditor() {
   const setSelectedNodeId = useSelectionStore((s) => s.setSelectedNodeId)
   // 节点右键菜单(承载 旁路/复制/删除,让快捷键功能可发现)。坐标为画布容器内像素。
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
+  // 端口拖到空白 → 快捷建相连节点菜单(借鉴 Infinite-Canvas)。
+  const connectStartRef = useRef<{ nodeId: string; handleId: string | null; handleType: 'source' | 'target' } | null>(null)
+  const [createMenu, setCreateMenu] = useState<{
+    x: number; y: number; flowX: number; flowY: number
+    fromNodeId: string; fromHandle: string | null; handleType: 'source' | 'target'
+    portType: PortType; choices: NodeChoice[]
+  } | null>(null)
 
   // Cmd/Ctrl+Z undo; Cmd/Ctrl+Shift+Z (or Ctrl+Y) redo. Swallow when the
   // event target is an input/textarea/contenteditable so native text edit
@@ -248,6 +257,70 @@ export default function NodeEditor() {
     },
     [setEdges, storeAddEdge],
   )
+
+  // 端口拖到空白建节点(借鉴 Infinite-Canvas):记起点 → 落 pane 上则弹兼容节点菜单。
+  const onConnectStart = useCallback(
+    (_e: unknown, params: { nodeId: string | null; handleId: string | null; handleType: 'source' | 'target' | null }) => {
+      connectStartRef.current = params.nodeId && params.handleType
+        ? { nodeId: params.nodeId, handleId: params.handleId, handleType: params.handleType }
+        : null
+    },
+    [],
+  )
+
+  const onConnectEnd = useCallback((event: MouseEvent | TouchEvent) => {
+    const start = connectStartRef.current
+    connectStartRef.current = null
+    if (!start) return
+    // 只在落到空白画布(pane)时弹菜单;落到 handle 由 onConnect 正常连。
+    const tgt = event.target as HTMLElement | null
+    if (!tgt?.classList?.contains('react-flow__pane')) return
+    const rfi = reactFlowInstance.current
+    const bounds = reactFlowWrapper.current?.getBoundingClientRect()
+    if (!rfi || !bounds) return
+    const clientX = 'clientX' in event ? event.clientX : event.changedTouches?.[0]?.clientX
+    const clientY = 'clientY' in event ? event.clientY : event.changedTouches?.[0]?.clientY
+    if (clientX == null || clientY == null) return
+    const fromNode = nodesRef.current.find((n) => n.id === start.nodeId)
+    const portType = getPortType(fromNode?.type ?? '', start.handleId)
+    if (!portType) return
+    const choices = start.handleType === 'source'
+      ? choicesAcceptingInput(portType)
+      : choicesProvidingOutput(portType)
+    if (choices.length === 0) return
+    const flow = rfi.screenToFlowPosition({ x: clientX, y: clientY })
+    setCreateMenu({
+      x: clientX - bounds.left, y: clientY - bounds.top,
+      flowX: flow.x, flowY: flow.y,
+      fromNodeId: start.nodeId, fromHandle: start.handleId, handleType: start.handleType,
+      portType, choices,
+    })
+  }, [])
+
+  // 菜单选中 → 在落点建节点 + 按 portType 连边(单次 undo);选中新节点。
+  const createConnectedNode = useCallback((type: NodeType) => {
+    const m = createMenu
+    if (!m) return
+    const id = crypto.randomUUID().slice(0, 8)
+    // source 拖出 → 新节点放落点;target 拖出(从输入口) → 左移一个节点宽,让输出口对齐落点。
+    const position = { x: m.handleType === 'source' ? m.flowX : m.flowX - 320, y: m.flowY - 20 }
+    const newNode: WorkflowNode = { id, type, position, data: {} }
+    let edge: WorkflowEdge | null = null
+    if (m.handleType === 'source') {
+      const th = firstInputHandle(type, m.portType)
+      if (th) edge = { id: crypto.randomUUID().slice(0, 8), source: m.fromNodeId, sourceHandle: m.fromHandle ?? '', target: id, targetHandle: th }
+    } else {
+      const sh = firstOutputHandle(type, m.portType)
+      if (sh) edge = { id: crypto.randomUUID().slice(0, 8), source: id, sourceHandle: sh, target: m.fromNodeId, targetHandle: m.fromHandle ?? '' }
+    }
+    storeAddNodesWithEdges([newNode], edge ? [edge] : [])
+    setNodes((nds) => [
+      ...nds.map((n) => ({ ...n, selected: false })),
+      { id, type, position, data: {}, style: { width: 320 }, selected: true } as Node,
+    ])
+    if (edge) setEdges((eds) => addEdge({ id: edge!.id, source: edge!.source, sourceHandle: edge!.sourceHandle, target: edge!.target, targetHandle: edge!.targetHandle, type: 'portTyped' }, eds))
+    setCreateMenu(null)
+  }, [createMenu, setNodes, setEdges, storeAddNodesWithEdges])
 
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
@@ -490,6 +563,8 @@ export default function NodeEditor() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onConnectStart={onConnectStart}
+          onConnectEnd={onConnectEnd}
           isValidConnection={isValidConnection}
           onInit={(instance) => { reactFlowInstance.current = instance }}
           onDragOver={onDragOver}
@@ -594,6 +669,18 @@ export default function NodeEditor() {
           </>
         )
       })()}
+
+      {/* 端口拖到空白 → 快捷建相连节点菜单 */}
+      {createMenu && (
+        <NodeCreateMenu
+          x={createMenu.x}
+          y={createMenu.y}
+          choices={createMenu.choices}
+          title={createMenu.handleType === 'source' ? '连接到…' : '从…连入'}
+          onPick={(type) => createConnectedNode(type)}
+          onClose={() => setCreateMenu(null)}
+        />
+      )}
 
       {/* m09: 节点属性面板（画布模式常驻右侧；overlay 视图下隐藏） */}
       {showPropertyPanel && <NodePropertyPanel />}
