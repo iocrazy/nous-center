@@ -48,6 +48,37 @@ def test_extract_image_urls_from_outputs():
     assert _extract_image_urls({"outputs": {}}) == []
 
 
+def test_extract_image_urls_prefers_exposed_outputs():
+    """exposed_outputs 指定产图终端 → 精确取它,不受其他节点 image_url 干扰。"""
+    result = {
+        "outputs": {
+            "img": {"image_url": "/files/images/INPUT.png"},   # image_input 上传图回显
+            "dec": {"image_url": "/files/images/OUT.png"},      # 真产图
+        }
+    }
+    snapshot = {"nodes": [
+        {"id": "img", "type": "image_input", "data": {}},
+        {"id": "dec", "type": "flux2_vae_decode", "data": {}},
+    ]}
+    exposed_outputs = [{"node_id": "dec", "input_name": "image_url"}]
+    assert _extract_image_urls(result, snapshot, exposed_outputs) == ["/files/images/OUT.png"]
+
+
+def test_extract_image_urls_skips_image_input_echo():
+    """无 exposed_outputs 兜底:跳过 image_input 节点的上传图回显(#372 外部路径版)。"""
+    result = {
+        "outputs": {
+            "img": {"image_url": "/files/images/INPUT.png"},   # 必须被跳过
+            "up": {"image_url": "/files/images/UPSCALED.png"},  # seedvr2_upscale 产图
+        }
+    }
+    snapshot = {"nodes": [
+        {"id": "img", "type": "image_input", "data": {}},
+        {"id": "up", "type": "seedvr2_upscale", "data": {}},
+    ]}
+    assert _extract_image_urls(result, snapshot, None) == ["/files/images/UPSCALED.png"]
+
+
 # --- 端点集成 ---
 
 
@@ -145,3 +176,129 @@ async def test_images_no_image_output_errors(db_client, db_session, image_servic
             json={"model": image_service.name, "prompt": "a cat"},
         )
     assert r.status_code >= 400, r.text
+
+
+# --- 图输入 / 无 prompt 服务(P4:编辑/增强/角度) ---
+
+
+@pytest.fixture
+async def edit_service(db_session):
+    """图片编辑式服务:image(image_input)+ prompt(encode)→ dec 产图。"""
+    svc = ServiceInstance(
+        source_type="workflow", source_name="edit",
+        name="edit-svc", type="inference", status="active",
+        category="image", meter_dim="images", workflow_id=2,
+        workflow_snapshot={
+            "nodes": [
+                {"id": "img", "type": "image_input", "data": {}},
+                {"id": "enc", "type": "flux2_encode_prompt", "data": {}},
+                {"id": "dec", "type": "flux2_vae_decode", "data": {}},
+            ],
+            "edges": [],
+        },
+        exposed_inputs=[
+            {"node_id": "img", "key": "image", "input_name": "image", "type": "image"},
+            {"node_id": "enc", "key": "prompt", "input_name": "text", "type": "string"},
+        ],
+        exposed_outputs=[
+            {"node_id": "dec", "key": "image_url", "input_name": "image_url", "type": "string"}
+        ],
+    )
+    db_session.add(svc)
+    await db_session.commit()
+    await db_session.refresh(svc)
+    return svc
+
+
+@pytest.fixture
+async def upscale_service(db_session):
+    """SeedVR2 细节增强式服务:image + resolution,无 prompt → up 产图。"""
+    svc = ServiceInstance(
+        source_type="workflow", source_name="up",
+        name="upscale-svc", type="inference", status="active",
+        category="image", meter_dim="images", workflow_id=3,
+        workflow_snapshot={
+            "nodes": [
+                {"id": "img", "type": "image_input", "data": {}},
+                {"id": "up", "type": "seedvr2_upscale", "data": {}},
+            ],
+            "edges": [],
+        },
+        exposed_inputs=[
+            {"node_id": "img", "key": "image", "input_name": "image", "type": "image"},
+            {"node_id": "up", "key": "resolution", "input_name": "resolution", "type": "int"},
+        ],
+        exposed_outputs=[
+            {"node_id": "up", "key": "image_url", "input_name": "image_url", "type": "string"}
+        ],
+    )
+    db_session.add(svc)
+    await db_session.commit()
+    await db_session.refresh(svc)
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_images_injects_image_and_prompt(db_client, db_session, edit_service):
+    """编辑服务:image + prompt 都注入对应节点(image_input echo 不当输出返回)。"""
+    raw, key = await _make_key(db_session, "sk-imgedit01")
+    db_session.add(ApiKeyGrant(api_key_id=key.id, service_id=edit_service.id, status="active"))
+    await db_session.commit()
+    captured = {}
+
+    async def _fake_execute(self):
+        captured["nodes"] = self.nodes
+        return {"outputs": {
+            "img": {"image_url": "/files/images/INPUT.png"},   # 回显输入图,必须被跳过
+            "dec": {"image_url": "/files/images/EDITED.png"},  # 真产图
+        }}
+
+    with patch("src.services.workflow_executor.WorkflowExecutor.execute", new=_fake_execute):
+        r = await db_client.post(
+            "/v1/images/generations",
+            headers={"Authorization": f"Bearer {raw}"},
+            json={
+                "model": edit_service.name,
+                "prompt": "make it snow",
+                "image": "data:image/png;base64,iVBORw0KGgo=",
+            },
+        )
+    assert r.status_code == 200, r.text
+    # exposed_outputs=dec → 取真产图,不是输入图回显。
+    assert r.json()["data"][0]["url"].endswith("/files/images/EDITED.png")
+    # image + prompt 都注入了对应节点 data。
+    by_id = {n["id"]: n for n in captured["nodes"]}
+    assert by_id["img"]["data"]["image"].startswith("data:image/png;base64,")
+    assert by_id["enc"]["data"]["text"] == "make it snow"
+
+
+@pytest.mark.asyncio
+async def test_images_no_prompt_service_works(db_client, db_session, upscale_service):
+    """超分服务无 prompt:image + resolution(extra 字段)注入,不触发 no_prompt 报错。"""
+    raw, key = await _make_key(db_session, "sk-imgup0123")
+    db_session.add(ApiKeyGrant(api_key_id=key.id, service_id=upscale_service.id, status="active"))
+    await db_session.commit()
+    captured = {}
+
+    async def _fake_execute(self):
+        captured["nodes"] = self.nodes
+        return {"outputs": {
+            "img": {"image_url": "/files/images/INPUT.png"},
+            "up": {"image_url": "/files/images/UP.png"},
+        }}
+
+    with patch("src.services.workflow_executor.WorkflowExecutor.execute", new=_fake_execute):
+        r = await db_client.post(
+            "/v1/images/generations",
+            headers={"Authorization": f"Bearer {raw}"},
+            json={
+                "model": upscale_service.name,
+                "image": "data:image/png;base64,iVBORw0KGgo=",
+                "resolution": 1440,
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"][0]["url"].endswith("/files/images/UP.png")
+    by_id = {n["id"]: n for n in captured["nodes"]}
+    assert by_id["img"]["data"]["image"].startswith("data:image/png;base64,")
+    assert by_id["up"]["data"]["resolution"] == 1440
