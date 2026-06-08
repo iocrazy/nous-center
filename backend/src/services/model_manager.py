@@ -837,27 +837,32 @@ class ModelManager:
 
     _VRAM_EST_MB = {"diffusion_models": 18000, "clip": 6000, "vae": 1000}
 
+    @staticmethod
+    def _component_bytes(file_path: str) -> int:
+        """组件权重字节数;**分片整模型**(...-NNNNN-of-NNNNN.safetensors)时 file 只是第 1 片,
+        返回同组件所有 sibling 分片之和。统一显存估算的分片感知入口 —— 选卡 need / 可驱逐 vram_mb /
+        守卫 per-card need 全走它,口径一致(2026-06-08 真机:vram_mb 只算第 1 片 → 可驱逐空间低估 →
+        effective free 不足 → auto 退 CPU hang)。"""
+        import glob
+        import os
+        import re
+        sz = os.path.getsize(file_path)
+        if re.search(r"-\d+-of-\d+\.safetensors$", os.path.basename(file_path)):
+            pattern = re.sub(r"-\d+-of-\d+\.safetensors$", "-*-of-*.safetensors", file_path)
+            shards = glob.glob(pattern)
+            if shards:
+                sz = sum(os.path.getsize(s) for s in shards)
+        return sz
+
     def _component_need_mb(self, spec) -> int:
-        """估该组件载入需多少显存(MB):优先真实文件大小×1.3,拿不到回退 _VRAM_EST_MB 表。
+        """估该组件载入需多少显存(MB):优先真实文件大小(分片求和)×1.3,拿不到回退 _VRAM_EST_MB 表。
         (anima 2B ~10GB ≠ Flux2 9B 18GB,套固定表会误判。)
 
-        **分片整模型(...-00001-of-00005.safetensors):spec.file 只是第 1 片**,真实需求 = 整个
-        组件所有分片之和。否则 6GB 片 ×1.3 严重低估 38GB transformer → auto 挑 24GB 小卡 → 加载到
-        一半 OOM(2026-06-08 Qwen-Image-Edit 角度控制真机逮到:54GB 模型被 auto 派到 cuda:0/3090)。"""
+        分片整模型用 _component_bytes 求和所有分片;否则 6GB 片 ×1.3 严重低估 38GB transformer →
+        auto 挑 24GB 小卡 → 加载到一半 OOM(2026-06-08 Qwen-Image-Edit 角度控制真机逮到)。"""
         need = self._VRAM_EST_MB.get(spec.kind, 8000)
         try:
-            import os
-            import re
-            f = spec.file
-            sz_bytes = os.path.getsize(f)
-            # 分片?把同组件所有分片大小加总(sibling -NNNNN-of-NNNNN.safetensors)。
-            if re.search(r"-\d+-of-\d+\.safetensors$", os.path.basename(f)):
-                import glob
-                pattern = re.sub(r"-\d+-of-\d+\.safetensors$", "-*-of-*.safetensors", f)
-                shards = glob.glob(pattern)
-                if shards:
-                    sz_bytes = sum(os.path.getsize(s) for s in shards)
-            sz_mb = int(sz_bytes / (1024 * 1024) * 1.3)
+            sz_mb = int(self._component_bytes(spec.file) / (1024 * 1024) * 1.3)
             if sz_mb > 0:
                 need = sz_mb
         except (OSError, AttributeError, TypeError):
@@ -963,7 +968,10 @@ class ModelManager:
         total = 0
         for k in ("diffusion_models", "clip", "vae"):
             try:
-                sz = os.path.getsize(resolved[k].file)
+                # 分片求和(_component_bytes),否则只算第 1 片 → vram_mb 低估 → 可驱逐空间被低估
+                # → effective free 不足 → auto 退 CPU(2026-06-08 真机:Z-Image vram_mb 只算 ~14G
+                # 而非 40G,Flux2 找不到可驱逐的大卡)。
+                sz = ModelManager._component_bytes(resolved[k].file)
             except OSError:
                 return None
             # fp8 量化只作用于 transformer/clip(vae 不量化)
@@ -1030,7 +1038,7 @@ class ModelManager:
             if self._l1_component_key(spec, dev) in self._components:
                 continue
             try:
-                sz = os.path.getsize(spec.file)
+                sz = self._component_bytes(spec.file)  # 分片求和(口径同选卡/vram_mb)
             except OSError:
                 continue
             if k in ("diffusion_models", "clip") and (spec.dtype or "").lower().startswith("fp8"):
