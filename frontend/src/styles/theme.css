@@ -48,6 +48,9 @@
   /* Infinite-Canvas 风:节点卡圆角 + 画布 dotted 网格点色(暗主题) */
   --node-radius: 14px;
   --grid: rgba(255, 255, 255, 0.06);
+  /* 框选高亮(对齐 Infinite-Canvas 洋红选框) */
+  --selection: rgba(236, 72, 153, 0.9);
+  --selection-fill: rgba(236, 72, 153, 0.10);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono", "Fira Code", monospace;
   --scrollbar-thumb: rgba(255, 255, 255, 0.1);
@@ -82,6 +85,9 @@
   /* Infinite-Canvas 风:节点卡圆角 + 画布 dotted 网格点色(亮主题) */
   --node-radius: 14px;
   --grid: rgba(15, 23, 42, 0.10);
+  /* 框选高亮(对齐 Infinite-Canvas 洋红选框) */
+  --selection: rgba(219, 39, 119, 0.9);
+  --selection-fill: rgba(219, 39, 119, 0.08);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono", "Fira Code", monospace;
   --scrollbar-thumb: rgba(0, 0, 0, 0.15);
@@ -113,6 +119,18 @@ body {
 
 .react-flow__minimap {
   background: var(--bg-accent) !important;
+}
+
+/* 框选(Ctrl+拖)橡皮筋选框 + 多选包围框:Infinite-Canvas 洋红风。 */
+.react-flow__selection {
+  background: var(--selection-fill) !important;
+  border: 1px solid var(--selection) !important;
+  border-radius: 8px;
+}
+.react-flow__nodesselection-rect {
+  background: var(--selection-fill) !important;
+  border: 1px solid var(--selection) !important;
+  border-radius: 8px;
 }
 
 /* 连接 edge 由自定义 PortTypedEdge 组件(spec 2026-06-04 §2.2)inline 驱动
