@@ -156,6 +156,21 @@ def _iter_node_outputs(result: object):
     yield from result.values()
 
 
+def _image_urls(result: object, limit: int = 8) -> list[str]:
+    """抽出 result 里所有 image_url(签名 URL),供任务卡缩略图 + 历史画廊用
+    (spec 2026-06-09 run-history PR-B)。最多 limit 张。"""
+    urls: list[str] = []
+    for v in _iter_node_outputs(result):
+        if not isinstance(v, dict):
+            continue
+        u = v.get("image_url")
+        if isinstance(u, str) and u:
+            urls.append(u)
+            if len(urls) >= limit:
+                break
+    return urls
+
+
 def _detect_image_meta(result: object) -> dict:
     """Pluck task_type + size from a workflow result by scanning for the
     image_output envelope shape. Stays None for non-image results so the
@@ -255,6 +270,8 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         "duration_ms": t.duration_ms,
         # 历史参数 —— 前端「重跑(相同参数)」回填用(spec 2026-06-09 run-history PR-A)。
         "input_json": t.input_json,
+        # 出图缩略(签名 URL 列表)—— 任务卡缩略图 + 历史画廊(PR-B)。
+        "output_thumbnails": _image_urls(t.result),
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }

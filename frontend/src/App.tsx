@@ -28,6 +28,7 @@ const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/node-packages': 'node-packages',
   '/usage': 'usage',
   '/studio': 'studio',
+  '/history': 'history',
 }
 
 /** Syncs the current URL to the panel store's activeOverlay */
@@ -178,6 +179,7 @@ export default function App() {
           <Route path="/node-packages" element={<MainLayout />} />
           <Route path="/usage" element={<MainLayout />} />
           <Route path="/studio" element={<MainLayout />} />
+          <Route path="/history" element={<MainLayout />} />
           <Route path="/services/:id" element={<MainLayout />} />
         </Routes>
       </AuthGate>
