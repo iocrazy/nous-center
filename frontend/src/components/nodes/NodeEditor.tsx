@@ -1,9 +1,10 @@
 import { useCallback, useRef, useMemo, useEffect, useState } from 'react'
-import { Copy, Ban, Trash2, Group } from 'lucide-react'
+import { Copy, Ban, Trash2, Group, Ungroup } from 'lucide-react'
 import {
   ReactFlow,
   Background,
   BackgroundVariant,
+  SelectionMode,
   Controls,
   MiniMap,
   addEdge,
@@ -22,6 +23,7 @@ import { nodeTypes } from './nodeTypes'
 import GroupLayer from './GroupLayer'
 import NodeCreateMenu from './NodeCreateMenu'
 import { choicesAcceptingInput, choicesProvidingOutput, firstInputHandle, firstOutputHandle, getAllChoices, type NodeChoice } from './nodeChoices'
+import { computeGroupBounds } from './groupGeometry'
 import PortTypedEdge from '../edges/PortTypedEdge'
 import { PORT_TYPE_COLORS } from './portColors'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -73,6 +75,7 @@ export default function NodeEditor() {
   const storeRemoveNode = useWorkspaceStore((s) => s.removeNode)
   const updateNode = useWorkspaceStore((s) => s.updateNode)
   const storeAddGroup = useWorkspaceStore((s) => s.addGroup)
+  const storeRemoveGroup = useWorkspaceStore((s) => s.removeGroup)
   const undo = useWorkspaceStore((s) => s.undo)
   const redo = useWorkspaceStore((s) => s.redo)
   const { activePanel, activeOverlay, panelWidth } = usePanelStore()
@@ -522,32 +525,41 @@ export default function NodeEditor() {
     ])
   }, [setNodes, setEdges, storeAddNodesWithEdges])
 
-  // 选中节点打包成分组框(对齐 ComfyUI Ctrl+G)。按 position 包围盒(节点高度未知 →
-  // 估算尺寸 + padding 兜框,用户可再缩放)。供 Ctrl+G 和右键菜单复用。
+  // 选中节点打包成分组框(对齐 ComfyUI/Infinite-Canvas Ctrl+G)。写显式 nodeIds,
+  // 初始 x/y/w/h 用成员实测包围盒(measured);渲染时 GroupLayer 会按成员实测再自适应。
+  // 供 Ctrl+G 和右键菜单复用。
   const groupSelected = useCallback(() => {
     const selected = nodesRef.current.filter((n) => n.selected)
     if (selected.length === 0) return
-    const PAD = 28
-    const NODE_W = 320
-    const NODE_H = 160
-    const xs = selected.map((n) => n.position.x)
-    const ys = selected.map((n) => n.position.y)
-    const minX = Math.min(...xs)
-    const minY = Math.min(...ys)
-    const maxX = Math.max(...selected.map((n) => n.position.x + ((n as any).width ?? (n.style as any)?.width ?? NODE_W)))
-    const maxY = Math.max(...ys.map((y) => y + NODE_H))
+    const members = selected.map((n) => ({
+      x: n.position.x,
+      y: n.position.y,
+      width: (n.measured?.width ?? (n as any).width ?? (n.style as any)?.width ?? 320) as number,
+      height: (n.measured?.height ?? (n as any).height ?? 160) as number,
+    }))
+    const b = computeGroupBounds(members)
+    if (!b) return
     const palette = ['#a855f7', '#3b82f6', '#22c55e', '#f59e0b', '#ec4899']
     const idx = (workflow.groups?.length ?? 0) % palette.length
     storeAddGroup({
       id: crypto.randomUUID().slice(0, 8),
       title: '分组',
-      x: minX - PAD,
-      y: minY - PAD - 26,
-      width: maxX - minX + PAD * 2,
-      height: maxY - minY + PAD * 2 + 26,
+      x: b.x, y: b.y, width: b.width, height: b.height,
       color: palette[idx],
+      nodeIds: selected.map((n) => n.id),
     })
   }, [workflow.groups, storeAddGroup])
+
+  // 解组(Ctrl+Shift+G):删掉「含任一选中节点」的分组(不删节点);无选中则删最近建的分组。
+  const ungroupSelected = useCallback(() => {
+    const selectedIds = new Set(nodesRef.current.filter((n) => n.selected).map((n) => n.id))
+    const groups = workflow.groups ?? []
+    if (groups.length === 0) return
+    const targets = selectedIds.size
+      ? groups.filter((g) => (g.nodeIds ?? []).some((id) => selectedIds.has(id)))
+      : groups.slice(-1)
+    for (const g of targets) storeRemoveGroup(g.id)
+  }, [workflow.groups, storeRemoveGroup])
 
   // 复制 Ctrl/Cmd+C / 粘贴 Ctrl/Cmd+V / 原地复制 Ctrl/Cmd+D。
   // 与 undo/redo 同样:focus 在 input/textarea/contenteditable 时放行原生行为。
@@ -586,15 +598,15 @@ export default function NodeEditor() {
           for (const n of selected) updateNode(n.id, { bypassed: anyOn })
         }
       } else if (k === 'g') {
-        if (nodesRef.current.some((n) => n.selected)) {
-          e.preventDefault()
-          groupSelected()
-        }
+        // Ctrl+G 成组 / Ctrl+Shift+G 解组(对齐 Infinite-Canvas)。
+        e.preventDefault()
+        if (e.shiftKey) ungroupSelected()
+        else if (nodesRef.current.some((n) => n.selected)) groupSelected()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [copySelection, pasteClipboard, updateNode, groupSelected])
+  }, [copySelection, pasteClipboard, updateNode, groupSelected, ungroupSelected])
 
   // m09: 画布模式下左节点库 + 右属性面板**常驻**。overlay 视图
   // （dashboard / services / 设置 等）下两边都隐藏。
@@ -677,6 +689,11 @@ export default function NodeEditor() {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           deleteKeyCode={['Backspace', 'Delete']}
+          // 框选(对齐 Infinite-Canvas「拖拽画布移动,Ctrl 框选多选」):左键拖默认平移;
+          // 按住 Ctrl/Cmd 拖 → 拉框选;Partial = 相交即选(AABB);多选拖动 RF 原生支持。
+          selectionKeyCode={['Control', 'Meta']}
+          multiSelectionKeyCode={['Control', 'Meta']}
+          selectionMode={SelectionMode.Partial}
           edgesReconnectable
           minZoom={0.15}
           maxZoom={8}
@@ -700,6 +717,20 @@ export default function NodeEditor() {
             zoomable
           />
         </ReactFlow>
+
+        {/* 底部操作提示条(对齐 Infinite-Canvas) */}
+        <div
+          style={{
+            position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)',
+            pointerEvents: 'none', userSelect: 'none', zIndex: 5,
+            fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap',
+            padding: '4px 12px', borderRadius: 999,
+            background: 'var(--card-hl)', border: '1px solid var(--border)',
+            backdropFilter: 'blur(6px)',
+          }}
+        >
+          拖拽画布移动,Ctrl 框选多选,拖动选中节点可一起移动
+        </div>
       </div>
 
       {/* 节点右键菜单(旁路/复制/删除)*/}
@@ -737,6 +768,7 @@ export default function NodeEditor() {
                 setTimeout(() => { copySelection(); pasteClipboard() }, 0)
               })}
               {item(<Group size={13} />, '分组 (Ctrl+G)', () => { setTimeout(() => groupSelected(), 0) })}
+              {item(<Ungroup size={13} />, '解组 (Ctrl+Shift+G)', () => { setTimeout(() => ungroupSelected(), 0) })}
               {item(<Trash2 size={13} />, '删除', () => {
                 setNodes((nds) => nds.filter((n) => n.id !== ctxMenu.nodeId))
                 storeRemoveNode(ctxMenu.nodeId)

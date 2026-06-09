@@ -1,21 +1,24 @@
 /**
- * GroupLayer — ComfyUI 式节点分组「可视框」。groups 存在 workflow.groups(不入执行图,
- * 后端执行器只读 nodes/edges)。本层渲染在画布内,按 React Flow 当前 viewport(x/y/zoom)
- * 把 flow 坐标的框换算成屏幕坐标 → 跟随平移/缩放。
+ * GroupLayer — ComfyUI/Infinite-Canvas 式节点分组「可视框」。groups 存在 workflow.groups
+ * (不入执行图,后端执行器只读 nodes/edges)。本层渲染在画布内,按 React Flow 当前
+ * viewport(x/y/zoom)把 flow 坐标的框换算成屏幕坐标 → 跟随平移/缩放。
+ *
+ * 自适应(PR-4):有显式 g.nodeIds 的分组,框矩形按成员**实测包围盒**实时派生
+ * (订阅 useNodes,成员拖动/缩放时框自动适配,对齐 Infinite-Canvas),不再依赖存储 x/y/w/h;
+ * 头部显示「N张图片 · M个提示词 已成组」计数副标题。legacy 分组(无 nodeIds)回退到
+ * 存储矩形 + 「按 position 落框内」隐式判定 + 右下角缩放手柄。
  *
  * 交互:
- * - 拖组头 = 移动框 + 框内节点(拖起时按 node.position 是否落在框内圈定)
- * - 右下角手柄 = 缩放框(不动节点)
+ * - 拖组头 = 移动框 + 成员节点(autoFit 按 nodeIds;legacy 按落框内)
+ * - 右下角手柄 = 缩放框(仅 legacy;autoFit 由内容决定尺寸)
  * - 双击标题 = 改名;组头右侧 X = 删除组(不删节点)
- *
- * pointer-events 策略:容器/框体 none(让节点照常可点),仅组头/手柄 auto。框绘制在
- * 节点下层(zIndex 低),组头一般在节点上方不被遮挡,可正常拖。
  */
 import { useRef, useState, useCallback } from 'react'
-import { useViewport } from '@xyflow/react'
+import { useViewport, useNodes } from '@xyflow/react'
 import { X } from 'lucide-react'
 import { useWorkspaceStore } from '../../stores/workspace'
 import type { WorkflowGroup } from '../../models/workflow'
+import { computeGroupBounds, countGroupMembers, groupSubtitle, type Rect } from './groupGeometry'
 
 // 稳定空数组 —— zustand selector 不能每次返回新 `[]`(useSyncExternalStore 会判定
 // snapshot 变化 → 无限重渲染)。fallback 放 selector 外、用模块级常量。
@@ -40,6 +43,7 @@ interface DragState {
 
 export default function GroupLayer() {
   const { x: vx, y: vy, zoom } = useViewport()
+  const liveNodes = useNodes()
   const groups = useWorkspaceStore((s) => s.getActiveWorkflow().groups) ?? EMPTY_GROUPS
   const getActiveWorkflow = useWorkspaceStore((s) => s.getActiveWorkflow)
   const setWorkflow = useWorkspaceStore((s) => s.setWorkflow)
@@ -51,6 +55,14 @@ export default function GroupLayer() {
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
   const dragRef = useRef<DragState | null>(null)
+
+  // 实时节点矩形 + 类型表(派生自适应框 + 计数副标题用)。
+  const nodeRectById = new Map<string, Rect & { type: string }>()
+  for (const n of liveNodes) {
+    const width = (n.measured?.width ?? (n.width as number | undefined) ?? (n.style?.width as number | undefined) ?? 320)
+    const height = (n.measured?.height ?? (n.height as number | undefined) ?? 160)
+    nodeRectById.set(n.id, { x: n.position.x, y: n.position.y, width, height, type: n.type ?? '' })
+  }
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     const d = dragRef.current
@@ -92,33 +104,35 @@ export default function GroupLayer() {
   }, [onPointerMove])
   onPointerUpRef.current = onPointerUp
 
-  const startMove = (e: React.PointerEvent, g: typeof groups[number]) => {
+  const startMove = (e: React.PointerEvent, g: WorkflowGroup, rect: Rect) => {
     if (editingId === g.id) return
     e.stopPropagation()
     e.preventDefault()
     const wf = getActiveWorkflow()
-    // 拖起时圈定框内节点(node.position 落在框矩形内)。
-    const contained = wf.nodes.filter(
-      (n) =>
-        n.position.x >= g.x && n.position.x <= g.x + g.width &&
-        n.position.y >= g.y && n.position.y <= g.y + g.height,
-    )
+    // autoFit:按 nodeIds 圈成员;legacy:按 node.position 落框内。
+    const memberSet = g.nodeIds?.length
+      ? wf.nodes.filter((n) => g.nodeIds!.includes(n.id))
+      : wf.nodes.filter(
+          (n) =>
+            n.position.x >= rect.x && n.position.x <= rect.x + rect.width &&
+            n.position.y >= rect.y && n.position.y <= rect.y + rect.height,
+        )
     dragRef.current = {
       groupId: g.id, startX: e.clientX, startY: e.clientY,
-      groupStart: { x: g.x, y: g.y, width: g.width, height: g.height },
-      nodes: contained.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y })),
+      groupStart: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      nodes: memberSet.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y })),
       mode: 'move',
     }
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
   }
 
-  const startResize = (e: React.PointerEvent, g: typeof groups[number]) => {
+  const startResize = (e: React.PointerEvent, g: WorkflowGroup, rect: Rect) => {
     e.stopPropagation()
     e.preventDefault()
     dragRef.current = {
       groupId: g.id, startX: e.clientX, startY: e.clientY,
-      groupStart: { x: g.x, y: g.y, width: g.width, height: g.height },
+      groupStart: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       nodes: [], mode: 'resize',
     }
     window.addEventListener('pointermove', onPointerMove)
@@ -127,54 +141,78 @@ export default function GroupLayer() {
 
   if (groups.length === 0) return null
 
-  const headerH = 26 * zoom
-  const fontSize = Math.min(20, Math.max(9, 13 * zoom))
+  const headerH = 30 * zoom
+  const titleSize = Math.min(16, Math.max(8, 11 * zoom))
+  const subSize = Math.min(13, Math.max(7, 9 * zoom))
 
   return (
     <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1, overflow: 'hidden' }}>
       {groups.map((g) => {
-        const left = g.x * zoom + vx
-        const top = g.y * zoom + vy
+        // autoFit:框矩形 + 计数从成员实测派生;无成员或 legacy 回退存储矩形。
+        const autoFit = !!g.nodeIds?.length
+        const memberRects = autoFit
+          ? g.nodeIds!.map((id) => nodeRectById.get(id)).filter(Boolean) as (Rect & { type: string })[]
+          : []
+        const rect: Rect = (autoFit && computeGroupBounds(memberRects)) || {
+          x: g.x, y: g.y, width: g.width, height: g.height,
+        }
+        const subtitle = autoFit
+          ? groupSubtitle(countGroupMembers(memberRects.map((m) => m.type)))
+          : null
+
+        const left = rect.x * zoom + vx
+        const top = rect.y * zoom + vy
         return (
           <div
             key={g.id}
             style={{
-              position: 'absolute', left, top, width: g.width * zoom, height: g.height * zoom,
-              border: `2px solid ${g.color}`, borderRadius: 8, background: hexA(g.color, 0.05),
-              pointerEvents: 'none', boxSizing: 'border-box',
+              position: 'absolute', left, top, width: rect.width * zoom, height: rect.height * zoom,
+              border: `1.5px solid ${hexA(g.color, 0.55)}`, borderRadius: 'var(--node-radius, 14px)',
+              background: hexA(g.color, 0.05),
+              pointerEvents: 'none', boxSizing: 'border-box', backdropFilter: 'blur(1px)',
             }}
           >
-            {/* 组头:拖动 / 双击改名 / 删除 */}
+            {/* 组头:拖动 / 双击改名 / 删除 + 计数副标题 */}
             <div
-              onPointerDown={(e) => startMove(e, g)}
+              onPointerDown={(e) => startMove(e, g, rect)}
               onDoubleClick={(e) => { e.stopPropagation(); setEditingId(g.id) }}
               style={{
-                height: headerH, display: 'flex', alignItems: 'center', gap: 6,
-                padding: `0 ${6 * zoom}px`, background: hexA(g.color, 0.18),
-                borderRadius: '6px 6px 0 0', pointerEvents: 'auto', cursor: 'move',
-                overflow: 'hidden',
+                minHeight: headerH, display: 'flex', alignItems: 'center', gap: 6,
+                padding: `${3 * zoom}px ${8 * zoom}px`, background: hexA(g.color, 0.16),
+                borderRadius: 'var(--node-radius, 14px) var(--node-radius, 14px) 0 0',
+                pointerEvents: 'auto', cursor: 'move', overflow: 'hidden',
               }}
             >
-              {editingId === g.id ? (
-                <input
-                  autoFocus
-                  defaultValue={g.title}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onBlur={(e) => { updateGroup(g.id, { title: e.target.value || '分组' }); setEditingId(null) }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') { updateGroup(g.id, { title: (e.target as HTMLInputElement).value || '分组' }); setEditingId(null) }
-                    if (e.key === 'Escape') setEditingId(null)
-                  }}
-                  style={{
-                    flex: 1, minWidth: 0, fontSize, fontWeight: 600, color: 'var(--text)',
-                    background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 4px',
-                  }}
-                />
-              ) : (
-                <span style={{ flex: 1, minWidth: 0, fontSize, fontWeight: 600, color: 'var(--text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {g.title}
-                </span>
-              )}
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {editingId === g.id ? (
+                  <input
+                    autoFocus
+                    defaultValue={g.title}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onBlur={(e) => { updateGroup(g.id, { title: e.target.value || '分组' }); setEditingId(null) }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { updateGroup(g.id, { title: (e.target as HTMLInputElement).value || '分组' }); setEditingId(null) }
+                      if (e.key === 'Escape') setEditingId(null)
+                    }}
+                    style={{
+                      width: '100%', fontSize: titleSize, fontWeight: 700, color: 'var(--text)',
+                      background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 4px',
+                    }}
+                  />
+                ) : (
+                  <span style={{
+                    fontSize: titleSize, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+                    color: 'var(--text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  }}>
+                    {g.title}
+                  </span>
+                )}
+                {subtitle && (
+                  <span style={{ fontSize: subSize, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {subtitle}
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
                 title="删除分组(不删节点)"
@@ -185,16 +223,18 @@ export default function GroupLayer() {
                 <X size={Math.min(16, Math.max(10, 13 * zoom))} />
               </button>
             </div>
-            {/* 右下角缩放手柄 */}
-            <div
-              onPointerDown={(e) => startResize(e, g)}
-              style={{
-                position: 'absolute', right: 0, bottom: 0, width: 16, height: 16,
-                pointerEvents: 'auto', cursor: 'nwse-resize',
-                background: `linear-gradient(135deg, transparent 50%, ${g.color} 50%)`,
-                borderRadius: '0 0 6px 0',
-              }}
-            />
+            {/* 右下角缩放手柄(仅 legacy;autoFit 框尺寸由内容决定) */}
+            {!autoFit && (
+              <div
+                onPointerDown={(e) => startResize(e, g, rect)}
+                style={{
+                  position: 'absolute', right: 0, bottom: 0, width: 16, height: 16,
+                  pointerEvents: 'auto', cursor: 'nwse-resize',
+                  background: `linear-gradient(135deg, transparent 50%, ${g.color} 50%)`,
+                  borderRadius: '0 0 6px 0',
+                }}
+              />
+            )}
           </div>
         )
       })}
