@@ -74,10 +74,13 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
     ?? (selected ? 'var(--accent)' : hovered ? 'var(--border-strong)' : 'var(--border)')
   const boxShadow = stateOutline?.shadow
     ?? (selected
-      ? 'var(--shadow-md), 0 0 0 2px var(--accent-subtle)'
+      ? 'var(--shadow-lg), 0 0 0 1.5px var(--accent)'
       : hovered
         ? 'var(--shadow-md), 0 0 0 1px var(--border-strong)'
         : 'var(--shadow-md)')
+
+  // Infinite-Canvas 风:端口默认低调,hover/选中时高亮放大 + 标签显形。
+  const portActive = hovered || !!selected
 
   return (
     <div
@@ -91,7 +94,7 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
         flexDirection: 'column',
         background: 'var(--card)',
         border: `1px solid ${borderColor}`,
-        borderRadius: 8,
+        borderRadius: 'var(--node-radius, 14px)',
         boxShadow,
         transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
       }}
@@ -106,7 +109,7 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
           padding: '6px 10px',
           borderBottom: collapsed ? 'none' : '1px solid var(--border)',
           background: 'var(--card-hl)',
-          borderRadius: collapsed ? 8 : '8px 8px 0 0',
+          borderRadius: collapsed ? 'var(--node-radius, 14px)' : 'var(--node-radius, 14px) var(--node-radius, 14px) 0 0',
           cursor: 'pointer',
           userSelect: 'none',
           position: 'relative',
@@ -137,7 +140,17 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
         >
           &#9660;
         </span>
-        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-strong)' }}>{title}</span>
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 700,
+            color: 'var(--text)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+          }}
+        >
+          {title}
+        </span>
         {badge && (
           <span
             className="ml-auto"
@@ -185,21 +198,26 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
                 id={row.input.id}
                 style={{
                   background: PORT_TYPE_COLORS[row.input.type] ?? 'var(--muted)',
-                  width: 10,
-                  height: 10,
+                  width: 12,
+                  height: 12,
                   border: '2px solid var(--card)',
-                  left: -5,
+                  left: -6,
+                  boxShadow: portActive ? '0 0 0 3px var(--accent-subtle)' : 'none',
+                  transition: 'box-shadow 0.15s ease',
                 }}
               />
               {!collapsed && (
                 <span
                   style={{
                     fontSize: 10,
-                    // 端口标签按类型着色(PR-3):与端口圆点 + 连线同色,强化类型系统视觉一致。
+                    // 端口标签按类型着色:与端口圆点 + 连线同色,强化类型系统视觉一致。
+                    // Infinite-Canvas 风:标签默认弱化,hover/选中显形。
                     color: PORT_TYPE_COLORS[row.input.type] ?? 'var(--muted)',
                     fontWeight: 500,
                     letterSpacing: 0.2,
                     flexShrink: 0,
+                    opacity: portActive ? 1 : 0.55,
+                    transition: 'opacity 0.15s ease',
                   }}
                 >
                   {row.input.label}
@@ -219,6 +237,8 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
                     marginLeft: 'auto',
                     textAlign: 'right',
                     flexShrink: 0,
+                    opacity: portActive ? 1 : 0.55,
+                    transition: 'opacity 0.15s ease',
                   }}
                 >
                   {row.output.label}
@@ -230,10 +250,12 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
                 id={row.output.id}
                 style={{
                   background: PORT_TYPE_COLORS[row.output.type] ?? 'var(--muted)',
-                  width: 10,
-                  height: 10,
+                  width: 12,
+                  height: 12,
                   border: '2px solid var(--card)',
-                  right: -5,
+                  right: -6,
+                  boxShadow: portActive ? '0 0 0 3px var(--accent-subtle)' : 'none',
+                  transition: 'box-shadow 0.15s ease',
                 }}
               />
             </>
