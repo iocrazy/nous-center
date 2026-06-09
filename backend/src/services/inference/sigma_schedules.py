@@ -210,3 +210,32 @@ def compute_sigmas(scheduler: str, steps: int, shift: float = 3.0) -> list[float
         raise ValueError(f"未知 scheduler: {scheduler!r}(支持:{sorted(SIGMA_SCHEDULES)})")
     ms = FlowModelSampling(shift=shift)
     return fn(ms, steps)
+
+
+def split_sigmas(
+    full_sigmas: list[float], *,
+    start_at_step: int = 0, end_at_step: int | None = None, force_full_denoise: bool = False,
+) -> list[float]:
+    """KSamplerAdvanced 留噪分段切片(spec 2026-06-08 路 B,**逐行对照 ComfyUI** comfy/samplers.py
+    `KSampler.sample` 1164-1175)。
+
+    full_sigmas = compute_sigmas 出的 steps+1 个(末尾 0)= ComfyUI `self.sigmas`。
+    - end_at_step = ComfyUI last_step:`if end<len-1: sigmas=sigmas[:end+1]`;留噪(return_with_leftover_noise
+      =enable → force_full_denoise=False)时**不**把末 sigma 置 0,余噪带出去交接。force_full_denoise=True
+      (return_with_leftover_noise=disable)→ `sigmas[-1]=0` 强制去到底。
+    - start_at_step = ComfyUI start_step:`if start<len-1: sigmas=sigmas[start:]`,从中间噪声水平起步
+      (续采:配 add_noise=disable 注入上段带噪 latent)。
+
+    返回这段实际要跑的 sigma 子序列(含末尾值;调用方按 pipe 是否自 append 0 决定去不去末尾 0)。
+    """
+    sigmas = list(full_sigmas)
+    if end_at_step is not None and end_at_step < len(sigmas) - 1:
+        sigmas = sigmas[: end_at_step + 1]
+        if force_full_denoise:
+            sigmas[-1] = 0.0
+    if start_at_step and start_at_step > 0:
+        if start_at_step < len(sigmas) - 1:
+            sigmas = sigmas[start_at_step:]
+        else:
+            sigmas = sigmas[-1:]
+    return sigmas
