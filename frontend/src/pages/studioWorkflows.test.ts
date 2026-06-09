@@ -118,4 +118,23 @@ describe('buildChainWorkflow 跨模型链式采样图', () => {
     expect(wf.nodes.find((n) => n.id === 'k1')?.data.seed).toBe('101')
     expect(wf.nodes.find((n) => n.id === 'k2')?.data.seed).toBe('102')
   })
+
+  it('无 strength 时 ks.data 不含 strength(零回归:默认文生图/纯重生成)', () => {
+    for (const k of ['k0', 'k1', 'k2']) {
+      expect(wf.nodes.find((n) => n.id === k)?.data).not.toHaveProperty('strength')
+    }
+  })
+
+  it('PR-A3:z-image 段(i>0)的 strength 透传进 ks.data;第 0 段无上游图不透传', () => {
+    const st: ChainStage[] = [
+      { ckpt: '/m/Z', arch: 'z-image', prompt: 'a', steps: 8, cfg: 1, strength: 0.6 },
+      { ckpt: '/m/Z', arch: 'z-image', prompt: 'b', steps: 8, cfg: 1, strength: 0.6 },
+    ]
+    const { workflow: w } = buildChainWorkflow(st, { width: 512, height: 512, seed: 1 })
+    const n = (w as unknown as { nodes: { id: string; data: Record<string, unknown> }[] }).nodes
+    // 第 0 段无上游图 → strength 不写(i>0 才有意义)
+    expect(n.find((x) => x.id === 'k0')?.data).not.toHaveProperty('strength')
+    // 第 1 段有上游图 → strength 透传(引擎再按 arch/范围门控)
+    expect(n.find((x) => x.id === 'k1')?.data.strength).toBe(0.6)
+  })
 })
