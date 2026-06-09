@@ -113,6 +113,10 @@ class ImageRequest(InferenceRequest):
     # 决定是否注入(见 model_arch_adapter.ImageArchSpec.needs_image_input)。runner 把节点传来的
     # 签名 URL 经 _resolve_input_image_path 解析成本地路径再塞这里(避免 base64 大图过 msgpack pipe)。
     input_image: str | None = None
+    # 输出模式(spec 2026-06-08 路 B,PR-B1):"image"=终端 VAE decode 出图(默认,字节零回归);
+    # "latent"=终端不 decode,把真 latent 张量落盘,返 latent_ref 描述符(同空间真 latent 接力用,
+    # 下游 sample_from_latent 注入 latents= 接续去噪)。引擎据此对 pipe 传 output_type="latent"。
+    output_mode: str = "image"
     # PR-4: component path. When set, the runner routes through
     # ModelManager.get_or_load_image_adapter instead of model_key. None ⇒
     # legacy model_key path (back-compat).

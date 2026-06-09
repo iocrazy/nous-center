@@ -396,6 +396,9 @@ def _build_request(node: P.RunNode):
                 offload=unet_offload,
                 seed=int(lseed) if lseed not in (None, "") else None,
                 input_image=input_image_resolved,
+                # 路 B(PR-B1):flux2_vae_decode 自己的 output_mode widget(image|latent)→ node.inputs
+                # (dispatch 节点的 widget 同 seedvr2 的 resolution 一样进 inputs)。默认 image 零回归。
+                output_mode=str(node.inputs.get("output_mode") or "image"),
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
                     "clip": ComponentSpec(**clip_spec),
@@ -657,7 +660,16 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
         # outputs,下游 image_output 节点才能从 inputs.image_url 取到。把 bytes
         # 通过 msgpack pipe 直接传 50MB 是反模式。
         outputs: dict[str, Any] = {"meta": result.metadata, "media_type": result.media_type}
-        if (node.node_type in ("image", "upscale")
+        # 路 B(PR-B1)latent 模式:引擎返序列化 latent 字节(media_type=application/x-latent)→
+        # 落盘成 latent_ref.path(本地路径,不进 msgpack 张量),下游 sample_from_latent 从 path 读回。
+        if (node.node_type == "image" and result.media_type == "application/x-latent"
+                and result.data):
+            from src.services.latent_storage import write_latent  # noqa: PLC0415
+            rec = write_latent(result.data)
+            lm = (result.metadata or {}).get("latent") or {}
+            outputs["latent_ref"] = {"_type": "latent_ref", "path": rec["path"],
+                                     "uuid": rec["uuid"], **lm}
+        elif (node.node_type in ("image", "upscale")
                 and result.media_type.startswith("image/") and result.data):
             from src.config import get_settings  # noqa: PLC0415
             from src.services.image_output_storage import write_image
