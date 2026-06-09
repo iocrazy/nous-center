@@ -73,6 +73,45 @@ describe('SchemaDrivenForm', () => {
     expect(onSubmit).toHaveBeenCalledWith({ temperature: 0.7 })
   })
 
+  it('renders a slider (range + number) when numeric with min/max', () => {
+    const { onSubmit } = setup([
+      {
+        node_id: 'in_s', key: 'steps', input_name: 'steps', label: '步数',
+        type: 'number', constraints: { min: 1, max: 100, step: 1 }, default: 20,
+      },
+    ])
+    const range = screen.getByRole('slider') as HTMLInputElement
+    expect(range).toBeInTheDocument()
+    expect(range.min).toBe('1')
+    expect(range.max).toBe('100')
+    fireEvent.change(range, { target: { value: '30' } })
+    fireEvent.click(screen.getByText(/▶ 运行/))
+    expect(onSubmit).toHaveBeenCalledWith({ steps: 30 })
+  })
+
+  it('shows a randomize button for seed-like numeric fields and sets a number', () => {
+    const { onSubmit } = setup([
+      { node_id: 'in_seed', key: 'seed', input_name: 'seed', label: '种子', type: 'integer' },
+    ])
+    fireEvent.click(screen.getByLabelText('随机种子'))
+    fireEvent.click(screen.getByText(/▶ 运行/))
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    const arg = onSubmit.mock.calls[0][0] as Record<string, unknown>
+    expect(typeof arg.seed).toBe('number')
+  })
+
+  it('uses enum_labels for select option text', () => {
+    setup([
+      {
+        node_id: 'in_e', key: 'mode', input_name: 'mode', label: '模式', type: 'string',
+        constraints: { enum: ['a', 'b'], enum_labels: { a: '甲', b: '乙' } },
+      },
+    ])
+    const sel = screen.getByRole('combobox') as HTMLSelectElement
+    expect(Array.from(sel.options).map((o) => o.textContent)).toEqual(['甲', '乙'])
+    expect(Array.from(sel.options).map((o) => o.value)).toEqual(['a', 'b'])
+  })
+
   it('honors legacy aliases (api_name + param_key) on backfilled rows', () => {
     const { onSubmit } = setup([
       { node_id: 'in_6', api_name: 'prompt', param_key: 'value', label: '提示', type: 'string' },
