@@ -99,6 +99,11 @@ class ImageRequest(InferenceRequest):
     # scheduler = sigma 调度(normal=默认 / karras / exponential / beta → use_*_sigmas)。
     sampler_name: str = "euler"
     scheduler: str = "normal"
+    # img2img 降噪强度(0..1):**仅当架构注册了 img2img 变体(z-image)且连了 input_image** 时生效
+    # (spec 2026-06-08-multi-sampling-cross-model PR-A2)。1.0 = 全量去噪 ≈ 忽略输入图(等同纯文生图/
+    # 参考编辑,零回归);<1 = 从输入图 VAE-encode 后加噪到该比例再去噪(同模型加噪重去噪 refine)。
+    # 无 img2img 变体的架构(Flux2-Klein 走多参考编辑条件)忽略此值。
+    strength: float = Field(1.0, ge=0, le=1)
     # PR-D:权重 offload 目标(none = 不 offload;cpu = enable_model_cpu_offload 把不用的组件挪 CPU,慢
     # 但让大模型塞进小显存,如 True-v2 bf16 进 3090 24GB)。cuda:N 跨卡 offload 留 PR-D2。
     offload: str = "none"

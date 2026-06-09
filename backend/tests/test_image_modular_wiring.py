@@ -483,3 +483,53 @@ def test_unload_resets_sched_key():
     be._model = be._pipe
     be.unload()
     assert be._sched_key == ("euler", "normal")
+
+
+# ---- PR-A2:img2img(z-image strength)门控 + img2img pipe 复用组件 ----------------
+
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.mark.parametrize("pipeline_class,input_image,strength,expected", [
+    ("ZImagePipeline", "/tmp/a.png", 0.6, True),    # z-image 有 img2img 变体 + 图 + 0<s<1 → img2img
+    ("ZImagePipeline", "/tmp/a.png", 1.0, False),   # strength=1 = 全量去噪 ≈ 文生图(零回归)
+    ("ZImagePipeline", "/tmp/a.png", 0.0, False),   # strength=0 边界 → 不 img2img
+    ("ZImagePipeline", None, 0.6, False),           # 没连输入图 → 不 img2img
+    ("Flux2KleinPipeline", "/tmp/a.png", 0.6, False),  # flux2 无 img2img 变体(接图走多参考编辑)
+    ("QwenImageEditPlusPipeline", "/tmp/a.png", 0.6, False),  # qwen-edit 无 img2img 变体
+])
+def test_wants_img2img_gating(pipeline_class, input_image, strength, expected):
+    """img2img 门控:仅 arch 注册了 img2img_pipeline_class + 连了 input_image + 0<strength<1。"""
+    be = image_modular.ModularImageBackend(repo="/m/x", device="cpu", pipeline_class=pipeline_class)
+    req = ImageRequest(request_id="t", prompt="x", input_image=input_image, strength=strength)
+    assert be._wants_img2img(req) is expected
+
+
+def test_ensure_img2img_pipe_reuses_components(monkeypatch):
+    """_ensure_img2img_pipe 用 text2img pipe 的 components 构建 img2img 类(不重载权重)。"""
+    base = MagicMock(name="base_pipe")
+    base.components = {"transformer": "T", "vae": "V", "text_encoder": "E"}
+    img_pipe = MagicMock(name="img2img_pipe")
+    img_cls = MagicMock(name="ZImageImg2ImgPipeline", return_value=img_pipe)
+    monkeypatch.setattr(image_modular, "_import_img2img_pipeline", lambda cls_name: img_cls)
+
+    be = image_modular.ModularImageBackend(repo="/m/z", device="cpu", pipeline_class="ZImagePipeline")
+    be._pipe = base  # _ensure_pipe 早退返回它(不构建真 pipe)
+    be._model = base
+
+    got = be._ensure_img2img_pipe()
+    assert got is img_pipe
+    img_cls.assert_called_once_with(transformer="T", vae="V", text_encoder="E")  # 复用组件
+    # 二次调用缓存,不重建
+    assert be._ensure_img2img_pipe() is img_pipe
+    img_cls.assert_called_once()
+
+
+def test_unload_clears_img2img_pipe():
+    """unload 清 _img2img_pipe(与 _pipe 共享组件,随之释放)。"""
+    be = image_modular.ModularImageBackend(repo="/m/z", device="cpu", pipeline_class="ZImagePipeline")
+    be._pipe = MagicMock(name="pipe")
+    be._img2img_pipe = MagicMock(name="img2img")
+    be._model = be._pipe
+    be.unload()
+    assert be._img2img_pipe is None

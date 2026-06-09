@@ -117,12 +117,17 @@ class ImageArchSpec:
              diffusers pipeline)/ "anima"(AnimaImageBackend,自定义 DiT)。
     caps: 采样器/CFG/步数等能力(ModularImageBackend 的采样器校验消费;anima 不经此校验)。
     needs_image_input: 编辑类架构(qwen-edit / flux2 多参考编辑)需要输入图。
+    img2img_pipeline_class: 真 img2img 变体(VAE-encode 输入图 + strength 加噪重去噪)的 diffusers 类名。
+        仅部分架构有(z-image=ZImageImg2ImgPipeline);None=无 img2img 变体(Flux2-Klein 接图走多参考
+        编辑条件,非 strength img2img)。引擎在「连了 input_image + 0<strength<1」时切到此 pipeline
+        (spec 2026-06-08-multi-sampling-cross-model PR-A2)。
     """
     arch: str
     pipeline_class: str
     adapter: str
     caps: ModelArchAdapter
     needs_image_input: bool = False
+    img2img_pipeline_class: str | None = None
 
 
 class ZImageTurboArchAdapter:
@@ -186,7 +191,9 @@ IMAGE_ARCH_REGISTRY: dict[str, ImageArchSpec] = {
     # anima 走 AnimaImageBackend(自定义 DiT),caps 占位(不经 ModularImageBackend 采样器校验)。
     "anima": ImageArchSpec("anima", "AnimaPipeline", "anima", FluxKleinArchAdapter()),
     # Z-Image-Turbo 文生图(P1):走 ModularImageBackend 的 ZImagePipeline 分支。
-    "z-image": ImageArchSpec("z-image", "ZImagePipeline", "modular", ZImageTurboArchAdapter()),
+    # img2img 变体 ZImageImg2ImgPipeline(PR-A2):连 input_image + 0<strength<1 时切到它做加噪重去噪。
+    "z-image": ImageArchSpec("z-image", "ZImagePipeline", "modular", ZImageTurboArchAdapter(),
+                             img2img_pipeline_class="ZImageImg2ImgPipeline"),
     # Qwen-Image-Edit-2511 角度控制/编辑(P2):needs_image_input=True;走 QwenImageEditPlusPipeline 分支。
     "qwen-edit": ImageArchSpec("qwen-edit", "QwenImageEditPlusPipeline", "modular",
                                QwenImageEditArchAdapter(), needs_image_input=True),

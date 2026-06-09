@@ -185,6 +185,10 @@ nodes:
       - { name: height,     label: "高度",  widget: slider, min: 256, max: 2048, step: 64, default: 1024 }
       - { name: steps,      label: "步数",  widget: slider, min: 1,   max: 100,  step: 1,  default: 25 }
       - { name: cfg_scale,  label: "CFG",   widget: slider, min: 0,   max: 20,   step: 0.1, default: 4.0 }
+      # img2img 重绘强度(PR-A2):默认 1.0 = 全量去噪 ≈ 文生图(零回归)。仅当架构有 img2img 变体
+      # (Z-Image)+ 连了 image 端口 + <1 时生效(从输入图加噪到该比例再去噪);Flux2-Klein 接图走多
+      # 参考编辑条件、忽略此值。
+      - { name: strength,   label: "重绘强度(img2img)", widget: slider, min: 0, max: 1, step: 0.05, default: 1.0 }
       # 复刻 ComfyUI KSampler 两下拉(结构对齐,选项是 diffusers 的)。Flux2 是 flow-matching,
       # diffusers 只 3 个采样器兼容;sampler_name=scheduler 类,scheduler=sigma 调度(use_*_sigmas)。
       # 选了不支持的 → 后端 _validate_sampler_scheduler 清晰报错不出图。
