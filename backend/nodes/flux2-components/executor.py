@@ -199,6 +199,27 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
     }
     if input_image:
         latent["input_image"] = str(input_image)
+    # 留噪 latent 接力 / 分段采样(PR-B2,对齐 ComfyUI KSamplerAdvanced)。把字段透进描述符,
+    # runner _build_request 再摊进 ImageRequest;引擎 _wants_segmented 据此走手写分段去噪循环。
+    # 全默认(start=0/end空/add_noise=enable/无 init_latent)= 整段采样(零回归)。仅 z-image 同 16ch
+    # latent 空间生效;跨架构 latent 注入派发前人话报错(引擎 _load_init_latent 校验 arch/通道)。
+    raw_start = data.get("start_at_step")
+    if raw_start not in (None, ""):
+        latent["start_at_step"] = int(raw_start)
+    raw_end = data.get("end_at_step")
+    # end_at_step 空 / -1 = 跑到底(不截断);>=0 = 停在该步(留噪)。
+    if raw_end not in (None, "") and int(raw_end) >= 0:
+        latent["end_at_step"] = int(raw_end)
+    # add_noise / return_with_leftover_noise:checkbox(bool)。默认 add_noise=enable、
+    # return_with_leftover_noise=disable(对齐 ComfyUI 默认)。
+    if "add_noise" in data:
+        latent["add_noise"] = bool(data.get("add_noise"))
+    if "return_with_leftover_noise" in data:
+        latent["return_with_leftover_noise"] = bool(data.get("return_with_leftover_noise"))
+    # 续采输入:上段 VAE Decode(output_mode=latent)的 latent_ref 描述符,经 init_latent 端口接入。
+    init_latent = inputs.get("init_latent")
+    if isinstance(init_latent, dict) and init_latent.get("_type") == "latent_ref":
+        latent["init_latent_ref"] = init_latent
     return {"latent": latent}
 
 

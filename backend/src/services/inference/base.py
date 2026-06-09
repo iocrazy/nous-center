@@ -117,6 +117,20 @@ class ImageRequest(InferenceRequest):
     # "latent"=终端不 decode,把真 latent 张量落盘,返 latent_ref 描述符(同空间真 latent 接力用,
     # 下游 sample_from_latent 注入 latents= 接续去噪)。引擎据此对 pipe 传 output_type="latent"。
     output_mode: str = "image"
+    # 留噪 latent 接力 / 分段采样(spec 2026-06-08 路 B,PR-B2;对齐 ComfyUI KSamplerAdvanced)。
+    # 把一次 N 步去噪劈成多段(不同 LoRA/cfg/sampler),中途带噪 latent 直接交接(不过 VAE、不重加噪)。
+    # 任一字段非默认 → 引擎走「手写分段去噪循环」(_run_zimage_segmented),否则走整段 pipe()(零回归)。
+    #   start_at_step:从全 schedule 的第几步起(续采段;refiner 配 init_latent_ref + add_noise=False)。
+    #   end_at_step:跑到第几步停(None=跑到底);<steps 时停在带噪水平(base 段,配 return_with_leftover_noise)。
+    #   add_noise:注入 init_latent 时是否重加噪(False=原样续采=留噪接力;True=按 start sigma 加噪=img2img 风)。
+    #   return_with_leftover_noise:base 段停步时是否保留余噪(True=带噪交接;False=force_full_denoise 末步去到底)。
+    #   init_latent_ref:上段导出的 latent_ref(本地路径 + arch/latent_channels 元信息),引擎读回注入 latents=。
+    #     派发前校验 arch/latent_channels 与本段模型一致,不符 → 人话报错(对齐 anima arch-mismatch 校验)。
+    start_at_step: int = Field(0, ge=0, le=200)
+    end_at_step: int | None = Field(None, ge=0, le=200)
+    add_noise: bool = True
+    return_with_leftover_noise: bool = False
+    init_latent_ref: dict | None = None
     # PR-4: component path. When set, the runner routes through
     # ModelManager.get_or_load_image_adapter instead of model_key. None ⇒
     # legacy model_key path (back-compat).

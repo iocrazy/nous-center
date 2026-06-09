@@ -399,6 +399,15 @@ def _build_request(node: P.RunNode):
                 # 路 B(PR-B1):flux2_vae_decode 自己的 output_mode widget(image|latent)→ node.inputs
                 # (dispatch 节点的 widget 同 seedvr2 的 resolution 一样进 inputs)。默认 image 零回归。
                 output_mode=str(node.inputs.get("output_mode") or "image"),
+                # 留噪 latent 接力 / 分段采样(PR-B2):从 ksampler 描述符透传(exec_ksampler 写进 latent)。
+                # 全默认 = 整段采样(零回归);任一非默认 → 引擎走手写分段去噪循环(仅 z-image)。
+                # init_latent_ref 是上段 latent_ref(本地路径,runner 同机直接读,无需 URL 解析)。
+                start_at_step=int(latent.get("start_at_step") or 0),
+                end_at_step=(int(latent["end_at_step"]) if latent.get("end_at_step") is not None else None),
+                add_noise=bool(latent.get("add_noise", True)),
+                return_with_leftover_noise=bool(latent.get("return_with_leftover_noise", False)),
+                init_latent_ref=(latent.get("init_latent_ref")
+                                 if isinstance(latent.get("init_latent_ref"), dict) else None),
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
                     "clip": ComponentSpec(**clip_spec),

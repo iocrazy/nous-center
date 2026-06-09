@@ -69,6 +69,71 @@ async def test_ksampler_emits_descriptor_no_tensor():
 
 
 @pytest.mark.asyncio
+async def test_ksampler_no_segment_fields_default(_=None):
+    """无分段 widget → 描述符不带分段键(整段采样,零回归)。"""
+    mod = _load_mod()
+    out = await mod.exec_ksampler(
+        {"width": 512, "height": 512, "steps": 12, "cfg_scale": 1.0, "seed": 1},
+        {"model": _MODEL,
+         "conditioning": {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""}})
+    lat = out["latent"]
+    for k in ("start_at_step", "end_at_step", "add_noise", "return_with_leftover_noise", "init_latent_ref"):
+        assert k not in lat
+
+
+@pytest.mark.asyncio
+async def test_ksampler_segment_widgets_passthrough():
+    """PR-B2:base 留噪段 widget(end_at_step + return_with_leftover_noise)透进描述符。
+    end_at_step=-1 / "" = 跑到底(不写键);>=0 写键。"""
+    mod = _load_mod()
+    out = await mod.exec_ksampler(
+        {"width": 512, "height": 512, "steps": 12, "cfg_scale": 2.3, "seed": 7,
+         "end_at_step": 5, "return_with_leftover_noise": True, "add_noise": True},
+        {"model": _MODEL,
+         "conditioning": {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""}})
+    lat = out["latent"]
+    assert lat["end_at_step"] == 5
+    assert lat["return_with_leftover_noise"] is True
+    assert lat["add_noise"] is True
+    assert "start_at_step" not in lat  # 未设 → 不写(默认 0)
+
+
+@pytest.mark.asyncio
+async def test_ksampler_end_at_step_blank_runs_to_end():
+    """end_at_step 空 / -1 = 跑到底 → 不写 end_at_step 键(引擎默认 None)。"""
+    mod = _load_mod()
+    out = await mod.exec_ksampler(
+        {"steps": 12, "end_at_step": "", "start_at_step": 5, "add_noise": False},
+        {"model": _MODEL,
+         "conditioning": {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""}})
+    lat = out["latent"]
+    assert "end_at_step" not in lat
+    assert lat["start_at_step"] == 5
+    assert lat["add_noise"] is False
+
+
+@pytest.mark.asyncio
+async def test_ksampler_init_latent_ref_from_port():
+    """PR-B2:续采段 —— init_latent 端口接上段 latent_ref(_type=latent_ref)→ 写进描述符。
+    非 latent_ref(误连 / 空)= 不写(零回归)。"""
+    mod = _load_mod()
+    ref = {"_type": "latent_ref", "path": "/nas/latents/x.safetensors", "arch": "z-image", "latent_channels": 16}
+    out = await mod.exec_ksampler(
+        {"steps": 12, "start_at_step": 5, "add_noise": False},
+        {"model": _MODEL,
+         "conditioning": {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""},
+         "init_latent": ref})
+    assert out["latent"]["init_latent_ref"] == ref
+    # 误连非 latent_ref → 不写
+    out2 = await mod.exec_ksampler(
+        {"steps": 12},
+        {"model": _MODEL,
+         "conditioning": {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""},
+         "init_latent": {"_type": "flux2_latent"}})
+    assert "init_latent_ref" not in out2["latent"]
+
+
+@pytest.mark.asyncio
 async def test_ksampler_seed_blank_is_none():
     mod = _load_mod()
     out = await mod.exec_ksampler(

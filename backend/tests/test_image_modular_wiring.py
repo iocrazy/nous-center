@@ -533,3 +533,54 @@ def test_unload_clears_img2img_pipe():
     be._model = be._pipe
     be.unload()
     assert be._img2img_pipe is None
+
+
+# ---- PR-B2:留噪 latent 接力 / 分段采样门控 + 派发前 arch 校验 -----------------------
+
+
+@_pytest.mark.parametrize("pipeline_class,kwargs,expected", [
+    # z-image + 各分段字段非默认 → 走手写分段循环
+    ("ZImagePipeline", {"start_at_step": 5}, True),                       # 续采段
+    ("ZImagePipeline", {"end_at_step": 5, "steps": 12}, True),            # base 留噪截断段
+    ("ZImagePipeline", {"add_noise": False}, True),                       # 注入原样续采
+    ("ZImagePipeline", {"init_latent_ref": {"path": "/t/x.safetensors"}}, True),
+    # 全默认 → 整段采样(零回归)
+    ("ZImagePipeline", {}, False),
+    ("ZImagePipeline", {"start_at_step": 0, "add_noise": True}, False),
+    ("ZImagePipeline", {"end_at_step": 12, "steps": 12}, False),          # end>=steps 不截断 → 不触发
+    # 跨模型 latent 不兼容:Flux2 / qwen 即便带分段字段也不走此路(只 z-image 同 16ch 空间)
+    ("Flux2KleinPipeline", {"start_at_step": 5, "init_latent_ref": {"path": "/t/x"}}, False),
+    ("QwenImageEditPlusPipeline", {"add_noise": False}, False),
+])
+def test_wants_segmented_gating(pipeline_class, kwargs, expected):
+    """分段采样门控:仅 ZImagePipeline + 任一分段字段真正非默认。"""
+    be = image_modular.ModularImageBackend(repo="/m/x", device="cpu", pipeline_class=pipeline_class)
+    req = ImageRequest(request_id="t", prompt="x", **kwargs)
+    assert be._wants_segmented(req) is expected
+
+
+def test_load_init_latent_rejects_cross_arch():
+    """跨架构 latent 注入(flux2 latent → z-image 段)派发前人话报错,不崩 transformer 深处
+    (对齐 [[project_anima_arch_mismatch]])。校验在读文件前 → 无需真 latent 文件/torch。"""
+    be = image_modular.ModularImageBackend(repo="/m/z", device="cpu", pipeline_class="ZImagePipeline")
+    req = ImageRequest(request_id="t", prompt="x",
+                       init_latent_ref={"path": "/t/x.safetensors", "arch": "flux2", "latent_channels": 128})
+    with pytest.raises(ValueError, match="架构不匹配|不兼容"):
+        be._load_init_latent(req, "cpu")
+
+
+def test_load_init_latent_rejects_missing_path():
+    be = image_modular.ModularImageBackend(repo="/m/z", device="cpu", pipeline_class="ZImagePipeline")
+    req = ImageRequest(request_id="t", prompt="x", init_latent_ref={"arch": "z-image"})
+    with pytest.raises(ValueError, match="缺 path"):
+        be._load_init_latent(req, "cpu")
+
+
+def test_segmented_fields_default_zero_regression():
+    """ImageRequest 分段字段默认值 = 不触发分段(契约零回归)。"""
+    req = ImageRequest(request_id="t", prompt="x")
+    assert req.start_at_step == 0
+    assert req.end_at_step is None
+    assert req.add_noise is True
+    assert req.return_with_leftover_noise is False
+    assert req.init_latent_ref is None

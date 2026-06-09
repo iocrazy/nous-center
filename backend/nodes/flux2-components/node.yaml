@@ -178,6 +178,10 @@ nodes:
       # (链式编辑)的 image 端口。连了 → 编辑模式(Flux2 多参考 / Qwen-Image-Edit);不连 → 纯文生图。
       # 引擎按 pipeline 是否支持 image= 决定注入(Z-Image 不支持 → 忽略);零回归。
       - { id: image,         type: image,        label: "输入图(可选)", optional: true }
+      # 续采输入(留噪 latent 接力,PR-B2):接上一段 VAE Decode(output_mode=latent)的 latent_ref。
+      # 连了 + start_at_step>0 + 加噪关 → 不重加噪从中段续采(KSamplerAdvanced add_noise=disable 语义)。
+      # 仅 Z-Image 同 16ch latent 空间;跨架构注入引擎派发前人话报错。不连 = 普通采样(零回归)。
+      - { id: init_latent,   type: LATENT_REF,   label: "续采 Latent(可选)", optional: true }
     outputs:
       - { id: latent, type: LATENT, label: LATENT }
     widgets:
@@ -218,6 +222,15 @@ nodes:
           - { value: linear_quadratic, label: "Linear Quadratic", description: "前段线性后段二次 — Mochi 风格" }
           - { value: kl_optimal,       label: "KL Optimal",       description: "KL 最优(arctan 插值)" }
       - { name: seed,       label: "Seed",  widget: input, default: "" }
+      # 留噪 latent 接力 / 分段采样(PR-B2,对齐 ComfyUI KSamplerAdvanced)。默认全关 = 整段采样(零回归)。
+      # 仅 Z-Image(同 16ch latent 空间)生效:把一次去噪劈成 base(end_at_step 处留噪、output_mode=latent
+      # 导出带噪 latent)+ refiner(start_at_step 注入 + 加噪关 续采到 0),两段各用不同 LoRA/CFG/采样器。
+      # 跨模型(Flux2)latent 物理不兼容,走像素链(路 A 参考编辑 / img2img),别用此组。
+      - { name: start_at_step, label: "起始步(续采)", widget: slider, min: 0, max: 100, step: 1, default: 0 }
+      # 结束步:留空或 -1 = 跑到底(不截断);>=0 = 停在该步(配「保留余噪」带噪交接给下段)。
+      - { name: end_at_step, label: "结束步(留噪;空=到底)", widget: input, default: "" }
+      - { name: add_noise, label: "加噪(注入 latent 时;续采关此项)", widget: checkbox, default: true }
+      - { name: return_with_leftover_noise, label: "保留余噪(base 段交接用)", widget: checkbox, default: false }
       # 对齐 ComfyUI control_after_generate(纯前端,每次 Run 后按模式更新上面的 seed):
       # fixed=不变 / increment=+1 / decrement=-1 / randomize=随机。本 widget 不传后端
       # (前端在 Run 完成后改 seed 值)。default=fixed(比 ComfyUI 的 randomize 保守,
@@ -246,6 +259,9 @@ nodes:
     # image_generate emits — workflow_executor forwards the full dict.
     outputs:
       - { id: image, type: image, label: 图像 }
+      # 留噪 latent 接力(PR-B2):output_mode=latent 时产 latent_ref(落盘真 latent 引用),接下游
+      # KSampler 的 init_latent 端口续采。output_mode=image 时此端口无输出(下游续采取不到 = 纯出图)。
+      - { id: latent_ref, type: LATENT_REF, label: "Latent(接力)" }
     widgets:
       # 路 B(spec 2026-06-08,PR-B1):输出模式。默认 image=解码出图(现有行为,字节零回归);
       # latent=不解码,把真 latent 张量落盘传 latent_ref(同空间真 latent 接力,下游 sample_from_latent
