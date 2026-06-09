@@ -1,4 +1,5 @@
 import { useState, useMemo, type ChangeEvent, type FormEvent } from 'react'
+import { Dices } from 'lucide-react'
 import type { ExposedParam } from '../../api/services'
 import { paramKey, paramSlot } from '../../api/services'
 
@@ -19,11 +20,23 @@ type FieldKind =
   | 'boolean'
   | 'file'
   | 'select'
+  | 'slider'
+
+function num(v: unknown): number | undefined {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
+}
 
 function classifyField(p: ExposedParam): FieldKind {
   const constraints = (p.constraints ?? {}) as Record<string, unknown>
   if (Array.isArray(constraints.enum) && constraints.enum.length > 0) return 'select'
   const t = (p.type ?? 'string').toLowerCase()
+  const numeric = t === 'integer' || t === 'int' || t === 'number' || t === 'float'
+  // Numeric field with a bounded range → slider (对齐 Infinite-Canvas / nous
+  // 节点的 slider widget,min/max/step 从 ExposedParam.constraints 带出)。
+  if (numeric && num(constraints.min) !== undefined && num(constraints.max) !== undefined) {
+    return 'slider'
+  }
   if (t === 'integer' || t === 'int') return 'integer'
   if (t === 'number' || t === 'float') return 'number'
   if (t === 'boolean' || t === 'bool') return 'boolean'
@@ -35,11 +48,32 @@ function classifyField(p: ExposedParam): FieldKind {
   return 'string_multiline'
 }
 
+/** Seed-like numeric field → show a 🎲 randomize button. Opt-in via
+ *  constraints.random, or auto-detected by a `seed` key/slot name. */
+function isRandomizable(p: ExposedParam): boolean {
+  const constraints = (p.constraints ?? {}) as Record<string, unknown>
+  if (constraints.random === true) return true
+  const name = `${paramKey(p) ?? ''} ${paramSlot(p) ?? ''}`.toLowerCase()
+  return /seed/.test(name)
+}
+
+function randomSeed(): number {
+  // 0..2^31-1 — 安全整数范围内,够用作种子。crypto 优先,回退到时间。
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    return crypto.getRandomValues(new Uint32Array(1))[0] % 2147483647
+  }
+  return Math.floor(Date.now() % 2147483647)
+}
+
 function defaultFor(p: ExposedParam): unknown {
   if (p.default !== undefined && p.default !== null) return p.default
   switch (classifyField(p)) {
     case 'boolean':
       return false
+    case 'slider': {
+      const c = (p.constraints ?? {}) as Record<string, unknown>
+      return num(c.min) ?? 0
+    }
     case 'number':
     case 'integer':
       return ''
@@ -160,7 +194,8 @@ function Field({
 }) {
   const kind = classifyField(param)
   const slot = paramSlot(param) ?? '?'
-  const typeBadge = kind === 'string_multiline' ? 'string' : kind
+  const typeBadge =
+    kind === 'string_multiline' ? 'string' : kind === 'slider' ? 'number' : kind
 
   return (
     <div className="flex flex-col gap-2 mb-4">
@@ -243,19 +278,64 @@ function FieldInput({
   }
 
   if (kind === 'select') {
-    const opts = ((param.constraints as { enum?: unknown[] } | undefined)?.enum ?? []) as unknown[]
+    const c = (param.constraints ?? {}) as { enum?: unknown[]; enum_labels?: unknown }
+    const opts = (c.enum ?? []) as unknown[]
+    // enum_labels: 平行数组或 {value: label} 映射,缺省用 value 本身。
+    const labels = c.enum_labels
+    const labelFor = (o: unknown, i: number): string => {
+      if (Array.isArray(labels)) return String(labels[i] ?? o)
+      if (labels && typeof labels === 'object') {
+        const m = labels as Record<string, unknown>
+        return String(m[String(o)] ?? o)
+      }
+      return String(o)
+    }
     return (
       <select
         value={String(value ?? '')}
         onChange={(e) => onChange(e.target.value)}
         style={inputStyle}
       >
-        {opts.map((o) => (
+        {opts.map((o, i) => (
           <option key={String(o)} value={String(o)}>
-            {String(o)}
+            {labelFor(o, i)}
           </option>
         ))}
       </select>
+    )
+  }
+
+  if (kind === 'slider') {
+    const c = (param.constraints ?? {}) as Record<string, unknown>
+    const min = num(c.min) ?? 0
+    const max = num(c.max) ?? 1
+    const step = num(c.step) ?? (Number.isInteger(min) && Number.isInteger(max) ? 1 : 0.01)
+    const v = num(value) ?? min
+    const set = (raw: string) => {
+      if (raw === '') return onChange('')
+      onChange(Number(raw))
+    }
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={v}
+          onChange={(e) => set(e.target.value)}
+          style={{ flex: 1, accentColor: 'var(--accent)' }}
+        />
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={(value as number | string) ?? ''}
+          onChange={(e) => set(e.target.value)}
+          style={{ ...inputStyle, width: 92, flexShrink: 0 }}
+        />
+      </div>
     )
   }
 
@@ -273,7 +353,7 @@ function FieldInput({
   }
 
   if (kind === 'number' || kind === 'integer') {
-    return (
+    const numberInput = (
       <input
         type="number"
         step={kind === 'integer' ? 1 : 'any'}
@@ -286,29 +366,68 @@ function FieldInput({
         style={inputStyle}
       />
     )
+    if (!isRandomizable(param)) return numberInput
+    // Seed-like field → 数字框 + 🎲 随机按钮。
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ flex: 1 }}>{numberInput}</div>
+        <button
+          type="button"
+          title="随机种子"
+          aria-label="随机种子"
+          onClick={() => onChange(randomSeed())}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: 30, height: 30, flexShrink: 0,
+            background: 'var(--bg)', border: '1px solid var(--border)',
+            borderRadius: 4, color: 'var(--text)', cursor: 'pointer',
+          }}
+        >
+          <Dices size={15} />
+        </button>
+      </div>
+    )
   }
 
   if (kind === 'file') {
-    const f = value as File | null
+    // value 存的是 data-URI 字符串(JSON 可序列化);File 对象不能进 JSON body
+    // —— 旧实现直接把 File 塞进 values,JSON.stringify 成 {} → 后端收到空图。
+    const dataUri = typeof value === 'string' && value.startsWith('data:') ? value : null
+    const t = (param.type ?? '').toLowerCase()
+    const isImage = t === 'image' || (dataUri?.startsWith('data:image') ?? false)
+    const accept = isImage ? 'image/*' : t === 'audio' ? 'audio/*' : t === 'video' ? 'video/*' : undefined
+    const onPick = (e: ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0]
+      if (!f) return onChange(null)
+      const reader = new FileReader()
+      reader.onload = () => onChange(reader.result as string)
+      reader.readAsDataURL(f)
+    }
     return (
       <label
         style={{
           display: 'block',
           border: '1px dashed var(--border)',
           borderRadius: 4,
-          padding: 14,
+          padding: dataUri && isImage ? 8 : 14,
           textAlign: 'center',
           cursor: 'pointer',
           color: 'var(--muted)',
           fontSize: 12,
         }}
       >
-        {f ? `已选 ${f.name} · ${(f.size / 1024).toFixed(1)} KB` : '点击或拖入选择文件'}
-        <input
-          type="file"
-          hidden
-          onChange={(e) => onChange(e.target.files?.[0] ?? null)}
-        />
+        {dataUri && isImage ? (
+          <img
+            src={dataUri}
+            alt="preview"
+            style={{ maxWidth: '100%', maxHeight: 180, borderRadius: 3, display: 'block', margin: '0 auto' }}
+          />
+        ) : dataUri ? (
+          '已选文件 · 点击替换'
+        ) : (
+          '点击或拖入选择文件'
+        )}
+        <input type="file" accept={accept} hidden onChange={onPick} />
       </label>
     )
   }
