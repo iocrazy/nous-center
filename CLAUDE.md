@@ -23,6 +23,10 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   `ADMIN_SESSION_SECRET` (HMAC key), `ADMIN_TOKEN` (CLI bearer).
 - Production frontend changes need `cd frontend && npm run build` after merge —
   backend serves `frontend/dist/`, not the source.
+- Dev backend (manual, not systemd): `backend/scripts/dev-serve.sh` — sources `.env`
+  (uv won't), runs uvicorn, tees stdout to `backend/logs/backend-dev.log` (50MB rotate).
+  Structured request/audit/app logs still go to `log_db` (view via `/api/v1/logs/*` or
+  the frontend LogsOverlay) regardless of stdout. Production stays on journald.
 
 ## Testing
 
