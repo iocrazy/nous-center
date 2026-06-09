@@ -927,7 +927,8 @@ function ChainSamplePanel() {
     setStages((prev) => prev.map((s) => ({ ...s, result: null })))
     const seed = Math.floor(Math.random() * 1_000_000_000)
     const chainStages: ChainStage[] = stages.map((s) => ({
-      ckpt: s.ckpt, arch: s.arch, prompt: s.prompt.trim(), steps: s.steps, cfg: s.cfg }))
+      ckpt: s.ckpt, arch: s.arch, prompt: s.prompt.trim(), steps: s.steps, cfg: s.cfg,
+      ...(s.strength != null ? { strength: s.strength } : {}) }))
     const { workflow, stageTerminals } = buildChainWorkflow(chainStages, { width, height, seed })
     submitChainWorkflow(workflow, stageTerminals, {
       onStage: (i, url) => setStage(i, { result: url }),
@@ -961,8 +962,6 @@ function ChainSamplePanel() {
         </div>
 
         {stages.map((s, i) => {
-          const opt = ARCH_OPTIONS.find((o) => o.arch === s.arch)
-          const refHint = i > 0 && opt && !opt.canRef
           return (
             <div key={i} style={{
               border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 10, background: 'var(--bg)',
@@ -1013,10 +1012,21 @@ function ChainSamplePanel() {
                 <Field label="CFG">
                   <NumBox value={s.cfg} onChange={(v) => setStage(i, { cfg: v })} />
                 </Field>
+                {/* z-image 段 + 有上游图(i>0):img2img 重绘强度滑杆(PR-A3,引擎 PR-A2)。 */}
+                {i > 0 && s.arch === 'z-image' && (
+                  <Field label={`重绘强度 ${(s.strength ?? 1).toFixed(2)}`}>
+                    <input
+                      type="range" min={0.3} max={1} step={0.05} value={s.strength ?? 1}
+                      onChange={(e) => setStage(i, { strength: Number(e.target.value) })}
+                      style={{ width: 130 }}
+                    />
+                  </Field>
+                )}
               </div>
-              {refHint && (
-                <div style={{ fontSize: 11, color: 'var(--danger, #e5484d)', marginTop: 8 }}>
-                  Z-Image 不接受参考图 —— 这段会忽略上一段出图,只按提示词文生图。要接力请选 Flux2-Klein / Qwen-Edit。
+              {i > 0 && s.arch === 'z-image' && (
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+                  Z-Image 用 img2img 重绘上一段图:强度 &lt;1 保留上段结构重绘(越低越像原图),=1 纯文生图(忽略上图)。
+                  要改局部/视角的参考编辑用 Flux2-Klein / Qwen-Edit。
                 </div>
               )}
             </div>

@@ -119,6 +119,9 @@ export interface ChainStage {
   prompt: string
   steps: number
   cfg: number
+  // img2img 重绘强度(PR-A2):仅 z-image 段 + 有上游图(i>0)时生效 —— 引擎 _wants_img2img 门控
+  // (arch 有 img2img 变体 + input_image + 0<strength<1)。<1=保留上段结构重绘,1/缺省=纯重生成(零回归)。
+  strength?: number
 }
 
 /** 搭跨模型链式采样图。返回 workflow + 每段终端(flux2_vae_decode)节点 id,供 UI 逐段收集出图。
@@ -139,7 +142,12 @@ export function buildChainWorkflow(
       { id: e, type: 'flux2_encode_prompt', position: { x: 320, y },
         data: { text: st.prompt, negative_prompt: '' } },
       { id: k, type: 'flux2_ksampler', position: { x: 640, y },
-        data: { width, height, steps: st.steps, cfg_scale: st.cfg, sampler_name: 'euler', scheduler: 'normal', seed: String(seed + i) } },
+        data: {
+          width, height, steps: st.steps, cfg_scale: st.cfg, sampler_name: 'euler', scheduler: 'normal',
+          seed: String(seed + i),
+          // strength 仅在本段有上游图(i>0)时有意义;引擎按 arch(z-image)+0<strength<1 门控,其余忽略。
+          ...(i > 0 && st.strength != null ? { strength: st.strength } : {}),
+        } },
       { id: d, type: 'flux2_vae_decode', position: { x: 960, y }, data: {} },
     )
     edges.push(
