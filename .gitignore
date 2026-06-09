@@ -33,6 +33,7 @@ frontend/src/wasm/pkg/
 # Logs
 *.log
 npm-debug.log*
+backend/logs/
 
 # Assets (large files)
 checkpoints/
