@@ -11,7 +11,7 @@ def _node(inputs):
     return P.RunNode(task_id=1, node_id="dec", node_type="image", model_key=None, inputs=inputs)
 
 
-def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2", input_image=None):
+def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2", input_image=None, output_mode=None):
     model = {"_type": "flux2_model",
              "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": unet_dev, "dtype": "fp8_e4m3", "adapter_arch": arch},
              "loras": loras or []}
@@ -24,7 +24,23 @@ def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2", input_image=No
     if input_image is not None:
         latent["input_image"] = input_image
     vae = {"_type": "flux2_vae", "spec": {"kind": "vae", "file": "/m/v.safe", "dtype": "default"}}
-    return {"latent": latent, "vae": vae, "url_ttl_seconds": "3600"}
+    inputs = {"latent": latent, "vae": vae, "url_ttl_seconds": "3600"}
+    # output_mode 是 flux2_vae_decode 自己的 widget → 进 node.inputs 顶层(同 seedvr2 resolution）。
+    if output_mode is not None:
+        inputs["output_mode"] = output_mode
+    return inputs
+
+
+def test_granular_default_output_mode_image():
+    """无 output_mode widget → req.output_mode='image'(默认,字节零回归)。"""
+    req = _build_request(_node(_granular_inputs()))
+    assert req.output_mode == "image"
+
+
+def test_granular_output_mode_latent():
+    """VAE Decode output_mode=latent widget → req.output_mode='latent'(路 B 接力)。"""
+    req = _build_request(_node(_granular_inputs(output_mode="latent")))
+    assert req.output_mode == "latent"
 
 
 def test_granular_flatten_single_card():

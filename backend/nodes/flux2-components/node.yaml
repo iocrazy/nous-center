@@ -247,3 +247,13 @@ nodes:
     outputs:
       - { id: image, type: image, label: 图像 }
     widgets:
+      # 路 B(spec 2026-06-08,PR-B1):输出模式。默认 image=解码出图(现有行为,字节零回归);
+      # latent=不解码,把真 latent 张量落盘传 latent_ref(同空间真 latent 接力,下游 sample_from_latent
+      # 注入 latents= 接续去噪)。latent 模式仅同 latent 空间(同模型 / 同 16ch 空间)有意义。
+      - name: output_mode
+        label: "输出"
+        widget: select
+        default: image
+        options:
+          - { value: image,  label: "图像(decode)", description: "VAE 解码出图 — 默认,单采样工作流不变" }
+          - { value: latent, label: "Latent(接力)", description: "不解码,导出真 latent 给下游 sample_from_latent 接续去噪(同空间)" }

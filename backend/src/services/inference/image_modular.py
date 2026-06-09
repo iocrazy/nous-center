@@ -939,6 +939,13 @@ class ModularImageBackend(InferenceAdapter):
 
             call_kwargs["callback_on_step_end"] = _step_cb
 
+        # 输出模式(spec 2026-06-08 路 B,PR-B1):latent 模式让 pipe 跳过 VAE decode 直接返真 latent
+        # 张量(output_type="latent"),终端落盘传 latent_ref(下游 sample_from_latent 注入 latents=)。
+        # 默认 image 模式不设此 kwarg → 行为/出图字节不变(golden SSIM 1.0)。
+        want_latent = getattr(req, "output_mode", "image") == "latent"
+        if want_latent:
+            call_kwargs["output_type"] = "latent"
+
         # 关键(flux2 默认引擎 to_thread,同 anima #206):pipe() 的 denoise(1024 ~20-30s)
         # 是阻塞 CUDA 调用。在 runner coroutine 里同步跑会占住事件循环 → ① _step_cb 发的
         # 进度 task 全卡到 pipe() 返回才 flush(逐步进度不实时)② pipe-reader 读不到 Abort
@@ -964,6 +971,32 @@ class ModularImageBackend(InferenceAdapter):
             detail=f"vae_decode done ({total_steps} steps)",
         )
         latency_ms = int((time.monotonic() - t) * 1000)
+
+        # 路 B latent 模式:不 decode,序列化真 latent 张量(safetensors)+ 返 latent 元信息;
+        # runner 把字节落盘成 latent_ref.path(不进 msgpack)。media_type 区分,runner 据此分支。
+        if want_latent:
+            import safetensors.torch as _st  # noqa: PLC0415
+            from src.services.inference.model_arch_adapter import arch_spec_by_pipeline  # noqa: PLC0415
+            latent = out.images[0] if isinstance(out.images, (list, tuple)) else out.images
+            blob = _st.save({"latent": latent.detach().contiguous().cpu()})
+            _arch = arch_spec_by_pipeline(self.pipeline_class)
+            return InferenceResult(
+                media_type="application/x-latent",
+                data=blob,
+                metadata={
+                    "latent": {
+                        "pipeline_class": self.pipeline_class,
+                        "arch": (_arch.arch if _arch else None),
+                        "shape": [int(x) for x in latent.shape],
+                        "latent_channels": int(latent.shape[1]) if latent.dim() >= 2 else None,
+                        "dtype": str(latent.dtype).replace("torch.", ""),
+                        "width": req.width,
+                        "height": req.height,
+                        "seed": req.seed,
+                    },
+                },
+                usage=UsageMeter(image_count=0, latency_ms=latency_ms),
+            )
 
         img = out.images[0]
         buf = io.BytesIO()
