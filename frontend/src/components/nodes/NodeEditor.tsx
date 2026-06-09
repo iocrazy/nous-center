@@ -646,6 +646,20 @@ export default function NodeEditor() {
     return () => window.removeEventListener('keydown', onKey)
   }, [copySelection, pasteClipboard, updateNode, groupSelected, ungroupSelected])
 
+  // Z(无修饰键)→ 缩放到全部节点总览(对齐 Infinite-Canvas Z 总览)。编辑态/带修饰键放行。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
+      if (e.key.toLowerCase() !== 'z') return
+      const tgt = e.target as HTMLElement | null
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return
+      e.preventDefault()
+      reactFlowInstance.current?.fitView({ padding: 0.2, duration: 300 })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // m09: 画布模式下左节点库 + 右属性面板**常驻**。overlay 视图
   // （dashboard / services / 设置 等）下两边都隐藏。
   // v3 没有 panel 切换 — PanelStore.PANEL_ITEMS 已空 — activePanel
@@ -670,6 +684,17 @@ export default function NodeEditor() {
         style={{
           left: showNodeLibrary || showLegacyPanel ? panelWidth : 0,
           right: showPropertyPanel ? PROPERTY_PANEL_WIDTH : 0,
+        }}
+        onDoubleClick={(e) => {
+          // 双击画布空白 → 光标处建节点菜单(对齐 Infinite-Canvas 双击建节点)。
+          const tgt = e.target as HTMLElement | null
+          if (!tgt?.classList?.contains('react-flow__pane')) return
+          const rfi = reactFlowInstance.current
+          const bounds = reactFlowWrapper.current?.getBoundingClientRect()
+          if (!rfi || !bounds) return
+          const flow = rfi.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+          setCtxMenu(null)
+          setPaneMenu({ x: e.clientX - bounds.left, y: e.clientY - bounds.top, flowX: flow.x, flowY: flow.y })
         }}
       >
         <ReactFlow
@@ -737,7 +762,7 @@ export default function NodeEditor() {
           multiSelectionKeyCode={['Control', 'Meta']}
           selectionMode={SelectionMode.Partial}
           edgesReconnectable
-          minZoom={0.15}
+          minZoom={0.05}
           maxZoom={8}
           fitView
           fitViewOptions={{ padding: 0.1, minZoom: 0.5, maxZoom: 1.5 }}
