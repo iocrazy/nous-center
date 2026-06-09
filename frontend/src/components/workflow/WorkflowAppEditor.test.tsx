@@ -46,7 +46,7 @@ describe('WorkflowAppEditor field list (rename / reorder)', () => {
   })
 
   it('first row 上移 is disabled (no-op)', () => {
-    const { onChange } = setup([inp('a', 'f1', '字段一'), inp('a', 'f2', '字段二')])
+    setup([inp('a', 'f1', '字段一'), inp('a', 'f2', '字段二')])
     const up = screen.getAllByTitle('上移')[0] as HTMLButtonElement
     expect(up.disabled).toBe(true)
   })
