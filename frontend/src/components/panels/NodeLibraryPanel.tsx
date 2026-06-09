@@ -1,8 +1,47 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import {
+  ChevronDown, ChevronRight, Box,
+  FileInput, FileOutput, Sparkles, GitBranch, AudioLines, Image as ImageIcon, Mic,
+  type LucideIcon,
+} from 'lucide-react'
 import FloatingPanel from '../layout/FloatingPanel'
 import { NODE_DEFS } from '../../models/workflow'
 import { getMergedCategories } from '../nodes/nodeChoices'
+import { PORT_TYPE_COLORS } from '../nodes/portColors'
+
+// 类目图标(按 category name;plugin/未知类目回退 Box)。
+const CAT_ICON: Record<string, LucideIcon> = {
+  input: FileInput,
+  ai: Sparkles,
+  logic: GitBranch,
+  audio: AudioLines,
+  image: ImageIcon,
+  output: FileOutput,
+  tts: Mic,
+}
+
+// 节点端口类型摘要(去重)。
+function portTypes(type: string): { ins: string[]; outs: string[] } {
+  const def = NODE_DEFS[type]
+  if (!def) return { ins: [], outs: [] }
+  const uniq = (a: { type: string }[]) => [...new Set(a.map((p) => p.type))]
+  return { ins: uniq(def.inputs), outs: uniq(def.outputs) }
+}
+
+// 端口类型色点行(最多 4 个)。
+function PortDots({ types }: { types: string[] }) {
+  return (
+    <span className="flex items-center gap-0.5">
+      {types.slice(0, 4).map((t, i) => (
+        <span
+          key={i}
+          className="shrink-0 rounded-full"
+          style={{ width: 5, height: 5, background: PORT_TYPE_COLORS[t] ?? 'var(--muted-strong)' }}
+        />
+      ))}
+    </span>
+  )
+}
 
 // m09 v3: 固定分组对齐 mockup（输入 / AI / 逻辑 / 音频 / 图像 / 输出），plugin
 // 节点按 category merge 进同名组。分类与端口口径统一抽到 ../nodes/nodeChoices.ts,
@@ -69,6 +108,7 @@ export default function NodeLibraryPanel() {
           onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
         >
           {isCollapsed ? <ChevronRight size={10} color="var(--muted)" /> : <ChevronDown size={10} color="var(--muted)" />}
+          {(() => { const Icon = CAT_ICON[cat.name] ?? Box; return <Icon size={12} color={cat.color} /> })()}
           <span style={{ color: cat.color }}>{cat.label}</span>
           <span
             className="ml-auto"
@@ -85,10 +125,15 @@ export default function NodeLibraryPanel() {
           </span>
         </div>
         {!isCollapsed &&
-          filteredNodes.map(({ type, dotColor }) => (
+          filteredNodes.map(({ type, dotColor }) => {
+            const { ins, outs } = portTypes(type)
+            const title = `输入: ${ins.join(' / ') || '无'}  →  输出: ${outs.join(' / ') || '无'}`
+            const ioDots = outs.length ? outs : ins
+            return (
             <div
               key={type}
               className="flex items-center gap-1.5 rounded select-none"
+              title={title}
               style={{
                 padding: '4px 8px 4px 28px',
                 fontSize: 11,
@@ -111,9 +156,12 @@ export default function NodeLibraryPanel() {
                 className="shrink-0 rounded-full"
                 style={{ width: 6, height: 6, background: dotColor }}
               />
-              {highlight(NODE_DEFS[type]?.label ?? type, q)}
+              <span className="truncate">{highlight(NODE_DEFS[type]?.label ?? type, q)}</span>
+              {/* 右侧:节点输出(无输出则输入)端口类型色点提示 */}
+              {ioDots.length > 0 && <span className="ml-auto pl-1"><PortDots types={ioDots} /></span>}
             </div>
-          ))}
+            )
+          })}
       </div>
     )
   })
