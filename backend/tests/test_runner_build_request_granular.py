@@ -43,6 +43,37 @@ def test_granular_output_mode_latent():
     assert req.output_mode == "latent"
 
 
+def test_granular_default_segment_fields_zero_regression():
+    """无分段字段 → 默认值(整段采样,零回归):start=0/end=None/add_noise=True/leftover=False/无 init。"""
+    req = _build_request(_node(_granular_inputs()))
+    assert req.start_at_step == 0
+    assert req.end_at_step is None
+    assert req.add_noise is True
+    assert req.return_with_leftover_noise is False
+    assert req.init_latent_ref is None
+
+
+def test_granular_segment_fields_passthrough():
+    """PR-B2:ksampler 描述符里的分段字段摊进 ImageRequest(base 留噪段)。"""
+    inp = _granular_inputs(arch="z-image")
+    inp["latent"].update({"end_at_step": 5, "return_with_leftover_noise": True, "add_noise": True})
+    req = _build_request(_node(inp))
+    assert req.end_at_step == 5
+    assert req.return_with_leftover_noise is True
+    assert req.start_at_step == 0
+
+
+def test_granular_init_latent_ref_passthrough():
+    """PR-B2:refiner 续采段 —— init_latent_ref(latent_ref dict)+ start_at_step + add_noise=False 摊入。"""
+    inp = _granular_inputs(arch="z-image")
+    ref = {"_type": "latent_ref", "path": "/nas/latents/x.safetensors", "arch": "z-image", "latent_channels": 16}
+    inp["latent"].update({"start_at_step": 5, "add_noise": False, "init_latent_ref": ref})
+    req = _build_request(_node(inp))
+    assert req.start_at_step == 5
+    assert req.add_noise is False
+    assert req.init_latent_ref == ref
+
+
 def test_granular_flatten_single_card():
     req = _build_request(_node(_granular_inputs(unet_dev="cuda:1")))
     assert req.components is not None

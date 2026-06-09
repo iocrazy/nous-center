@@ -16,6 +16,9 @@ export const PORT_TYPE_COLORS: Record<string, string> = {
   VAE: 'rgba(239,68,68,0.85)', // red
   CONDITIONING: 'rgba(251,146,60,0.9)', // orange
   LATENT: 'rgba(168,85,247,0.85)', // purple
+  // 留噪 latent 接力(PR-B2):VAE Decode(output_mode=latent)→ KSampler init_latent。区别于
+  // LATENT(采样计划描述符)—— LATENT_REF 是落盘的真 latent 张量引用,用更亮的靛蓝区分。
+  LATENT_REF: 'rgba(129,140,248,0.9)', // indigo
   // SeedVR2 三节点(DiT/VAE 配置 bundle):DiT 走青绿、VAE 走红(呼应 flux2 VAE 红)。
   seedvr2_dit: 'rgba(16,185,129,0.85)', // emerald
   seedvr2_vae: 'rgba(239,68,68,0.85)', // red(同 VAE 家族)

@@ -634,6 +634,160 @@ class ModularImageBackend(InferenceAdapter):
         self._img2img_pipe = img_cls(**base.components)
         return self._img2img_pipe
 
+    def _wants_segmented(self, req: Any) -> bool:
+        """是否走「手写分段去噪循环」(留噪 latent 接力,PR-B2)。仅 ZImagePipeline(同 16ch latent
+        空间);任一分段字段非默认即触发:start_at_step>0(续采段)/ end_at_step 真截断(base 留噪段)/
+        add_noise=False(注入 latent 原样续采)/ init_latent_ref(上段导出的带噪 latent)。
+        全默认 = 整段 pipe()(零回归)。跨模型(latent 空间不兼容)不在此路 —— 走路 A 像素链。"""
+        if self.pipeline_class != "ZImagePipeline":
+            return False
+        start = int(getattr(req, "start_at_step", 0) or 0)
+        end = getattr(req, "end_at_step", None)
+        steps = int(getattr(req, "steps", 0) or 0)
+        end_truncates = end is not None and int(end) < steps
+        add_noise = bool(getattr(req, "add_noise", True))
+        return start > 0 or end_truncates or (not add_noise) or getattr(req, "init_latent_ref", None) is not None
+
+    def _load_init_latent(self, req: Any, device: str) -> Any:
+        """读回上段导出的 latent_ref(PR-B1 落盘的 safetensors)→ float32 张量(本段 device)。
+        派发前校验 arch / latent_channels 与本段模型一致 —— 不符给人话报错(对齐
+        [[project_anima_arch_mismatch]] 的「别让 UNet 抛晦涩 shape 错」),跨模型 latent 不兼容
+        显式拦在派发前。"""
+        from src.services.inference.model_arch_adapter import arch_spec_by_pipeline  # noqa: PLC0415
+
+        ref = req.init_latent_ref or {}
+        path = ref.get("path")
+        if not path:
+            raise ValueError("init_latent_ref 缺 path —— 上段 VAE Decode 需 output_mode=latent 导出 latent_ref")
+        spec = arch_spec_by_pipeline(self.pipeline_class)
+        my_arch = spec.arch if spec else None
+        ref_arch = ref.get("arch")
+        if ref_arch and my_arch and ref_arch != my_arch:
+            raise ValueError(
+                f"latent 接力架构不匹配:上段 latent 来自 '{ref_arch}' 架构,本段采样模型是 '{my_arch}'。"
+                f"不同架构的 latent 空间物理不兼容(通道数/缩放/归一不同),无法直接接力。"
+                f"跨模型请改走「像素链」(上段出图 → 本段 input_image 重绘/参考编辑,即路 A),"
+                f"不要用 latent 输出端口。")
+        # safetensors/torch import 推到校验后(CI test venv 不装 inference extra;派发前 ValueError
+        # 路径无需它,本测试可在 CI 跑 —— 仅真加载时才需依赖)。
+        import safetensors.torch as _st  # noqa: PLC0415
+        sd = _st.load_file(path)
+        latent = sd.get("latent")
+        if latent is None:
+            raise ValueError(f"latent_ref 文件 {path!r} 无 'latent' 键(非本系统导出的 latent)")
+        ref_ch = ref.get("latent_channels")
+        actual_ch = int(latent.shape[1]) if latent.dim() >= 2 else None
+        if ref_ch and actual_ch is not None and int(ref_ch) != actual_ch:
+            raise ValueError(
+                f"latent_ref 通道数声明 {ref_ch} 与实际张量 {actual_ch} 不符(文件损坏 / 元信息过期)")
+        import torch  # noqa: PLC0415
+        return latent.to(device=device, dtype=torch.float32)
+
+    def _run_zimage_segmented(
+        self, pipe: Any, req: Any, gen: Any, pt: Any, stage_ts: dict, cancel_flag: Any,
+    ) -> Any:
+        """手写 Z-Image 分段去噪循环(留噪 latent 接力,PR-B2)—— 逐行对照 diffusers
+        `ZImagePipeline.__call__` 的 denoise loop(pipeline_z_image.py),但把一次 N 步去噪劈成一段:
+        从全 schedule 的 start_at_step 跑到 end_at_step(可留噪不到 0),注入/导出带噪 latent。
+
+        正确性(闸门 smoke_zimage_split):全 schedule 用 scheduler 自己的 set_timesteps(shift=3,
+        Z-Image use_dynamic_shifting=false → 与整段 pipe() **逐数值一致**);split_sigmas 只做**索引切片**
+        (不重算 shift)→ 覆盖 scheduler.sigmas/timesteps 后,step() 按 step_index 取同一组 sigma 对
+        → base 段第 i 步 == 整段第 i 步(bit 级);refiner 注入 base 末态续采 == 整段后半 → SSIM≈1.0。
+
+        Z-Image distilled:guidance_scale=0(apply_cfg=False,走简单单次前向路径)。返回最终 latent(float32,
+        device 上);caller 决定导出 latent_ref(output_mode=latent)还是 VAE decode 出图。"""
+        import torch  # noqa: PLC0415
+
+        from src.services.inference.sigma_schedules import split_sigmas  # noqa: PLC0415
+
+        device = self.device
+        scheduler = pipe.scheduler
+        transformer = pipe.transformer
+        total_steps = int(req.steps)
+        start = int(getattr(req, "start_at_step", 0) or 0)
+        end = getattr(req, "end_at_step", None)
+        add_noise = bool(getattr(req, "add_noise", True))
+        leftover = bool(getattr(req, "return_with_leftover_noise", False))
+
+        # 1. 文本编码(distilled → do_classifier_free_guidance=False,只出正向 embeds 列表)。
+        prompt_embeds, _ = pipe.encode_prompt(
+            prompt=req.prompt, device=device, do_classifier_free_guidance=False)
+
+        # 2. 全 schedule —— 与整段 pipe() 完全同法(sigma_min=0 + set_timesteps,shift=3 内化)。
+        scheduler.sigma_min = 0.0
+        scheduler.set_timesteps(num_inference_steps=total_steps, device=device)
+        full_sigmas = [float(x) for x in scheduler.sigmas.tolist()]  # total_steps+1 个,末尾 0
+
+        # 3. split_sigmas 索引切片本段(留噪不置 0 / force_full_denoise 末步去到底)。
+        seg = split_sigmas(
+            full_sigmas, start_at_step=start, end_at_step=end,
+            force_full_denoise=not leftover)
+        if len(seg) < 2:
+            raise ValueError(
+                f"分段采样切出 <2 个 sigma(start={start} end={end} 全步={total_steps})—— "
+                f"段为空,检查 start_at_step/end_at_step 边界")
+        num_train = float(getattr(scheduler.config, "num_train_timesteps", 1000) or 1000)
+        sig_t = torch.tensor(seg, dtype=torch.float32, device=device)
+        scheduler.sigmas = sig_t
+        scheduler.timesteps = sig_t[:-1] * num_train
+        scheduler._step_index = None
+        scheduler._begin_index = None
+        scheduler.set_begin_index(0)
+        seg_steps = len(seg) - 1
+
+        # 4. 初始 latent。续采(init_latent_ref + add_noise=False)= 原样注入上段带噪 latent(不缩放/不加噪);
+        #    base / 无注入 = randn(经 pipe.prepare_latents,与整段 pipe() 同 generator → 同初噪 → bit 一致)。
+        num_channels = transformer.in_channels
+        init_latent = self._load_init_latent(req, device) if getattr(req, "init_latent_ref", None) else None
+        if init_latent is not None:
+            latents = pipe.prepare_latents(
+                1, num_channels, req.height, req.width, torch.float32, device, gen, init_latent)
+            if add_noise:
+                # add_noise=enable + 注入图:按本段起始 sigma 重加噪(ComfyUI KSamplerAdvanced add_noise=enable
+                # 配 start_at_step 的 img2img 风;留噪接力主路是 add_noise=disable → 跳过)。
+                noise = torch.randn(
+                    latents.shape, generator=gen, device=device, dtype=torch.float32)
+                latents = scheduler.scale_noise(latents, scheduler.timesteps[:1], noise)
+        else:
+            latents = pipe.prepare_latents(
+                1, num_channels, req.height, req.width, torch.float32, device, gen, None)
+
+        # 5. denoise loop —— 逐行对照 pipeline_z_image.py(guidance=0 单次前向)。
+        import asyncio  # noqa: PLC0415
+        for i in range(seg_steps):
+            if cancel_flag is not None and cancel_flag.is_set():
+                raise asyncio.CancelledError()
+            t = scheduler.timesteps[i]
+            timestep = t.expand(latents.shape[0])
+            timestep = (1000 - timestep) / 1000
+            latent_model_input = latents.to(transformer.dtype).unsqueeze(2)
+            latent_model_input_list = list(latent_model_input.unbind(dim=0))
+            model_out_list = transformer(
+                latent_model_input_list, timestep, prompt_embeds, return_dict=False)[0]
+            noise_pred = torch.stack([o.float() for o in model_out_list], dim=0)
+            noise_pred = noise_pred.squeeze(2)
+            noise_pred = -noise_pred
+            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+            # 进度 + 逐组件时长(与整段路径对齐:denoise 首/末步时间戳 → VAE Decode 真时长)。
+            _now = time.monotonic()
+            stage_ts.setdefault("denoise_first", _now)
+            stage_ts["denoise_last"] = _now
+            if pt is not None and pt.has_callback:
+                preview_url = None
+                from src.services.inference.latent_preview import latent_to_preview_data_uri  # noqa: PLC0415
+                preview_url = latent_to_preview_data_uri(latents)
+                pt.step(i + 1, seg_steps, stage="dit_denoise", preview_url=preview_url)
+        return latents
+
+    def _zimage_decode_latents(self, pipe: Any, latents: Any) -> Any:
+        """Z-Image latent → PIL(逐行对照 ZImagePipeline.__call__ 末段 decode)。分段路径出图时用。"""
+        latents = latents.to(pipe.vae.dtype)
+        latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
+        image = pipe.vae.decode(latents, return_dict=False)[0]
+        image = pipe.image_processor.postprocess(image, output_type="pil")
+        return image[0]
+
     def _build_klein_pipe(self) -> Any:
         """comfy Flux2 单文件 → 标准 `Flux2KleinPipeline(is_distilled=False)` = true-CFG。
 
@@ -951,7 +1105,29 @@ class ModularImageBackend(InferenceAdapter):
         # 进度 task 全卡到 pipe() 返回才 flush(逐步进度不实时)② pipe-reader 读不到 Abort
         # → cancel_flag 永不置位、中途取消失效 ③ 慢卡长 denoise >ping_timeout 触发 watchdog
         # 介入。丢 to_thread 让事件循环空闲:进度实时 flush、Abort 可读、cancel 生效。
-        out = await asyncio.to_thread(lambda: pipe(**call_kwargs))
+        # 留噪 latent 接力 / 分段采样(PR-B2):Z-Image + 任一分段字段非默认 → 走手写去噪循环
+        # (整段 pipe() 不暴露 mid-schedule 起步 / 带噪中途导出)。其余照常整段 pipe()。
+        segmented = self._wants_segmented(req)
+        if segmented:
+            from types import SimpleNamespace  # noqa: PLC0415
+
+            # no_grad 必须裹手写循环 —— ZImagePipeline.__call__ 自带 @torch.no_grad(),我们这条手写
+            # 路径绕过它,不裹会逐步累积 autograd graph(每步全层激活)→ 几步就 OOM(实测 91GB)。
+            def _seg() -> Any:
+                with torch.no_grad():
+                    return self._run_zimage_segmented(pipe, req, gen, pt, _stage_ts, cancel_flag)
+
+            final_latents = await asyncio.to_thread(_seg)
+            if want_latent:
+                out = SimpleNamespace(images=final_latents)
+            else:
+                def _dec() -> Any:
+                    with torch.no_grad():
+                        return self._zimage_decode_latents(pipe, final_latents)
+
+                out = SimpleNamespace(images=[await asyncio.to_thread(_dec)])
+        else:
+            out = await asyncio.to_thread(lambda: pipe(**call_kwargs))
         t_pipe_end = time.monotonic()
         # 逐组件时长:denoise=首→末步;vae_decode=末步→pipe 返回(内嵌 decode 段)。
         # 只在 step 回调真跑过(Flux2Klein + 有 progress/cancel)时算 —— 其余路径(ERNIE
