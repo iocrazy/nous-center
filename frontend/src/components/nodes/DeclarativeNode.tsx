@@ -652,6 +652,9 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
   // 节点完成耗时只在「真的跑完」时显示(node_complete);loading / running
   // 的视觉由 BaseNode 通用 status chip(已存在)负责。
   const [doneElapsedSec, setDoneElapsedSec] = useState<number | null>(null)
+  // node_complete.cached=true → 该节点结果来自缓存(L1/L2 组件缓存、留噪 latent 等),
+  // 没真算 → 完成文案标「(cached)」,跟真跑完区分(见 project_component_l1_cache)。
+  const [cachedDone, setCachedDone] = useState(false)
   const nodeStartAtRef = useRef<number | null>(null)
   // PR-3:真采样进度(每步从 backend 经 WS node_progress 事件来)。runner 的
   // P.NodeProgress 用 progress(0-1)+ detail("step N/T")—— parse detail 拿 step/total。
@@ -722,6 +725,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
         setDenoiseProgress(null)
         setPreviewUrl(null)
         setDoneElapsedSec(null)
+        setCachedDone(false)
         nodeStartAtRef.current = performance.now()
       }
       if (data.type === 'node_complete' && data.node_id === id) {
@@ -738,6 +742,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
             ? (performance.now() - start) / 1000
             : 0
         setDoneElapsedSec(realElapsed)
+        setCachedDone(!!data.cached)
         nodeStartAtRef.current = null
         const usage = data.usage
         const durationMs = data.duration_ms
@@ -882,7 +887,7 @@ export default function DeclarativeNode({ id, type, data, selected }: NodeProps)
             <span>
               {denoiseProgress
                 ? `step ${denoiseProgress.step}/${denoiseProgress.total} · ${denoiseProgress.percent}%`
-                : `完成 · ${Math.round((doneElapsedSec ?? 0) * 10) / 10}s`}
+                : `完成 · ${Math.round((doneElapsedSec ?? 0) * 10) / 10}s${cachedDone ? ' (cached)' : ''}`}
             </span>
           </div>
           {denoiseProgress && (
