@@ -165,7 +165,9 @@ export default function WorkflowAppEditor({
         </div>
       </div>
 
-      {/* 右:只读节点图 */}
+      {/* 右:只读节点图。画布底色用 --bg(对齐真工作流画布 NodeEditor),
+          这样白色 --card 节点卡能和画布拉开对比 —— 否则浅色主题下画布纯白、
+          卡片也白,节点框看不见(用户反馈「白底节点不明显」)。 */}
       <div style={{ flex: 1, minWidth: 0 }}>
         <ReactFlow
           nodes={rfNodes}
@@ -176,8 +178,9 @@ export default function WorkflowAppEditor({
           elementsSelectable={false}
           fitView
           proOptions={{ hideAttribution: true }}
+          style={{ background: 'var(--bg)' }}
         >
-          <Background gap={16} color="var(--border)" />
+          <Background gap={24} size={1.4} color="var(--grid, var(--border))" />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
