@@ -195,6 +195,9 @@ export interface WorkflowGroup {
   height: number
   /** 边框/标题色(CSS color)。 */
   color: string
+  /** 显式成员节点 id(Ctrl+G 写入)。有则分组框按成员实测包围盒自适应 + 拖动成员一起移动;
+   *  无(legacy)则回退到「按 position 落框内」隐式判定 + 固定 x/y/w/h。 */
+  nodeIds?: string[]
 }
 
 export interface Workflow {
