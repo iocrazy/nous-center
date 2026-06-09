@@ -361,3 +361,30 @@ def test_task_to_dict_exposes_type_field_for_image_result():
         created_at=now, updated_at=now,
     )
     assert _task_to_dict(t_none)["type"] is None
+
+
+def test_task_to_dict_output_thumbnails():
+    # 出图缩略抽取(spec run-history PR-B):result.outputs[*].image_url → output_thumbnails。
+    from datetime import datetime, timezone
+
+    from src.api.routes.execution_tasks import _task_to_dict
+    from src.models.execution_task import ExecutionTask
+
+    now = datetime.now(timezone.utc)
+    t_img = ExecutionTask(
+        id=21, workflow_id=1, workflow_name="img", status="completed",
+        nodes_total=1, nodes_done=1, current_node=None,
+        result={"outputs": {"dec": {"image_url": "/files/a.png?t=1", "media_type": "image/png"}}},
+        error=None, duration_ms=100, created_at=now, updated_at=now,
+    )
+    d = _task_to_dict(t_img)
+    assert d["output_thumbnails"] == ["/files/a.png?t=1"]
+    assert d["type"] == "image"
+
+    t_txt = ExecutionTask(
+        id=22, workflow_id=1, workflow_name="llm", status="completed",
+        nodes_total=1, nodes_done=1, current_node=None,
+        result={"outputs": {"o": {"text": "hi"}}},
+        error=None, duration_ms=5, created_at=now, updated_at=now,
+    )
+    assert _task_to_dict(t_txt)["output_thumbnails"] == []
