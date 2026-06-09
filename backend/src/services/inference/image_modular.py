@@ -125,12 +125,38 @@ def _maybe_convert_comfy_flux2_lora(state_dict: dict):
     return _convert_non_diffusers_flux2_lora_to_diffusers(dict(state_dict))
 
 
-def build_bridged_transformer(unet_spec: Any, repo: str, device: str) -> Any:
-    """comfy 量化单文件 → diffusers transformer module(PR-2 桥接)。
+def _ref_class_name(repo: str, sub: str) -> str:
+    """读参考库 `repo/<sub>/config.json` 的 `_class_name`(桥接按它选 module 类/路径,arch-agnostic)。"""
+    import json  # noqa: PLC0415
+    try:
+        return str(json.loads((Path(repo) / sub / "config.json").read_text()).get("_class_name", ""))
+    except Exception:  # noqa: BLE001
+        return ""
 
-    dequant_and_convert(quant_loaders 反量化 + diffusers 转键)→ from_config(HF repo 的
-    transformer config)→ load_state_dict → 落 device。喂 `ModularImageBackend(transformer_override=)`。
+
+def _bf16_or(dtype_str: str) -> Any:
+    """_torch_dtype 但 default(None)兜底 bf16(单文件 from_single_file 需具体 dtype)。"""
+    import torch  # noqa: PLC0415
+    return _torch_dtype(dtype_str) or torch.bfloat16
+
+
+def build_bridged_transformer(unet_spec: Any, repo: str, device: str) -> Any:
+    """comfy 单文件 → diffusers transformer module(桥接)。按参考库 transformer config 的 `_class_name` 选路径:
+
+    - **Z-Image(`ZImageTransformer2DModel`)= diffusers 原生 from_single_file**(PR-2,spec 2026-06-09):
+      diffusers `single_file_model.py` 注册了 `convert_z_image_transformer_checkpoint_to_diffusers`,
+      comfy 单文件 bf16 直接吃,**无需手写转键**(probe_zimage_singlefile 真机验过)。
+    - Flux2(`Flux2Transformer2DModel`)= 现有手写桥接(dequant_and_convert 反量化 + 转键 + from_config)。
+    喂 `ModularImageBackend(transformer_override=)`。
     """
+    cls_name = _ref_class_name(repo, "transformer")
+    if cls_name.startswith("ZImage"):
+        from diffusers import ZImageTransformer2DModel  # noqa: PLC0415
+        module = ZImageTransformer2DModel.from_single_file(
+            unet_spec.file, config=str(Path(repo) / "transformer"),
+            torch_dtype=_bf16_or(unet_spec.dtype))
+        return module.to(device)
+
     from src.services.inference.quant_loaders import dequant_and_convert  # noqa: PLC0415
 
     transformer_cls = _import_flux2_transformer()
@@ -190,9 +216,21 @@ def build_bridged_text_encoder(clip_spec: Any, repo: str, device: str) -> Any:
 
 
 def build_bridged_vae(vae_spec: Any, repo: str, device: str) -> Any:
-    """comfy 单文件 vae → 参考整模型 vae config 建 + 反量化单文件权重(plain/comfy 标准键)。"""
+    """comfy 单文件 vae → diffusers vae module。按参考库 vae config 的 `_class_name` 选路径:
+
+    - **Z-Image(`AutoencoderKL` = Flux1 16ch VAE)= diffusers 原生 from_single_file**(PR-2)——
+      `ae.safetensors`(Flux1 VAE)直接吃,config 取参考库 vae(默认 config 形状不符,probe 验过)。
+    - Flux2(`AutoencoderKLFlux2`)= 现有 dequant + from_config 路径。
+    """
     import torch  # noqa: PLC0415
     from accelerate import init_empty_weights  # noqa: PLC0415
+
+    if _ref_class_name(repo, "vae").strip() == "AutoencoderKL":
+        from diffusers import AutoencoderKL  # noqa: PLC0415
+        vae = AutoencoderKL.from_single_file(
+            vae_spec.file, config=str(Path(repo) / "vae"), torch_dtype=_bf16_or(vae_spec.dtype))
+        return vae.to(device)
+
     from diffusers import AutoencoderKLFlux2  # noqa: PLC0415
 
     from src.services.inference.quant_loaders import dequant_comfy_mixed  # noqa: PLC0415
@@ -857,13 +895,35 @@ class ModularImageBackend(InferenceAdapter):
         return pipe
 
     def _build_zimage_pipe(self) -> Any:
-        """Z-Image-Turbo:HF-layout 整模型,标准 `ZImagePipeline.from_pretrained`(无单文件桥接)。
-        组件名 transformer/text_encoder/vae 与 Flux2 一致 → 之后的 fp8/逐组件放置/offload 共享。
-        真机冒烟验过(smoke_zimage.py:load 10.4s / infer 2.6s / 8 步出真图)。"""
+        """Z-Image:HF-layout 整模型 from_pretrained,或**单文件分开载入**(PR-2,spec 2026-06-09)。
+
+        分开载入(三桥接 override,对齐 _build_klein_pipe):base/refiner 不同单文件 UNet + 独立编码器/VAE
+        装配成 ZImagePipeline —— 还原用户写真工作流的 UNETLoader+VAELoader+CLIPLoader 分开载入。
+        tokenizer/scheduler 从参考库(self.repo,Z-Image-Turbo 整模型或仓内 bundle)。组件经
+        build_bridged_*(z-image 走 diffusers from_single_file)预建,经 *_override 灌入。
+        无 override = 整模型 from_pretrained(零回归;smoke_zimage.py 验过 8 步出图)。"""
         zimage_cls = _import_zimage_pipeline()
+        overrides = {k: v for k, v in (
+            ("transformer", self._transformer_override),
+            ("text_encoder", self._text_encoder_override),
+            ("vae", self._vae_override),
+        ) if v is not None}
+        if len(overrides) == 3:
+            from transformers import AutoTokenizer  # noqa: PLC0415
+            tokenizer = AutoTokenizer.from_pretrained(str(Path(self.repo) / "tokenizer"))
+            scheduler = _import_flow_schedulers()["euler"].from_pretrained(str(Path(self.repo) / "scheduler"))
+            return zimage_cls(
+                transformer=overrides["transformer"],
+                text_encoder=overrides["text_encoder"],
+                tokenizer=tokenizer,
+                vae=overrides["vae"],
+                scheduler=scheduler)
         # low_cpu_mem_usage=False:对齐 HF README(Z-Image 加载建议),避免 meta-init 与本仓桥接路径冲突。
-        return zimage_cls.from_pretrained(
+        pipe = zimage_cls.from_pretrained(
             self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
+        if overrides:
+            pipe.register_modules(**overrides)
+        return pipe
 
     def _build_qwen_edit_pipe(self) -> Any:
         """Qwen-Image-Edit-2511:HF-layout 整模型,标准 `QwenImageEditPlusPipeline.from_pretrained`。
