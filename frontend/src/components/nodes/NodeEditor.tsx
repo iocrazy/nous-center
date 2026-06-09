@@ -762,6 +762,9 @@ export default function NodeEditor() {
           selectionKeyCode={['Control', 'Meta']}
           multiSelectionKeyCode={['Control', 'Meta']}
           selectionMode={SelectionMode.Partial}
+          // 关掉 RF 原生双击缩放:双击空白改为弹建节点菜单(否则双击只放大,且缩放的
+          // onMoveStart 会把刚弹的菜单关掉)。真机巡检发现。
+          zoomOnDoubleClick={false}
           edgesReconnectable
           minZoom={0.05}
           maxZoom={8}
