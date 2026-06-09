@@ -547,6 +547,8 @@ def test_unload_clears_img2img_pipe():
     # 非 normal 调度器(PR-1)→ 走手写循环(手动算 sigma)
     ("ZImagePipeline", {"scheduler": "simple"}, True),
     ("ZImagePipeline", {"scheduler": "beta"}, True),
+    # euler_ancestral 采样器(PR-1b)→ 走手写循环(手写 RF ancestral 步)
+    ("ZImagePipeline", {"sampler_name": "euler_ancestral"}, True),
     # 全默认 → 整段采样(零回归)
     ("ZImagePipeline", {}, False),
     ("ZImagePipeline", {"start_at_step": 0, "add_noise": True}, False),
