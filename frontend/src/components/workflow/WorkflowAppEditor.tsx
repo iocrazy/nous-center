@@ -34,6 +34,14 @@ function defaultOutputSlot(type: string): string {
   return 'image_url'
 }
 
+// 输出参数的 type:让 Playground/SchemaDrivenOutput 直接按类型渲 <img>/<audio>
+// (不必再靠值推断)。slot=image_url→image,audio→audio,text→string。
+function outputTypeForSlot(slot: string): string {
+  if (slot === 'image_url' || slot === 'image') return 'image'
+  if (slot === 'audio') return 'audio'
+  return 'string'
+}
+
 export interface AppEditorValue {
   inputs: ExposedParam[]
   outputs: ExposedParam[]
@@ -99,7 +107,7 @@ export default function WorkflowAppEditor({
         key: `output_${value.outputs.length + 1}`,
         input_name: slot,
         label: DECLARATIVE_NODES[node.type]?.label || node.type,
-        type: 'string',
+        type: outputTypeForSlot(slot),
       }
       onChange({ ...value, outputs: dedupeKeys([...value.outputs, param]) })
     },

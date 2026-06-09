@@ -35,13 +35,16 @@ const OUT_RE = /output|save|preview/i
 function defaultValue(nodes: PublishDialogProps['nodes']): AppEditorValue {
   const outputs: ExposedParam[] = nodes
     .filter((n) => OUT_RE.test(n.type ?? ''))
-    .map((n, i) => ({
-      node_id: n.id,
-      key: `output_${i + 1}`,
-      input_name: /text/i.test(n.type ?? '') ? 'text' : 'image_url',
-      label: n.type ?? 'output',
-      type: 'string',
-    }))
+    .map((n, i) => {
+      const slot = /text/i.test(n.type ?? '') ? 'text' : 'image_url'
+      return {
+        node_id: n.id,
+        key: `output_${i + 1}`,
+        input_name: slot,
+        label: n.type ?? 'output',
+        type: slot === 'image_url' ? 'image' : 'string',
+      }
+    })
   return { inputs: [], outputs }
 }
 
