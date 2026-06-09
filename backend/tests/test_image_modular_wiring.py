@@ -544,12 +544,17 @@ def test_unload_clears_img2img_pipe():
     ("ZImagePipeline", {"end_at_step": 5, "steps": 12}, True),            # base 留噪截断段
     ("ZImagePipeline", {"add_noise": False}, True),                       # 注入原样续采
     ("ZImagePipeline", {"init_latent_ref": {"path": "/t/x.safetensors"}}, True),
+    # 非 normal 调度器(PR-1)→ 走手写循环(手动算 sigma)
+    ("ZImagePipeline", {"scheduler": "simple"}, True),
+    ("ZImagePipeline", {"scheduler": "beta"}, True),
     # 全默认 → 整段采样(零回归)
     ("ZImagePipeline", {}, False),
     ("ZImagePipeline", {"start_at_step": 0, "add_noise": True}, False),
+    ("ZImagePipeline", {"scheduler": "normal"}, False),                   # normal = 默认,不触发
     ("ZImagePipeline", {"end_at_step": 12, "steps": 12}, False),          # end>=steps 不截断 → 不触发
     # 跨模型 latent 不兼容:Flux2 / qwen 即便带分段字段也不走此路(只 z-image 同 16ch 空间)
     ("Flux2KleinPipeline", {"start_at_step": 5, "init_latent_ref": {"path": "/t/x"}}, False),
+    ("Flux2KleinPipeline", {"scheduler": "beta"}, False),                 # Flux2 非此路(走 _apply_scheduler)
     ("QwenImageEditPlusPipeline", {"add_noise": False}, False),
 ])
 def test_wants_segmented_gating(pipeline_class, kwargs, expected):
