@@ -653,8 +653,6 @@ class ModularImageBackend(InferenceAdapter):
         派发前校验 arch / latent_channels 与本段模型一致 —— 不符给人话报错(对齐
         [[project_anima_arch_mismatch]] 的「别让 UNet 抛晦涩 shape 错」),跨模型 latent 不兼容
         显式拦在派发前。"""
-        import safetensors.torch as _st  # noqa: PLC0415
-
         from src.services.inference.model_arch_adapter import arch_spec_by_pipeline  # noqa: PLC0415
 
         ref = req.init_latent_ref or {}
@@ -670,6 +668,9 @@ class ModularImageBackend(InferenceAdapter):
                 f"不同架构的 latent 空间物理不兼容(通道数/缩放/归一不同),无法直接接力。"
                 f"跨模型请改走「像素链」(上段出图 → 本段 input_image 重绘/参考编辑,即路 A),"
                 f"不要用 latent 输出端口。")
+        # safetensors/torch import 推到校验后(CI test venv 不装 inference extra;派发前 ValueError
+        # 路径无需它,本测试可在 CI 跑 —— 仅真加载时才需依赖)。
+        import safetensors.torch as _st  # noqa: PLC0415
         sd = _st.load_file(path)
         latent = sd.get("latent")
         if latent is None:
