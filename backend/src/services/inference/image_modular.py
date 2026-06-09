@@ -646,7 +646,11 @@ class ModularImageBackend(InferenceAdapter):
         steps = int(getattr(req, "steps", 0) or 0)
         end_truncates = end is not None and int(end) < steps
         add_noise = bool(getattr(req, "add_noise", True))
-        return start > 0 or end_truncates or (not add_noise) or getattr(req, "init_latent_ref", None) is not None
+        # 非 normal 调度器(simple/beta/…,PR-1 放开)也走手写循环 —— 手动算 sigma 覆盖 scheduler
+        # (统一 sigma 控制,且为 PR-1b 的 euler_ancestral 铺路)。normal+euler+无分段 = 整段 pipe(零回归)。
+        sched = (getattr(req, "scheduler", "normal") or "normal")
+        return (start > 0 or end_truncates or (not add_noise)
+                or getattr(req, "init_latent_ref", None) is not None or sched != "normal")
 
     def _load_init_latent(self, req: Any, device: str) -> Any:
         """读回上段导出的 latent_ref(PR-B1 落盘的 safetensors)→ float32 张量(本段 device)。
@@ -699,7 +703,7 @@ class ModularImageBackend(InferenceAdapter):
         device 上);caller 决定导出 latent_ref(output_mode=latent)还是 VAE decode 出图。"""
         import torch  # noqa: PLC0415
 
-        from src.services.inference.sigma_schedules import split_sigmas  # noqa: PLC0415
+        from src.services.inference.sigma_schedules import compute_sigmas, split_sigmas  # noqa: PLC0415
 
         device = self.device
         scheduler = pipe.scheduler
@@ -709,15 +713,23 @@ class ModularImageBackend(InferenceAdapter):
         end = getattr(req, "end_at_step", None)
         add_noise = bool(getattr(req, "add_noise", True))
         leftover = bool(getattr(req, "return_with_leftover_noise", False))
+        sched_name = (getattr(req, "scheduler", "normal") or "normal")
 
         # 1. 文本编码(distilled → do_classifier_free_guidance=False,只出正向 embeds 列表)。
         prompt_embeds, _ = pipe.encode_prompt(
             prompt=req.prompt, device=device, do_classifier_free_guidance=False)
 
-        # 2. 全 schedule —— 与整段 pipe() 完全同法(sigma_min=0 + set_timesteps,shift=3 内化)。
-        scheduler.sigma_min = 0.0
-        scheduler.set_timesteps(num_inference_steps=total_steps, device=device)
-        full_sigmas = [float(x) for x in scheduler.sigmas.tolist()]  # total_steps+1 个,末尾 0
+        # 2. 全 schedule。normal:与整段 pipe() 完全同法(set_timesteps,shift=3 内化 → golden 不变)。
+        #    其余(simple/beta/…,PR-1 放开):sigma_schedules.compute_sigmas(ComfyUI ground-truth 验过,
+        #    含末尾 0,shift=3)。两者都给 total_steps+1 个 sigma(末尾 0),后续 split_sigmas 索引切片一致。
+        if sched_name == "normal":
+            scheduler.sigma_min = 0.0
+            scheduler.set_timesteps(num_inference_steps=total_steps, device=device)
+            full_sigmas = [float(x) for x in scheduler.sigmas.tolist()]
+        else:
+            shift = float(getattr(scheduler.config, "shift", 3.0) or 3.0) \
+                if hasattr(scheduler, "config") else 3.0
+            full_sigmas = [float(x) for x in compute_sigmas(sched_name, total_steps, shift=shift)]
 
         # 3. split_sigmas 索引切片本段(留噪不置 0 / force_full_denoise 末步去到底)。
         seg = split_sigmas(

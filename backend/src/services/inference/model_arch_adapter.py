@@ -150,10 +150,17 @@ class ZImageTurboArchAdapter:
         return 0.0  # distilled — 必须 0
 
     def supported_samplers(self) -> set[str]:
+        # euler 原生;euler_ancestral 经 PR-1b 手写 ancestral 步(留噪循环内),先不声明。
         return {"euler"}
 
     def supported_schedulers(self) -> set[str]:
-        return {"normal"}
+        # 放开到 9 个(对齐 Flux2 / ComfyUI;spec 2026-06-09 Z-Image 引擎地基 PR-1)。Z-Image 走手写
+        # 分段循环时 normal 用 scheduler.set_timesteps(golden 不变),其余用 sigma_schedules.compute_sigmas
+        # (ComfyUI ground-truth 验过的 sigma 算法,shift=3)。
+        return {
+            "normal", "karras", "exponential", "beta",
+            "simple", "sgm_uniform", "ddim_uniform", "linear_quadratic", "kl_optimal",
+        }
 
 
 class QwenImageEditArchAdapter:

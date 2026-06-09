@@ -49,6 +49,10 @@ def test_zimage_arch_registered():
     assert s.caps.default_guidance_scale() == 0.0
     assert s.caps.default_steps() == 8
     assert s.needs_image_input is False  # 纯文生图
+    # PR-1(2026-06-09 引擎地基):调度器放开到 9 个(对齐 Flux2/ComfyUI),引擎手写循环按 scheduler 算 sigma。
+    scheds = s.caps.supported_schedulers()
+    assert {"normal", "simple", "beta", "karras"} <= scheds
+    assert len(scheds) == 9
 
 
 def test_qwen_edit_arch_registered():
