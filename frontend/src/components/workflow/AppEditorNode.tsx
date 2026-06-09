@@ -43,32 +43,45 @@ function AppEditorNodeImpl({ data }: { data: AppEditorNodeData }) {
     <div
       style={{
         width: 240,
-        background: 'var(--bg-elevated, var(--bg))',
-        border: `1px solid ${anyExposed ? color : 'var(--border)'}`,
-        borderRadius: 8,
+        // 对齐 BaseNode 的卡片 token(--card/--node-radius/--shadow-md),
+        // 让节点框在画布上明显、且和真工作流节点风格一致(原来用 --bg-elevated
+        // + 圆角8 在浅色下几乎和画布融在一起 → 用户反馈「节点框不明显」)。
+        background: 'var(--card)',
+        border: `1px solid ${anyExposed ? color : 'var(--border-strong, var(--border))'}`,
+        borderRadius: 'var(--node-radius, 14px)',
         overflow: 'hidden',
-        boxShadow: anyExposed ? `0 0 0 1px ${color}` : 'none',
+        boxShadow: anyExposed
+          ? `var(--shadow-md), 0 0 0 1px ${color}`
+          : 'var(--shadow-md)',
         fontSize: 12,
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: 'var(--muted)' }} />
-      <Handle type="source" position={Position.Right} style={{ background: 'var(--muted)' }} />
+      <Handle type="target" position={Position.Left} style={{ background: 'var(--muted)', width: 10, height: 10, border: '2px solid var(--card)' }} />
+      <Handle type="source" position={Position.Right} style={{ background: 'var(--muted)', width: 10, height: 10, border: '2px solid var(--card)' }} />
 
-      {/* header */}
+      {/* header — 彩色左条 + uppercase 标题 + badge(同 BaseNode) */}
       <div
         style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '8px 10px', borderBottom: '1px solid var(--border)',
-          borderLeft: `3px solid ${color}`,
+          display: 'flex', alignItems: 'center', gap: 6,
+          padding: '7px 10px', borderBottom: '1px solid var(--border)',
+          background: 'var(--card-hl)',
+          borderRadius: 'var(--node-radius, 14px) var(--node-radius, 14px) 0 0',
+          position: 'relative', overflow: 'hidden',
         }}
       >
-        <span style={{ flex: 1, color: 'var(--text)', fontWeight: 600, fontSize: 13 }}>
+        <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: color }} />
+        <span style={{
+          flex: 1, color: 'var(--text)', fontWeight: 700, fontSize: 10.5,
+          textTransform: 'uppercase', letterSpacing: '0.06em',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
           {data.label}
         </span>
         {data.badge && (
           <span style={{
-            fontSize: 9, padding: '1px 6px', borderRadius: 8,
-            background: color, color: '#fff', fontWeight: 600,
+            fontSize: 8, padding: '1px 5px', borderRadius: 3, flexShrink: 0,
+            background: `color-mix(in srgb, ${color} 15%, transparent)`,
+            color, fontWeight: 600,
           }}>
             {data.badge}
           </span>
