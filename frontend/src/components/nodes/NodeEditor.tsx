@@ -4,6 +4,7 @@ import {
   ReactFlow,
   Background,
   BackgroundVariant,
+  SelectionMode,
   Controls,
   MiniMap,
   addEdge,
@@ -677,6 +678,11 @@ export default function NodeEditor() {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           deleteKeyCode={['Backspace', 'Delete']}
+          // 框选(对齐 Infinite-Canvas「拖拽画布移动,Ctrl 框选多选」):左键拖默认平移;
+          // 按住 Ctrl/Cmd 拖 → 拉框选;Partial = 相交即选(AABB);多选拖动 RF 原生支持。
+          selectionKeyCode={['Control', 'Meta']}
+          multiSelectionKeyCode={['Control', 'Meta']}
+          selectionMode={SelectionMode.Partial}
           edgesReconnectable
           minZoom={0.15}
           maxZoom={8}
@@ -700,6 +706,20 @@ export default function NodeEditor() {
             zoomable
           />
         </ReactFlow>
+
+        {/* 底部操作提示条(对齐 Infinite-Canvas) */}
+        <div
+          style={{
+            position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)',
+            pointerEvents: 'none', userSelect: 'none', zIndex: 5,
+            fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap',
+            padding: '4px 12px', borderRadius: 999,
+            background: 'var(--card-hl)', border: '1px solid var(--border)',
+            backdropFilter: 'blur(6px)',
+          }}
+        >
+          拖拽画布移动,Ctrl 框选多选,拖动选中节点可一起移动
+        </div>
       </div>
 
       {/* 节点右键菜单(旁路/复制/删除)*/}
