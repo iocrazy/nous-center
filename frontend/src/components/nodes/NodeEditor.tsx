@@ -22,6 +22,7 @@ import '@xyflow/react/dist/style.css'
 import { nodeTypes } from './nodeTypes'
 import GroupLayer from './GroupLayer'
 import ShortcutsHelp from './ShortcutsHelp'
+import Lightbox from './Lightbox'
 import NodeCreateMenu from './NodeCreateMenu'
 import { choicesAcceptingInput, choicesProvidingOutput, firstInputHandle, firstOutputHandle, getAllChoices, type NodeChoice } from './nodeChoices'
 import { computeGroupBounds } from './groupGeometry'
@@ -801,6 +802,9 @@ export default function NodeEditor() {
 
         {/* 快捷键帮助面板(? 浮层) */}
         <ShortcutsHelp />
+
+        {/* 全屏图片预览(跨图 ←/→ 切换) */}
+        <Lightbox />
       </div>
 
       {/* 节点右键菜单(旁路/复制/删除)*/}

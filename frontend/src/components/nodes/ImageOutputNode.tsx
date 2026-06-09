@@ -3,6 +3,7 @@ import { Download, Maximize2, ImageOff } from 'lucide-react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
 import { NODE_DEFS } from '../../models/workflow'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { useLightboxStore } from '../../stores/lightbox'
 import BaseNode from './BaseNode'
 
 type Phase = 'empty' | 'loading' | 'success' | 'error'
@@ -20,7 +21,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
 
   const [phase, setPhase] = useState<Phase>('empty')
   const [error, setError] = useState<string>('')
-  const [lightbox, setLightbox] = useState(false)
+  const openLightbox = useLightboxStore((s) => s.openFromUrl)
 
   const imageUrl = (data.image_url as string) || ''
   const mediaType = (data.media_type as string) || 'image/png'
@@ -122,7 +123,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
               position: 'relative',
               cursor: phase === 'success' ? 'zoom-in' : 'default',
             }}
-            onClick={() => phase === 'success' && setLightbox(true)}
+            onClick={() => phase === 'success' && dataUrl && openLightbox(dataUrl)}
           >
             {phase === 'success' && dataUrl ? (
               <img
@@ -176,7 +177,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
               </button>
               <button
                 className="nodrag"
-                onClick={() => setLightbox(true)}
+                onClick={() => dataUrl && openLightbox(dataUrl)}
                 style={{
                   flex: 1,
                   padding: '4px 6px',
@@ -211,27 +212,6 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
           )}
         </div>
       </BaseNode>
-      {lightbox && dataUrl && (
-        <div
-          onClick={() => setLightbox(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.85)',
-            zIndex: 9999,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'zoom-out',
-          }}
-        >
-          <img
-            src={dataUrl}
-            alt="generated"
-            style={{ maxWidth: '95vw', maxHeight: '95vh', objectFit: 'contain' }}
-          />
-        </div>
-      )}
     </>
   )
 }

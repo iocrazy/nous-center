@@ -3,6 +3,7 @@ import { NodeResizer, type NodeProps } from '@xyflow/react'
 import { ImageOff } from 'lucide-react'
 import { NODE_DEFS } from '../../models/workflow'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { useLightboxStore } from '../../stores/lightbox'
 import BaseNode from './BaseNode'
 
 /** 图像对比节点 —— A/B 滑动对比(对标 rgthree Image Comparer)。
@@ -13,6 +14,7 @@ export default function ImageCompareNode({ id, data, selected }: NodeProps) {
   const tabs = useWorkspaceStore((s) => s.tabs)
   const activeTabId = useWorkspaceStore((s) => s.activeTabId)
   const updateNode = useWorkspaceStore((s) => s.updateNode)
+  const openLightbox = useLightboxStore((s) => s.openFromUrl)
 
   // 两路上游 source 节点 id(按 targetHandle image_a / image_b 分)。
   const { srcA, srcB } = useMemo(() => {
@@ -133,7 +135,9 @@ export default function ImageCompareNode({ id, data, selected }: NodeProps) {
                 src={urlA || urlB}
                 alt="single"
                 draggable={false}
-                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }}
+                className="nodrag"
+                onClick={() => { const u = urlA || urlB; if (u) openLightbox(u) }}
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', cursor: 'zoom-in' }}
               />
             ) : (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--muted-strong)' }}>
