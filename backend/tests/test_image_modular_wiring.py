@@ -591,3 +591,29 @@ def test_segmented_fields_default_zero_regression():
     assert req.add_noise is True
     assert req.return_with_leftover_noise is False
     assert req.init_latent_ref is None
+
+
+# ---- PR-2:Z-Image 分开载入(组件 override 装配 + 桥接 arch 派发)----------------------
+# 注:三 override 装配 / from_single_file 派发的**正确性**由真机 smoke_zimage_singlefile.py 守
+# (SSIM 0.9833,CLAUDE.md「引擎正确性只靠 standalone smoke」)。这里只测 CI-safe 的纯逻辑。
+
+
+def test_zimage_no_override_from_pretrained(monkeypatch):
+    """无 override → 整模型 from_pretrained(零回归,不走单文件装配)。"""
+    pipe = MagicMock(name="zimage_pipe")
+    zimage_cls = MagicMock(name="ZImagePipeline", return_value=pipe)
+    zimage_cls.from_pretrained.return_value = pipe
+    monkeypatch.setattr(image_modular, "_import_zimage_pipeline", lambda: zimage_cls)
+    be = image_modular.ModularImageBackend(repo="/m/z", device="cpu", pipeline_class="ZImagePipeline")
+    be._ensure_pipe()
+    zimage_cls.from_pretrained.assert_called_once()
+    zimage_cls.assert_not_called()  # 无 override 不直接装配
+
+
+def test_ref_class_name_reads_config(tmp_path):
+    """_ref_class_name 读 repo/<sub>/config.json 的 _class_name(桥接据此选 from_single_file vs 手写)。"""
+    import json
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "config.json").write_text(json.dumps({"_class_name": "ZImageTransformer2DModel"}))
+    assert image_modular._ref_class_name(str(tmp_path), "transformer") == "ZImageTransformer2DModel"
+    assert image_modular._ref_class_name(str(tmp_path), "vae") == ""  # 缺 → 空(不崩)
