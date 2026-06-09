@@ -131,13 +131,24 @@ export function usePublishWorkflow() {
   })
 }
 
+export interface PatchServiceBody {
+  status?: ServiceStatus
+  // 服务页「应用编辑」tab 就地改对外暴露 schema(逐 widget 表单配置)。
+  // 省略 = 不动该字段;传 [] = 清空。
+  exposed_inputs?: ExposedParam[]
+  exposed_outputs?: ExposedParam[]
+}
+
 export function usePatchService() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ serviceId, status }: { serviceId: string | number; status: ServiceStatus }) =>
+    mutationFn: ({
+      serviceId,
+      ...body
+    }: { serviceId: string | number } & PatchServiceBody) =>
       apiFetch<ServiceRow>(`/api/v1/services/${serviceId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(body),
       }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['services'] })
