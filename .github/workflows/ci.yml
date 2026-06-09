@@ -51,7 +51,7 @@ jobs:
           CUDA_VISIBLE_DEVICES: ""
 
   frontend:
-    name: Frontend · lint + build
+    name: Frontend · lint + test + build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -79,6 +79,11 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # vitest 之前没进 CI(job 只跑 lint+build)→ 前端单测红了没人察觉
+      # (CachedHint.test 在 master 长红到 #409 才修)。接进来当门禁。
+      - name: Test (vitest)
+        run: npm test
 
       - name: Build
         run: npm run build
