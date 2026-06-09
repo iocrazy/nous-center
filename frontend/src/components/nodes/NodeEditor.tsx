@@ -3,6 +3,7 @@ import { Copy, Ban, Trash2, Group } from 'lucide-react'
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   addEdge,
@@ -688,7 +689,8 @@ export default function NodeEditor() {
           }}
           style={{ background: 'var(--bg)' }}
         >
-          <Background color="rgba(255,255,255,0.03)" gap={20} />
+          {/* Infinite-Canvas 风 dotted 网格(点色随主题 --grid)。 */}
+          <Background variant={BackgroundVariant.Dots} color="var(--grid)" gap={24} size={1.4} />
           <GroupLayer />
           <Controls />
           <MiniMap
