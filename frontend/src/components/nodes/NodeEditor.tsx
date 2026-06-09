@@ -362,6 +362,21 @@ export default function NodeEditor() {
     setPaneMenu(null)
   }, [setNodes, storeAddNode])
 
+  // 节点库双击 → 在画布视口中心建该节点(NodeLibraryPanel 派发 'nodelib-add-node')。
+  useEffect(() => {
+    const onAdd = (e: Event) => {
+      const type = (e as CustomEvent).detail?.type as NodeType
+      if (!type || !NODE_DEFS[type]) return
+      const rfi = reactFlowInstance.current
+      const bounds = reactFlowWrapper.current?.getBoundingClientRect()
+      if (!rfi || !bounds) return
+      const center = rfi.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+      createNodeAt(type, center.x, center.y)
+    }
+    window.addEventListener('nodelib-add-node', onAdd)
+    return () => window.removeEventListener('nodelib-add-node', onAdd)
+  }, [createNodeAt])
+
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
       // round5:挡自连(自环)——拖到节点自己的同类型输入会建自环边,要等执行时
