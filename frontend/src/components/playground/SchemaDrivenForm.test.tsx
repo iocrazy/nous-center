@@ -9,6 +9,12 @@ function setup(inputs: ExposedParam[]) {
   return { onSubmit }
 }
 
+function setupWithInitial(inputs: ExposedParam[], initialValues: Record<string, unknown>) {
+  const onSubmit = vi.fn()
+  render(<SchemaDrivenForm inputs={inputs} onSubmit={onSubmit} initialValues={initialValues} />)
+  return { onSubmit }
+}
+
 describe('SchemaDrivenForm', () => {
   it('renders empty-state hint when no inputs', () => {
     setup([])
@@ -23,6 +29,16 @@ describe('SchemaDrivenForm', () => {
     fireEvent.change(inp, { target: { value: 'hello' } })
     fireEvent.click(screen.getByText(/▶ 运行/))
     expect(onSubmit).toHaveBeenCalledWith({ prompt: 'hello' })
+  })
+
+  it('prefills from initialValues (重跑回填) overriding defaults', () => {
+    const { onSubmit } = setupWithInitial(
+      [{ node_id: 'in_1', key: 'prompt', input_name: 'value', label: '提示词', type: 'string' }],
+      { prompt: '历史提示词' },
+    )
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('历史提示词')
+    fireEvent.click(screen.getByText(/▶ 运行/))
+    expect(onSubmit).toHaveBeenCalledWith({ prompt: '历史提示词' })
   })
 
   it('renders a multiline textarea for type=string_multiline', () => {

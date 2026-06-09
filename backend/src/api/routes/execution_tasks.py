@@ -248,6 +248,8 @@ def _task_to_dict(t: ExecutionTask) -> dict:
         "result": t.result,
         "error": t.error,
         "duration_ms": t.duration_ms,
+        # 历史参数 —— 前端「重跑(相同参数)」回填用(spec 2026-06-09 run-history PR-A)。
+        "input_json": t.input_json,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }

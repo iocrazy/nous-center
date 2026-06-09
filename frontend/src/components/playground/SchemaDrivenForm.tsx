@@ -7,6 +7,8 @@ export interface SchemaDrivenFormProps {
   inputs: ExposedParam[]
   /** Called with `{ key: value }` keyed by `param.key`, ready to POST. */
   onSubmit: (values: Record<string, unknown>) => void
+  /** 预填初值(覆盖各字段 default),keyed by exposed key。「重跑(相同参数)」回填用。 */
+  initialValues?: Record<string, unknown>
   submitting?: boolean
   submitLabel?: string
   estimateLine?: string
@@ -87,6 +89,7 @@ function defaultFor(p: ExposedParam): unknown {
 export default function SchemaDrivenForm({
   inputs,
   onSubmit,
+  initialValues,
   submitting,
   submitLabel = '▶ 运行',
   estimateLine,
@@ -96,10 +99,11 @@ export default function SchemaDrivenForm({
     for (const p of inputs) {
       const k = paramKey(p)
       if (!k) continue
-      acc[k] = defaultFor(p)
+      // 有预填值用预填(重跑回填),否则用字段 default。
+      acc[k] = initialValues && k in initialValues ? initialValues[k] : defaultFor(p)
     }
     return acc
-  }, [inputs])
+  }, [inputs, initialValues])
 
   const [values, setValues] = useState<Record<string, unknown>>(initial)
 

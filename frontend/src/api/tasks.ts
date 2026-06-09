@@ -14,6 +14,8 @@ export interface ExecutionTask {
   result: any
   error: string | null
   duration_ms: number | null
+  /** 历史调用入参(flat {exposed_key: value})。「重跑(相同参数)」回填用。 */
+  input_json?: Record<string, unknown> | null
   created_at: string
   updated_at: string
   /** Server-derived from result envelope. null until the run completes

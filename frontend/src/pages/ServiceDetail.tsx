@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Activity,
   AlertTriangle,
@@ -57,6 +57,9 @@ type TabId = (typeof TABS)[number]['id']
 
 export default function ServiceDetailPage({ serviceId, onBack }: ServiceDetailPageProps) {
   const { data: svc, isLoading, error } = useService(serviceId)
+  const location = useLocation()
+  // 从任务面板「重跑(相同参数)」跳来时带的历史入参 → 预填 Playground 表单。
+  const rerunInputs = (location.state as { rerunInputs?: Record<string, unknown> } | null)?.rerunInputs
   const [tab, setTab] = useState<TabId>('playground')
 
   if (isLoading) {
@@ -82,7 +85,7 @@ export default function ServiceDetailPage({ serviceId, onBack }: ServiceDetailPa
         <Tabs current={tab} onChange={setTab} />
 
         {tab === 'overview' && <OverviewTab svc={svc} />}
-        {tab === 'playground' && <PlaygroundTab svc={svc} />}
+        {tab === 'playground' && <PlaygroundTab svc={svc} initialInputs={rerunInputs} />}
         {tab === 'app-editor' && <AppEditorTab svc={svc} />}
         {tab === 'docs' && <DocsTab svc={svc} />}
         {tab === 'auth' && <AuthTab svc={svc} />}
@@ -340,7 +343,7 @@ function ModelsPanel({ models }: { models: ServiceModelRef[] }) {
   )
 }
 
-function PlaygroundTab({ svc }: { svc: ServiceDetailT }) {
+function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInputs?: Record<string, unknown> }) {
   const [result, setResult] = useState<Record<string, unknown> | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -391,6 +394,7 @@ function PlaygroundTab({ svc }: { svc: ServiceDetailT }) {
         <SectionHeader title="入参" />
         <SchemaDrivenForm
           inputs={svc.exposed_inputs}
+          initialValues={initialInputs}
           submitting={running}
           onSubmit={submit}
         />
