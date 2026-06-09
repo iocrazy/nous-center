@@ -127,7 +127,7 @@ export default function NodeLibraryPanel() {
         {!isCollapsed &&
           filteredNodes.map(({ type, dotColor }) => {
             const { ins, outs } = portTypes(type)
-            const title = `输入: ${ins.join(' / ') || '无'}  →  输出: ${outs.join(' / ') || '无'}`
+            const title = `输入: ${ins.join(' / ') || '无'}  →  输出: ${outs.join(' / ') || '无'}\n双击添加到画布 / 拖拽放置`
             const ioDots = outs.length ? outs : ins
             return (
             <div
@@ -143,6 +143,7 @@ export default function NodeLibraryPanel() {
               }}
               draggable
               onDragStart={(e) => onDragStart(e, type)}
+              onDoubleClick={() => window.dispatchEvent(new CustomEvent('nodelib-add-node', { detail: { type } }))}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--bg-hover)'
                 e.currentTarget.style.color = 'var(--text)'
