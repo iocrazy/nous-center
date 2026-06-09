@@ -150,8 +150,9 @@ class ZImageTurboArchAdapter:
         return 0.0  # distilled — 必须 0
 
     def supported_samplers(self) -> set[str]:
-        # euler 原生;euler_ancestral 经 PR-1b 手写 ancestral 步(留噪循环内),先不声明。
-        return {"euler"}
+        # euler 原生;euler_ancestral 经 PR-1b 手写 rectified-flow ancestral 步(_run_zimage_segmented
+        # 内,逐式对照 ComfyUI sample_euler_ancestral_RF)。
+        return {"euler", "euler_ancestral"}
 
     def supported_schedulers(self) -> set[str]:
         # 放开到 9 个(对齐 Flux2 / ComfyUI;spec 2026-06-09 Z-Image 引擎地基 PR-1)。Z-Image 走手写

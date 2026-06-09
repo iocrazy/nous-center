@@ -646,11 +646,13 @@ class ModularImageBackend(InferenceAdapter):
         steps = int(getattr(req, "steps", 0) or 0)
         end_truncates = end is not None and int(end) < steps
         add_noise = bool(getattr(req, "add_noise", True))
-        # 非 normal 调度器(simple/beta/…,PR-1 放开)也走手写循环 —— 手动算 sigma 覆盖 scheduler
-        # (统一 sigma 控制,且为 PR-1b 的 euler_ancestral 铺路)。normal+euler+无分段 = 整段 pipe(零回归)。
+        # 非 normal 调度器(simple/beta/…,PR-1)或 euler_ancestral 采样器(PR-1b)也走手写循环 ——
+        # 手动算 sigma / 手写 ancestral 步。normal+euler+无分段 = 整段 pipe(零回归)。
         sched = (getattr(req, "scheduler", "normal") or "normal")
+        sampler = (getattr(req, "sampler_name", "euler") or "euler")
         return (start > 0 or end_truncates or (not add_noise)
-                or getattr(req, "init_latent_ref", None) is not None or sched != "normal")
+                or getattr(req, "init_latent_ref", None) is not None
+                or sched != "normal" or sampler == "euler_ancestral")
 
     def _load_init_latent(self, req: Any, device: str) -> Any:
         """读回上段导出的 latent_ref(PR-B1 落盘的 safetensors)→ float32 张量(本段 device)。
@@ -714,6 +716,7 @@ class ModularImageBackend(InferenceAdapter):
         add_noise = bool(getattr(req, "add_noise", True))
         leftover = bool(getattr(req, "return_with_leftover_noise", False))
         sched_name = (getattr(req, "scheduler", "normal") or "normal")
+        sampler_name = (getattr(req, "sampler_name", "euler") or "euler")
 
         # 1. 文本编码(distilled → do_classifier_free_guidance=False,只出正向 embeds 列表)。
         prompt_embeds, _ = pipe.encode_prompt(
@@ -780,7 +783,29 @@ class ModularImageBackend(InferenceAdapter):
             noise_pred = torch.stack([o.float() for o in model_out_list], dim=0)
             noise_pred = noise_pred.squeeze(2)
             noise_pred = -noise_pred
-            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+            noise_pred = noise_pred.to(torch.float32)
+            if sampler_name == "euler_ancestral":
+                # rectified-flow ancestral(PR-1b)—— 逐式对照 ComfyUI sample_euler_ancestral_RF
+                # (k_diffusion/sampling.py:240;Z-Image=CONST/RF,**不是** EDM 版的 get_ancestral_step)。
+                # denoised(x0)= latents - sigma*noise_pred(noise_pred 即 flow 速度 v;eta=0 时本式
+                # 代数化简 == diffusers euler step,已验)。eta=1/s_noise=1(ComfyUI 默认)。
+                sigma = float(seg[i])
+                sigma_next = float(seg[i + 1])
+                denoised = latents - sigma * noise_pred
+                if sigma_next == 0.0:
+                    latents = denoised
+                else:
+                    downstep_ratio = 1.0 + (sigma_next / sigma - 1.0) * 1.0  # eta=1
+                    sigma_down = sigma_next * downstep_ratio
+                    alpha_ip1 = 1.0 - sigma_next
+                    alpha_down = 1.0 - sigma_down
+                    renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
+                    sdr = sigma_down / sigma
+                    latents = sdr * latents + (1.0 - sdr) * denoised
+                    noise = torch.randn(latents.shape, generator=gen, device=device, dtype=torch.float32)
+                    latents = (alpha_ip1 / alpha_down) * latents + noise * renoise_coeff
+            else:
+                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
             # 进度 + 逐组件时长(与整段路径对齐:denoise 首/末步时间戳 → VAE Decode 真时长)。
             _now = time.monotonic()
             stage_ts.setdefault("denoise_first", _now)
