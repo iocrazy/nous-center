@@ -390,6 +390,9 @@ def _build_request(node: P.RunNode):
                 cfg_scale=float(latent.get("cfg_scale") or 4.0),
                 sampler_name=str(latent.get("sampler_name") or "euler"),
                 scheduler=str(latent.get("scheduler") or "normal"),
+                # PR-A2:img2img 重绘强度(默认 1.0 = 全量去噪 ≈ 文生图,零回归;<1 + input_image
+                # + arch 有 img2img 变体 → 引擎走 ZImageImg2ImgPipeline 加噪重去噪)。
+                strength=float(latent.get("strength") or 1.0),
                 offload=unet_offload,
                 seed=int(lseed) if lseed not in (None, "") else None,
                 input_image=input_image_resolved,

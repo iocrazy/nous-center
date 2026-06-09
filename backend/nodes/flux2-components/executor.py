@@ -193,6 +193,9 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
         "sampler_name": data.get("sampler_name") or "euler",
         "scheduler": data.get("scheduler") or "normal",
         "seed": seed,
+        # img2img 重绘强度(PR-A2):默认 1.0 = 全量去噪 ≈ 文生图(零回归)。仅 z-image(有 img2img 变体)
+        # + 连了 image 端口 + strength<1 时,引擎走 ZImageImg2ImgPipeline 加噪重去噪。
+        "strength": float(data.get("strength") or 1.0),
     }
     if input_image:
         latent["input_image"] = str(input_image)

@@ -56,6 +56,17 @@ def _import_zimage_pipeline() -> Any:
     return ZImagePipeline
 
 
+def _import_img2img_pipeline(cls_name: str) -> Any:
+    """Lazy import img2img pipeline 类(D2:diffusers import 只在本文件;PR-A2)。
+    目前仅 ZImageImg2ImgPipeline。从 text2img pipe 的 components 复用构建(不重载权重)。"""
+    import diffusers  # noqa: PLC0415
+    cls = getattr(diffusers, cls_name, None)
+    if cls is None:
+        raise NotImplementedError(
+            f"diffusers(钉的 commit)无 img2img pipeline 类 {cls_name!r} —— 升 diffusers 或换架构")
+    return cls
+
+
 def _import_qwen_edit_pipeline() -> Any:
     """Lazy import Qwen-Image-Edit-2511 pipeline(D2:diffusers import 只在本文件)。编辑类
     (needs_image_input),HF-layout 整模型,标准 from_pretrained。CFG 旋钮 true_cfg_scale(非
@@ -477,6 +488,9 @@ class ModularImageBackend(InferenceAdapter):
         self._text_encoder_override = text_encoder_override
         self._vae_override = vae_override
         self._pipe: Any = None
+        # PR-A2:img2img 变体 pipe(复用 _pipe 的 components,惰性建)。仅 arch 注册了 img2img_pipeline_class
+        # 且请求带 input_image + 0<strength<1 时构建/使用。unload 随 _pipe 一起清(共享组件)。
+        self._img2img_pipe: Any = None
         self._loaded_loras: set[str] = set()  # PR-3
         # PR-2 当前已装的 (sampler_name, scheduler);初值 = 参考库默认(FlowMatchEuler + normal sigmas)
         # → 默认请求不触发换 scheduler。
@@ -499,6 +513,7 @@ class ModularImageBackend(InferenceAdapter):
         """
         pipe = self._pipe
         self._pipe = None
+        self._img2img_pipe = None  # PR-A2:与 _pipe 共享组件,随之释放
         self._model = None
         self._loaded_loras.clear()
         # round5:复位 scheduler 缓存键。_apply_scheduler 用 _sched_key 做缓存早退不重装;
@@ -586,6 +601,38 @@ class ModularImageBackend(InferenceAdapter):
         self._pipe = pipe
         self._model = pipe  # is_loaded → True
         return pipe
+
+    def _wants_img2img(self, req: Any) -> bool:
+        """是否走真 img2img(PR-A2):arch 注册了 img2img_pipeline_class + 连了 input_image + 0<strength<1。
+        strength>=1(默认)= 全量去噪 ≈ 忽略输入图 → 不走 img2img(零回归:现有工作流默认 strength=1)。"""
+        from src.services.inference.model_arch_adapter import arch_spec_by_pipeline  # noqa: PLC0415
+        spec = arch_spec_by_pipeline(self.pipeline_class)
+        if not spec or not spec.img2img_pipeline_class:
+            return False
+        if not getattr(req, "input_image", None):
+            return False
+        try:
+            s = float(getattr(req, "strength", 1.0))
+        except (TypeError, ValueError):
+            return False
+        return 0.0 < s < 1.0
+
+    def _ensure_img2img_pipe(self) -> Any:
+        """img2img 变体 pipe —— 复用 text2img pipe 已加载+已放置的组件(不重载权重/不重放置显存),
+        仅换 pipeline 类(diffusers `Cls(**base.components)` 标准做法)。仅 arch 注册了
+        img2img_pipeline_class(z-image)时可建。"""
+        if self._img2img_pipe is not None:
+            return self._img2img_pipe
+        from src.services.inference.model_arch_adapter import arch_spec_by_pipeline  # noqa: PLC0415
+        spec = arch_spec_by_pipeline(self.pipeline_class)
+        cls_name = spec.img2img_pipeline_class if spec else None
+        if not cls_name:
+            raise NotImplementedError(
+                f"pipeline_class {self.pipeline_class!r} 无 img2img 变体(arch 未注册 img2img_pipeline_class)")
+        base = self._ensure_pipe()
+        img_cls = _import_img2img_pipeline(cls_name)
+        self._img2img_pipe = img_cls(**base.components)
+        return self._img2img_pipe
 
     def _build_klein_pipe(self) -> Any:
         """comfy Flux2 单文件 → 标准 `Flux2KleinPipeline(is_distilled=False)` = true-CFG。
@@ -752,6 +799,11 @@ class ModularImageBackend(InferenceAdapter):
 
         pipe = self._ensure_pipe()
         self._apply_loras(list(getattr(req, "loras", None) or []))
+        # PR-A2:真 img2img(z-image + input_image + 0<strength<1)→ 切到 img2img 变体 pipe(复用组件)。
+        # 下方 image= 注入(按 pipe.__call__ 签名)对 img2img pipe 自动生效;再补 strength。
+        img2img_mode = self._wants_img2img(req)
+        if img2img_mode:
+            pipe = self._ensure_img2img_pipe()
         if self.pipeline_class == "Flux2KleinPipeline":
             self._apply_scheduler(
                 pipe, getattr(req, "sampler_name", "euler"), getattr(req, "scheduler", "normal"))
@@ -838,6 +890,10 @@ class ModularImageBackend(InferenceAdapter):
                 import logging  # noqa: PLC0415
                 logging.getLogger(__name__).warning(
                     "pipeline %s 不接受 image= 入参,忽略 input_image(纯文生图架构)", self.pipeline_class)
+        # PR-A2:img2img 时补 strength(0<strength<1;img2img pipe 据此算从输入图加噪起点 + 截步)。
+        # _wants_img2img 已保证 image= 已注入(input_image 非空)且 pipe 是 img2img 变体(接受 strength)。
+        if img2img_mode:
+            call_kwargs["strength"] = float(req.strength)
         # injected scheduler(simple/sgm_uniform/ddim_uniform/linear_quadratic/kl_optimal):
         # diffusers FlowMatch 原生无对应 use_*_sigmas,手动算 sigma 传 pipe(sigmas=...)。
         # pipe 期望不含末尾 0(它自己 append),compute_sigmas 返回含末尾 0 → 去掉末尾 0。
