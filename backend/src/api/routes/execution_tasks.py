@@ -19,16 +19,21 @@ async def list_tasks(
     limit: int = 20,
     offset: int = 0,
     status: str | None = None,
+    workflow_id: str | None = None,
     session: AsyncSession = Depends(get_async_session),
 ):
-    stmt = (
-        select(ExecutionTask)
-        .order_by(desc(ExecutionTask.created_at))
-        .limit(limit)
-        .offset(offset)
-    )
+    # workflow_id 过滤要在 limit/offset 之前 where,否则先截断再过滤会漏。
+    stmt = select(ExecutionTask).order_by(desc(ExecutionTask.created_at))
     if status:
         stmt = stmt.where(ExecutionTask.status == status)
+    # 服务详情「用量/历史」tab:按源 workflow 归属过滤(service run 的 task 经 PR-A 已带
+    # workflow_id)。snowflake id 是 str,强转 int;非法值不抛、直接返回空集。
+    if workflow_id:
+        try:
+            stmt = stmt.where(ExecutionTask.workflow_id == int(workflow_id))
+        except (TypeError, ValueError):
+            return []
+    stmt = stmt.limit(limit).offset(offset)
     result = await session.execute(stmt)
     tasks = result.scalars().all()
     return [_task_to_dict(t) for t in tasks]

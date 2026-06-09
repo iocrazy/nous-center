@@ -98,6 +98,20 @@ export function useTasks() {
   })
 }
 
+/** 服务详情「用量/历史」tab:拉该服务源 workflow 的历史调用 task(spec run-history PR-C)。
+ *  独立 queryKey,不与全局任务面板的 ['tasks'] 混。 */
+export function useTasksByWorkflow(workflowId: string | null, limit = 50) {
+  return useQuery({
+    queryKey: ['tasks', 'wf', workflowId, limit],
+    queryFn: () =>
+      apiFetch<ExecutionTask[]>(
+        `/api/v1/tasks?limit=${limit}&workflow_id=${encodeURIComponent(workflowId ?? '')}`,
+      ),
+    enabled: !!workflowId,
+    staleTime: 10_000,
+  })
+}
+
 export function useCancelTask() {
   const qc = useQueryClient()
   return useMutation({
