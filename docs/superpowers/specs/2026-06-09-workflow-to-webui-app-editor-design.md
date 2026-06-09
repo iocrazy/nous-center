@@ -76,14 +76,29 @@ WorkflowAppEditor
 
 ### 节点图渲染
 
-- 复用工作流的 `nodes`(含 position)+ `edges` 喂给 React Flow,`nodesDraggable=
-  false`、`nodesConnectable=false`、`elementsSelectable=false`,只保留 pan/zoom。
+- `nodes` + `edges` 喂给 React Flow,`nodesDraggable=false`、`nodesConnectable=
+  false`、`elementsSelectable=false`,只保留 pan/zoom。
+- **坐标来源(R1,关键):** 发布弹窗传入的是 React Flow 节点(带真 `position`,
+  prop 类型没标但对象有),直接用;**服务页 tab 只有 `workflow_snapshot`,里面没有
+  position**(`_build_snapshot` 只存 `class_type/inputs/_meta`)。因此组件内置一个
+  **零依赖分层布局**:按 `edges` 做最长路径求每个节点的「层」→ 横向分列,同列纵向
+  均匀排开。`position` 缺失用它,存在则优先真坐标。**不引 dagre/elk**(避免重依赖)。
 - 新节点组件 `AppEditorNode`:头部沿用 nous 节点卡片样式(类目色条 + 标题 +
-  badge,见 `BaseNode`/`DeclarativeNode`),body 列出该节点 type 在
-  `DECLARATIVE_NODES` 里的 widgets,每行左侧一个 checkbox。勾中的行高亮 +
-  节点整体加 `has-exposed` 视觉标记(对齐 Infinite-Canvas 的绿色/高亮节点)。
-- 非声明式节点(text_input/image_input/image_output 等纯 I/O 节点)按其
-  primary slot 暴露成单字段(沿用 `NODE_PRIMARY_SLOT` 的语义)。
+  badge,见 `BaseNode`/`DeclarativeNode`),body 列出该节点的 widgets,每行左侧一个
+  checkbox。勾中的行高亮 + 节点整体加 `has-exposed` 标记(对齐 Infinite-Canvas)。
+- **widget 行来源 + fallback(R2):** 优先查 `DECLARATIVE_NODES[type].widgets`。
+  不在表里的节点(自定义组件 / 插件节点)→ fallback:把节点当前 `data` 的键列成
+  可勾选行,`type` 按值启发式推断(**仅 fallback 才用** Infinite-Canvas 那套猜法)。
+  纯 I/O 节点(text_input/image_input/image_output 等)按其 primary slot 暴露单字段
+  (沿用 `NODE_PRIMARY_SLOT` 语义)。
+
+### 左侧表单:预览 vs 可运行(R4)
+
+`WorkflowAppEditor` 接 `runnable?: boolean` + `onRun?`:
+
+- **发布弹窗**:服务尚未发布,左表单为**预览态**(看布局,不真跑)。
+- **服务页 tab**:服务已发布,左表单**可运行**,复用 Playground 的
+  `/v1/apps/{name}/run` 逻辑 → 改完配置当场验。
 
 ### 输入 vs 输出
 
@@ -93,7 +108,8 @@ WorkflowAppEditor
 
 ## 5. PR 切分(每 lane 独立分支 + PR,走 CI/CD)
 
-> 依赖:PR-1 与 PR-5 可独立先行;PR-2 是 PR-3/PR-4 的基础。
+> 依赖(R5):PR-1 与 PR-5 可独立先行;PR-2 是 PR-3/PR-4 的基础
+> (PR-3/PR-4 blockedBy PR-2,PR-4 还 blockedBy PR-1)。
 
 ### PR-0(本 spec,docs)
 push 本设计文档,开 docs PR。
@@ -103,7 +119,11 @@ push 本设计文档,开 docs PR。
 - PATCH 时若带 exposed:复用 `workflow_publish._node_ids` 对 `svc.workflow_snapshot`
   校验每个 `node_id` 存在(否则 422);复用 image envelope 白名单校验 outputs。
 - 写入后 `invalidate("services")`;`updated_at` 刷新。**不**改 snapshot_hash
-  (schema 映射变更不动快照本体)。
+  (schema 映射变更不动快照本体),也**不** bump `version`(version 留给
+  deprecate + new-name 流程)。
+- **契约风险(R3):** 就地改一个 active 服务的 `exposed_inputs` = 改它的对外 API
+  schema,已对接的 key/调用方可能被静默破坏。单管理员 infra,v1 允许就地改,但
+  PR-4 的 UI 要给「改 schema 会影响已对接调用方」提示。
 - 测试:patch exposed 成功 / 引用不存在 node_id → 422 / 缓存失效。
 - 前端 `usePatchService` 增 `exposed_inputs/outputs/label` 可选入参。
 
@@ -156,3 +176,15 @@ push 本设计文档,开 docs PR。
 
 按用户习惯,UI 改动用 chrome-devtools 真机点测(勾选 widget→表单实时更新→运行
 出结果),逐个抓 build 抓不到的口径 bug;图片/采样类用真模型 smoke 验一次。
+
+## 8. 自我 Review 修订(2026-06-09)
+
+对照真实代码做了一轮工程审查,修订如下:
+
+- **R1(硬伤,阻塞 PR-4):** 服务页只有 `workflow_snapshot`,`_build_snapshot` 不存
+  position → 没坐标。改为组件内置零依赖分层布局,缺坐标时用,详见 §4 节点图渲染。
+- **R2:** 非声明式节点无 widget 定义 → fallback 用 `data` 键 + 值推断类型(§4)。
+- **R3:** 在线改 exposed 即改对外契约,标注风险 + UI 提示,不 bump version(§5 PR-1)。
+- **R4:** 左表单在发布弹窗=预览态、在服务页=可运行,加 `runnable`/`onRun`(§4)。
+- **R5(切分):** PR-2 体量最大且阻塞 PR-3/PR-4;PR-5(富表单)最独立、可先行。
+  任务依赖已设:PR-3/PR-4 blockedBy PR-2,PR-4 blockedBy PR-1。
