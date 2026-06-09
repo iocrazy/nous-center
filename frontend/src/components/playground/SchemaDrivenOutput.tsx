@@ -52,7 +52,9 @@ function pluck(
   return undefined
 }
 
-function pickMime(p: ExposedParam): 'audio' | 'video' | 'image' | 'json' | 'text' {
+type OutKind = 'audio' | 'video' | 'image' | 'json' | 'text'
+
+function pickMime(p: ExposedParam): OutKind {
   const t = (p.type ?? '').toLowerCase()
   if (t.includes('audio')) return 'audio'
   if (t.includes('video')) return 'video'
@@ -64,6 +66,34 @@ function pickMime(p: ExposedParam): 'audio' | 'video' | 'image' | 'json' | 'text
   if (mime.startsWith('image/')) return 'image'
   if (t === 'object' || t === 'json') return 'json'
   return 'text'
+}
+
+const IMG_EXT = /\.(png|jpe?g|webp|gif|bmp|avif)(\?|#|$)/i
+const VIDEO_EXT = /\.(mp4|webm|mov|mkv)(\?|#|$)/i
+const AUDIO_EXT = /\.(mp3|wav|ogg|flac|m4a)(\?|#|$)/i
+
+/**
+ * 真机发现:image 服务(如 img-flux2)的输出参数常是 type='string' + slot='image_url',
+ * pickMime 只看 type → 判成 text → 把图渲成 URL 文本而非 <img>。这里在 type 之外**按值
+ * 推断**:URL/data 的扩展名或 image_url 这类名字 → 升级成 image/video/audio。值优先(只在
+ * 值确实是 URL 时才用名字提示),避免把普通文本字段错当成坏图。存量服务不用重发布即生效。
+ */
+function resolveKind(p: ExposedParam, value: unknown): OutKind {
+  const declared = pickMime(p)
+  if (declared === 'audio' || declared === 'video' || declared === 'image') return declared
+  if (typeof value !== 'string') return declared
+  const v = value
+  if (v.startsWith('data:image') || IMG_EXT.test(v)) return 'image'
+  if (v.startsWith('data:video') || VIDEO_EXT.test(v)) return 'video'
+  if (v.startsWith('data:audio') || AUDIO_EXT.test(v)) return 'audio'
+  const isUrl = v.startsWith('http') || v.startsWith('/') || v.startsWith('data:')
+  if (isUrl) {
+    const name = `${paramSlot(p) ?? ''} ${paramKey(p) ?? ''}`.toLowerCase()
+    if (/image|img|cover|thumb/.test(name)) return 'image'
+    if (/audio|voice|speech/.test(name)) return 'audio'
+    if (/video|clip/.test(name)) return 'video'
+  }
+  return declared
 }
 
 export default function SchemaDrivenOutput({
@@ -116,7 +146,7 @@ export default function SchemaDrivenOutput({
           <OutputBlock
             key={`${p.node_id}.${k}`}
             label={p.label || k || 'output'}
-            kind={pickMime(p)}
+            kind={resolveKind(p, v)}
             value={v}
             singular={outputs.length === 1}
           />
