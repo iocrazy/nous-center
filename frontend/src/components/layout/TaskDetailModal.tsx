@@ -16,9 +16,11 @@ import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
   X, Image as ImageIcon, Mic, MessageSquare, Eye,
-  RefreshCw, Copy, Download, Play,
+  RefreshCw, Copy, Play,
 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useTasks, type ExecutionTask } from '../../api/tasks'
+import { useServices } from '../../api/services'
 import { useExecutionStore } from '../../stores/execution'
 
 type TaskType = 'image' | 'tts' | 'vision' | 'llm'
@@ -484,37 +486,71 @@ function Stat({ label, value, unit }: { label: string; value: string; unit?: str
   )
 }
 
-function ActionRow({ task: _task }: { task: ExecutionTask }) {
-  // 重跑 / 复制 / 下载 暂时静态(后续 wire 真 action;入 spec PR-6)。
+function ActionRow({ task }: { task: ExecutionTask }) {
+  // 重跑(相同参数):按 task.workflow_id 找到对应服务 → 跳服务 Playground,用 input_json
+  // 回填表单(spec 2026-06-09 run-history PR-A)。复制参数:input_json → 剪贴板 JSON。
+  const navigate = useNavigate()
+  const close = useExecutionStore((s) => s.closeDetailModal)
+  const { data: services } = useServices()
+  const svc = services?.find((s) => !!s.workflow_id && s.workflow_id === task.workflow_id)
+  const hasParams = !!task.input_json && Object.keys(task.input_json).length > 0
+  const canRerun = !!svc && hasParams
+
+  const rerun = () => {
+    if (!svc) return
+    close()
+    navigate(`/services/${svc.id}`, { state: { rerunInputs: task.input_json } })
+  }
+  const copyParams = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(task.input_json ?? {}, null, 2))
+    } catch {
+      /* clipboard unavailable in non-https */
+    }
+  }
+
   return (
     <div
       className="shrink-0 flex items-center gap-2 px-4 py-3"
       style={{ borderTop: '1px solid var(--tp-border-faint)' }}
     >
-      <ActionBtn label="重跑(相同参数)" primary><RefreshCw size={14} /></ActionBtn>
-      <ActionBtn label="复制 prompt"><Copy size={14} /></ActionBtn>
-      <ActionBtn label="下载"><Download size={14} /></ActionBtn>
+      <ActionBtn
+        label={canRerun ? '重跑(相同参数)' : '重跑(需源服务+入参)'}
+        primary
+        disabled={!canRerun}
+        onClick={rerun}
+      >
+        <RefreshCw size={14} />
+      </ActionBtn>
+      <ActionBtn label="复制参数" disabled={!hasParams} onClick={copyParams}>
+        <Copy size={14} />
+      </ActionBtn>
     </div>
   )
 }
 
 function ActionBtn({
-  label, primary, children,
+  label, primary, children, onClick, disabled,
 }: {
   label: string
   primary?: boolean
   children: React.ReactNode
+  onClick?: () => void
+  disabled?: boolean
 }) {
   return (
     <button
       aria-label={label}
       title={label}
+      onClick={onClick}
+      disabled={disabled}
       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[11.5px] font-mono transition-colors"
       style={{
         background: primary ? 'var(--type-image-bg-chip)' : 'var(--tp-bg-elevated)',
         border: `1px solid ${primary ? 'var(--type-image-border-subtle, var(--type-image))' : 'var(--tp-border-strong)'}`,
         color: primary ? 'var(--type-image)' : 'var(--tp-text-muted)',
-        cursor: 'pointer',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
       }}
     >
       {children}
