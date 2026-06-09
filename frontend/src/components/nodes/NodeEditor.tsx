@@ -21,6 +21,7 @@ import '@xyflow/react/dist/style.css'
 
 import { nodeTypes } from './nodeTypes'
 import GroupLayer from './GroupLayer'
+import ShortcutsHelp from './ShortcutsHelp'
 import NodeCreateMenu from './NodeCreateMenu'
 import { choicesAcceptingInput, choicesProvidingOutput, firstInputHandle, firstOutputHandle, getAllChoices, type NodeChoice } from './nodeChoices'
 import { computeGroupBounds } from './groupGeometry'
@@ -731,6 +732,9 @@ export default function NodeEditor() {
         >
           拖拽画布移动,Ctrl 框选多选,拖动选中节点可一起移动
         </div>
+
+        {/* 快捷键帮助面板(? 浮层) */}
+        <ShortcutsHelp />
       </div>
 
       {/* 节点右键菜单(旁路/复制/删除)*/}
