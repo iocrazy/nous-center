@@ -4,7 +4,9 @@
 import { useCallback, useMemo, type ReactNode } from 'react'
 import { ReactFlow, Background, Controls, type Edge, type Node } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { ChevronUp, ChevronDown, X } from 'lucide-react'
 import type { ExposedParam } from '../../api/services'
+import { paramSlot } from '../../api/services'
 import { DECLARATIVE_NODES } from '../../models/nodeRegistry'
 import SchemaDrivenForm from '../playground/SchemaDrivenForm'
 import AppEditorNode, { type AppEditorNodeData } from './AppEditorNode'
@@ -104,6 +106,28 @@ export default function WorkflowAppEditor({
     [value, onChange],
   )
 
+  // 字段改名 / 上下移 / 移除(对齐 Infinite-Canvas 字段配置)。表单按 value.inputs
+  // 数组顺序渲染,所以「排序」= 重排数组;label 改的是 ExposedParam.label。
+  const renameInput = useCallback(
+    (i: number, label: string) =>
+      onChange({ ...value, inputs: value.inputs.map((p, j) => (j === i ? { ...p, label } : p)) }),
+    [value, onChange],
+  )
+  const moveInput = useCallback(
+    (i: number, dir: -1 | 1) => {
+      const j = i + dir
+      if (j < 0 || j >= value.inputs.length) return
+      const arr = [...value.inputs]
+      ;[arr[i], arr[j]] = [arr[j], arr[i]]
+      onChange({ ...value, inputs: arr })
+    },
+    [value, onChange],
+  )
+  const removeInput = useCallback(
+    (i: number) => onChange({ ...value, inputs: value.inputs.filter((_, j) => j !== i) }),
+    [value, onChange],
+  )
+
   const rfNodes = useMemo<Node<AppEditorNodeData>[]>(() => {
     const auto = layeredLayout(nodes, edges)
     return nodes.map((n) => {
@@ -155,6 +179,33 @@ export default function WorkflowAppEditor({
           画布节点预览{runnable ? '' : ' · 预览'}
         </div>
         <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+          {value.inputs.length > 0 && (
+            <div style={{ padding: '10px 12px 4px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                字段 · 可改名/排序
+              </div>
+              {value.inputs.map((p, i) => (
+                <div key={paramId(p)} style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <FieldBtn title="上移" disabled={i === 0} onClick={() => moveInput(i, -1)}><ChevronUp size={11} /></FieldBtn>
+                    <FieldBtn title="下移" disabled={i === value.inputs.length - 1} onClick={() => moveInput(i, 1)}><ChevronDown size={11} /></FieldBtn>
+                  </div>
+                  <input
+                    value={p.label ?? ''}
+                    onChange={(e) => renameInput(i, e.target.value)}
+                    placeholder={paramSlot(p) ?? 'field'}
+                    title={`node=${p.node_id} · ${paramSlot(p) ?? ''}`}
+                    style={{
+                      flex: 1, minWidth: 0, fontSize: 12, padding: '4px 7px',
+                      background: 'var(--bg)', color: 'var(--text)',
+                      border: '1px solid var(--border)', borderRadius: 4,
+                    }}
+                  />
+                  <FieldBtn title="移除暴露" onClick={() => removeInput(i)}><X size={12} /></FieldBtn>
+                </div>
+              ))}
+            </div>
+          )}
           <SchemaDrivenForm
             inputs={value.inputs}
             submitting={running}
@@ -185,5 +236,35 @@ export default function WorkflowAppEditor({
         </ReactFlow>
       </div>
     </div>
+  )
+}
+
+function FieldBtn({
+  children,
+  onClick,
+  title,
+  disabled,
+}: {
+  children: ReactNode
+  onClick: () => void
+  title: string
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 20, height: 18, padding: 0, flexShrink: 0,
+        background: 'transparent', border: 'none', borderRadius: 3,
+        color: 'var(--muted)', cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.3 : 1,
+      }}
+    >
+      {children}
+    </button>
   )
 }
