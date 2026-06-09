@@ -37,6 +37,7 @@ import {
 import CreateApiKeyDialog from '../components/api-keys/CreateApiKeyDialog'
 import SchemaDrivenForm from '../components/playground/SchemaDrivenForm'
 import SchemaDrivenOutput from '../components/playground/SchemaDrivenOutput'
+import { useTasksByWorkflow, type ExecutionTask } from '../api/tasks'
 import { apiFetch } from '../api/client'
 
 export interface ServiceDetailPageProps {
@@ -796,12 +797,119 @@ function AuthTab({ svc }: { svc: ServiceDetailT }) {
 }
 
 function UsageTab({ svc }: { svc: ServiceDetailT }) {
+  // 该服务源 workflow 的历史调用记录(service run 的 task 经 PR-A 已带 workflow_id)。
+  const { data: tasks, isLoading } = useTasksByWorkflow(svc.workflow_id)
+  const [openId, setOpenId] = useState<string | null>(null)
+
+  if (!svc.workflow_id) {
+    return (
+      <Panel title="用量 / 历史">
+        <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 14px' }}>
+          该服务非工作流来源,暂无可归属的调用历史。
+        </div>
+      </Panel>
+    )
+  }
+
+  const rows = tasks ?? []
+  const total = rows.length
+  const done = rows.filter((t) => t.status === 'completed').length
+  const failed = rows.filter((t) => t.status === 'failed').length
+  const durs = rows.map((t) => t.duration_ms).filter((d): d is number => d != null)
+  const avgMs = durs.length ? Math.round(durs.reduce((a, b) => a + b, 0) / durs.length) : null
+  const successPct = total ? Math.round((done / total) * 100) : null
+
   return (
-    <Panel title={`用量 — ${svc.name}`}>
-      <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 12px' }}>
-        细分图表与统计将随用量子系统接入。当前可在右侧 Usage 概览页查看汇总。
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <Panel title="概览 · 最近 50 次调用">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 0 }}>
+          <KV k="调用数" v={String(total)} />
+          <KV k="成功率" v={successPct == null ? '—' : `${successPct}%`} />
+          <KV k="均耗时" v={avgMs == null ? '—' : avgMs < 1000 ? `${avgMs} ms` : `${(avgMs / 1000).toFixed(2)} s`} />
+          <KV k="失败" v={String(failed)} />
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--muted)', padding: '4px 14px 0' }}>
+          按 API key 细分待用量子系统接入(ExecutionTask 暂无 api_key 归属字段)。
+        </div>
+      </Panel>
+
+      <Panel title="历史调用">
+        {isLoading ? (
+          <div style={{ fontSize: 12, color: 'var(--muted)', padding: '14px' }}>加载中…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--muted)', padding: '24px', textAlign: 'center' }}>
+            暂无调用记录 — 到 Playground 跑一次就会出现在这里。
+          </div>
+        ) : (
+          rows.map((t, i) => (
+            <UsageRow
+              key={t.id}
+              task={t}
+              outputs={svc.exposed_outputs}
+              isFirst={i === 0}
+              open={openId === t.id}
+              onToggle={() => setOpenId(openId === t.id ? null : t.id)}
+            />
+          ))
+        )}
+      </Panel>
+    </div>
+  )
+}
+
+function UsageRow({
+  task, outputs, isFirst, open, onToggle,
+}: {
+  task: ExecutionTask
+  outputs: ExposedParam[]
+  isFirst: boolean
+  open: boolean
+  onToggle: () => void
+}) {
+  const dur = task.duration_ms == null ? '—'
+    : task.duration_ms < 1000 ? `${task.duration_ms} ms` : `${(task.duration_ms / 1000).toFixed(2)} s`
+  const statusColor = task.status === 'completed' ? 'var(--ok, #34c759)'
+    : task.status === 'failed' ? 'var(--error, #ef4444)'
+    : 'var(--muted)'
+  const inputSummary = task.input_json ? JSON.stringify(task.input_json) : '—'
+  return (
+    <div style={{ borderTop: isFirst ? 'none' : '1px solid var(--border)' }}>
+      <div
+        onClick={onToggle}
+        style={{
+          display: 'grid', gridTemplateColumns: '150px 70px 80px 1fr', gap: 10,
+          padding: '9px 14px', fontSize: 12, cursor: 'pointer', alignItems: 'center',
+        }}
+      >
+        <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono, monospace)', fontSize: 11 }}>
+          {new Date(task.created_at).toLocaleString()}
+        </span>
+        <span style={{ color: statusColor }}>{task.status}</span>
+        <span style={{ color: 'var(--text)', fontFamily: 'var(--mono, monospace)' }}>{dur}</span>
+        <span style={{
+          color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }} title={inputSummary}>
+          {inputSummary}
+        </span>
       </div>
-    </Panel>
+      {open && (
+        <div style={{ padding: '4px 14px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>入参</div>
+            <pre style={{
+              margin: 0, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono, monospace)', color: 'var(--text)', overflow: 'auto',
+            }}>
+              {JSON.stringify(task.input_json ?? {}, null, 2)}
+            </pre>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>出参</div>
+            <SchemaDrivenOutput outputs={outputs} result={task.result} error={task.error} />
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -97,6 +97,26 @@ async def test_list_tasks_with_filter(db_client: AsyncClient):
     assert all(t["status"] == "failed" for t in tasks)
 
 
+async def test_list_tasks_workflow_id_filter(db_client: AsyncClient, db_session):
+    # 服务用量/历史 tab 按 workflow_id 归属过滤(spec run-history PR-C)。
+    from src.models.execution_task import ExecutionTask
+
+    db_session.add_all([
+        ExecutionTask(workflow_name="svc-a", workflow_id=111, status="completed", nodes_total=1),
+        ExecutionTask(workflow_name="svc-b", workflow_id=222, status="completed", nodes_total=1),
+    ])
+    await db_session.commit()
+
+    resp = await db_client.get("/api/v1/tasks?workflow_id=111")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["workflow_id"] for r in rows] == ["111"]  # 序列化成 str
+
+    # 非法 workflow_id → 空集,不抛错
+    bad = await db_client.get("/api/v1/tasks?workflow_id=notanumber")
+    assert bad.status_code == 200 and bad.json() == []
+
+
 def test_detect_image_meta_recognizes_image_output_envelope():
     from src.api.routes.execution_tasks import _detect_image_meta
 
