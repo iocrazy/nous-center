@@ -138,3 +138,86 @@ describe('buildChainWorkflow 跨模型链式采样图', () => {
     expect(n.find((x) => x.id === 'k1')?.data.strength).toBe(0.6)
   })
 })
+
+describe('buildChainWorkflow 留噪 latent 接力(PR-B3,同模型双采)', () => {
+  // Z-Image 双采:base(段0)→ latent 留噪续采(段1),split=5;再 flux2 图参考编辑(段2)。
+  const stages: ChainStage[] = [
+    { ckpt: '/m/Z', arch: 'z-image', prompt: '人像', steps: 12, cfg: 2.3 },
+    { ckpt: '/m/Z', arch: 'z-image', prompt: '人像精修', steps: 12, cfg: 1.15, relay: 'latent', split: 5 },
+    { ckpt: '/m/Flux2', arch: 'flux2', prompt: '风格化', steps: 20, cfg: 4 },
+  ]
+  const { workflow } = buildChainWorkflow(stages, { width: 1024, height: 1024, seed: 7 })
+  const wf = workflow as unknown as {
+    nodes: { id: string; type: string; data: Record<string, unknown> }[]
+    edges: { id: string; source: string; sourceHandle: string; target: string; targetHandle: string }[]
+  }
+  const data = (id: string) => wf.nodes.find((n) => n.id === id)!.data
+
+  it('latent 续采段:ks.init_latent ← 上段 vae_decode.latent_ref(不是 image 接力边)', () => {
+    expect(wf.edges).toContainEqual(
+      expect.objectContaining({ source: 'd0', sourceHandle: 'latent_ref', target: 'k1', targetHandle: 'init_latent' }))
+    expect(wf.edges.some((e) => e.source === 'd0' && e.targetHandle === 'image')).toBe(false)
+  })
+
+  it('base 段(段0)vae_decode output_mode=latent(导出带噪 latent 给下段续采)', () => {
+    expect(data('d0').output_mode).toBe('latent')
+    expect(data('d1')).not.toHaveProperty('output_mode')  // 续采段终端出图,不设 latent
+  })
+
+  it('base 段 ks:end_at_step=split + 保留余噪;refiner 段 ks:start_at_step=split + 不重加噪', () => {
+    expect(data('k0').end_at_step).toBe(5)
+    expect(data('k0').return_with_leftover_noise).toBe(true)
+    expect(data('k0')).not.toHaveProperty('start_at_step')
+    expect(data('k1').start_at_step).toBe(5)
+    expect(data('k1').add_noise).toBe(false)
+    expect(data('k1')).not.toHaveProperty('end_at_step')
+  })
+
+  it('latent 接力组共享总步数:refiner 段 steps = base 段 steps', () => {
+    expect(data('k0').steps).toBe(12)
+    expect(data('k1').steps).toBe(12)  // 组首 base 的 steps,非 refiner 自己
+  })
+
+  it('latent 续采段不写 strength(不走 img2img)', () => {
+    expect(data('k1')).not.toHaveProperty('strength')
+  })
+
+  it('跨模型段(段2 flux2)仍走图接力:d1.image → k2.image', () => {
+    expect(wf.edges).toContainEqual(
+      expect.objectContaining({ source: 'd1', sourceHandle: 'image', target: 'k2', targetHandle: 'image' }))
+  })
+
+  it('零回归:全 image 接力(无 relay)不产分段字段 / latent_ref 边', () => {
+    const plain: ChainStage[] = [
+      { ckpt: '/m/Z', arch: 'z-image', prompt: 'a', steps: 8, cfg: 1 },
+      { ckpt: '/m/F', arch: 'flux2', prompt: 'b', steps: 20, cfg: 4 },
+    ]
+    const { workflow: w } = buildChainWorkflow(plain, { width: 512, height: 512, seed: 1 })
+    const n = (w as unknown as { nodes: { id: string; data: Record<string, unknown> }[] }).nodes
+    const e = (w as unknown as { edges: { sourceHandle: string }[] }).edges
+    for (const id of ['k0', 'k1']) {
+      const d = n.find((x) => x.id === id)!.data
+      for (const f of ['start_at_step', 'end_at_step', 'add_noise', 'return_with_leftover_noise']) {
+        expect(d).not.toHaveProperty(f)
+      }
+    }
+    expect(n.find((x) => x.id === 'd0')!.data).not.toHaveProperty('output_mode')
+    expect(e.some((x) => x.sourceHandle === 'latent_ref')).toBe(false)
+  })
+
+  it('校验:跨架构 latent 接力(flux2 续采 z-image)报错', () => {
+    const bad: ChainStage[] = [
+      { ckpt: '/m/Z', arch: 'z-image', prompt: 'a', steps: 12, cfg: 1 },
+      { ckpt: '/m/F', arch: 'flux2', prompt: 'b', steps: 20, cfg: 4, relay: 'latent', split: 5 },
+    ]
+    expect(() => buildChainWorkflow(bad, { width: 512, height: 512, seed: 1 })).toThrow(/z-image|latent/)
+  })
+
+  it('校验:split 越界(>=总步数)报错', () => {
+    const bad: ChainStage[] = [
+      { ckpt: '/m/Z', arch: 'z-image', prompt: 'a', steps: 12, cfg: 1 },
+      { ckpt: '/m/Z', arch: 'z-image', prompt: 'b', steps: 12, cfg: 1, relay: 'latent', split: 12 },
+    ]
+    expect(() => buildChainWorkflow(bad, { width: 512, height: 512, seed: 1 })).toThrow(/split/)
+  })
+})

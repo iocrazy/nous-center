@@ -122,20 +122,55 @@ export interface ChainStage {
   // img2img 重绘强度(PR-A2):仅 z-image 段 + 有上游图(i>0)时生效 —— 引擎 _wants_img2img 门控
   // (arch 有 img2img 变体 + input_image + 0<strength<1)。<1=保留上段结构重绘,1/缺省=纯重生成(零回归)。
   strength?: number
+  // 接力方式(PR-B3):i>0 段如何消费上一段。缺省 'image'。
+  //   'image'  = A-ref 图接力(上段出图 → 本段 input_image,参考编辑 / z-image img2img)。
+  //   'latent' = 同模型留噪续采(KSamplerAdvanced split):注入上段**带噪** latent + 不重加噪,
+  //              base/refiner 共享一次去噪的总步数,在 split 步交接。仅同 latent 空间(同 z-image)有效。
+  relay?: 'image' | 'latent'
+  // latent 续采的劈分步(同时是上段 end_at_step 与本段 start_at_step);仅 relay==='latent' 用。
+  split?: number
 }
 
-/** 搭跨模型链式采样图。返回 workflow + 每段终端(flux2_vae_decode)节点 id,供 UI 逐段收集出图。
- *  第 i 段(i>0)的 ksampler.image ← 第 i-1 段 vae_decode.image(跨段接力关键边)。 */
+// 组首步数:latent 接力组里所有段共享一次去噪的总步数 = 组首(relay!=='latent' 的段)的 steps。
+// 沿 relay==='latent' 往回走到组首(image 接力段或第 0 段)。
+function chainGroupSteps(stages: ChainStage[], i: number): number {
+  let j = i
+  while (j > 0 && stages[j].relay === 'latent') j--
+  return stages[j].steps
+}
+
+/** 搭链式采样图(跨模型 A-ref 图接力 + 同模型留噪 latent 接力)。返回 workflow + 每段终端
+ *  (flux2_vae_decode)节点 id,供 UI 逐段收集出图(latent 中间段终端不出图,只产 latent_ref)。
+ *  第 i 段(i>0):relay='image' → ks.image ← 上段 vae_decode.image;relay='latent' → ks.init_latent
+ *  ← 上段 vae_decode.latent_ref(上段转 output_mode=latent + end_at_step 留噪导出带噪 latent)。 */
 export function buildChainWorkflow(
   stages: ChainStage[],
   { width, height, seed }: { width: number; height: number; seed: number },
 ): { workflow: Workflow; stageTerminals: string[] } {
+  // 留噪 latent 接力校验(派发前 fail loud,别搭出错图):同 latent 空间(同 z-image)+ split 边界。
+  stages.forEach((st, i) => {
+    if (st.relay !== 'latent') return
+    const prev = stages[i - 1]
+    if (!prev || st.arch !== prev.arch || st.arch !== 'z-image') {
+      throw new Error(
+        `第 ${i + 1} 段「latent 留噪续采」要求与上一段同为 z-image 架构(latent 空间一致才能接力);` +
+        '跨模型 latent 物理不兼容,请改用「图参考编辑」。')
+    }
+    const total = chainGroupSteps(stages, i)
+    if (st.split == null || st.split <= 0 || st.split >= total) {
+      throw new Error(`第 ${i + 1} 段 split(劈分步)须在 1..${total - 1} 之间(组内总步数 ${total})。`)
+    }
+  })
+
   const nodes: unknown[] = []
   const edges: unknown[] = []
   const terminals: string[] = []
   stages.forEach((st, i) => {
     const c = `c${i}`, e = `e${i}`, k = `k${i}`, d = `d${i}`
     const y = i * 360
+    const isLatentRefiner = st.relay === 'latent'
+    const feedsLatentNext = stages[i + 1]?.relay === 'latent'
+    const totalSteps = chainGroupSteps(stages, i)
     nodes.push(
       { id: c, type: 'flux2_load_checkpoint', position: { x: 0, y },
         data: { file: st.ckpt, weight_dtype: 'bfloat16', device: 'auto', offload: 'none', adapter_arch: st.arch } },
@@ -143,12 +178,19 @@ export function buildChainWorkflow(
         data: { text: st.prompt, negative_prompt: '' } },
       { id: k, type: 'flux2_ksampler', position: { x: 640, y },
         data: {
-          width, height, steps: st.steps, cfg_scale: st.cfg, sampler_name: 'euler', scheduler: 'normal',
+          // latent 接力组共享总步数(base/refiner 同 steps,在 split 步交接)。
+          width, height, steps: totalSteps, cfg_scale: st.cfg, sampler_name: 'euler', scheduler: 'normal',
           seed: String(seed + i),
-          // strength 仅在本段有上游图(i>0)时有意义;引擎按 arch(z-image)+0<strength<1 门控,其余忽略。
-          ...(i > 0 && st.strength != null ? { strength: st.strength } : {}),
+          // 本段是 refiner:从 split 步起、不重加噪(注入上段带噪 latent 原样续采)。
+          ...(isLatentRefiner ? { start_at_step: st.split, add_noise: false } : {}),
+          // 本段是下段的 base:停在 split 步、保留余噪(带噪交接给下段 refiner)。
+          ...(feedsLatentNext ? { end_at_step: stages[i + 1].split, return_with_leftover_noise: true } : {}),
+          // strength 仅 image 接力的 z-image 段(i>0)有意义;latent 接力不走 img2img。
+          ...(i > 0 && st.relay !== 'latent' && st.strength != null ? { strength: st.strength } : {}),
         } },
-      { id: d, type: 'flux2_vae_decode', position: { x: 960, y }, data: {} },
+      // 下段要 latent 接力 → 本段终端不解码,导出带噪 latent(output_mode=latent → latent_ref)。
+      { id: d, type: 'flux2_vae_decode', position: { x: 960, y },
+        data: feedsLatentNext ? { output_mode: 'latent' } : {} },
     )
     edges.push(
       { id: `${c}-clip`, source: c, sourceHandle: 'clip', target: e, targetHandle: 'clip' },
@@ -157,9 +199,14 @@ export function buildChainWorkflow(
       { id: `${c}-vae`, source: c, sourceHandle: 'vae', target: d, targetHandle: 'vae' },
       { id: `${k}-latent`, source: k, sourceHandle: 'latent', target: d, targetHandle: 'latent' },
     )
-    // 跨段接力:上一段 decode 出图 → 本段 ksampler.image(参考编辑条件)。
     if (i > 0) {
-      edges.push({ id: `chain-${i}`, source: `d${i - 1}`, sourceHandle: 'image', target: k, targetHandle: 'image' })
+      if (isLatentRefiner) {
+        // 留噪 latent 接力:上段带噪 latent_ref → 本段 ksampler.init_latent(同空间真 latent 续采)。
+        edges.push({ id: `chain-lat-${i}`, source: `d${i - 1}`, sourceHandle: 'latent_ref', target: k, targetHandle: 'init_latent' })
+      } else {
+        // A-ref 图接力:上段 decode 出图 → 本段 ksampler.image(参考编辑 / img2img 条件)。
+        edges.push({ id: `chain-${i}`, source: `d${i - 1}`, sourceHandle: 'image', target: k, targetHandle: 'image' })
+      }
     }
     terminals.push(d)
   })

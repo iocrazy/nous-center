@@ -928,8 +928,15 @@ function ChainSamplePanel() {
     const seed = Math.floor(Math.random() * 1_000_000_000)
     const chainStages: ChainStage[] = stages.map((s) => ({
       ckpt: s.ckpt, arch: s.arch, prompt: s.prompt.trim(), steps: s.steps, cfg: s.cfg,
-      ...(s.strength != null ? { strength: s.strength } : {}) }))
-    const { workflow, stageTerminals } = buildChainWorkflow(chainStages, { width, height, seed })
+      // latent 留噪续采(PR-B3):透传 relay + split;image 接力才透 strength。
+      ...(s.relay === 'latent' ? { relay: 'latent' as const, split: s.split } : {}),
+      ...(s.relay !== 'latent' && s.strength != null ? { strength: s.strength } : {}) }))
+    let workflow: Workflow, stageTerminals: string[]
+    try {
+      ({ workflow, stageTerminals } = buildChainWorkflow(chainStages, { width, height, seed }))
+    } catch (err) {
+      toast((err as Error)?.message ?? '链配置无效', 'error'); setRunning(false); return
+    }
     submitChainWorkflow(workflow, stageTerminals, {
       onStage: (i, url) => setStage(i, { result: url }),
       onDone: () => { setRunning(false); toast('链式采样完成', 'success') },
@@ -962,6 +969,11 @@ function ChainSamplePanel() {
         </div>
 
         {stages.map((s, i) => {
+          // latent 接力组的总步数 = 组首(relay!=='latent' 段)的步数,本段(若 latent 续采)共享之 +
+          // 作劈分步滑杆上界。沿 relay==='latent' 回走到组首。
+          let gj = i
+          while (gj > 0 && stages[gj].relay === 'latent') gj--
+          const baseSteps = stages[gj].steps
           return (
             <div key={i} style={{
               border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 10, background: 'var(--bg)',
@@ -972,7 +984,8 @@ function ChainSamplePanel() {
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700,
                 }}>{i + 1}</span>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>
-                  {i === 0 ? '起始(文生图)' : `第 ${i + 1} 段(参考编辑上一段)`}
+                  {i === 0 ? '起始(文生图)'
+                    : s.relay === 'latent' ? `第 ${i + 1} 段(留噪续采上一段)` : `第 ${i + 1} 段(参考编辑上一段)`}
                 </span>
                 <div style={{ flex: 1 }} />
                 {stages.length > 2 && (
@@ -994,7 +1007,12 @@ function ChainSamplePanel() {
               />
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
                 <Field label="架构">
-                  <select value={s.arch} onChange={(e) => setStage(i, { arch: e.target.value, ckpt: pickCkpt(e.target.value) })} style={selectStyle}>
+                  <select value={s.arch} onChange={(e) => {
+                    const arch = e.target.value
+                    // 切架构使 latent 接力失配(与上段不同空间)→ 复位回 image 接力。
+                    const relayOk = i > 0 && arch === 'z-image' && stages[i - 1].arch === 'z-image'
+                    setStage(i, { arch, ckpt: pickCkpt(arch), ...(relayOk ? {} : { relay: 'image' as const }) })
+                  }} style={selectStyle}>
                     {ARCH_OPTIONS.map((o) => <option key={o.arch} value={o.arch}>{o.label}</option>)}
                   </select>
                 </Field>
@@ -1006,14 +1024,40 @@ function ChainSamplePanel() {
                     ))}
                   </select>
                 </Field>
-                <Field label="步数">
-                  <NumBox value={s.steps} onChange={(v) => setStage(i, { steps: v })} />
-                </Field>
+                {/* 接力方式(PR-B3):仅 i>0 且与上段同为 z-image(同 latent 空间)可选 latent 留噪续采。 */}
+                {i > 0 && s.arch === 'z-image' && stages[i - 1].arch === 'z-image' && (
+                  <Field label="接力方式">
+                    <select value={s.relay ?? 'image'}
+                      onChange={(e) => setStage(i, { relay: e.target.value as 'image' | 'latent',
+                        ...(e.target.value === 'latent' && s.split == null ? { split: Math.max(1, Math.floor(baseSteps / 2)) } : {}) })}
+                      style={selectStyle}>
+                      <option value="image">图参考编辑 / img2img</option>
+                      <option value="latent">latent 留噪续采(双采)</option>
+                    </select>
+                  </Field>
+                )}
+                {/* latent 续采段共享上段总步数,不单独设步数;其余段正常设。 */}
+                {s.relay !== 'latent' && (
+                  <Field label="步数">
+                    <NumBox value={s.steps} onChange={(v) => setStage(i, { steps: v })} />
+                  </Field>
+                )}
                 <Field label="CFG">
                   <NumBox value={s.cfg} onChange={(v) => setStage(i, { cfg: v })} />
                 </Field>
-                {/* z-image 段 + 有上游图(i>0):img2img 重绘强度滑杆(PR-A3,引擎 PR-A2)。 */}
-                {i > 0 && s.arch === 'z-image' && (
+                {/* latent 续采:劈分步滑杆(同时是上段 end_at_step 与本段 start_at_step;1..总步数-1)。 */}
+                {s.relay === 'latent' && (
+                  <Field label={`劈分步 ${s.split ?? Math.floor(baseSteps / 2)} / ${baseSteps}`}>
+                    <input
+                      type="range" min={1} max={Math.max(1, baseSteps - 1)} step={1}
+                      value={s.split ?? Math.floor(baseSteps / 2)}
+                      onChange={(e) => setStage(i, { split: Number(e.target.value) })}
+                      style={{ width: 130 }}
+                    />
+                  </Field>
+                )}
+                {/* z-image 图接力段(i>0,非 latent):img2img 重绘强度滑杆(PR-A3,引擎 PR-A2)。 */}
+                {i > 0 && s.arch === 'z-image' && s.relay !== 'latent' && (
                   <Field label={`重绘强度 ${(s.strength ?? 1).toFixed(2)}`}>
                     <input
                       type="range" min={0.3} max={1} step={0.05} value={s.strength ?? 1}
@@ -1023,7 +1067,13 @@ function ChainSamplePanel() {
                   </Field>
                 )}
               </div>
-              {i > 0 && s.arch === 'z-image' && (
+              {i > 0 && s.arch === 'z-image' && s.relay === 'latent' && (
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+                  留噪续采(对齐 ComfyUI 双采):与上段共享一次去噪({baseSteps} 步),上段跑到劈分步留噪、
+                  本段从劈分步接着去到底(不重加噪)。两段可用不同 CFG/提示词。仅同 Z-Image 模型(latent 空间一致)。
+                </div>
+              )}
+              {i > 0 && s.arch === 'z-image' && s.relay !== 'latent' && (
                 <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
                   Z-Image 用 img2img 重绘上一段图:强度 &lt;1 保留上段结构重绘(越低越像原图),=1 纯文生图(忽略上图)。
                   要改局部/视角的参考编辑用 Flux2-Klein / Qwen-Edit。
