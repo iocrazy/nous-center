@@ -51,7 +51,9 @@ if sig_param:
     try:
         from src.services.inference.sigma_schedules import compute_sigmas  # noqa
     except Exception:
-        import sys; sys.path.insert(0, "."); from src.services.inference.sigma_schedules import compute_sigmas
+        import sys
+        sys.path.insert(0, ".")
+        from src.services.inference.sigma_schedules import compute_sigmas
     full = compute_sigmas("simple", 8, shift=float(getattr(pipe.scheduler.config,"shift",3.0) or 3.0))
     print(f"  compute_sigmas('simple',8)={[round(x,3) for x in full]}")
     partial = full[:6]  # [s0..s5],不含 0 → 期望 5 步,停在 s5(leftover)
