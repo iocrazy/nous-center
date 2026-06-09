@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
-  ChevronDown, ChevronRight, Box,
+  ChevronDown, ChevronRight, Box, ChevronsDownUp, ChevronsUpDown,
   FileInput, FileOutput, Sparkles, GitBranch, AudioLines, Image as ImageIcon, Mic,
   type LucideIcon,
 } from 'lucide-react'
@@ -61,9 +61,17 @@ function highlight(label: string, q: string) {
   )
 }
 
+const COLLAPSE_KEY = 'nodelib-collapsed'
+
 export default function NodeLibraryPanel() {
   const [search, setSearch] = useState('')
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  // 折叠状态持久化(localStorage),刷新/切 tab 不丢。
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}') } catch { return {} }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed)) } catch { /* ignore */ }
+  }, [collapsed])
 
   const onDragStart = (e: React.DragEvent, nodeType: string) => {
     e.dataTransfer.setData('application/reactflow', nodeType)
@@ -71,6 +79,9 @@ export default function NodeLibraryPanel() {
   }
 
   const allCategories = getMergedCategories()
+  // 一键收起/展开全部。
+  const collapseAll = () => setCollapsed(Object.fromEntries(allCategories.map((c) => [c.name, true])))
+  const expandAll = () => setCollapsed({})
   const q = search.trim().toLowerCase()
   const searching = q.length > 0
 
@@ -172,6 +183,28 @@ export default function NodeLibraryPanel() {
       title="节点库"
       searchPlaceholder="搜索节点..."
       onSearch={setSearch}
+      actions={
+        <div className="flex items-center gap-1">
+          <button
+            type="button" title="展开全部" aria-label="展开全部" onClick={expandAll}
+            className="flex items-center justify-center rounded"
+            style={{ width: 22, height: 22, background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--muted)' }}
+          >
+            <ChevronsUpDown size={13} />
+          </button>
+          <button
+            type="button" title="收起全部" aria-label="收起全部" onClick={collapseAll}
+            className="flex items-center justify-center rounded"
+            style={{ width: 22, height: 22, background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--muted)' }}
+          >
+            <ChevronsDownUp size={13} />
+          </button>
+        </div>
+      }
     >
       {body}
       {searching && totalMatched === 0 && (
