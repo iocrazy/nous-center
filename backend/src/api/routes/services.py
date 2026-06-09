@@ -30,6 +30,7 @@ from sqlalchemy.orm import undefer
 from src.api.deps_admin import require_admin
 from src.api.response_cache import cached, invalidate
 from src.models.database import get_async_session
+from src.models.schemas import ExposedParam
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
 from src.services.service_models import extract_service_models
@@ -101,6 +102,11 @@ class ServiceDetailOut(ServiceOut):
 
 class ServicePatch(BaseModel):
     status: Literal["active", "paused", "deprecated", "retired"] | None = None
+    # 服务页「应用编辑」tab 改暴露字段(逐 widget 表单配置)就地落库。映射改了
+    # 不动 snapshot 本体,故不 bump snapshot_hash/version(见 spec 2026-06-09 R3:
+    # 改 active 服务的对外 schema 有契约风险,UI 给提示,单管理员 infra 允许)。
+    exposed_inputs: list[ExposedParam] | None = None
+    exposed_outputs: list[ExposedParam] | None = None
 
 
 class QuickProvisionBody(BaseModel):
@@ -323,15 +329,79 @@ async def patch_service(
     body: ServicePatch,
     session: AsyncSession = Depends(get_async_session),
 ):
-    svc = await session.get(ServiceInstance, service_id)
+    edits_exposed = body.exposed_inputs is not None or body.exposed_outputs is not None
+    # workflow_snapshot / exposed_* are deferred() — touching them in the async
+    # path without undefer raises MissingGreenlet (lazy load = sync IO). Only
+    # pull them when this PATCH actually edits the exposed schema.
+    stmt = select(ServiceInstance).where(ServiceInstance.id == service_id)
+    if edits_exposed:
+        stmt = stmt.options(
+            undefer(ServiceInstance.workflow_snapshot),
+            undefer(ServiceInstance.exposed_inputs),
+            undefer(ServiceInstance.exposed_outputs),
+        )
+    svc = await session.scalar(stmt)
     if svc is None:
         raise HTTPException(404, detail="service not found")
     if body.status is not None:
         svc.status = body.status
+    if edits_exposed:
+        _validate_exposed_against_snapshot(
+            dict(svc.workflow_snapshot or {}),
+            body.exposed_inputs,
+            body.exposed_outputs,
+        )
+        if body.exposed_inputs is not None:
+            svc.exposed_inputs = [p.model_dump(exclude_none=True) for p in body.exposed_inputs]
+        if body.exposed_outputs is not None:
+            svc.exposed_outputs = [p.model_dump(exclude_none=True) for p in body.exposed_outputs]
     await session.commit()
     await session.refresh(svc)
     invalidate("services")
     return svc
+
+
+def _validate_exposed_against_snapshot(
+    snapshot: dict,
+    inputs: list[ExposedParam] | None,
+    outputs: list[ExposedParam] | None,
+) -> None:
+    """Same hard contract as publish: every exposed.node_id must resolve in
+    the frozen snapshot, and image-node outputs may only reference fields the
+    node actually emits. Imported lazily — workflow_publish imports from this
+    module, so a top-level import would be circular."""
+    from src.api.routes.workflow_publish import (
+        _IMAGE_NODE_TYPES,
+        _IMAGE_OUTPUT_FIELDS,
+        _node_ids,
+        _node_types_by_id,
+    )
+
+    valid_ids = _node_ids(snapshot)
+    types_by_id = _node_types_by_id(snapshot)
+    for kind, params in (("input", inputs), ("output", outputs)):
+        for p in params or []:
+            if str(p.node_id) not in valid_ids:
+                raise HTTPException(
+                    422,
+                    detail=(
+                        f"exposed {kind} references node_id {p.node_id!r} "
+                        f"that does not exist in the workflow snapshot"
+                    ),
+                )
+    for p in outputs or []:
+        node_type = types_by_id.get(str(p.node_id))
+        if node_type not in _IMAGE_NODE_TYPES:
+            continue
+        field = p.input_name
+        if field and field not in _IMAGE_OUTPUT_FIELDS:
+            raise HTTPException(
+                422,
+                detail=(
+                    f"exposed output input_name={field!r} is not emitted by "
+                    f"{node_type}; allowed: {sorted(_IMAGE_OUTPUT_FIELDS)}"
+                ),
+            )
 
 
 @router.delete(
