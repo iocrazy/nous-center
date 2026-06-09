@@ -526,6 +526,43 @@ export default function NodeEditor() {
     ])
   }, [setNodes, setEdges, storeAddNodesWithEdges])
 
+  // Alt+拖拽复制(对齐 Infinite-Canvas duplicateForAltDrag):拖起时按住 Alt,在原位
+  // 留一份副本(offset 0),原节点继续被拖走 → 等效「拖出一个副本」。多选时整组复制
+  // (含组内连线)。复用纯函数 buildPastedGraph(发新 id / 内部边重连)。
+  const altDuplicate = useCallback((dragNodeId: string) => {
+    const all = nodesRef.current
+    const sel = all.filter((n) => n.selected)
+    const set = sel.some((n) => n.id === dragNodeId) && sel.length ? sel : all.filter((n) => n.id === dragNodeId)
+    if (!set.length) return
+    const ids = new Set(set.map((n) => n.id))
+    const clip = {
+      nodes: set.map((n) => ({
+        id: n.id, type: n.type ?? '', data: structuredClone(n.data ?? {}) as Record<string, unknown>,
+        position: { ...n.position }, style: (n as any).style, width: (n as any).width, height: (n as any).height,
+      })),
+      edges: edgesRef.current
+        .filter((e) => ids.has(e.source) && ids.has(e.target))
+        .map((e) => ({ source: e.source, sourceHandle: e.sourceHandle ?? '', target: e.target, targetHandle: e.targetHandle ?? '' })),
+    }
+    const { nodes: pn, edges: pe } = buildPastedGraph(clip, 0, () => crypto.randomUUID().slice(0, 8))
+    const newNodes = pn.map((n) => {
+      const node: any = { id: n.id, type: n.type, position: n.position, data: n.data, style: n.style ?? { width: 320 } }
+      if (n.width != null) node.width = n.width
+      if (n.height != null) node.height = n.height
+      return node as WorkflowNode
+    })
+    const newEdges: WorkflowEdge[] = pe.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle, target: e.target, targetHandle: e.targetHandle }))
+    storeAddNodesWithEdges(newNodes, newEdges)
+    // 副本插到原位且不选中(原节点保持选中 + 继续被拖)。
+    setNodes((nds) => [
+      ...newNodes.map((n) => ({ id: n.id, type: n.type, position: n.position, data: n.data, style: (n as any).style ?? { width: 320 }, selected: false } as Node)),
+      ...nds,
+    ])
+    if (newEdges.length) {
+      setEdges((eds) => [...eds, ...newEdges.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle, target: e.target, targetHandle: e.targetHandle, type: 'portTyped' } as Edge))])
+    }
+  }, [setNodes, setEdges, storeAddNodesWithEdges])
+
   // 选中节点打包成分组框(对齐 ComfyUI/Infinite-Canvas Ctrl+G)。写显式 nodeIds,
   // 初始 x/y/w/h 用成员实测包围盒(measured);渲染时 GroupLayer 会按成员实测再自适应。
   // 供 Ctrl+G 和右键菜单复用。
@@ -650,6 +687,10 @@ export default function NodeEditor() {
           onSelectionChange={({ nodes: sel }) => {
             // Only single-select drives the property panel; multi-select / deselect → null.
             setSelectedNodeId(sel.length === 1 ? sel[0].id : null)
+          }}
+          onNodeDragStart={(event, node) => {
+            // Alt 拖拽 → 原位留副本(对齐 Infinite-Canvas)。
+            if ((event as unknown as MouseEvent).altKey) altDuplicate(node.id)
           }}
           onNodeDragStop={syncToStore}
           onEdgeDoubleClick={(_event, edge) => {
