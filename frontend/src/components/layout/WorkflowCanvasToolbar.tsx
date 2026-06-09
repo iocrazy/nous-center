@@ -233,7 +233,8 @@ export default function WorkflowCanvasToolbar() {
           open={showPublishWizard}
           onClose={() => setShowPublishWizard(false)}
           workflowId={String(activeTab.workflow.id)}
-          nodes={(activeTab.workflow.nodes ?? []) as Array<{ id: string; type?: string; data?: Record<string, unknown> }>}
+          nodes={(activeTab.workflow.nodes ?? []) as Array<{ id: string; type?: string; data?: Record<string, unknown>; position?: { x: number; y: number } }>}
+          edges={(activeTab.workflow.edges ?? []) as Array<{ source: string; target: string }>}
         />
       )}
 
