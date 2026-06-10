@@ -372,13 +372,20 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
             resolution=resolution, max_resolution=max_resolution,
             input_noise_scale=input_noise_scale, color_correction=color_correction,
         )
+        # **cache_model=True 必须**:False 是 NumZ CLI 一次性语义 —— 阶段收尾 cleanup_dit/
+        # cleanup_vae 直接 `runner.dit/vae = None` 删模型。我们把 adapter(含 runner)缓存在
+        # ModelManager 复用,第二次 infer 撞 None → 「'NoneType' object has no attribute
+        # 'parameters'」。True = 跑完搬去 offload device 保留(无 offload 配置时 NumZ 内部回退
+        # cpu),下次 phase 入口 manage_model_device 自动搬回 GPU。对齐 ComfyUI loader 的
+        # cache_model=True(keep model loaded between runs);sampler 每次 configure_diffusion
+        # 重建,不受 cleanup 置空影响。
         ctx = upscale_all_batches(
             self._runner, ctx=ctx, debug=self._debug, progress_callback=None,
-            seed=seed, latent_noise_scale=latent_noise_scale, cache_model=False,
+            seed=seed, latent_noise_scale=latent_noise_scale, cache_model=True,
         )
         ctx = decode_all_batches(
             self._runner, ctx=ctx, debug=self._debug, progress_callback=None,
-            cache_model=False,
+            cache_model=True,
         )
         ctx = postprocess_all_batches(
             ctx=ctx, debug=self._debug, progress_callback=None,
