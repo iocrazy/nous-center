@@ -58,6 +58,22 @@ def test_trivial_quick_provision_engine():
     assert refs[0]["engine_key"] == "qwen3-5"
 
 
+def test_image_generate_engine_role_is_not_llm():
+    """Regression: the legacy integrated image_generate node carries the image
+    engine via `model_key` — the same param name the llm node uses. Before the
+    fix it fell into the generic `"model_key" in inp` branch and got role="llm",
+    so a Flux2 image engine showed up as an LLM in the service overview."""
+    snap = _published({
+        "gen": {"class_type": "image_generate",
+                "inputs": {"model_key": "flux2-klein-9b-true-v2-fp8mixed"}},
+    })
+    refs = extract_service_models(snap)
+    assert len(refs) == 1
+    assert refs[0]["kind"] == "engine"
+    assert refs[0]["engine_key"] == "flux2-klein-9b-true-v2-fp8mixed"
+    assert refs[0]["role"] == "diffusion_models"  # NOT "llm"
+
+
 def test_dedup_same_file_across_nodes():
     snap = _published({
         "a": {"class_type": "flux2_load_vae", "inputs": {"file": "/m/vae/v.safetensors"}},
