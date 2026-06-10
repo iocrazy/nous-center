@@ -1,0 +1,39 @@
+name: image-color-match
+version: "1.0"
+description: "图像色彩匹配(ColorMatch)— 把目标图色彩统计向参考图迁移(肤色/影调保持)。对齐 ComfyUI-KJNodes ColorMatch"
+author: "ComfyUI-KJNodes (color-matcher, BSD) / nous-center"
+
+# image_color_match:image→image inline 节点(主进程 CPU,无 GPU)。两路 image 输入:
+#   image_target(要调整的图)+ image_ref(色彩来源参考)→ color-matcher transfer(mkl 等)→
+#   strength 线性插值混合 → 落盘签 URL。对齐用户写真工作流 ColorMatch ['mkl', 0.65, True](保肤色)。
+# 双路 image 输入靠 workflow_executor._get_inputs 的「图 bundle 按 target_handle 落一份」路由
+#   (image_target/image_ref 各拿区分 URL,不撞键)。spec 2026-06-09-zimage-component-loading-design PR-4。
+
+nodes:
+
+  image_color_match:
+    label: "图像色彩匹配"
+    category: image
+    badge: ColorMatch
+    badgeColor: "var(--accent)"
+    inputs:
+      - { id: image_target, type: image, label: "目标图(要调色)" }
+      - { id: image_ref, type: image, label: "参考图(色彩来源)" }
+    outputs:
+      - { id: image, type: image, label: 图像 }
+    widgets:
+      # color-matcher 支持的转移方法。mkl=Monge-Kantorovich Linearization(最优传输线性化,
+      # 保色彩多样性,比直方图匹配自然)= 原工作流用的方法。
+      - name: method
+        label: "方法"
+        widget: select
+        default: mkl
+        options:
+          - { value: mkl, label: "MKL", description: "Monge-Kantorovich 线性化 — 最优传输,自然(默认/原工作流)" }
+          - { value: hm, label: "直方图匹配", description: "Histogram Matching — 强制对齐分布" }
+          - { value: reinhard, label: "Reinhard", description: "Reinhard 均值/方差迁移" }
+          - { value: mvgd, label: "MVGD", description: "多元高斯分布迁移" }
+          - { value: hm-mvgd-hm, label: "HM-MVGD-HM", description: "复合:直方图→MVGD→直方图" }
+          - { value: hm-mkl-hm, label: "HM-MKL-HM", description: "复合:直方图→MKL→直方图" }
+      # strength 线性插值:result = target + strength*(matched - target)。0=不变,1=全量匹配。
+      - { name: strength, label: "强度", widget: slider, min: 0, max: 1, step: 0.01, default: 0.65 }

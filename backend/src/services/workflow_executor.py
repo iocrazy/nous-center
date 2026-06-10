@@ -214,6 +214,13 @@ class WorkflowExecutor:
                 for key, value in source_output.items():
                     if key not in inputs:
                         inputs[key] = value
+                # 图像 bundle 多路输入(image_url 但 handle 名非输出键,如 sourceHandle="image"
+                # → 输出键是 image_url):额外把 image_url 也按 target_handle 落一份,让**多个**
+                # 图输入(ColorMatch 的 image_target/image_ref)各自拿到区分 URL —— 否则上面
+                # spread 的 image_url 被首条边占位、后续边 `key not in inputs` 跳过 → 第二路图丢失。
+                # 纯加法:单图消费者仍读 image_url(spread 不变),零回归。
+                if target_handle and "image_url" in source_output:
+                    inputs.setdefault(target_handle, source_output["image_url"])
         return inputs
 
     async def execute(self) -> dict[str, Any]:

@@ -24,6 +24,10 @@ dependencies = [
     # runner subprocess over multiprocessing.Pipe). Small, pure-wheel, no
     # native CUDA deps — safe in the API-server venv. See spec 3.3.
     "msgpack>=1.1",
+    # ColorMatch inline 节点(image_color_match)— mkl 等色彩迁移(对齐 ComfyUI-KJNodes)。
+    # inline 节点在主 API 进程跑(非 image runner 子进程)→ 进主 deps;无 CUDA 依赖(matplotlib/
+    # scipy/numpy),不破坏 venv 的 CUDA 隔离初衷。
+    "color-matcher>=0.6.0",
 ]
 
 [project.optional-dependencies]
