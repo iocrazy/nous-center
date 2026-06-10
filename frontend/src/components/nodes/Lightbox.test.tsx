@@ -65,6 +65,35 @@ describe('Lightbox zoom/pan wiring', () => {
     expect(screen.getByText('对比')).toBeTruthy()
   })
 
+  it('单图带 compareBase(输入/源图)→ 对比按钮出现且标「与输入图」', () => {
+    const URL2 = 'data:image/png;base64,SOURCEINPUT='
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({
+      open: true, images: [URL1], index: 0,
+      metas: [{ compareBase: URL2 }],
+    }))
+    // 单图但有源图基准 → 对比按钮存在(IC 语义:生成图 vs 输入图)
+    const btn = screen.getByTitle('前后对比(与输入图)')
+    expect(btn).toBeTruthy()
+    fireEvent.click(btn)
+    expect(screen.getByText('当前')).toBeTruthy()
+    expect(screen.getByText('对比')).toBeTruthy()
+  })
+
+  it('单图无 compareBase → 对比按钮不出现(纯文生图不误显对比)', () => {
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({ open: true, images: [URL1], metas: [undefined], index: 0 }))
+    expect(screen.queryByTitle(/前后对比/)).toBeNull()
+  })
+
+  it('compareBase 等于当前图时忽略(无意义自比)', () => {
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({
+      open: true, images: [URL1], index: 0, metas: [{ compareBase: URL1 }],
+    }))
+    expect(screen.queryByTitle(/前后对比/)).toBeNull()
+  })
+
   it('does not render when closed', () => {
     render(<Lightbox />)
     expect(screen.queryByAltText('preview')).toBeNull()

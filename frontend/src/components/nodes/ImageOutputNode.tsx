@@ -19,6 +19,35 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
     return edge?.source ?? null
   }, [tabs, activeTabId, id])
 
+  // 对齐 IC「生成图 vs 输入图」对比:沿 edges 上溯,找喂进本输出的源图 url
+  // (编辑/超分流的 image_input/源节点)。纯文生图无源图 → null,灯箱对比按钮不出现。
+  // 中间采样/编码节点不带 image url,所以第一个命中的就是真正的输入源。
+  const compareBaseUrl = useMemo(() => {
+    const wf = tabs.find((t) => t.id === activeTabId)?.workflow
+    if (!wf) return null
+    const incoming = new Map<string, string[]>()
+    for (const e of wf.edges) {
+      if (!incoming.has(e.target)) incoming.set(e.target, [])
+      incoming.get(e.target)!.push(e.source)
+    }
+    const nodeById = new Map(wf.nodes.map((n) => [n.id, n]))
+    const IMG_KEYS = ['image_url', 'image', 'url']
+    const seen = new Set<string>([id])
+    const queue = [...(incoming.get(id) ?? [])]
+    while (queue.length) {
+      const cur = queue.shift()!
+      if (seen.has(cur)) continue
+      seen.add(cur)
+      const d = nodeById.get(cur)?.data as Record<string, unknown> | undefined
+      for (const k of IMG_KEYS) {
+        const v = d?.[k]
+        if (typeof v === 'string' && v) return v
+      }
+      for (const s of incoming.get(cur) ?? []) queue.push(s)
+    }
+    return null
+  }, [tabs, activeTabId, id])
+
   const [phase, setPhase] = useState<Phase>('empty')
   const [error, setError] = useState<string>('')
   const openLightbox = useLightboxStore((s) => s.openFromUrl)
@@ -51,6 +80,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
       resolution: width && height ? `${width}×${height}` : undefined,
       durationMs: durationMs ?? null,
       fields: lbFields,
+      compareBase: compareBaseUrl ?? undefined,
     })
   }
 
