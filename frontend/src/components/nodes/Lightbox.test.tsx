@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import Lightbox from './Lightbox'
 import { useLightboxStore } from '../../stores/lightbox'
@@ -12,7 +12,27 @@ function scaleOf(transform: string): number {
 
 describe('Lightbox zoom/pan wiring', () => {
   beforeEach(() => {
-    act(() => useLightboxStore.setState({ open: false, images: [], index: 0 }))
+    act(() => useLightboxStore.setState({ open: false, images: [], metas: [], index: 0 }))
+  })
+
+  it('renders meta panel (prompt + fields + rerun) when meta present', () => {
+    const onRerun = vi.fn()
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({
+      open: true, images: [URL1], index: 0,
+      metas: [{ prompt: 'a corgi astronaut', fields: [{ label: 'seed', value: '42' }], durationMs: 2000, onRerun }],
+    }))
+    expect(screen.getByText('a corgi astronaut')).toBeTruthy()
+    expect(screen.getByText('seed')).toBeTruthy()
+    expect(screen.getByText(/耗时 2\.0s/)).toBeTruthy()
+    fireEvent.click(screen.getByText(/重跑/))
+    expect(onRerun).toHaveBeenCalled()
+  })
+
+  it('no meta panel when meta empty', () => {
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({ open: true, images: [URL1], metas: [undefined], index: 0 }))
+    expect(screen.queryByText(/重跑/)).toBeNull()
   })
 
   it('does not render when closed', () => {

@@ -1,6 +1,7 @@
 // 历史出图画廊(spec 2026-06-09 run-history PR-B,借鉴 Infinite-Canvas history)。
 // 拉最近 task,筛出带 output_thumbnails 的出图记录 → 网格画廊;hover 卡片可「重跑」
-// (复用 PR-A:按 workflow_id 找服务跳 Playground 回填 input_json)/「删除」;点图开 lightbox。
+// (复用 PR-A:按 workflow_id 找服务跳 Playground 回填 input_json)/「删除」;点图开共享灯箱
+// (缩放/平移 + 元信息面板:prompt/参数/时长/重跑;spec 2026-06-10)。
 import { useMemo, useState } from 'react'
 import { X, RefreshCw, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
@@ -8,6 +9,7 @@ import { usePanelStore } from '../../stores/panel'
 import { confirmDialog } from '../../stores/confirm'
 import { useImageTasks, useDeleteTask, type ExecutionTask } from '../../api/tasks'
 import { useServices } from '../../api/services'
+import { useLightboxStore, type LightboxItem, type LightboxMeta } from '../../stores/lightbox'
 
 export default function HistoryOverlay() {
   const setOverlay = usePanelStore((s) => s.setOverlay)
@@ -15,12 +17,15 @@ export default function HistoryOverlay() {
   const { data: tasks, isLoading } = useImageTasks()
   const { data: services } = useServices()
   const del = useDeleteTask()
-  const [lightbox, setLightbox] = useState<string | null>(null)
+  const openItems = useLightboxStore((s) => s.openItems)
 
   const items = useMemo(
     () => (tasks ?? []).filter((t) => (t.output_thumbnails?.length ?? 0) > 0),
     [tasks],
   )
+
+  const canRerun = (t: ExecutionTask) =>
+    !!services?.find((s) => !!s.workflow_id && s.workflow_id === t.workflow_id)
 
   const rerun = (t: ExecutionTask) => {
     const svc = services?.find((s) => !!s.workflow_id && s.workflow_id === t.workflow_id)
@@ -28,6 +33,43 @@ export default function HistoryOverlay() {
     setOverlay(null)
     navigate(`/services/${svc.id}`, { state: { rerunInputs: t.input_json } })
   }
+
+  // 一个 task 的元信息:prompt(input_json 里最长字符串/带 prompt 关键字)+ 其余字段 + 时长 + 重跑。
+  const taskMeta = (t: ExecutionTask): LightboxMeta => {
+    const inp = (t.input_json ?? {}) as Record<string, unknown>
+    const entries = Object.entries(inp).filter(
+      ([, v]) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+    )
+    let prompt: string | undefined
+    let promptKey: string | undefined
+    for (const [k, v] of entries) {
+      if (typeof v === 'string' && (/prompt|提示|描述/i.test(k) || v.length >= 20)) {
+        if (!prompt || v.length > prompt.length) { prompt = v; promptKey = k }
+      }
+    }
+    const fields = entries
+      .filter(([k]) => k !== promptKey)
+      .map(([k, v]) => ({ label: k, value: String(v) }))
+    return {
+      prompt,
+      fields,
+      durationMs: (t.duration_ms as number | null | undefined) ?? null,
+      onRerun: canRerun(t) ? () => rerun(t) : undefined,
+    }
+  }
+
+  // 全画廊扁平图集(跨 task 多图)+ 每 task 首图的全局索引(点卡片定位)。
+  const { gallery, startIndex } = useMemo(() => {
+    const g: LightboxItem[] = []
+    const start = new Map<string | number, number>()
+    for (const t of items) {
+      start.set(t.id, g.length)
+      const meta = taskMeta(t)
+      for (const url of t.output_thumbnails ?? []) g.push({ url, meta })
+    }
+    return { gallery: g, startIndex: start }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, services])
 
   return (
     <div className="absolute inset-0 z-30 flex flex-col" style={{ background: 'var(--bg)', overflow: 'hidden' }}>
@@ -66,14 +108,13 @@ export default function HistoryOverlay() {
           >
             {items.map((t) => {
               const thumb = t.output_thumbnails![0]
-              const canRerun = !!services?.find((s) => !!s.workflow_id && s.workflow_id === t.workflow_id)
               return (
                 <Card
                   key={t.id}
                   task={t}
                   thumb={thumb}
-                  canRerun={canRerun}
-                  onOpen={() => setLightbox(thumb)}
+                  canRerun={canRerun(t)}
+                  onOpen={() => openItems(gallery, startIndex.get(t.id) ?? 0)}
                   onRerun={() => rerun(t)}
                   onDelete={async () => {
                     if (await confirmDialog({ message: '删除这条出图记录?', danger: true, confirmText: '删除' })) del.mutate(t.id)
@@ -84,18 +125,6 @@ export default function HistoryOverlay() {
           </div>
         )}
       </div>
-
-      {lightbox && (
-        <div
-          onClick={() => setLightbox(null)}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.85)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, cursor: 'zoom-out',
-          }}
-        >
-          <img src={lightbox} alt="" style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: 6, objectFit: 'contain' }} />
-        </div>
-      )}
     </div>
   )
 }
