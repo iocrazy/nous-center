@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, X, Copy, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, X, Copy, RefreshCw, Download, DownloadCloud, Columns2 } from 'lucide-react'
 import { useLightboxStore, type LightboxMeta } from '../../stores/lightbox'
 import { IDENTITY, clampPan, zoomAt, type ZoomState } from './lightboxZoom'
 
@@ -73,6 +73,43 @@ function ZoomableImage({ src, onNatural }: { src: string; onNatural?: (w: number
           willChange: 'transform',
         }}
       />
+    </div>
+  )
+}
+
+/** 前后对比:back 底图定尺寸,front 叠加按滑块 clip;拖拽分隔线。 */
+function CompareView({ front, back }: { front: string; back: string }) {
+  const [pos, setPos] = useState(50)
+  const ref = useRef<HTMLDivElement>(null)
+  const drag = useRef(false)
+  const setFromX = (clientX: number) => {
+    const r = ref.current?.getBoundingClientRect()
+    if (!r || !r.width) return
+    setPos(Math.max(0, Math.min(100, ((clientX - r.left) / r.width) * 100)))
+  }
+  useEffect(() => {
+    const mv = (e: MouseEvent) => { if (drag.current) setFromX(e.clientX) }
+    const up = () => { drag.current = false }
+    window.addEventListener('mousemove', mv)
+    window.addEventListener('mouseup', up)
+    return () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up) }
+  }, [])
+  const tag = (text: string, side: 'left' | 'right') => (
+    <span style={{ position: 'absolute', top: 8, [side]: 8, fontSize: 11, color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 4, padding: '2px 7px', pointerEvents: 'none' } as React.CSSProperties}>{text}</span>
+  )
+  return (
+    <div
+      ref={ref}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => { e.preventDefault(); drag.current = true; setFromX(e.clientX) }}
+      style={{ position: 'relative', maxWidth: '92vw', maxHeight: '92vh', cursor: 'ew-resize', userSelect: 'none' }}
+    >
+      <img src={back} alt="preview" draggable={false} style={{ display: 'block', maxWidth: '92vw', maxHeight: '92vh', objectFit: 'contain' }} />
+      <img src={front} alt="" draggable={false} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', clipPath: `inset(0 ${100 - pos}% 0 0)` }} />
+      <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${pos}%`, width: 2, background: '#fff', boxShadow: '0 0 4px rgba(0,0,0,0.6)', transform: 'translateX(-1px)', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', top: '50%', left: `${pos}%`, width: 24, height: 24, marginLeft: -12, marginTop: -12, borderRadius: '50%', background: '#fff', boxShadow: '0 0 4px rgba(0,0,0,0.6)', pointerEvents: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: '#333' }}>⇄</div>
+      {tag('对比', 'left')}
+      {tag('当前', 'right')}
     </div>
   )
 }
@@ -154,6 +191,7 @@ export default function Lightbox() {
   const next = useLightboxStore((s) => s.next)
   const prev = useLightboxStore((s) => s.prev)
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null)
+  const [compare, setCompare] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -170,6 +208,21 @@ export default function Lightbox() {
   const url = images[index]
   const meta = metas[index]
   const multi = images.length > 1
+  const showCompare = compare && multi
+  const compareBase = multi ? images[index === 0 ? 1 : index - 1] : url
+
+  const basename = (u: string): string => {
+    try {
+      const path = new URL(u, window.location.href).pathname
+      return decodeURIComponent(path.split('/').pop() || '') || `image-${index + 1}.png`
+    } catch { return `image-${index + 1}.png` }
+  }
+  const downloadOne = (u: string) => {
+    const a = document.createElement('a')
+    a.href = u; a.download = basename(u)
+    document.body.appendChild(a); a.click(); a.remove()
+  }
+  const downloadAll = () => images.forEach((u, i) => setTimeout(() => downloadOne(u), i * 200))
 
   const navBtn = (onClick: () => void, side: 'left' | 'right', icon: React.ReactNode) => (
     <button
@@ -194,8 +247,10 @@ export default function Lightbox() {
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'zoom-out',
       }}
     >
-      {/* key=index → 切图 remount,缩放/平移自动复位 */}
-      <ZoomableImage key={index} src={url} onNatural={(w, h) => setNatural({ w, h })} />
+      {/* key=index → 切图 remount,缩放/平移自动复位;对比模式换成 CompareView */}
+      {showCompare
+        ? <CompareView key={`cmp-${index}`} front={url} back={compareBase} />
+        : <ZoomableImage key={index} src={url} onNatural={(w, h) => setNatural({ w, h })} />}
 
       <button
         type="button"
@@ -214,21 +269,55 @@ export default function Lightbox() {
         <MetaPanel meta={meta} fallbackRes={natural ? `${natural.w}×${natural.h}` : ''} />
       )}
 
-      {multi && (
+      {multi && !showCompare && (
         <>
           {navBtn(prev, 'left', <ChevronLeft size={24} />)}
           {navBtn(next, 'right', <ChevronRight size={24} />)}
-          <div
-            style={{
-              position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)',
-              fontSize: 12, color: '#fff', fontFamily: 'var(--mono)',
-              background: 'rgba(0,0,0,0.5)', padding: '3px 10px', borderRadius: 999,
-            }}
-          >
-            {index + 1} / {images.length}
-          </div>
         </>
       )}
+
+      {/* 底部工具栏:对比 / 下载 / 下载全部 + 计数 */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)',
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.2)',
+          padding: '5px 8px', borderRadius: 999,
+        }}
+      >
+        {multi && (
+          <ToolBtn active={showCompare} onClick={() => setCompare((c) => !c)} title="前后对比(与上一张)">
+            <Columns2 size={15} />
+          </ToolBtn>
+        )}
+        <ToolBtn onClick={() => downloadOne(url)} title="下载当前"><Download size={15} /></ToolBtn>
+        {multi && <ToolBtn onClick={downloadAll} title={`下载全部(${images.length})`}><DownloadCloud size={15} /></ToolBtn>}
+        {multi && (
+          <span style={{ fontSize: 12, color: '#fff', fontFamily: 'var(--mono)', padding: '0 4px' }}>
+            {index + 1} / {images.length}
+          </span>
+        )}
+      </div>
     </div>
+  )
+}
+
+function ToolBtn({ children, onClick, title, active }: { children: React.ReactNode; onClick: () => void; title: string; active?: boolean }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={(e) => { e.stopPropagation(); onClick() }}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 32, height: 32, borderRadius: '50%', cursor: 'pointer',
+        background: active ? 'var(--accent, #4f7cff)' : 'transparent',
+        border: 'none', color: '#fff',
+      }}
+    >
+      {children}
+    </button>
   )
 }
