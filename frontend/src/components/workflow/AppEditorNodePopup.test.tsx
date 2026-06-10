@@ -54,9 +54,11 @@ describe('AppEditorNodePopup', () => {
     fireEvent.change(name, { target: { value: '正向提示' } })
     expect(h.onRename).toHaveBeenCalledWith('text', '正向提示')
 
-    const select = screen.getAllByRole('combobox')[0]
-    fireEvent.change(select, { target: { value: 'textarea' } })
-    expect(h.onChangeKind).toHaveBeenCalledWith('text', 'textarea')
+    // 控件类型 = NodeSelectPopover:type:string 无 single_line → 当前「多行文本」;
+    // 点触发打开浮层 → 选「文本」→ onChangeKind('text','text')。
+    fireEvent.click(screen.getByText('多行文本'))
+    fireEvent.click(screen.getByRole('option', { name: '文本' }))
+    expect(h.onChangeKind).toHaveBeenCalledWith('text', 'text')
   })
 
   it('close button fires onClose', () => {

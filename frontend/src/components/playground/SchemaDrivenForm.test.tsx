@@ -65,9 +65,10 @@ describe('SchemaDrivenForm', () => {
         constraints: { enum: ['alice', 'bob'] },
       },
     ])
-    const sel = screen.getByRole('combobox') as HTMLSelectElement
-    expect(sel).toBeInTheDocument()
-    expect(Array.from(sel.options).map((o) => o.value)).toEqual(['alice', 'bob'])
+    // NodeSelectPopover:点触发打开浮层,选项 alice/bob 出现。
+    fireEvent.click(screen.getByText('请选择'))
+    expect(screen.getByRole('option', { name: 'alice' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'bob' })).toBeInTheDocument()
   })
 
   it('renders a checkbox for boolean and forwards the typed value on submit', () => {
@@ -123,9 +124,10 @@ describe('SchemaDrivenForm', () => {
         constraints: { enum: ['a', 'b'], enum_labels: { a: '甲', b: '乙' } },
       },
     ])
-    const sel = screen.getByRole('combobox') as HTMLSelectElement
-    expect(Array.from(sel.options).map((o) => o.textContent)).toEqual(['甲', '乙'])
-    expect(Array.from(sel.options).map((o) => o.value)).toEqual(['a', 'b'])
+    // NodeSelectPopover:打开后选项文本用 enum_labels(甲/乙)。
+    fireEvent.click(screen.getByText('请选择'))
+    expect(screen.getByRole('option', { name: '甲' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '乙' })).toBeInTheDocument()
   })
 
   it('honors legacy aliases (api_name + param_key) on backfilled rows', () => {
