@@ -182,6 +182,9 @@ nodes:
       # 连了 + start_at_step>0 + 加噪关 → 不重加噪从中段续采(KSamplerAdvanced add_noise=disable 语义)。
       # 仅 Z-Image 同 16ch latent 空间;跨架构注入引擎派发前人话报错。不连 = 普通采样(零回归)。
       - { id: init_latent,   type: LATENT_REF,   label: "续采 Latent(可选)", optional: true }
+      # 采样期干预(LCS 锐化/保色,spec 2026-06-10):接 LCS 节点产的描述符 list → 引擎去噪每步沿标定
+      # 方向推 denoised。不连 = 无干预(零回归)。仅手写循环(Z-Image)+ Flux2 callback 路径有挂钩点。
+      - { id: interventions, type: intervene,    label: "采样干预(可选)", optional: true }
     outputs:
       - { id: latent, type: LATENT, label: LATENT }
     widgets:

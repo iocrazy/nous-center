@@ -742,14 +742,14 @@ class ModularImageBackend(InferenceAdapter):
         import torch  # noqa: PLC0415
         return latent.to(device=device, dtype=torch.float32)
 
-    def _build_interventions(self, req: Any) -> list:
+    def _build_interventions(self, req: Any, pipe: Any = None) -> list:
         """req.interventions 描述符 list → per-step latent 干预闭包 list(复刻 comfyui-lcs post-CFG hook,
         spec 2026-06-10)。每个闭包契约:`fn(step_idx, total_steps, sigma, denoised) -> denoised`
         —— 在 denoised(x0)语义点逐步改 latent(对齐 ComfyUI post_cfg 改 denoised,非改 step 后 latent)。
         空/None → 空 list(零回归:挂钩点不调用 = byte-identical)。
 
-        PR-1 只实现 `test_shift`(管道验证:沿常向量推 denoised)。`lcs_sharpness`/`lcs_color_anchor`
-        在 PR-2/3 接入(读 calib_ref safetensors → vendor 的 _build_*_fn)。"""
+        `test_shift`(PR-1 管道验证:沿常向量推 denoised)。`lcs_sharpness`(PR-2:vendor 光栅 PCA 标定
+        → 沿锐化 PC1 方向推,惰性标定 + VAE 指纹缓存)。`lcs_color_anchor` 待 PR-3。"""
         import logging  # noqa: PLC0415
 
         import torch  # noqa: PLC0415
@@ -770,9 +770,21 @@ class ModularImageBackend(InferenceAdapter):
                         return x
                     return x + _s * torch.ones_like(x)
                 fns.append(_fn)
+            elif kind == "lcs_sharpness":
+                strength = float(d.get("strength", 1.0))
+                if strength == 0.0:
+                    continue  # no-op → 不建闭包(避免 denoised 往返反推的浮点误差,保 byte-identical)
+                if pipe is None or getattr(pipe, "vae", None) is None:
+                    logging.getLogger(__name__).warning("lcs_sharpness 需 VAE(pipe.vae 缺),跳过")
+                    continue
+                from src.services.inference.lcs_integration import build_sharpness_fn  # noqa: PLC0415
+                fns.append(build_sharpness_fn(
+                    pipe.vae, self.device, strength=strength,
+                    start_step=int(d.get("start_step", 0)),
+                    end_step=int(d.get("end_step", 10 ** 9))))
             else:
                 logging.getLogger(__name__).warning(
-                    "intervention _type=%r 未实现(PR-2/3 接 lcs_sharpness/lcs_color_anchor),跳过", kind)
+                    "intervention _type=%r 未实现(PR-3 接 lcs_color_anchor),跳过", kind)
         return fns
 
     def _run_zimage_segmented(
@@ -1110,7 +1122,7 @@ class ModularImageBackend(InferenceAdapter):
         self._apply_loras(list(getattr(req, "loras", None) or []))
         # 采样期 latent 干预闭包(spec 2026-06-10);空 list = 无干预(零回归)。两挂钩点(Z-Image 手写
         # 循环 / Flux2 callback_on_step_end)共用此 list。
-        interventions = self._build_interventions(req)
+        interventions = self._build_interventions(req, pipe)
         # PR-A2:真 img2img(z-image + input_image + 0<strength<1)→ 切到 img2img 变体 pipe(复用组件)。
         # 下方 image= 注入(按 pipe.__call__ 签名)对 img2img pipe 自动生效;再补 strength。
         img2img_mode = self._wants_img2img(req)
