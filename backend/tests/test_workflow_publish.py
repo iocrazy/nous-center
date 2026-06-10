@@ -84,6 +84,35 @@ async def test_publish_flips_workflow_status_to_published(
 
 
 @pytest.mark.asyncio
+async def test_delete_service_resets_workflow_status_to_draft(
+    db_client, db_session, workflow_with_two_nodes,
+):
+    """删服务(源工作流已无其它关联服务)→ wf.status 退回 draft。镜像 publish 的状态机。
+    之前删服务没回退 → 工作流卡在 published 但无关联服务(卡片绿徽章与"未关联服务"+
+    发布按钮冲突,用户反馈)。"""
+    pub = await db_client.post(
+        f"/api/v1/workflows/{workflow_with_two_nodes.id}/publish",
+        headers=_admin_headers(),
+        json={
+            "name": "del-svc", "label": "D", "category": "app", "meter_dim": "calls",
+            "exposed_inputs": [{"node_id": "in_1", "key": "text", "input_name": "v",
+                                "type": "string", "required": True}],
+            "exposed_outputs": [{"node_id": "out_1", "key": "echo", "input_name": "v",
+                                 "type": "string"}],
+        },
+    )
+    assert pub.status_code == 201, pub.text
+    await db_session.refresh(workflow_with_two_nodes)
+    assert workflow_with_two_nodes.status == "published"
+    svc_id = pub.json()["id"]
+
+    r = await db_client.delete(f"/api/v1/services/{svc_id}", headers=_admin_headers())
+    assert r.status_code == 204, r.text
+    await db_session.refresh(workflow_with_two_nodes)
+    assert workflow_with_two_nodes.status == "draft"
+
+
+@pytest.mark.asyncio
 async def test_publish_rejects_unknown_exposed_node_id(
     db_client, workflow_with_two_nodes, monkeypatch,
 ):
