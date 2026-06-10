@@ -2,7 +2,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 
 async def test_list_engines(db_client):
-    with patch("src.api.routes.engines.scan_local_models", return_value={"tts/cosyvoice2-0.5b", "tts/indextts-2", "tts/moss-tts"}):
+    with patch("src.api.routes.engines.scan_local_models", return_value={"speech/cosyvoice2-0.5b", "speech/indextts-2", "speech/moss-tts"}):
         resp = await db_client.get("/api/v1/engines")
     assert resp.status_code == 200
     engines = resp.json()
@@ -16,7 +16,7 @@ async def test_list_engines(db_client):
 
 async def test_list_engines_includes_all(db_client):
     """All engines are returned regardless of local availability."""
-    with patch("src.api.routes.engines.scan_local_models", return_value={"tts/cosyvoice2-0.5b"}):
+    with patch("src.api.routes.engines.scan_local_models", return_value={"speech/cosyvoice2-0.5b"}):
         resp = await db_client.get("/api/v1/engines")
     engines = resp.json()
     names = {e["name"] for e in engines}
@@ -24,7 +24,7 @@ async def test_list_engines_includes_all(db_client):
 
 
 async def test_list_engines_returns_metadata_fields(db_client):
-    with patch("src.api.routes.engines.scan_local_models", return_value={"tts/cosyvoice2-0.5b"}):
+    with patch("src.api.routes.engines.scan_local_models", return_value={"speech/cosyvoice2-0.5b"}):
         resp = await db_client.get("/api/v1/engines")
     engine = resp.json()[0]
     assert "has_metadata" in engine
@@ -34,7 +34,7 @@ async def test_list_engines_returns_metadata_fields(db_client):
 
 
 async def test_list_engines_filter_by_type(db_client):
-    local = {"tts/cosyvoice2-0.5b", "tts/indextts-2", "tts/moss-tts"}
+    local = {"speech/cosyvoice2-0.5b", "speech/indextts-2", "speech/moss-tts"}
     with patch("src.api.routes.engines.scan_local_models", return_value=local):
         resp = await db_client.get("/api/v1/engines?type=tts")
     engines = resp.json()
