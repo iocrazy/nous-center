@@ -1,5 +1,5 @@
 import { useCallback, useRef, useMemo, useEffect, useState } from 'react'
-import { Copy, Ban, Trash2, Group, Ungroup } from 'lucide-react'
+import { Copy, Ban, Trash2, Group, Ungroup, Pencil, Download } from 'lucide-react'
 import {
   ReactFlow,
   Background,
@@ -895,6 +895,21 @@ export default function NodeEditor() {
                 background: 'var(--bg-elevated)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-md)',
               }}
             >
+              {item(<Pencil size={13} />, '重命名', () => {
+                // 触发该节点 BaseNode 的就地编辑(BaseNode 监听 'node-rename')。
+                setTimeout(() => window.dispatchEvent(new CustomEvent('node-rename', { detail: { id: ctxMenu.nodeId } })), 0)
+              })}
+              {(() => {
+                const d = ctxNode?.data as Record<string, unknown> | undefined
+                const url = (d?.image_url || d?.image || d?.image_a_url || d?.image_b_url) as string | undefined
+                if (!url) return null
+                return item(<Download size={13} />, '下载图', () => {
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `${ctxMenu.nodeId}.png`
+                  document.body.appendChild(a); a.click(); a.remove()
+                })
+              })()}
               {item(<Ban size={13} />, isBypassed ? '取消旁路' : '旁路 (Ctrl+B)', () => updateNode(ctxMenu.nodeId, { bypassed: !isBypassed }))}
               {item(<Copy size={13} />, '复制 (Ctrl+D)', () => {
                 // 延后一拍:选中态(右键已设)在下一帧稳定后再 copy+paste
