@@ -1,7 +1,8 @@
-// 工作流 → WebUI 应用编辑器(spec 2026-06-09 PR-2)。复刻 Infinite-Canvas 测试画布:
-// 右侧只读 nous 节点图(节点上逐 widget 勾选暴露),左侧从勾选项实时生成的表单。
+// 工作流 → WebUI 应用编辑器(spec 2026-06-09 PR-2 → 2026-06-10 节点弹窗化)。
+// 复刻 Infinite-Canvas 测试画布:右侧只读 nous 节点图,**点节点 → 弹出属性编辑窗**
+// (逐 widget 勾选 + 改名 + 控件类型),左侧从勾选项实时生成表单。
 // 被发布弹窗(预览态)和服务详情页「应用编辑」tab(可运行)复用。
-import { useCallback, useMemo, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { ReactFlow, Background, Controls, type Edge, type Node } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { ChevronUp, ChevronDown, X } from 'lucide-react'
@@ -10,6 +11,8 @@ import { paramSlot } from '../../api/services'
 import { DECLARATIVE_NODES } from '../../models/nodeRegistry'
 import SchemaDrivenForm from '../playground/SchemaDrivenForm'
 import AppEditorNode, { type AppEditorNodeData } from './AppEditorNode'
+import AppEditorNodePopup from './AppEditorNodePopup'
+import { applyKind, type WidgetKind } from './widgetKind'
 import {
   dedupeKeys,
   exposableRowsFor,
@@ -70,14 +73,18 @@ export default function WorkflowAppEditor({
   onRun,
   formFooter,
 }: WorkflowAppEditorProps) {
-  const checked = useMemo(
-    () => new Set(value.inputs.map((p) => paramId(p))),
-    [value.inputs],
-  )
+  const [popupNodeId, setPopupNodeId] = useState<string | null>(null)
+
   const outputChecked = useMemo(
     () => new Set(value.outputs.map((p) => String(p.node_id))),
     [value.outputs],
   )
+  // 每节点已暴露字段数(节点卡「N 已用」badge)。
+  const exposedCountByNode = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const p of value.inputs) m.set(String(p.node_id), (m.get(String(p.node_id)) ?? 0) + 1)
+    return m
+  }, [value.inputs])
 
   const toggleInput = useCallback(
     (node: EditorNodeLike, inputName: string) => {
@@ -114,8 +121,23 @@ export default function WorkflowAppEditor({
     [value, onChange],
   )
 
-  // 字段改名 / 上下移 / 移除(对齐 Infinite-Canvas 字段配置)。表单按 value.inputs
-  // 数组顺序渲染,所以「排序」= 重排数组;label 改的是 ExposedParam.label。
+  // 弹窗内按 input_name 改名 / 改控件类型(身份 = node_id::input_name)。
+  const renameByInput = useCallback(
+    (nodeId: string, inputName: string, label: string) => {
+      const id = paramId({ node_id: nodeId, input_name: inputName })
+      onChange({ ...value, inputs: value.inputs.map((p) => (paramId(p) === id ? { ...p, label } : p)) })
+    },
+    [value, onChange],
+  )
+  const changeKind = useCallback(
+    (nodeId: string, inputName: string, kind: WidgetKind) => {
+      const id = paramId({ node_id: nodeId, input_name: inputName })
+      onChange({ ...value, inputs: value.inputs.map((p) => (paramId(p) === id ? applyKind(p, kind) : p)) })
+    },
+    [value, onChange],
+  )
+
+  // 左侧字段列表的改名 / 上下移 / 移除(按数组顺序渲表单)。
   const renameInput = useCallback(
     (i: number, label: string) =>
       onChange({ ...value, inputs: value.inputs.map((p, j) => (j === i ? { ...p, label } : p)) }),
@@ -149,16 +171,16 @@ export default function WorkflowAppEditor({
           label: def?.label || n.type,
           badge: def?.badge,
           badgeColor: def?.badgeColor,
-          rows: out ? [] : exposableRowsFor(n),
-          checked,
-          onToggle: (inputName: string) => toggleInput(n, inputName),
+          exposedCount: exposedCountByNode.get(n.id) ?? 0,
+          active: popupNodeId === n.id,
+          onOpenPopup: () => setPopupNodeId(n.id),
           isOutput: out,
           outputChecked: outputChecked.has(n.id),
           onToggleOutput: () => toggleOutput(n),
         },
       }
     })
-  }, [nodes, edges, checked, outputChecked, toggleInput, toggleOutput])
+  }, [nodes, edges, exposedCountByNode, popupNodeId, outputChecked, toggleOutput])
 
   const rfEdges = useMemo<Edge[]>(
     () =>
@@ -170,6 +192,17 @@ export default function WorkflowAppEditor({
       })),
     [edges],
   )
+
+  // 当前打开弹窗的节点 + 它的可暴露行 + 已暴露映射。
+  const popupNode = popupNodeId ? nodes.find((n) => n.id === popupNodeId) ?? null : null
+  const popupRows = useMemo(() => (popupNode ? exposableRowsFor(popupNode) : []), [popupNode])
+  const popupExposed = useMemo(() => {
+    const m = new Map<string, ExposedParam>()
+    if (popupNode) {
+      for (const p of value.inputs) if (String(p.node_id) === popupNode.id) m.set(paramId(p), p)
+    }
+    return m
+  }, [popupNode, value.inputs])
 
   return (
     <div style={{ display: 'flex', height: '100%', minHeight: 420 }}>
@@ -224,10 +257,9 @@ export default function WorkflowAppEditor({
         </div>
       </div>
 
-      {/* 右:只读节点图。画布底色用 --bg(对齐真工作流画布 NodeEditor),
-          这样白色 --card 节点卡能和画布拉开对比 —— 否则浅色主题下画布纯白、
-          卡片也白,节点框看不见(用户反馈「白底节点不明显」)。 */}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      {/* 右:只读节点图 + 节点属性弹窗(position:relative 容纳弹窗 absolute 定位)。
+          画布底色用 --bg(对齐真工作流画布 NodeEditor),让白色 --card 节点卡拉开对比。 */}
+      <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -242,6 +274,18 @@ export default function WorkflowAppEditor({
           <Background gap={24} size={1.4} color="var(--grid, var(--border))" />
           <Controls showInteractive={false} />
         </ReactFlow>
+        {popupNode && (
+          <AppEditorNodePopup
+            title={DECLARATIVE_NODES[popupNode.type]?.label || popupNode.type}
+            sub={`${popupNode.type} · #${popupNode.id}`}
+            rows={popupRows}
+            exposed={popupExposed}
+            onToggle={(inputName) => toggleInput(popupNode, inputName)}
+            onRename={(inputName, label) => renameByInput(popupNode.id, inputName, label)}
+            onChangeKind={(inputName, kind) => changeKind(popupNode.id, inputName, kind)}
+            onClose={() => setPopupNodeId(null)}
+          />
+        )}
       </div>
     </div>
   )
