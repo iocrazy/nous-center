@@ -12,42 +12,42 @@ models:
 - adapter: src.workers.tts_engines.cosyvoice2.CosyVoice2Engine
   id: cosyvoice2
   paths:
-    main: tts/cosyvoice2-0.5b
+    main: speech/cosyvoice2-0.5b
   resident: false
   type: tts
   vram_mb: 3000
 - adapter: src.workers.tts_engines.indextts2.IndexTTS2Engine
   id: indextts2
   paths:
-    main: tts/indextts-2
+    main: speech/indextts-2
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.moss_tts.MOSSTTSEngine
   id: moss_tts
   paths:
-    main: tts/moss-tts
+    main: speech/moss-tts
   resident: false
   type: tts
   vram_mb: 8000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSBaseEngine
   id: qwen3_tts_base
   paths:
-    main: tts/qwen3-tts-1.7b-base
+    main: speech/qwen3-tts-1.7b-base
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSCustomVoiceEngine
   id: qwen3_tts_customvoice
   paths:
-    main: tts/qwen3-tts-1.7b-customvoice
+    main: speech/qwen3-tts-1.7b-customvoice
   resident: false
   type: tts
   vram_mb: 4000
 - adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSVoiceDesignEngine
   id: qwen3_tts_voicedesign
   paths:
-    main: tts/qwen3-tts-1.7b-voicedesign
+    main: speech/qwen3-tts-1.7b-voicedesign
   resident: false
   type: tts
   vram_mb: 4000
@@ -99,7 +99,7 @@ models:
 - adapter: src.workers.tts_engines.voxcpm2.VoxCPM2Engine
   id: voxcpm2
   paths:
-    main: tts/VoxCPM2
+    main: speech/VoxCPM2
   resident: false
   type: tts
   vram_mb: 8000

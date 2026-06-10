@@ -53,7 +53,17 @@ class TTSEngine(InferenceAdapter):
     def __init__(self, paths: dict[str, str], device: str = "cuda", **params: Any):
         super().__init__(paths=paths, device=device)
         # All TTS engines are single-component: paths['main'] is the model dir.
-        self.model_path = Path(paths.get("main", ""))
+        # models.yaml 的 main 是**相对** LOCAL_MODELS_PATH 的(如 speech/cosyvoice2-0.5b)——
+        # 对齐 llm_vllm.py 同款解析:先拼基路径,存在用绝对;否则原样(绝对路径/HF id 直通)。
+        # 此前不解析 → 相对串直通引擎,CosyVoice 把它当 modelscope repo id 去下载 → 404。
+        raw = Path(paths.get("main", ""))
+        try:
+            from src.config import get_settings  # noqa: PLC0415
+            base = Path(get_settings().LOCAL_MODELS_PATH or "")
+            resolved = base / raw
+            self.model_path = resolved if resolved.exists() else raw
+        except Exception:  # noqa: BLE001 — settings 不可用(极端测试环境)退回原样
+            self.model_path = raw
 
     async def load(self, device: str | None = None) -> None:
         if device:

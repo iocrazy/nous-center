@@ -61,10 +61,13 @@ def _get_qwen_model(model_type: str, model_choice: str, device: str = "cuda", pr
 
     source = HF_MAP.get((model_type, model_choice), "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 
-    # Check local path first
-    local_dir = os.path.join(settings.LOCAL_MODELS_PATH, "tts", source.split("/")[-1].lower())
-    if os.path.exists(local_dir):
-        source = local_dir
+    # Check local path first — TTS 模型盘上目录是 speech/(models.yaml 同口径);
+    # 兼容旧 tts/ 布局兜底,两处都没有才走 HF 源。
+    for _sub in ("speech", "tts"):
+        local_dir = os.path.join(settings.LOCAL_MODELS_PATH, _sub, source.split("/")[-1].lower())
+        if os.path.exists(local_dir):
+            source = local_dir
+            break
 
     dtype = torch.bfloat16 if precision == "bf16" else torch.float32
     model = Qwen3TTSModel.from_pretrained(source, device_map=device, dtype=dtype)
