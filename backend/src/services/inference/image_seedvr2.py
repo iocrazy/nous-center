@@ -101,15 +101,22 @@ def _clamp_seed(seed: int) -> int:
 
 
 def _decode_image(src: str) -> Any:
-    """req.image(base64 data URI 或本地路径)→ PIL.Image(RGB)。"""
+    """req.image(base64 data URI 或本地路径)→ PIL.Image(RGB 或 RGBA)。
+
+    带透明的输入保留 RGBA —— 引擎原生支持(encode 自检 is_rgba,postprocess 用
+    alpha_upscaling 边缘引导超分 alpha 再合回),输出格式跟随输入(对齐上游
+    video_upscaler「Output format will match input format」)。其余统一 RGB。"""
     from PIL import Image  # noqa: PLC0415
 
     if src.startswith("data:"):
         # "data:image/png;base64,...." → 取逗号后的 base64 体
         _, _, b64 = src.partition(",")
         raw = base64.b64decode(b64)
-        return Image.open(io.BytesIO(raw)).convert("RGB")
-    return Image.open(src).convert("RGB")
+        img = Image.open(io.BytesIO(raw))
+    else:
+        img = Image.open(src)
+    has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+    return img.convert("RGBA" if has_alpha else "RGB")
 
 
 class SeedVR2UpscaleBackend(InferenceAdapter):
@@ -419,8 +426,11 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         # 引擎边界向下归一到最近合法值,不靠 UI 约束。
         batch_size = max(1, ((int(batch_size) - 1) // 4) * 4 + 1)
 
-        # 输入图 → frames_tensor [1,H,W,C] float16 [0,1] RGB(对齐 NumZ extract_frames_from_image)。
-        rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+        # 输入图 → frames_tensor [1,H,W,C] float16 [0,1],C=3(RGB)或 4(RGBA —— 引擎
+        # encode 自检 shape[-1]==4 走 alpha 边缘引导超分;输出 Image.fromarray 4 通道天然 RGBA)。
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGB")
+        rgb = np.asarray(image, dtype=np.float32) / 255.0
         frames = torch.from_numpy(rgb[None, ...]).to(torch.float16)
 
         # prepend_frames **加帧侧**(对齐上游 compute_generation_info):encode 前补反转帧,

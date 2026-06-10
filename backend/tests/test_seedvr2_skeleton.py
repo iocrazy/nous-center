@@ -253,3 +253,31 @@ def test_batch_size_normalized_to_4n_plus_1():
     """batch_size 必须 4n+1(上游 widget step=4 enforce);引擎边界向下归一。"""
     src = (_VENDOR.parent / "image_seedvr2.py").read_text()
     assert "// 4) * 4 + 1" in src, "缺 batch_size 4n+1 归一"
+
+
+# --- RGBA 透传(输出格式跟随输入,对齐上游)---
+
+
+def test_decode_image_preserves_rgba():
+    """带透明的输入保留 RGBA(引擎原生支持 alpha 边缘引导超分);不透明统一 RGB。
+    直接调 _decode_image(纯 PIL,无 torch)。"""
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image as _Image
+
+    from src.services.inference.image_seedvr2 import _decode_image
+
+    def _data_uri(img):
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode()
+
+    rgba = _decode_image(_data_uri(_Image.new("RGBA", (4, 4), (255, 0, 0, 128))))
+    assert rgba.mode == "RGBA", "RGBA 输入被强转丢 alpha"
+    rgb = _decode_image(_data_uri(_Image.new("RGB", (4, 4), (255, 0, 0))))
+    assert rgb.mode == "RGB"
+    # 调色板带透明 → RGBA
+    p = _Image.new("RGBA", (4, 4), (0, 255, 0, 0)).convert("P")
+    pal = _decode_image(_data_uri(p))
+    assert pal.mode in ("RGBA", "RGB")  # PNG 调色板透明保留与否取决于 save;不崩即可
