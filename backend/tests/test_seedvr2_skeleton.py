@@ -281,3 +281,25 @@ def test_decode_image_preserves_rgba():
     p = _Image.new("RGBA", (4, 4), (0, 255, 0, 0)).convert("P")
     pal = _decode_image(_data_uri(p))
     assert pal.mode in ("RGBA", "RGB")  # PNG 调色板透明保留与否取决于 save;不崩即可
+
+
+# --- 进度权重 + complete_cleanup 收尾(对齐上游 execute)---
+
+
+def test_progress_uses_upstream_phase_weights():
+    """上游按真实耗时加权:encode 20% / upscale 25% / decode 50% / post 5%。
+    均分 /4 会让 decode 段进度假停。源码检查权重表在位。"""
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    for frag in ("0.2, 0.0", "0.25, 0.2", "0.5, 0.45", "0.05, 0.95"):
+        assert frag in src, f"缺上游 phase 权重/偏移 {frag}"
+
+
+def test_upscale_calls_complete_cleanup_in_finally():
+    """上游 execute 成功/异常路径都 cleanup;阶段中途失败不收尾会把临时张量/模型留在 GPU。
+    源码检查:complete_cleanup 在 finally 里,双 cache=True(保模型复用)。"""
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    fin = src.find("finally:")
+    cc = src.find("complete_cleanup(")
+    assert cc != -1, "缺 complete_cleanup 收尾"
+    assert fin != -1 and fin < cc, "complete_cleanup 必须在 finally(异常路径也清)"
+    assert "dit_cache=True, vae_cache=True" in src, "收尾必须保模型(双 cache=True)"

@@ -318,14 +318,16 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         seed = _clamp_seed(req.seed if req.seed is not None else 42)
 
         # 进度桥接:NumZ progress_callback(done, total, extra, "Phase N: Label")(4 positional)。
-        # 总体进度 = (阶段序号-1 + done/total)/4。工作线程 → call_soon_threadsafe → 事件循环。
+        # 总体进度按**上游 video_upscaler 的真实耗时权重**(encode 20% / upscale 25% /
+        # decode 50% / post 5%,decode 最重)—— 均分 /4 会让 decode 段进度「假停」。
         numz_cb = None
         if progress_callback is not None:
             loop = asyncio.get_running_loop()
-            # NumZ 阶段串 → (stage 名, 中文 detail 前缀)。stage 词汇对齐 modular(vae_*/dit_*)。
+            # NumZ 阶段串 → (stage 名, 中文 detail 前缀, 权重, 偏移)。逐字对齐上游
+            # phase_weights/phase_offset;stage 词汇对齐 modular(vae_*/dit_*)。
             phase_stage = {
-                1: ("vae_encode", "编码"), 2: ("dit_upscale", "超分"),
-                3: ("vae_decode", "解码"), 4: ("postprocess", "后处理"),
+                1: ("vae_encode", "编码", 0.2, 0.0), 2: ("dit_upscale", "超分", 0.25, 0.2),
+                3: ("vae_decode", "解码", 0.5, 0.45), 4: ("postprocess", "后处理", 0.05, 0.95),
             }
 
             def numz_cb(done: int, total: int, _extra: Any = None, msg: str = "") -> None:
@@ -334,9 +336,9 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
                     pidx = int(str(msg).split(":")[0].strip().split()[-1])
                 except (ValueError, IndexError):
                     pidx = 1
-                stage, label = phase_stage.get(pidx, ("upscale", str(msg)))
+                stage, label, weight, offset = phase_stage.get(pidx, ("upscale", str(msg), 0.25, 0.2))
                 frac = (done / total) if total else 1.0
-                overall = min(1.0, (pidx - 1 + frac) / 4)
+                overall = min(1.0, offset + frac * weight)
 
                 def _deferred() -> None:
                     try:
@@ -443,33 +445,46 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         # ctx 每次 upscale 重置(NumZ ctx 阶段间 in-place 累积,复用 runner 但 ctx 要新)。
         ctx = dict(self._ctx_base) if self._ctx_base else {}
 
-        ctx = encode_all_batches(
-            self._runner, ctx=ctx, images=frames, debug=self._debug,
-            batch_size=batch_size, uniform_batch_size=uniform_batch_size, seed=seed,
-            progress_callback=progress_callback, temporal_overlap=temporal_overlap,
-            resolution=resolution, max_resolution=max_resolution,
-            input_noise_scale=input_noise_scale, color_correction=color_correction,
-        )
-        # **cache_model=True 必须**:False 是 NumZ CLI 一次性语义 —— 阶段收尾 cleanup_dit/
-        # cleanup_vae 直接 `runner.dit/vae = None` 删模型。我们把 adapter(含 runner)缓存在
-        # ModelManager 复用,第二次 infer 撞 None → 「'NoneType' object has no attribute
-        # 'parameters'」。True = 跑完搬去 offload device 保留(无 offload 配置时 NumZ 内部回退
-        # cpu),下次 phase 入口 manage_model_device 自动搬回 GPU。对齐 ComfyUI loader 的
-        # cache_model=True(keep model loaded between runs);sampler 每次 configure_diffusion
-        # 重建,不受 cleanup 置空影响。
-        ctx = upscale_all_batches(
-            self._runner, ctx=ctx, debug=self._debug, progress_callback=progress_callback,
-            seed=seed, latent_noise_scale=latent_noise_scale, cache_model=True,
-        )
-        ctx = decode_all_batches(
-            self._runner, ctx=ctx, debug=self._debug, progress_callback=progress_callback,
-            cache_model=True,
-        )
-        ctx = postprocess_all_batches(
-            ctx=ctx, debug=self._debug, progress_callback=progress_callback,
-            color_correction=color_correction, prepend_frames=prepend_frames,
-            temporal_overlap=temporal_overlap, batch_size=batch_size,
-        )
+        # try/finally 收尾对齐上游 execute(成功/异常路径都 cleanup):complete_cleanup
+        # 双 cache=True = 模型保留(搬 offload device)+ 清 runtime caches + 深度
+        # clear_memory + cuBLAS workspace。**异常路径尤其重要** —— 阶段中途失败时把
+        # DiT/VAE 从 GPU 搬走、释放临时张量,否则失败一次就把卡占死。text_embeds 故意
+        # 不清(_ctx_base 常驻复用,上游每 run 重载,我们省这步)。
+        try:
+            ctx = encode_all_batches(
+                self._runner, ctx=ctx, images=frames, debug=self._debug,
+                batch_size=batch_size, uniform_batch_size=uniform_batch_size, seed=seed,
+                progress_callback=progress_callback, temporal_overlap=temporal_overlap,
+                resolution=resolution, max_resolution=max_resolution,
+                input_noise_scale=input_noise_scale, color_correction=color_correction,
+            )
+            # **cache_model=True 必须**:False 是 NumZ CLI 一次性语义 —— 阶段收尾 cleanup_dit/
+            # cleanup_vae 直接 `runner.dit/vae = None` 删模型。我们把 adapter(含 runner)缓存在
+            # ModelManager 复用,第二次 infer 撞 None → 「'NoneType' object has no attribute
+            # 'parameters'」。True = 跑完搬去 offload device 保留(无 offload 配置时 NumZ 内部回退
+            # cpu),下次 phase 入口 manage_model_device 自动搬回 GPU。对齐 ComfyUI loader 的
+            # cache_model=True(keep model loaded between runs);sampler 每次 configure_diffusion
+            # 重建,不受 cleanup 置空影响。
+            ctx = upscale_all_batches(
+                self._runner, ctx=ctx, debug=self._debug, progress_callback=progress_callback,
+                seed=seed, latent_noise_scale=latent_noise_scale, cache_model=True,
+            )
+            ctx = decode_all_batches(
+                self._runner, ctx=ctx, debug=self._debug, progress_callback=progress_callback,
+                cache_model=True,
+            )
+            ctx = postprocess_all_batches(
+                ctx=ctx, debug=self._debug, progress_callback=progress_callback,
+                color_correction=color_correction, prepend_frames=prepend_frames,
+                temporal_overlap=temporal_overlap, batch_size=batch_size,
+            )
+        finally:
+            from src.services.inference.seedvr2_vendor.src.optimization.memory_manager import (  # noqa: PLC0415
+                complete_cleanup,
+            )
+            complete_cleanup(
+                runner=self._runner, debug=self._debug, dit_cache=True, vae_cache=True,
+            )
 
         out = ctx["final_video"]  # [N,H,W,C] [0,1]
         if out.is_cuda:
