@@ -665,7 +665,7 @@ function EnhancePanel() {
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, flexWrap: 'wrap' }}>
               <Field label={`目标分辨率(短边 ${resolution}px)`}>
                 <input
-                  type="range" min={512} max={2160} step={16} value={resolution}
+                  type="range" min={512} max={4320} step={16} value={resolution}
                   onChange={(e) => setResolution(Number(e.target.value))}
                   style={{ width: 200 }}
                 />

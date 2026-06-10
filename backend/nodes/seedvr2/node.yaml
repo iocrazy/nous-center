@@ -115,8 +115,9 @@ nodes:
     outputs:
       - { id: image, type: image, label: 图像 }
     widgets:
-      - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 2160, step: 16, default: 1080 }
-      - { name: max_resolution, label: "长边上限(0=不限)", widget: slider, min: 0, max: 4320, step: 16, default: 0 }
+      # 上限 4320(短边)= 16:9 长边≈7680(8K)。非模型硬限,只受显存约束;>4K 建议开 VAE 分块解码防 OOM。
+      - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 4320, step: 16, default: 1080 }
+      - { name: max_resolution, label: "长边上限(0=不限)", widget: slider, min: 0, max: 7680, step: 16, default: 0 }
       # batch_size/uniform_batch_size 是**多帧/视频**参数(按帧分批)。单图=1 帧 → 无效。对齐 ComfyUI 保留。
       - { name: batch_size, label: "批大小(视频/多帧;单图无效)", widget: slider, min: 1, max: 16, step: 1, default: 1 }
       - { name: uniform_batch_size, label: "统一批尺寸(视频;单图无效)", widget: checkbox, default: false }
