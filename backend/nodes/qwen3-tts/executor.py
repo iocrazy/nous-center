@@ -154,10 +154,16 @@ async def exec_qwen3_voice_clone(data: dict, inputs: dict) -> dict:
     )
 
 
+# 预置 speaker 白名单(与 node.yaml options 同步)—— 旧工作流 JSON/API 直发可携非法值,
+# 模型层报错难读;归一到默认 ryan(同 seedvr2 batch_size 引擎边界归一模式)。
+_VALID_SPEAKERS = {"aiden", "dylan", "eric", "serena", "vivian", "ryan", "uncle_fu", "ono_anna", "sohee"}
+
+
 async def exec_qwen3_custom_voice(data: dict, inputs: dict) -> dict:
     """Custom voice TTS with preset speakers."""
+    _spk = str(data.get("speaker", "ryan") or "ryan").lower()
     return await _exec_qwen3_tts(data, inputs, "CustomVoice", "generate_custom_voice",
-        speaker=data.get("speaker", "ryan"),
+        speaker=_spk if _spk in _VALID_SPEAKERS else "ryan",
         instruct=data.get("instruct") or None,
     )
 

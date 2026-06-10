@@ -50,11 +50,16 @@ async def exec_color_match(data: dict, inputs: dict) -> dict:
     tgt_np = np.asarray(tgt, dtype=np.float32) / 255.0
     ref_np = np.asarray(ref, dtype=np.float32) / 255.0
 
-    method = data.get("method") or "mkl"
+    # 引擎边界归一(2026-06-11 体检):method 白名单(与 node.yaml options 同步,非法值
+    # ColorMatcher 深处崩报错难读)+ strength clamp。合法值原样(零回归)。
+    _methods = {"mkl", "hm", "reinhard", "mvgd", "hm-mvgd-hm", "hm-mkl-hm"}
+    method = str(data.get("method") or "mkl")
+    if method not in _methods:
+        method = "mkl"
     matched = ColorMatcher().transfer(src=tgt_np, ref=ref_np, method=method)
 
     # strength 线性插值(对齐 KJNodes:result = src + strength*(matched - src))
-    strength = float(data.get("strength", 0.65))
+    strength = max(0.0, min(1.0, float(data.get("strength", 0.65))))
     result = tgt_np + strength * (matched - tgt_np)
     result = np.clip(result * 255.0, 0, 255).astype(np.uint8)
 
