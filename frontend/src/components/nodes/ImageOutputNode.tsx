@@ -40,6 +40,20 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   if (width && height) captionParts.push(`${width}×${height}`)
   if (durationMs !== null && durationMs !== undefined) captionParts.push(`${(durationMs / 1000).toFixed(1)}s`)
 
+  // 灯箱元信息(画布输出节点:无 prompt,展 seed/steps/cfg/分辨率/时长)。
+  const lbFields: Array<{ label: string; value: string }> = []
+  if (seed !== null && seed !== undefined) lbFields.push({ label: 'seed', value: String(seed) })
+  if (steps !== null && steps !== undefined) lbFields.push({ label: 'steps', value: String(steps) })
+  if (cfgScale !== null && cfgScale !== undefined) lbFields.push({ label: 'cfg', value: String(cfgScale) })
+  const openZoom = () => {
+    if (!dataUrl) return
+    openLightbox(dataUrl, {
+      resolution: width && height ? `${width}×${height}` : undefined,
+      durationMs: durationMs ?? null,
+      fields: lbFields,
+    })
+  }
+
   useEffect(() => {
     if (imageUrl && phase !== 'success') setPhase('success')
   }, [imageUrl, phase])
@@ -123,7 +137,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
               position: 'relative',
               cursor: phase === 'success' ? 'zoom-in' : 'default',
             }}
-            onClick={() => phase === 'success' && dataUrl && openLightbox(dataUrl)}
+            onClick={() => phase === 'success' && openZoom()}
           >
             {phase === 'success' && dataUrl ? (
               <img
@@ -177,7 +191,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
               </button>
               <button
                 className="nodrag"
-                onClick={() => dataUrl && openLightbox(dataUrl)}
+                onClick={openZoom}
                 style={{
                   flex: 1,
                   padding: '4px 6px',
