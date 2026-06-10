@@ -208,6 +208,8 @@ nodes:
           - { value: euler_ancestral, label: "Euler Ancestral", description: "Z-Image 支持(RF 手写,逐步加噪)；Flux2 不支持" }
           - { value: dpmpp_2m, label: "DPM++ 2M", description: "Z-Image 支持(RF 手写,二阶多步,质量优于 Euler)；Flux2 不支持" }
           - { value: dpmpp_2s_ancestral, label: "DPM++ 2S Ancestral", description: "Z-Image 支持(RF 手写,二阶 ancestral,NFE 翻倍)；Flux2 不支持" }
+          - { value: dpmpp_2m_sde, label: "DPM++ 2M SDE", description: "Z-Image 支持(RF 手写,二阶随机,细节质感)；Flux2 不支持" }
+          - { value: dpmpp_3m_sde, label: "DPM++ 3M SDE", description: "Z-Image 支持(RF 手写,三阶随机)；Flux2 不支持" }
           - { value: heun,  label: "Heun (2 阶)",    description: "diffusers Heun 不接 custom sigmas → Flux2 不支持" }
           - { value: lcm,   label: "LCM",            description: "LCM 蒸馏模型专用 — True-v2 等普通模型出错图" }
       - name: scheduler

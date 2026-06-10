@@ -495,7 +495,10 @@ def _place_components_per_device(
 
 # 非 euler 采样器 —— 走 Z-Image 手写分段循环(_run_zimage_segmented)而非整段 pipe()。
 # euler 仍走整段 pipe() 保 golden;这些经手写步实现(逐式对照 ComfyUI k_diffusion)。
-_SEGMENTED_SAMPLERS = {"euler_ancestral", "dpmpp_2m", "dpmpp_2s_ancestral"}
+_SEGMENTED_SAMPLERS = {
+    "euler_ancestral", "dpmpp_2m", "dpmpp_2s_ancestral",
+    "dpmpp_2m_sde", "dpmpp_3m_sde",
+}
 
 
 class ModularImageBackend(InferenceAdapter):
@@ -906,6 +909,10 @@ class ModularImageBackend(InferenceAdapter):
             return (-npred).to(torch.float32)
 
         old_denoised: Any = None  # dpmpp_2m 多步状态(上一步 denoised);其余采样器不用
+        sde_d1: Any = None  # dpmpp_2m_sde/3m_sde 历史:上一步 denoised
+        sde_d2: Any = None  # dpmpp_3m_sde 历史:上上步 denoised
+        sde_h1: float | None = None  # 上一步 h(=Δλ)
+        sde_h2: float | None = None  # 上上步 h(3m 三阶用)
         for i in range(seg_steps):
             if cancel_flag is not None and cancel_flag.is_set():
                 raise asyncio.CancelledError()
@@ -1005,6 +1012,50 @@ class ModularImageBackend(InferenceAdapter):
                     latents = sdr * latents + (1.0 - sdr) * d_i
                     noise = torch.randn(latents.shape, generator=gen, device=device, dtype=torch.float32)
                     latents = (alpha_ip1 / alpha_down) * latents + noise * renoise_coeff  # s_noise=1
+            elif sampler_name in ("dpmpp_2m_sde", "dpmpp_3m_sde"):
+                # DPM-Solver++ (2M/3M) SDE, rectified-flow —— 逐式对照 ComfyUI sample_dpmpp_2m_sde /
+                # sample_dpmpp_3m_sde(CONST 分支:half-log-snr λ=log((1-σ)/σ)、α_t=σ_next·e^λ_t=1-σ_next)。
+                # 随机解算:噪声用 seeded randn 逐步 —— 单向前传中相邻不相交区间的布朗增量本就是独立单位正态
+                # == randn(ComfyUI 默认 BrownianTree 仅多了跨区间相关性,前传无重启时等价),故免引 torchsde
+                # 依赖;与 euler_ancestral 同精度门:分布正确 + 同 seed 可复现,非逐字节对齐 ComfyUI。eta=1/s_noise=1。
+                # 首 σ≥1 时 logit(1)=∞ → 钳到 0.9999(对齐 ComfyUI offset_first_sigma_for_snr 的 CONST 分支)。
+                sigma = 0.9999 if (i == 0 and float(seg[i]) >= 1.0) else float(seg[i])
+                sigma_next = float(seg[i + 1])
+                denoised = latents - sigma * noise_pred
+                if sigma_next == 0.0:
+                    latents = denoised
+                else:
+                    lambda_s = math.log((1.0 - sigma) / sigma)
+                    lambda_t = math.log((1.0 - sigma_next) / sigma_next)
+                    h = lambda_t - lambda_s
+                    h_eta = h * 2.0  # eta=1 → h_eta=2h
+                    alpha_t = 1.0 - sigma_next
+                    neg_expm1_heta = -math.expm1(-h_eta)  # = (-h_eta).expm1().neg()
+                    latents = (sigma_next / sigma) * math.exp(-h) * latents + alpha_t * neg_expm1_heta * denoised
+                    if sampler_name == "dpmpp_3m_sde":
+                        if sde_h2 is not None:
+                            r0 = sde_h1 / h
+                            r1 = sde_h2 / h
+                            d1_0 = (denoised - sde_d1) / r0
+                            d1_1 = (sde_d1 - sde_d2) / r1
+                            d1 = d1_0 + (d1_0 - d1_1) * r0 / (r0 + r1)
+                            d2 = (d1_0 - d1_1) / (r0 + r1)
+                            phi_2 = math.expm1(-h_eta) / h_eta + 1.0
+                            phi_3 = phi_2 / h_eta - 0.5
+                            latents = latents + (alpha_t * phi_2) * d1 - (alpha_t * phi_3) * d2
+                        elif sde_h1 is not None:
+                            r = sde_h1 / h
+                            d = (denoised - sde_d1) / r
+                            phi_2 = math.expm1(-h_eta) / h_eta + 1.0
+                            latents = latents + (alpha_t * phi_2) * d
+                    else:  # dpmpp_2m_sde(midpoint,ComfyUI 默认 solver_type)
+                        if sde_h1 is not None:
+                            r = sde_h1 / h
+                            latents = latents + 0.5 * alpha_t * neg_expm1_heta * (1.0 / r) * (denoised - sde_d1)
+                    noise = torch.randn(latents.shape, generator=gen, device=device, dtype=torch.float32)
+                    latents = latents + noise * sigma_next * math.sqrt(-math.expm1(-2.0 * h))  # s_noise=1
+                    sde_d1, sde_d2 = denoised, sde_d1
+                    sde_h1, sde_h2 = h, sde_h1
             else:
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
             # 进度 + 逐组件时长(与整段路径对齐:denoise 首/末步时间戳 → VAE Decode 真时长)。
