@@ -18,6 +18,10 @@ export interface LightboxMeta {
   durationMs?: number | null
   /** 「重跑」回调(有则面板显示重跑按钮)。 */
   onRerun?: () => void
+  /** 前后对比的基准图 url(对齐 Infinite-Canvas:生成图 vs 输入/源图)。有值则
+   *  对比按钮无条件出现(不依赖多图),CompareView 用它作底图;缺省时回退到
+   *  多图模式的「与上一张」。编辑/超分流由 ImageOutputNode 上溯源图填入。 */
+  compareBase?: string
 }
 
 /** 按节点顺序收集当前工作流全部图片 url(去重)。 */

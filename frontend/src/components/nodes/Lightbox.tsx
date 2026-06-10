@@ -208,8 +208,12 @@ export default function Lightbox() {
   const url = images[index]
   const meta = metas[index]
   const multi = images.length > 1
-  const showCompare = compare && multi
-  const compareBase = multi ? images[index === 0 ? 1 : index - 1] : url
+  // 显式 compareBase(输入/源图,如编辑/超分流)优先于多图「与上一张」。有它时单图
+  // 也能对比(对齐 IC 的「生成图 vs 输入图」);两者都无则对比按钮不出现。
+  const explicitBase = meta?.compareBase && meta.compareBase !== url ? meta.compareBase : undefined
+  const canCompare = !!explicitBase || multi
+  const compareBase = explicitBase ?? (multi ? images[index === 0 ? 1 : index - 1] : url)
+  const showCompare = compare && canCompare
 
   const basename = (u: string): string => {
     try {
@@ -286,8 +290,12 @@ export default function Lightbox() {
           padding: '5px 8px', borderRadius: 999,
         }}
       >
-        {multi && (
-          <ToolBtn active={showCompare} onClick={() => setCompare((c) => !c)} title="前后对比(与上一张)">
+        {canCompare && (
+          <ToolBtn
+            active={showCompare}
+            onClick={() => setCompare((c) => !c)}
+            title={explicitBase ? '前后对比(与输入图)' : '前后对比(与上一张)'}
+          >
             <Columns2 size={15} />
           </ToolBtn>
         )}
