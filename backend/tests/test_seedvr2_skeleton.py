@@ -190,3 +190,15 @@ def test_model_manager_seedvr2_loader_accepts_configs():
     assert "vae_config: dict | None = None" in mm, "loader 未接 vae_config"
     # 缓存键纳入 blockswap/tiling 维度
     assert "blocks_to_swap" in mm and "enc_tiled" in mm, "缓存键未纳入 blockswap/tiling"
+
+
+# --- runner 复用:cache_model=True(修第二次 infer 撞 None)---
+
+
+def test_upscale_phases_keep_models_for_reuse():
+    """upscale() 必须给 upscale/decode 阶段传 **cache_model=True** —— False 是 NumZ CLI
+    一次性语义,阶段收尾 cleanup 把 runner.dit/vae 置 None;adapter 缓存复用时第二次 infer
+    撞「'NoneType' object has no attribute 'parameters'」。源码检查(避 torch import 链)。"""
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    assert "cache_model=False" not in src, "upscale 阶段回退到一次性语义,缓存 adapter 二跑必崩"
+    assert src.count("cache_model=True") >= 2, "upscale/decode 两阶段都要 cache_model=True"
