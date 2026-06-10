@@ -764,7 +764,7 @@ class ModularImageBackend(InferenceAdapter):
                 start = int(d.get("start_step", 0))
                 end = int(d.get("end_step", 10 ** 9))
 
-                def _fn(step_idx: int, total: int, sigma: float, x: Any,
+                def _fn(step_idx: int, total: int, sigma: float, x: Any, sigmas: Any = None,
                         _s: float = scale, _a: int = start, _b: int = end) -> Any:
                     if _s == 0.0 or step_idx < _a or step_idx > _b:
                         return x
@@ -782,9 +782,19 @@ class ModularImageBackend(InferenceAdapter):
                     pipe.vae, self.device, strength=strength,
                     start_step=int(d.get("start_step", 0)),
                     end_step=int(d.get("end_step", 10 ** 9))))
+            elif kind == "lcs_color_anchor":
+                intensity = float(d.get("intensity", 0.8))
+                if intensity == 0.0:
+                    continue  # no-op → 不建闭包(保 byte-identical)
+                if pipe is None or getattr(pipe, "vae", None) is None:
+                    logging.getLogger(__name__).warning("lcs_color_anchor 需 VAE(pipe.vae 缺),跳过")
+                    continue
+                from src.services.inference.lcs_integration import build_color_anchor_fn  # noqa: PLC0415
+                fns.append(build_color_anchor_fn(
+                    pipe.vae, self.device,
+                    mode=str(d.get("mode", "self_anchor")), intensity=intensity))
             else:
-                logging.getLogger(__name__).warning(
-                    "intervention _type=%r 未实现(PR-3 接 lcs_color_anchor),跳过", kind)
+                logging.getLogger(__name__).warning("intervention _type=%r 未实现,跳过", kind)
         return fns
 
     def _run_zimage_segmented(
@@ -890,7 +900,7 @@ class ModularImageBackend(InferenceAdapter):
                 if _sig > 0.0:
                     _den = latents - _sig * noise_pred
                     for _fn in interventions:
-                        _den = _fn(i, seg_steps, _sig, _den)
+                        _den = _fn(i, seg_steps, _sig, _den, seg)  # seg=本段 sigma schedule(色彩锚定 phase 需)
                     noise_pred = (latents - _den) / _sig
             if sampler_name == "euler_ancestral":
                 # rectified-flow ancestral(PR-1b)—— 逐式对照 ComfyUI sample_euler_ancestral_RF
@@ -1260,8 +1270,9 @@ class ModularImageBackend(InferenceAdapter):
                     _lat = cb_kwargs.get("latents")
                     if _lat is not None:
                         _sig = float(cb_kwargs.get("sigma", 0.0)) if isinstance(cb_kwargs, dict) else 0.0
+                        _sched = getattr(getattr(_pipe, "scheduler", None), "sigmas", None)
                         for _fn in interventions:
-                            _lat = _fn(i, total_steps, _sig, _lat)
+                            _lat = _fn(i, total_steps, _sig, _lat, _sched)
                         cb_kwargs["latents"] = _lat
                 # 逐组件时长:记 denoise 首/末步时间戳(callback 在每步**末**触发)。
                 _now = time.monotonic()
