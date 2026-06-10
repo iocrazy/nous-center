@@ -1,13 +1,4 @@
-import pytest
-from src.services.log_db import init_log_db
 from src.api.middleware import derive_audit_action
-
-
-@pytest.fixture
-def log_db(tmp_path):
-    db_path = str(tmp_path / "test_logs.db")
-    init_log_db(db_path)
-    return db_path
 
 
 def test_derive_audit_action():

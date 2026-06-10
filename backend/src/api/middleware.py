@@ -1,5 +1,4 @@
 """Request logging and audit middleware."""
-import asyncio
 import logging
 import re
 import time
@@ -48,18 +47,17 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         logger.info("%s %s %d %dms", request.method, path, response.status_code, elapsed_ms)
 
-        # Write to log DB (fire-and-forget, non-blocking)
+        # Enqueue log row (non-blocking, silent-fail; batched into main DB).
         try:
-            from src.services.log_db import insert_request_log
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, lambda: insert_request_log(
-                method=request.method,
-                path=path,
-                status=response.status_code,
-                duration_ms=elapsed_ms,
-                ip=request.client.host if request.client else "",
-                user_agent=request.headers.get("user-agent", ""),
-            ))
+            from src.services.log_store import enqueue
+            enqueue("request", {
+                "method": request.method,
+                "path": path,
+                "status": response.status_code,
+                "duration_ms": elapsed_ms,
+                "ip": request.client.host if request.client else "",
+                "user_agent": request.headers.get("user-agent", ""),
+            })
         except Exception:
             pass
 
@@ -95,17 +93,16 @@ class AuditMiddleware(BaseHTTPMiddleware):
             # Only log mutating operations that succeeded
             if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 500:
                 try:
-                    from src.services.log_db import insert_audit_log
+                    from src.services.log_store import enqueue
                     action = derive_audit_action(request.method, path)
                     detail = body.decode("utf-8", errors="replace")[:2000] if body else ""
-                    loop = asyncio.get_running_loop()
-                    loop.run_in_executor(None, lambda: insert_audit_log(
-                        action=action,
-                        path=path,
-                        method=request.method,
-                        ip=request.client.host if request.client else "",
-                        detail=detail,
-                    ))
+                    enqueue("audit", {
+                        "action": action,
+                        "path": path,
+                        "method": request.method,
+                        "ip": request.client.host if request.client else "",
+                        "detail": detail,
+                    })
                 except Exception:
                     pass
 

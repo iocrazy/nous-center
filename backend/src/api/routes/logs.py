@@ -1,9 +1,11 @@
 """Log query and frontend error reporting endpoints."""
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
-from src.services.log_db import query_logs, insert_frontend_log
+from src.models.database import get_async_session
+from src.services.log_store import enqueue, query_logs
 
 router = APIRouter(prefix="/api/v1/logs", tags=["logs"])
 
@@ -23,8 +25,9 @@ async def get_request_logs(
     method: str | None = None,
     status: str | None = None,
     since: str | None = None,
+    session: AsyncSession = Depends(get_async_session),
 ):
-    return query_logs(table="request_logs", limit=limit, offset=offset, search=search, method=method, status=status, since=since)
+    return await query_logs(session, table="request_logs", limit=limit, offset=offset, search=search, method=method, status=status, since=since)
 
 
 @router.get("/app", dependencies=[Depends(require_admin)])
@@ -34,8 +37,9 @@ async def get_app_logs(
     search: str | None = None,
     level: str | None = None,
     since: str | None = None,
+    session: AsyncSession = Depends(get_async_session),
 ):
-    return query_logs(table="app_logs", limit=limit, offset=offset, search=search, level=level, since=since)
+    return await query_logs(session, table="app_logs", limit=limit, offset=offset, search=search, level=level, since=since)
 
 
 @router.get("/frontend", dependencies=[Depends(require_admin)])
@@ -45,13 +49,14 @@ async def get_frontend_logs(
     search: str | None = None,
     type: str | None = None,
     since: str | None = None,
+    session: AsyncSession = Depends(get_async_session),
 ):
-    return query_logs(table="frontend_logs", limit=limit, offset=offset, search=search, type_filter=type, since=since)
+    return await query_logs(session, table="frontend_logs", limit=limit, offset=offset, search=search, type_filter=type, since=since)
 
 
 @router.post("/frontend", status_code=201)
 async def report_frontend_log(body: FrontendLogReport):
-    insert_frontend_log(type=body.type, message=body.message, page=body.page, stack=body.stack)
+    enqueue("frontend", {"type": body.type, "message": body.message, "page": body.page, "stack": body.stack})
     return {"status": "recorded"}
 
 
@@ -61,5 +66,6 @@ async def get_audit_logs(
     offset: int = Query(0, ge=0),
     search: str | None = None,
     since: str | None = None,
+    session: AsyncSession = Depends(get_async_session),
 ):
-    return query_logs(table="audit_logs", limit=limit, offset=offset, search=search, since=since)
+    return await query_logs(session, table="audit_logs", limit=limit, offset=offset, search=search, since=since)
