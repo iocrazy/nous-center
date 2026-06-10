@@ -12,13 +12,13 @@ const IMAGE_KEYS = ['image_url', 'image_a_url', 'image_b_url', 'image', 'dataUrl
 export function collectWorkflowImages(): string[] {
   const wf = useWorkspaceStore.getState().getActiveWorkflow()
   const urls: string[] = []
+  const push = (v: unknown) => { if (typeof v === 'string' && v && !urls.includes(v)) urls.push(v) }
   for (const n of wf.nodes) {
     const d = n.data as Record<string, unknown> | undefined
     if (!d) continue
-    for (const k of IMAGE_KEYS) {
-      const v = d[k]
-      if (typeof v === 'string' && v && !urls.includes(v)) urls.push(v)
-    }
+    for (const k of IMAGE_KEYS) push(d[k])
+    // 多模态输入:data.images 是 url 数组,逐个收。
+    if (Array.isArray(d.images)) d.images.forEach(push)
   }
   return urls
 }

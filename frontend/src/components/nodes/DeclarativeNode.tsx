@@ -3,6 +3,7 @@ import { NodeResizer, type NodeProps } from '@xyflow/react'
 import { Zap, Check, ArrowUp, ArrowDown, X, Plus, ImageIcon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { useLightboxStore } from '../../stores/lightbox'
 import { NODE_DEFS, type NodeType } from '../../models/workflow'
 import { DECLARATIVE_NODES, type WidgetDef } from '../../models/nodeRegistry'
 import { useAgents } from '../../api/agents'
@@ -571,6 +572,7 @@ function ImageUploadWidget({
   onChange: (v: string) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const openLightbox = useLightboxStore((s) => s.openFromUrl)
   const readFile = (file: File) => {
     if (!file.type.startsWith('image/')) return
     const reader = new FileReader()
@@ -609,7 +611,9 @@ function ImageUploadWidget({
           <img
             src={value}
             alt="upload"
-            style={{ maxWidth: '100%', maxHeight: 140, borderRadius: 4, display: 'block' }}
+            title="双击放大预览"
+            onDoubleClick={(e) => { e.stopPropagation(); openLightbox(value) }}
+            style={{ maxWidth: '100%', maxHeight: 140, borderRadius: 4, display: 'block', cursor: 'zoom-in' }}
           />
         ) : (
           <span style={{ fontSize: 11, color: 'var(--muted)' }}>点击或拖拽上传图片</span>
