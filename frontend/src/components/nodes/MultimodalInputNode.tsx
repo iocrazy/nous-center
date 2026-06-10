@@ -2,11 +2,13 @@ import { useRef, useCallback, useEffect, useState } from 'react'
 import { ImagePlus, X, Music, Upload } from 'lucide-react'
 import type { NodeProps } from '@xyflow/react'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { useLightboxStore } from '../../stores/lightbox'
 import { NODE_DEFS } from '../../models/workflow'
 import BaseNode from './BaseNode'
 
 export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
   const updateNode = useWorkspaceStore((s) => s.updateNode)
+  const openLightbox = useLightboxStore((s) => s.openFromUrl)
   const def = NODE_DEFS.multimodal_input
   const dropRef = useRef<HTMLDivElement>(null)
 
@@ -283,8 +285,9 @@ export default function MultimodalInputNode({ id, data, selected }: NodeProps) {
                   cursor: 'pointer',
                   display: 'block',
                 }}
-                title={`@img${idx + 1}`}
+                title={`单击插入 @img${idx + 1} · 双击放大预览`}
                 onClick={() => insertAtRef(idx)}
+                onDoubleClick={(e) => { e.stopPropagation(); openLightbox(img) }}
               />
               {/* Index badge */}
               <span
