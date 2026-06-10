@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Activity,
@@ -46,10 +46,12 @@ export interface ServiceDetailPageProps {
   onBack?: () => void
 }
 
+// Playground(运行)与应用编辑(配置暴露字段)合并成一个 tab,内部「运行/编辑」
+// 切换(对齐 Infinite-Canvas 单模块 + 工作流/测试画布切换)。LLM/TTS 无工作流图 →
+// 只有运行视图。
 const TABS = [
   { id: 'overview', label: '总览', icon: LayoutGrid },
   { id: 'playground', label: 'Playground', icon: Play },
-  { id: 'app-editor', label: '应用编辑', icon: SlidersHorizontal },
   { id: 'docs', label: 'API 文档', icon: Code2 },
   { id: 'auth', label: 'Key 授权', icon: KeyRound },
   { id: 'usage', label: '用量', icon: Activity },
@@ -87,8 +89,7 @@ export default function ServiceDetailPage({ serviceId, onBack }: ServiceDetailPa
         <Tabs current={tab} onChange={setTab} />
 
         {tab === 'overview' && <OverviewTab svc={svc} />}
-        {tab === 'playground' && <PlaygroundTab svc={svc} initialInputs={rerunInputs} />}
-        {tab === 'app-editor' && <AppEditorTab svc={svc} />}
+        {tab === 'playground' && <AppTab svc={svc} initialInputs={rerunInputs} />}
         {tab === 'docs' && <DocsTab svc={svc} />}
         {tab === 'auth' && <AuthTab svc={svc} />}
         {tab === 'usage' && <UsageTab svc={svc} />}
@@ -342,6 +343,47 @@ function ModelsPanel({ models }: { models: ServiceModelRef[] }) {
         </div>
       )}
     </Panel>
+  )
+}
+
+// 合并后的「Playground」tab:运行(干净表单+输出)与编辑(节点图+暴露字段配置)
+// 二合一,顶部分段切换。仅工作流类服务(有节点快照)才出现「编辑」;LLM/TTS 只有运行。
+function AppTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInputs?: Record<string, unknown> }) {
+  const canEdit = useMemo(
+    () => snapshotToNodes(svc.workflow_snapshot ?? {}).length > 0,
+    [svc.workflow_snapshot],
+  )
+  const [mode, setMode] = useState<'run' | 'edit'>('run')
+  const m = canEdit ? mode : 'run'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {canEdit && (
+        <div style={{ display: 'inline-flex', alignSelf: 'flex-start', gap: 2, padding: 3, background: 'var(--bg-accent)', border: '1px solid var(--border)', borderRadius: 8 }}>
+          <SegBtn active={m === 'run'} onClick={() => setMode('run')} icon={<Play size={13} />} label="运行" />
+          <SegBtn active={m === 'edit'} onClick={() => setMode('edit')} icon={<SlidersHorizontal size={13} />} label="编辑暴露字段" />
+        </div>
+      )}
+      {m === 'edit' ? <AppEditorTab svc={svc} /> : <PlaygroundTab svc={svc} initialInputs={initialInputs} />}
+    </div>
+  )
+}
+
+function SegBtn({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: ReactNode; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 6,
+        border: 'none', cursor: 'pointer',
+        background: active ? 'var(--card)' : 'transparent',
+        color: active ? 'var(--text)' : 'var(--muted)',
+        boxShadow: active ? 'var(--shadow-sm, 0 1px 2px rgba(0,0,0,0.1))' : 'none',
+      }}
+    >
+      {icon}{label}
+    </button>
   )
 }
 
