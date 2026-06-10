@@ -1,31 +1,20 @@
-"""PCA calibration from FLUX VAE: compute LCS basis, mean, and anchor positions."""
+"""PCA calibration from FLUX VAE: compute LCS basis, mean, and anchor positions.
 
-import hashlib
+--- nous-center LOCAL MODIFICATIONS(vs upstream comfyui-lcs,MIT,同 sharpness.py)---
+脱离 ComfyUI:删 `import comfy.*`(ProgressBar / model_management.intermediate_device);
+`calibrate(vae,…)` → `calibrate(encode_fn,…)`(`vae.encode(BHWC)` → `encode_fn(BCHW [0,1]) -> raw latent`,
+diffusers 适配在调用方 lcs_integration)。`vae_fingerprint` 删(指纹在 lcs_integration 算)。
+HSV 采样 / PCA / 锚点角度数学原样保留。
+"""
+
 import math
 import torch
-import comfy.utils
 from .patchify import patchify
 from .lcs_data import LCSData
 from .color_space import _chromatic_plane_basis
 
 
-def vae_fingerprint(vae) -> str:
-    """8-char hex fingerprint from VAE decoder weights.
-
-    Used to cache calibration data per-VAE so different VAE models
-    get separate calibration files automatically.
-    """
-    sd = vae.get_sd()
-    # Use first decoder weight tensor as fingerprint source
-    for key in sorted(sd.keys()):
-        if "decoder" in key and "weight" in key:
-            w = sd[key]
-            return hashlib.sha256(w.cpu().float().numpy().tobytes()).hexdigest()[:8]
-    # Fallback: hash first weight found
-    first_key = sorted(sd.keys())[0]
-    w = sd[first_key]
-    return hashlib.sha256(w.cpu().float().numpy().tobytes()).hexdigest()[:8]
-
+# nous LOCAL MOD:vae_fingerprint(vae.get_sd) 删 —— 指纹改在 lcs_integration 用 diffusers VAE config+param 算。
 
 # 8 anchor colors: R, B, G, M, C, Y, Black, White
 ANCHOR_COLORS_RGB = [
@@ -40,7 +29,7 @@ ANCHOR_COLORS_RGB = [
 ]
 
 
-def calibrate(vae, num_colors=512, image_size=512, batch_size=8):
+def calibrate(encode_fn, num_colors=512, image_size=512, batch_size=8):
     """Compute LCS data (PCA basis, mean, anchors) from FLUX VAE.
 
     1. Sample num_colors solid-color images uniformly from HSV
@@ -51,8 +40,6 @@ def calibrate(vae, num_colors=512, image_size=512, batch_size=8):
 
     Returns: LCSData
     """
-    device = comfy.model_management.intermediate_device()
-
     print(f"\n[LCS Calibration] Starting calibration for {num_colors} colors...")
     print(f"[LCS Calibration] Image size: {image_size}x{image_size}, Batch size: {batch_size}")
 
@@ -68,51 +55,24 @@ def calibrate(vae, num_colors=512, image_size=512, batch_size=8):
         colors.append((r, g, b))
 
     # Step 2+3: Encode and average patches
+    # nous LOCAL MOD:vae.encode(BHWC) → encode_fn(BCHW [0,1]);删 ProgressBar + video 逐图回退。
     vectors = []
-    pbar = comfy.utils.ProgressBar(num_colors)
-
-    num_batches = (num_colors + batch_size - 1) // batch_size
-    print(f"[LCS Calibration] Encoding {num_colors} color images in {num_batches} batches...")
-
     for batch_start in range(0, num_colors, batch_size):
         batch_end = min(batch_start + batch_size, num_colors)
         batch_colors = colors[batch_start:batch_end]
         actual_batch = len(batch_colors)
 
-        # Create solid color images [B, H, W, 3] (BHWC format for ComfyUI VAE)
-        imgs = torch.zeros(actual_batch, image_size, image_size, 3, dtype=torch.float32, device="cpu")
+        # Create solid color images [B, 3, H, W] (BCHW [0,1] for encode_fn)
+        imgs = torch.zeros(actual_batch, 3, image_size, image_size, dtype=torch.float32, device="cpu")
         for j, (r, g, b) in enumerate(batch_colors):
-            imgs[j, :, :, 0] = r
-            imgs[j, :, :, 1] = g
-            imgs[j, :, :, 2] = b
+            imgs[j, 0] = r
+            imgs[j, 1] = g
+            imgs[j, 2] = b
 
-        # VAE encode — try batch first, fall back to per-image for video VAEs
-        latent = vae.encode(imgs[:, :, :, :3])
-
-        # Squeeze video VAE temporal dim — calibration uses still images
-        if latent.ndim == 5:
-            latent = latent[:, :, 0, :, :]
-
-        # Patchify → [B', L, D]
+        latent = encode_fn(imgs)
         patches, _, _, _ = patchify(latent)
-
-        # Average across patches → [B', D]
         avg = patches.mean(dim=1).cpu()
-
-        if avg.shape[0] == actual_batch:
-            # Normal VAE: batch encode worked
-            vectors.extend(avg.unbind(0))
-        else:
-            # Video VAE or unexpected batch collapse — encode one by one
-            for k in range(actual_batch):
-                single = imgs[k:k+1, :, :, :3]
-                lat = vae.encode(single)
-                if lat.ndim == 5:
-                    lat = lat[:, :, 0, :, :]
-                p, _, _, _ = patchify(lat)
-                vectors.append(p.mean(dim=1).cpu().squeeze(0))
-
-        pbar.update(actual_batch)
+        vectors.extend(avg.unbind(0))
 
     # Stack all vectors: [N, 64]
     X = torch.stack(vectors, dim=0).float()
@@ -137,13 +97,11 @@ def calibrate(vae, num_colors=512, image_size=512, batch_size=8):
     print("[LCS Calibration] Encoding 8 anchor colors...")
     anchor_lcs_list = []
     for i, (r, g, b) in enumerate(ANCHOR_COLORS_RGB):
-        img = torch.zeros(1, image_size, image_size, 3, dtype=torch.float32, device="cpu")
-        img[0, :, :, 0] = r
-        img[0, :, :, 1] = g
-        img[0, :, :, 2] = b
-        latent = vae.encode(img[:, :, :, :3])
-        if latent.ndim == 5:
-            latent = latent[:, :, 0, :, :]
+        img = torch.zeros(1, 3, image_size, image_size, dtype=torch.float32, device="cpu")
+        img[0, 0] = r
+        img[0, 1] = g
+        img[0, 2] = b
+        latent = encode_fn(img)
         patches, _, _, _ = patchify(latent)
         avg = patches.mean(dim=1).cpu().squeeze(0)  # [64]
         # Project to LCS

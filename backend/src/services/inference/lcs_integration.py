@@ -112,7 +112,7 @@ def build_sharpness_fn(vae: Any, device: str, *, strength: float, start_step: in
     pc1_dir = pc1_dir - pc1_dir.mean()
     edit_vec_cpu = (float(strength) * float(data.sign)) * pc1_dir  # [64]
 
-    def _fn(step_idx: int, total: int, sigma: float, denoised: Any) -> Any:
+    def _fn(step_idx: int, total: int, sigma: float, denoised: Any, sigmas: Any = None) -> Any:
         if strength == 0.0 or step_idx < start_step or step_idx > end_step:
             return denoised
         raw = denoised / scale + shift                      # denoised_to_raw(显式 scale/shift)
@@ -123,5 +123,133 @@ def build_sharpness_fn(vae: Any, device: str, *, strength: float, start_step: in
         patches = patches + ev
         raw_new = unpatchify(patches, h_len, w_len, extra)
         return (raw_new - shift) * scale                    # raw_to_denoised
+    _ = torch  # noqa: F841
+    return _fn
+
+
+def get_lcs_data(vae: Any, device: str) -> Any:
+    """惰性色彩标定(512 HSV 样本过 VAE → PCA 色彩子空间)+ 缓存。返回 vendor LCSData(basis[64,3]/mean/
+    anchor_lcs/anchor_angles)。同 sharpness 缓存机制,key=VAE 指纹。"""
+    from safetensors.torch import load_file, save_file  # noqa: PLC0415
+
+    from src.services.inference.lcs_vendor.core.calibration import calibrate  # noqa: PLC0415
+    from src.services.inference.lcs_vendor.core.lcs_data import LCSData  # noqa: PLC0415
+
+    fp = _vae_fingerprint(vae)
+    cache = _cache_dir() / f"lcsdata_{fp}.safetensors"
+    if cache.exists():
+        sd = load_file(str(cache))
+        logger.info("LCS color: 命中缓存 %s", cache.name)
+        return LCSData(basis=sd["basis"], mean=sd["mean"], anchor_lcs=sd["anchor_lcs"],
+                       anchor_angles=sd["anchor_angles"])
+    logger.info("LCS color: 标定中(512 HSV 样本 PCA,首次约几十秒)…")
+    data = calibrate(_diffusers_encode_fn(vae, device))
+    save_file({"basis": data.basis.cpu().contiguous(), "mean": data.mean.cpu().contiguous(),
+               "anchor_lcs": data.anchor_lcs.cpu().contiguous(),
+               "anchor_angles": data.anchor_angles.cpu().contiguous()}, str(cache))
+    logger.info("LCS color: 标定完成 → 缓存 %s", cache.name)
+    return data
+
+
+def build_color_anchor_fn(vae: Any, device: str, *, mode: str = "self_anchor",
+                          intensity: float = 0.8) -> Any:
+    """产 per-step 色彩锚定干预闭包(忠实移植 vendor nodes/anchor.py `_build_adaptive_anchor_fn` 的
+    self_anchor / smooth 模式;reference 模式需参考图,留后续)。契约 fn(step_idx,total,sigma,denoised,sigmas)。
+    每步:denoised→raw→patchify→投影到色彩子空间→按 sigma 归一→检测色漂/邻域异常→纠正→反归一→denoised。
+    mode=self_anchor:自适应检测色漂(EMA 邻域关系 + 异常)并拉回;smooth:双边滤波平滑色彩。"""
+    import torch  # noqa: PLC0415
+
+    from src.services.inference.lcs_vendor.core.adaptive import (  # noqa: PLC0415
+        compute_step_phases,
+        compute_strength_envelope,
+    )
+    from src.services.inference.lcs_vendor.core.bilateral import (  # noqa: PLC0415
+        bilateral_filter_lcs,
+        estimate_bilateral_params,
+    )
+    from src.services.inference.lcs_vendor.core.patchify import patchify, unpatchify  # noqa: PLC0415
+    from src.services.inference.lcs_vendor.core.relationships import (  # noqa: PLC0415
+        compute_local_relationships,
+        detect_anomalies_adaptive,
+        infer_color_from_neighbors,
+    )
+    from src.services.inference.lcs_vendor.core.timestep import (  # noqa: PLC0415
+        denormalize_from_t50,
+        get_alpha_beta,
+        get_alpha_beta_t50,
+        normalize_to_t50,
+    )
+
+    lcs_data = get_lcs_data(vae, device)
+    scale, shift = _vae_scale_shift(vae)
+    state: dict = {"phases": None, "envelope": None, "correction_index": 0, "r_ema": None,
+                   "prev_c_mean": None}
+
+    def _fn(step_idx: int, total: int, sigma: float, denoised: Any, sigmas: Any = None) -> Any:
+        if state["phases"] is None:
+            sched = sigmas if sigmas is not None else [sigma]
+            state["phases"] = compute_step_phases(sched, mode)
+            n_correct = sum(1 for p in state["phases"] if p == "correct")
+            state["envelope"] = compute_strength_envelope(n_correct)
+            state["correction_index"] = 0
+        if step_idx >= len(state["phases"]):
+            return denoised
+        phase = state["phases"][step_idx]
+        if phase == "skip":
+            return denoised
+
+        dev, dt = denoised.device, denoised.dtype
+        ld = lcs_data.to(dev, dt)
+        B_mat, mu = ld.basis, ld.mean
+        raw = denoised / scale + shift
+        patches, h_len, w_len, extra = patchify(raw)
+        if patches is None:
+            return denoised
+        projection = (patches - mu) @ B_mat
+        reconstruction = projection @ B_mat.T + mu
+        residual = patches - reconstruction
+
+        sigma_val = float(sigma)
+        alpha_t, beta_t = get_alpha_beta(sigma_val, device=dev)
+        alpha_t, beta_t = alpha_t.to(dt), beta_t.to(dt)
+        alpha_50, beta_50 = get_alpha_beta_t50(device=dev)
+        alpha_50, beta_50 = alpha_50.to(dt), beta_50.to(dt)
+        c_norm = normalize_to_t50(projection, alpha_t, beta_t, alpha_50, beta_50)
+
+        if phase == "observe":
+            r_current = compute_local_relationships(c_norm, h_len, w_len)
+            if state["r_ema"] is None:
+                state["r_ema"] = r_current.detach().clone()
+            else:
+                state["r_ema"] = 0.8 * state["r_ema"] + 0.2 * r_current.detach()
+            state["prev_c_mean"] = c_norm.detach().mean(dim=1, keepdim=True)
+            return denoised
+
+        ci = state["correction_index"]
+        env = state["envelope"]
+        step_strength = intensity * float(env[ci]) if ci < len(env) else intensity
+        state["correction_index"] = ci + 1
+        if mode == "self_anchor" and state["prev_c_mean"] is not None:
+            delta = (c_norm.detach().mean(dim=1, keepdim=True) - state["prev_c_mean"]).abs().mean().item()
+            step_strength *= min(delta / 0.1, 1.0)
+
+        if mode == "smooth":
+            sig_s, sig_c = estimate_bilateral_params(c_norm, h_len, w_len)
+            c_filtered = bilateral_filter_lcs(c_norm, h_len, w_len, sig_s, sig_c)
+            new_c_norm = c_norm + step_strength * (c_filtered - c_norm)
+        else:  # self_anchor
+            r_current = compute_local_relationships(c_norm, h_len, w_len)
+            if state["r_ema"] is None:
+                state["r_ema"] = r_current.detach().clone()
+            anomaly_mag = detect_anomalies_adaptive(r_current, state["r_ema"])
+            c_corrected = infer_color_from_neighbors(c_norm, anomaly_mag, h_len, w_len)
+            new_c_norm = c_norm + step_strength * (c_corrected - c_norm)
+            state["r_ema"] = 0.95 * state["r_ema"] + 0.05 * r_current.detach()
+            state["prev_c_mean"] = c_norm.detach().mean(dim=1, keepdim=True)
+
+        new_projection = denormalize_from_t50(new_c_norm, alpha_t, beta_t, alpha_50, beta_50)
+        patches_new = new_projection @ B_mat.T + mu + residual
+        raw_new = unpatchify(patches_new, h_len, w_len, extra)
+        return (raw_new - shift) * scale
     _ = torch  # noqa: F841
     return _fn

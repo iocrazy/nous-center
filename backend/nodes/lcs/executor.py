@@ -25,14 +25,27 @@ async def exec_sharpness_intervene(data: dict, inputs: dict) -> dict:
         "start_step": int(_num(data.get("start_step"), 5)),
         "end_step": int(_num(data.get("end_step"), 15)),
     }
+    return {"intervene": [*_prev_chain(inputs), desc]}
+
+
+async def exec_color_anchor(data: dict, inputs: dict) -> dict:
+    """widget → lcs_color_anchor 描述符,append 到上游干预链 → intervene list。"""
+    desc = {
+        "_type": "lcs_color_anchor",
+        "mode": data.get("mode") or "self_anchor",
+        "intensity": _num(data.get("intensity"), 0.8),
+    }
+    return {"intervene": [*_prev_chain(inputs), desc]}
+
+
+def _prev_chain(inputs: dict) -> list:
     prev = inputs.get("intervene_in") or inputs.get("intervene") or []
     if isinstance(prev, dict):
-        prev = [prev]
-    elif not isinstance(prev, list):
-        prev = []
-    return {"intervene": [*prev, desc]}
+        return [prev]
+    return prev if isinstance(prev, list) else []
 
 
 EXECUTORS = {
     "lcs_sharpness_intervene": exec_sharpness_intervene,
+    "lcs_color_anchor": exec_color_anchor,
 }
