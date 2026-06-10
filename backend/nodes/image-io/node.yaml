@@ -23,6 +23,23 @@ nodes:
       # 上传图 → base64 data URI 存进 node.data.image;executor 落盘签 URL。
       - { name: image, label: "图像", widget: image_upload }
 
+  # 参考图合并(多参考编辑)—— 两路 image → 一路 image(逗号串签名 URL)。可串联(输出接下一个
+  # 合并的 参考图A)扩到 3+ 张。下游链路本就支持逗号串:KSampler 透传(flux2_ksampler.image)→
+  # runner 逐 URL 解析本地路径(runner_process._build_request)→ 引擎拆列表喂 Flux2Pipeline
+  # image=(image_modular,与 ComfyUI ReferenceLatent 链等价)。需要专用节点的原因:KSampler
+  # 单 image 端口接多条边时 workflow_executor 显式 handle 路由是后到覆盖先到,合并必须在上游做。
+  image_ref_join:
+    label: "参考图合并"
+    category: image
+    badge: Ref
+    badgeColor: "var(--info)"
+    inputs:
+      - { id: image_a, type: image, label: 参考图 A }
+      - { id: image_b, type: image, label: 参考图 B }
+    outputs:
+      - { id: image, type: image, label: 图像 }
+    widgets: []
+
   # 图像对比(A/B 滑动对比)—— 显示型节点(像 image_output 是 sink,无输出)。前端自定义组件
   # ImageCompareNode 渲染:两路上游 image 叠加 + 可拖竖直分隔线,左露 A 右露 B。inline 节点
   # (executor 是 no-op:对比纯前端,从两个上游 node_complete 的 image_url 取图)。对标 rgthree Image Comparer。

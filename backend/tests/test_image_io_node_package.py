@@ -59,6 +59,47 @@ def test_image_input_executor_registered_and_rejects_missing_image():
         asyncio.run(mod.exec_image_input({"image": "/not/a/data/uri.png"}, {}))
 
 
+def _ref_join_def() -> dict:
+    return yaml.safe_load((_PKG / "node.yaml").read_text())["nodes"]["image_ref_join"]
+
+
+def test_image_ref_join_node_two_in_one_out():
+    """参考图合并:两路 image 输入 + 单 image 输出(可串联;接 KSampler 多参考编辑)。"""
+    nd = _ref_join_def()
+    assert [(p["id"], p["type"]) for p in nd["inputs"]] == [("image_a", "image"), ("image_b", "image")]
+    assert [(p["id"], p["type"]) for p in nd["outputs"]] == [("image", "image")]
+    assert nd["category"] == "image"
+
+
+def test_image_ref_join_is_inline():
+    """合并是纯字符串拼接(主进程),不进 GPU dispatch。"""
+    from src.services.node_routing import node_exec_class
+
+    assert node_exec_class("image_ref_join") == "inline"
+
+
+def test_image_ref_join_executor_joins_passes_and_rejects():
+    """两路 → 逗号串;单路透传(半成品工作流不崩);串联(上游已是逗号串)原样拼;全空报人话错误。"""
+    import asyncio
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_imgio_exec3", _PKG / "executor.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert "image_ref_join" in mod.EXECUTORS
+
+    out = asyncio.run(mod.exec_image_ref_join({}, {"image_a": "/u/a.png?sig=1", "image_b": "/u/b.png?sig=2"}))
+    assert out == {"image_url": "/u/a.png?sig=1,/u/b.png?sig=2"}
+    # 单路透传(A 或 B 任一)
+    assert asyncio.run(mod.exec_image_ref_join({}, {"image_a": "/u/a.png"})) == {"image_url": "/u/a.png"}
+    assert asyncio.run(mod.exec_image_ref_join({}, {"image_b": "/u/b.png"})) == {"image_url": "/u/b.png"}
+    # 串联:上游 join 的逗号串再拼第三张
+    out = asyncio.run(mod.exec_image_ref_join({}, {"image_a": "/u/a.png,/u/b.png", "image_b": "/u/c.png"}))
+    assert out == {"image_url": "/u/a.png,/u/b.png,/u/c.png"}
+    with pytest.raises(RuntimeError, match="两路输入都没有图"):
+        asyncio.run(mod.exec_image_ref_join({}, {}))
+
+
 def _compare_def() -> dict:
     return yaml.safe_load((_PKG / "node.yaml").read_text())["nodes"]["image_compare"]
 
