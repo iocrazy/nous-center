@@ -202,3 +202,17 @@ def test_upscale_phases_keep_models_for_reuse():
     src = (_VENDOR.parent / "image_seedvr2.py").read_text()
     assert "cache_model=False" not in src, "upscale 阶段回退到一次性语义,缓存 adapter 二跑必崩"
     assert src.count("cache_model=True") >= 2, "upscale/decode 两阶段都要 cache_model=True"
+
+
+# --- 进度桥接:infer(progress_callback) → NumZ 四阶段 ---
+
+
+def test_upscale_phases_receive_progress_callback():
+    """四阶段都必须透传 progress_callback(不再写死 None)—— runner dispatcher 按 infer
+    签名自动探测注入,SeedVR2 节点才有 stage 级进度。源码检查(避 torch import 链)。"""
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    assert "progress_callback=None," not in src, "阶段调用回退写死 None,节点无进度"
+    assert src.count("progress_callback=progress_callback,") >= 4, "四阶段都要透传 callback"
+    # NumZ 回调在工作线程触发,必须 call_soon_threadsafe 桥回事件循环(runner _on_progress
+    # 里 create_task 需 running loop)。
+    assert "call_soon_threadsafe" in src, "缺线程安全桥接,工作线程直调会崩"
