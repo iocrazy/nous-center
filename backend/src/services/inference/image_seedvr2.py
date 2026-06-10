@@ -169,7 +169,8 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
 
     def _load_sync(self) -> None:
         """装 DiT + VAE runner(NumZ prepare_runner)+ 备好 ctx(cache_context + text_embeds)。
-        缺模型时 prepare_runner 从 HF 自动下到 model_dir。对齐 NumZ CLI process_single_file。"""
+        对齐上游 video_upscaler.execute:先 download_weight(缺文件 HF 下载 + sha256 校验/
+        损坏重下;prepare_runner **本身不下载**,跳过这步缺文件直接崩)再 prepare_runner。"""
         from src.services.inference.seedvr2_vendor.src.core.generation_utils import (  # noqa: PLC0415
             load_text_embeddings,
             prepare_runner,
@@ -179,10 +180,24 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
             get_script_directory,
         )
         from src.services.inference.seedvr2_vendor.src.utils.debug import Debug  # noqa: PLC0415
+        from src.services.inference.seedvr2_vendor.src.utils.downloads import (  # noqa: PLC0415
+            download_weight,
+        )
 
         import torch  # noqa: PLC0415
 
         self._debug = Debug(enabled=self.enable_debug)
+
+        # 模型文件就位检查/自动下载(对齐上游 execute 的前置步;白名单 UI 标的「选了自动下载」
+        # 靠这里兑现)。registry 外的文件名 download_weight 只警告跳过,prepare_runner 再报。
+        if not download_weight(
+            dit_model=self.dit_model, vae_model=self.vae_model,
+            model_dir=self.model_dir, debug=self._debug,
+        ):
+            raise RuntimeError(
+                f"SeedVR2 模型文件下载/校验失败:DiT={self.dit_model} VAE={self.vae_model} "
+                f"(目录 {self.model_dir})。检查网络或手动放置文件后重试。"
+            )
 
         # DiT / VAE 各自 device(config 优先,回退 self.device);offload device("none"→None)。
         # **关键**:节点 widget device 默认 "auto",但 NumZ 直接 torch.device(str) 不认 "auto"
