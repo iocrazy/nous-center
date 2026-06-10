@@ -171,6 +171,31 @@ def _image_urls(result: object, limit: int = 8) -> list[str]:
     return urls
 
 
+def _uuid_from_image_url(url: str) -> str | None:
+    """/files/images/{date}/{uuid}.{ext}?token&expires → {uuid}(文件 stem)。"""
+    if not isinstance(url, str) or not url:
+        return None
+    name = url.split("?", 1)[0].rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0]
+    return stem or None
+
+
+async def collect_referenced_image_uuids(session) -> set[str]:
+    """所有 ExecutionTask.result 引用的图片 uuid(文件 stem)集合。reaper 用来保留仍被任务
+    历史引用的图(图寿命=任务寿命,spec 2026-06-09 run-history)。每 6h 扫全表 result 可接受;
+    任务量极大时再优化(靠任务保留策略兜底磁盘上界)。"""
+    from sqlalchemy import select
+
+    stems: set[str] = set()
+    rows = await session.execute(select(ExecutionTask.result))
+    for (res,) in rows.all():
+        for url in _image_urls(res, limit=10_000):
+            stem = _uuid_from_image_url(url)
+            if stem:
+                stems.add(stem)
+    return stems
+
+
 def _detect_image_meta(result: object) -> dict:
     """Pluck task_type + size from a workflow result by scanning for the
     image_output envelope shape. Stays None for non-image results so the

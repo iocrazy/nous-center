@@ -497,13 +497,20 @@ async def lifespan(app: FastAPI):
         # (4× the URL TTL leaves enough room for a caller who fetched
         # the URL near expiry to still pull the bytes once).
         async def image_orphan_reap_loop(interval_seconds: int = 6 * 3600):
+            from src.api.routes.execution_tasks import collect_referenced_image_uuids
+            from src.models.database import get_session_factory as _isf
             from src.services.image_output_storage import reap_orphans
+            sf = _isf()
             while True:
                 try:
-                    # round4 #6:reap_orphans 是同步 iterdir/stat/unlink 全盘遍历;
-                    # 早先 loop 体先 reap 再 sleep → 首次迭代在事件循环线程同步走盘一次。
-                    # 输出目录大时卡住事件循环。丢 to_thread。
-                    await asyncio.to_thread(reap_orphans, older_than_seconds=24 * 3600)
+                    # 图寿命=任务寿命(spec 2026-06-09 run-history):先查仍被 ExecutionTask
+                    # 引用的图 uuid,只清没人引用的真 orphan(失败/已删任务残留)→ /history
+                    # 画廊历史图不被误删。round4 #6:reap 同步全盘遍历,丢 to_thread 不卡 loop。
+                    async with sf() as session:
+                        keep = await collect_referenced_image_uuids(session)
+                    await asyncio.to_thread(
+                        reap_orphans, older_than_seconds=24 * 3600, keep_uuids=keep,
+                    )
                 except Exception:
                     logger.exception("image orphan reap error")
                 try:
