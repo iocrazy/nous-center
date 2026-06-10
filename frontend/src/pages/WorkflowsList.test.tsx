@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import WorkflowsList from './WorkflowsList'
 import type { WorkflowSummary } from '../api/workflows'
@@ -16,6 +16,9 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
   return { ...actual, useNavigate: () => navigateSpy }
 })
+
+// 统一确认弹窗:测试里直接 resolve(true),跳过真实 ConfirmHost 交互。
+vi.mock('../stores/confirm', () => ({ confirmDialog: vi.fn(() => Promise.resolve(true)) }))
 
 vi.mock('../api/workflows', async () => {
   const actual = await vi.importActual<typeof import('../api/workflows')>('../api/workflows')
@@ -119,17 +122,16 @@ describe('WorkflowsList', () => {
     promptSpy.mockRestore()
   })
 
-  it('右键卡片 → 删除 确认后调 delete', () => {
+  it('右键卡片 → 删除 确认后调 delete', async () => {
     useWorkflowsMock.mockReturnValue({
       data: [makeWf({ id: 'wf-8', name: '待删' })], isLoading: false, error: null,
     })
     useServicesMock.mockReturnValue({ data: [] })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<MemoryRouter><WorkflowsList /></MemoryRouter>)
     fireEvent.contextMenu(screen.getByText('待删'))
     fireEvent.click(screen.getByText('删除'))
-    expect(deleteMutateMock).toHaveBeenCalledWith('wf-8', expect.anything())
-    confirmSpy.mockRestore()
+    // handleDelete 走 await confirmDialog(已 mock resolve true)→ 下一 tick 调 delete
+    await waitFor(() => expect(deleteMutateMock).toHaveBeenCalledWith('wf-8', expect.anything()))
   })
 
   it('shows the linked service + bump-version button when an associated service exists', () => {
