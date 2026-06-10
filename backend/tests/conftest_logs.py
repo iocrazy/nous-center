@@ -1,14 +1,13 @@
-"""Test isolation: prevent logs.db pollution during tests.
+"""Test isolation: detach the DB log handler during tests.
 
-The global exception handler calls ``logger.exception(...)`` which, in production,
-gets buffered by ``DbLogHandler`` and written to ``backend/data/logs.db``. Tests
-that deliberately trigger 500s would otherwise pollute the real log DB and
-appear as noise in the app's LogsOverlay.
+The global exception handler calls ``logger.exception(...)`` which, in
+production, is forwarded by ``DbLogHandler`` to the structured-log store. Tests
+that deliberately trigger 500s would otherwise enqueue noise. ``DbLogHandler``
+is attached to the named loggers ``"src"`` and ``"nous"`` (not the root logger)
+in ``main.py``'s lifespan; we detach it for the duration of each test.
 
-``DbLogHandler`` is attached to the named loggers ``"src"`` and ``"nous"`` (not
-the root logger) in ``main.py``'s lifespan. We detach from those specific
-loggers and also monkeypatch ``log_db.insert_app_log`` as a belt-and-suspenders
-guard against lifespan-startup handlers installed after the fixture runs.
+(The store's ``enqueue`` is already a no-op when its writer isn't running, so
+no low-level stub is needed anymore — the standalone SQLite ``log_db`` is gone.)
 """
 
 from __future__ import annotations
@@ -28,22 +27,8 @@ def _silence_db_log_handler():
             if h.__class__.__name__ == "DbLogHandler":
                 lg.removeHandler(h)
                 saved.append((lg, h))
-
-    # Belt-and-suspenders: also stub the low-level write function so even
-    # handlers installed later (e.g. inside a TestClient `with` block that
-    # triggers lifespan) can't reach the DB.
-    try:
-        from src.services import log_db
-        original = log_db.insert_app_log
-        log_db.insert_app_log = lambda **kw: None
-    except Exception:
-        original = None
-
     try:
         yield
     finally:
         for lg, h in saved:
             lg.addHandler(h)
-        if original is not None:
-            from src.services import log_db
-            log_db.insert_app_log = original

@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
     import src.models.memory  # noqa: F401
     import src.models.api_gateway  # noqa: F401
     import src.models.admin_credentials  # noqa: F401
+    import src.models.log_entry  # noqa: F401  # structured logs live in main DB now
 
     # Retry DB connect: docker postgres 容器可能 backend 启动时还在 healthcheck 阶段
     # (race condition seen 2026-05-07). Backoff: 2s, 4s, 8s, 16s, 32s, 60s = 122s 总等
@@ -123,10 +124,11 @@ async def lifespan(app: FastAPI):
         logger.error("DB connect failed after 6 retries; last error: %s", last_err)
         raise last_err
 
-    # Initialize log database
-    from src.services.log_db import init_log_db
-    init_log_db()
-    logger.info("Log database initialized")
+    # Start the structured-log writer: async queue + single batch-insert consumer
+    # into the main PG DB (spec 2026-06-10 — one DB, no separate SQLite log_db).
+    from src.services.log_store import log_writer
+    log_writer.start()
+    logger.info("Log writer started (PG-backed)")
 
     # Install DB log handler for application logs
     from src.services.log_collector import DbLogHandler
@@ -481,11 +483,12 @@ async def lifespan(app: FastAPI):
             while True:
                 await asyncio.sleep(3600)  # Every hour
                 try:
-                    from src.services.log_db import cleanup_logs
-                    # round4 #3:cleanup_logs 是同步 SQLite,对 4 表各跑最多 10 万行的
-                    # NOT IN 子查询删除。直接调会在事件循环线程同步阻塞数秒 → 期间所有
-                    # HTTP/WS 心跳/广播全停(WS 客户端可能因心跳超时被判死)。丢 to_thread。
-                    await asyncio.to_thread(cleanup_logs)
+                    from src.services.log_store import cleanup_logs
+                    from src.models.database import get_session_factory
+                    # Now async on the main DB; no to_thread needed (it awaits I/O,
+                    # doesn't block the loop). One short-lived session per sweep.
+                    async with get_session_factory()() as session:
+                        await cleanup_logs(session)
                 except Exception as e:
                     logger.warning("Log cleanup failed: %s", e)
 
@@ -588,6 +591,12 @@ async def lifespan(app: FastAPI):
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        # Flush + stop the structured-log writer (drains queued log rows).
+        try:
+            from src.services.log_store import log_writer
+            await log_writer.stop()
+        except Exception:  # noqa: BLE001
+            pass
         # Drain partial-write worker
         if partial_worker is not None:
             from src.api.routes import responses as responses_routes

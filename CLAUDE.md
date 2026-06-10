@@ -25,8 +25,12 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   backend serves `frontend/dist/`, not the source.
 - Dev backend (manual, not systemd): `backend/scripts/dev-serve.sh` — sources `.env`
   (uv won't), runs uvicorn, tees stdout to `backend/logs/backend-dev.log` (50MB rotate).
-  Structured request/audit/app logs still go to `log_db` (view via `/api/v1/logs/*` or
-  the frontend LogsOverlay) regardless of stdout. Production stays on journald.
+  Structured request/audit/app/frontend logs go to the **main PostgreSQL DB**
+  (4 tables via `src/models/log_entry.py`, written through `log_store.py`'s async
+  queue + single batch consumer; view via `/api/v1/logs/*` or the frontend
+  LogsOverlay) regardless of stdout. There is no longer a separate SQLite
+  `log_db` — one DB (spec `docs/superpowers/specs/2026-06-10-log-db-merge-into-postgres-design.md`).
+  Production stays on journald for raw stdout.
 
 ## Testing
 
