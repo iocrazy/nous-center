@@ -54,6 +54,18 @@ async def exec_image_input(data: dict, inputs: dict) -> dict:
     }
 
 
+async def exec_image_ref_join(data: dict, inputs: dict) -> dict:
+    """参考图合并(多参考编辑):两路上游 image_url → 逗号串单 image 输出。可串联扩 3+ 图
+    (上游若已是逗号串原样拼接)。下游 KSampler→runner→引擎全链已按逗号拆。
+    单路连线放行(透传)—— 工作流搭一半不该崩;两路全空才是连线错误。"""
+    a = inputs.get("image_a") or inputs.get("image_url_a")
+    b = inputs.get("image_b") or inputs.get("image_url_b")
+    parts = [str(p).strip() for p in (a, b) if p and str(p).strip()]
+    if not parts:
+        raise RuntimeError("参考图合并:两路输入都没有图 —— 请把上游图像节点连到「参考图 A/B」端口")
+    return {"image_url": ",".join(parts)}
+
+
 async def exec_image_compare(data: dict, inputs: dict) -> dict:
     """图像对比 = 显示型 sink(对比纯前端,从两路上游 node_complete 的 image_url 取图渲染滑动对比)。
     executor 是 no-op:让工作流执行不报「未知节点」,本身不产输出。透传两路 image_url 进 meta
@@ -66,5 +78,6 @@ async def exec_image_compare(data: dict, inputs: dict) -> dict:
 
 EXECUTORS = {
     "image_input": exec_image_input,
+    "image_ref_join": exec_image_ref_join,
     "image_compare": exec_image_compare,
 }
