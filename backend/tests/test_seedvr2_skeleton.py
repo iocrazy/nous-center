@@ -216,3 +216,21 @@ def test_upscale_phases_receive_progress_callback():
     # NumZ 回调在工作线程触发,必须 call_soon_threadsafe 桥回事件循环(runner _on_progress
     # 里 create_task 需 running loop)。
     assert "call_soon_threadsafe" in src, "缺线程安全桥接,工作线程直调会崩"
+
+
+# --- 模型自动下载:_load_sync 先 download_weight 再 prepare_runner ---
+
+
+def test_load_calls_download_weight_before_prepare_runner():
+    """对齐上游 video_upscaler.execute:prepare_runner **不下载**,必须先 download_weight
+    (缺文件 HF 下 + sha256 校验/损坏重下)。白名单 UI「选了自动下载」靠它兑现。
+    源码检查(避 torch import 链):download_weight 调用必须出现在 prepare_runner 调用之前。"""
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    dl = src.find("download_weight(")
+    pr = src.find("prepare_runner(")
+    assert dl != -1, "_load_sync 没调 download_weight,缺模型直接崩(UI 承诺自动下载)"
+    assert pr != -1
+    # 取真调用位置(跳过 import 行):找 "if not download_weight("
+    call = src.find("if not download_weight(")
+    assert call != -1 and call < src.rfind("self._runner, cache_context = prepare_runner("), \
+        "download_weight 必须在 prepare_runner 之前"
