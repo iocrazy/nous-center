@@ -7,6 +7,7 @@ import type { ExposableRow } from './appEditorSchema'
 import { paramId } from './appEditorSchema'
 import type { ExposedParam } from '../../api/services'
 import { KIND_OPTIONS, kindOf, type WidgetKind } from './widgetKind'
+import NodeSelectPopover from '../nodes/NodeSelectPopover'
 
 export interface AppEditorNodePopupProps {
   title: string
@@ -140,16 +141,20 @@ export default function AppEditorNodePopup({
                     disabled={!active}
                     onChange={(e) => onRename(r.input_name, e.target.value)}
                   />
-                  <select
-                    style={{ ...smallInput, width: 110, opacity: active ? 1 : 0.5 }}
-                    value={kind}
-                    disabled={!active}
-                    onChange={(e) => onChangeKind(r.input_name, e.target.value as WidgetKind)}
-                  >
-                    {KIND_OPTIONS.map((o) => (
-                      <option key={o.v} value={o.v}>{o.label}</option>
-                    ))}
-                  </select>
+                  {/* 控件类型:用全局 NodeSelectPopover(对齐画布节点下拉样式),非勾选态置灰静态 */}
+                  {active ? (
+                    <NodeSelectPopover
+                      value={kind}
+                      onChange={(v) => onChangeKind(r.input_name, v as WidgetKind)}
+                      options={KIND_OPTIONS.map((o) => ({ value: o.v, label: o.label }))}
+                      size="compact"
+                      width={110}
+                    />
+                  ) : (
+                    <div style={{ ...smallInput, width: 110, flexShrink: 0, opacity: 0.5, color: 'var(--muted)', display: 'flex', alignItems: 'center' }}>
+                      {KIND_OPTIONS.find((o) => o.v === kind)?.label ?? kind}
+                    </div>
+                  )}
                 </div>
               </div>
             )

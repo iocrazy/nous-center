@@ -2,6 +2,7 @@ import { useState, useMemo, type ChangeEvent, type FormEvent } from 'react'
 import { Dices } from 'lucide-react'
 import type { ExposedParam } from '../../api/services'
 import { paramKey, paramSlot } from '../../api/services'
+import NodeSelectPopover from '../nodes/NodeSelectPopover'
 
 export interface SchemaDrivenFormProps {
   inputs: ExposedParam[]
@@ -295,17 +296,12 @@ function FieldInput({
       return String(o)
     }
     return (
-      <select
+      <NodeSelectPopover
         value={String(value ?? '')}
-        onChange={(e) => onChange(e.target.value)}
-        style={inputStyle}
-      >
-        {opts.map((o, i) => (
-          <option key={String(o)} value={String(o)}>
-            {labelFor(o, i)}
-          </option>
-        ))}
-      </select>
+        onChange={onChange}
+        options={opts.map((o, i) => ({ value: String(o), label: labelFor(o, i) }))}
+        placeholder="请选择"
+      />
     )
   }
 
