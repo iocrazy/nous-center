@@ -4,7 +4,7 @@ import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
   useLoadedAdapters, usePreloadSeedvr2, useUnloadSeedvr2,
-  useSetSeedvr2Resident, usePreloadComponent, useSetComponentResident,
+  useSetSeedvr2Resident, usePreloadComponent, useSetComponentResident, useUnloadComponent,
   type EngineInfo, type LoadedAdapter,
 } from '../../api/engines'
 import { apiFetch } from '../../api/client'
@@ -57,6 +57,7 @@ export default function ModelsOverlay() {
   const unloadSeedvr2 = useUnloadSeedvr2()
   const setSeedvr2Resident = useSetSeedvr2Resident()
   const preloadComponent = usePreloadComponent()
+  const unloadComponent = useUnloadComponent()
   const setComponentResident = useSetComponentResident()
   const syncMeta = useSyncMetadata()
   const scanModels = useScanModels()
@@ -92,11 +93,13 @@ export default function ModelsOverlay() {
         else preloadSeedvr2.mutate(engine.name)
         return
       }
-      // 组件(diffusion_models/clip/vae)可从引擎库预加载进显存(组件 L1 PR-2a)。已加载 → 提示
-      //(单组件卸载走「取消常驻 + 显存压力 LRU」,无独立卸按钮)。LoRA 仍随 pipeline,不独立预加载。
+      // 组件(diffusion_models/clip/vae)可从引擎库预加载进显存 / 卸载(组件 L1 PR-2a + 统一模型管理
+      // 收尾 PR-1)。已加载 → 出缓存释放显存(state_key 精确匹配;combo 在用则只清常驻待自然释放)。
+      // LoRA 仍随 pipeline,不独立预加载。
       if (engine.kind === 'component') {
         if (engine.status === 'loaded') {
-          useToastStore.getState().add(`${engine.display_name} 已在显存`, 'info')
+          if (engine.state_key) unloadComponent.mutate({ state_key: engine.state_key })
+          else unloadComponent.mutate({ name: engine.name })
         } else {
           preloadComponent.mutate({ name: engine.name })
         }
@@ -122,7 +125,7 @@ export default function ModelsOverlay() {
       }
       loadEngine.mutate(engine.name)
     },
-    [loadEngine, unloadEngine, preloadSeedvr2, unloadSeedvr2, preloadComponent],
+    [loadEngine, unloadEngine, preloadSeedvr2, unloadSeedvr2, preloadComponent, unloadComponent],
   )
 
   // 常驻 toggle 按 kind 分派:组件走组件 L1 端点(用 state_key 精确匹配)、SeedVR2 走 by-key
@@ -163,7 +166,7 @@ export default function ModelsOverlay() {
     ? [
         {
           label: isComponent
-            ? (cmLoaded ? '已在显存（取消常驻后随 LRU 让出）' : '预加载到显存（自动选卡）')
+            ? (cmLoaded ? '卸载（出缓存释放显存）' : '预加载到显存（自动选卡）')
             : isUpscale ? (cmLoaded ? '卸载 SeedVR2' : '加载 SeedVR2')
             : ctxMenu.model.kind === 'lora' ? 'LoRA · 随模型加载'
             : ctxMenu.model.status === 'loaded' ? '卸载模型'

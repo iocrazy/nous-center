@@ -245,6 +245,32 @@ async def refresh_engine_metadata(
     return _build_engine_info(name, configs[name], meta, local_dirs)
 
 
+# 注:必须定义在 `/{name}/unload` **之前** —— 否则参数路由 `/{name}/unload` 抢先匹配
+# `component/unload`(name='component')致 404。统一模型管理收尾 PR-1。
+@router.post("/component/unload", dependencies=[Depends(require_admin)])
+async def unload_component(request: Request, body: dict = Body(...)):
+    """卸载**已预加载**组件(引擎库组件卡「出缓存」,统一模型管理收尾 PR-1)。
+
+    body: `state_key`(component_state_key,file|device|dtype|loras 串)或 `name=
+    'component:<kind>:<path>'`+`device`/`dtype` 自拼(同 /component/resident)。派 image runner →
+    mm.unload_image_component(出 L1 + 释放显存;combo 在用则只清常驻)。没加载则 no-op。状态经下个 Pong 反映。"""
+    state_key = str(body.get("state_key") or "")
+    if not state_key:
+        parsed = _parse_component_name(str(body.get("name") or ""))
+        if parsed:
+            dev = str(body.get("device") or "auto")
+            dtype = str(body.get("dtype") or "bfloat16")
+            state_key = f"{parsed[1]}|{dev}|{dtype}|"
+    if not state_key:
+        raise HTTPException(422, "需要 state_key 或 name='component:<kind>:<path>'(+device/dtype)")
+    client = (getattr(request.app.state, "runner_clients", {}) or {}).get("image")
+    if client is None or not getattr(client, "_connected", True):
+        raise HTTPException(503, "image runner not available")
+    await client.unload_component(state_key=state_key)
+    invalidate("engines")
+    return {"status": "accepted", "state_key": state_key}
+
+
 @router.post("/{name}/load", response_model=EngineLoadResponse, dependencies=[Depends(require_admin)])
 async def load_engine(name: str, request: Request):
     configs = scan_models()

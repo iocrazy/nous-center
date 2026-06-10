@@ -293,6 +293,13 @@ class RunnerClient:
             raise ConnectionError("runner disconnected")
         await self._ch.send_message(P.SetComponentResident(state_key=state_key, resident=resident))
 
+    async def unload_component(self, state_key: str) -> None:
+        """发 UnloadComponent —— 卸载已预加载组件(出 L1 + 释放显存),fire-and-forget;走下个 Pong 快照。
+        统一模型管理收尾 PR-1:引擎库组件卡「出缓存」。"""
+        if not self._connected:
+            raise ConnectionError("runner disconnected")
+        await self._ch.send_message(P.UnloadComponent(state_key=state_key))
+
     async def set_model_resident(self, model_id: str, resident: bool) -> None:
         """发 SetModelResident —— 切 by-key 模型(如 SeedVR2)常驻位,fire-and-forget;走下个 Pong。
         组件 L1 PR-2c:引擎库 SeedVR2 卡常驻 toggle。"""

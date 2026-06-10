@@ -1518,6 +1518,35 @@ class ModelManager:
                 return True
         return False
 
+    def unload_image_component(self, state_key: str) -> bool:
+        """按 component_state_key 卸载已预加载组件(引擎库「出缓存」,统一模型管理收尾 PR-1)。
+        清常驻;refs 空(无 combo 在用)→ 出 L1 池 + 断 module 强引用 + empty_cache 真释放显存;
+        refs 非空(某 combo 正用它)→ 只清常驻,待 combo 释放时随 _release_combo_components 自然出池
+        (不硬拔,避免拽掉在用组件致出图崩)。匹配上返回 True,没加载该组件 → False。"""
+        hit = False
+        freed = False
+        for key, comp in list(self._components.items()):
+            if comp.get("state_key") != state_key:
+                continue
+            hit = True
+            comp["resident"] = False
+            if not comp["refs"]:
+                self._components.pop(key, None)
+                comp["module"] = None  # 断最后强引用让 gc 回收 CUDA 存储
+                freed = True
+                logger.info("component L1 引擎库卸载 role=%s file=%s(refs 空,出池释放)",
+                            comp.get("role"), _basename(key[0]))
+            else:
+                logger.info("component L1 引擎库卸载 role=%s file=%s(refs=%s 在用 → 清常驻待自然释放)",
+                            comp.get("role"), _basename(key[0]), sorted(comp["refs"]))
+        if freed:
+            try:
+                import torch  # noqa: PLC0415
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+        return hit
+
     async def _get_or_build_image_component(
         self, role, build_fn, spec, repo, load_device, offload, combo_id,
     ):

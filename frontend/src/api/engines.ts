@@ -217,6 +217,27 @@ export function usePreloadComponent() {
   })
 }
 
+/** 卸载已预加载组件(出 L1 + 释放显存,统一模型管理收尾 PR-1)。优先 state_key,否则 name+device/dtype。 */
+export function useUnloadComponent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ state_key, name, device, dtype }:
+      { state_key?: string | null; name?: string; device?: string; dtype?: string }) =>
+      apiFetch('/api/v1/engines/component/unload', {
+        method: 'POST',
+        body: JSON.stringify(
+          state_key ? { state_key } : { name, device, dtype: dtype ?? 'bfloat16' }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add('组件开始卸载...（几秒后引擎库刷新）', 'info')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`组件卸载失败: ${error.message}`, 'error')
+    },
+  })
+}
+
 /** 已加载组件常驻 toggle(组件 L1 PR-2b)。优先用 state_key 精确匹配,否则 name+device/dtype。 */
 export function useSetComponentResident() {
   const qc = useQueryClient()

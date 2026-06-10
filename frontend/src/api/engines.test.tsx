@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { usePreloadComponent, useSetComponentResident, useSetSeedvr2Resident } from './engines'
+import { usePreloadComponent, useSetComponentResident, useSetSeedvr2Resident, useUnloadComponent } from './engines'
 
 vi.mock('./client', () => ({ apiFetch: vi.fn() }))
 import { apiFetch } from './client'
@@ -29,6 +29,26 @@ describe('组件 L1 引擎库 hooks (PR-3b)', () => {
     expect(url).toBe('/api/v1/engines/component/preload')
     expect(JSON.parse((opts as any).body)).toEqual({
       name: 'component:clip:/m/qwen.safetensors', dtype: 'bfloat16', resident: false,
+    })
+  })
+
+  it('useUnloadComponent POST /component/unload，优先 state_key 精确匹配', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ status: 'accepted' })
+    const { result } = renderHook(() => useUnloadComponent(), { wrapper: wrapper() })
+    result.current.mutate({ state_key: '/m/z.safetensors|cuda:1|bfloat16|' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled())
+    const [url, opts] = vi.mocked(apiFetch).mock.calls[0]
+    expect(url).toBe('/api/v1/engines/component/unload')
+    expect(JSON.parse((opts as any).body)).toEqual({ state_key: '/m/z.safetensors|cuda:1|bfloat16|' })
+  })
+
+  it('useUnloadComponent 无 state_key → 回退 name+device/dtype', async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ status: 'accepted' })
+    const { result } = renderHook(() => useUnloadComponent(), { wrapper: wrapper() })
+    result.current.mutate({ name: 'component:vae:/m/vae.safetensors' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled())
+    expect(JSON.parse((vi.mocked(apiFetch).mock.calls[0][1] as any).body)).toEqual({
+      name: 'component:vae:/m/vae.safetensors', dtype: 'bfloat16',
     })
   })
 
