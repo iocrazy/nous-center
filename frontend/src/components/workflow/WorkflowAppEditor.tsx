@@ -2,7 +2,7 @@
 // 复刻 Infinite-Canvas 测试画布:右侧只读 nous 节点图,**点节点 → 弹出属性编辑窗**
 // (逐 widget 勾选 + 改名 + 控件类型),左侧从勾选项实时生成表单。
 // 被发布弹窗(预览态)和服务详情页「应用编辑」tab(可运行)复用。
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { ReactFlow, Background, Controls, type Edge, type Node } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { ChevronUp, ChevronDown, X } from 'lucide-react'
@@ -173,14 +173,25 @@ export default function WorkflowAppEditor({
           badgeColor: def?.badgeColor,
           exposedCount: exposedCountByNode.get(n.id) ?? 0,
           active: popupNodeId === n.id,
-          onOpenPopup: () => setPopupNodeId(n.id),
           isOutput: out,
           outputChecked: outputChecked.has(n.id),
-          onToggleOutput: () => toggleOutput(n),
         },
       }
     })
-  }, [nodes, edges, exposedCountByNode, popupNodeId, outputChecked, toggleOutput])
+  }, [nodes, edges, exposedCountByNode, popupNodeId, outputChecked])
+
+  // 节点点击统一走 React Flow 的 onNodeClick(节点卡内 DOM onClick 在 React Flow
+  // 里不可靠触发 —— 真机验证逮到:卡片 onClick 点不开弹窗。onNodeClick 是 React Flow
+  // 自己派发的,稳定。输出节点→切「暴露为输出」,其余→开属性弹窗。
+  const onNodeClick = useCallback(
+    (_e: ReactMouseEvent, rfNode: Node) => {
+      const n = nodes.find((x) => x.id === rfNode.id)
+      if (!n) return
+      if (isOutputNode(n.type)) toggleOutput(n)
+      else setPopupNodeId(n.id)
+    },
+    [nodes, toggleOutput],
+  )
 
   const rfEdges = useMemo<Edge[]>(
     () =>
@@ -264,6 +275,7 @@ export default function WorkflowAppEditor({
           nodes={rfNodes}
           edges={rfEdges}
           nodeTypes={nodeTypes}
+          onNodeClick={onNodeClick}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
