@@ -82,6 +82,17 @@ def seedvr2_dit_models_with_disk_status(model_dir: str | None = None) -> list[di
     return out
 
 
+def _resolve_dev(val: Any, fallback: str) -> str:
+    """归一设备串给 NumZ —— 它直接 `torch.device(str)`,**不认 'auto'**(会抛
+    「device type at start of device string: auto」)。节点 widget device 默认 'auto',
+    model_manager 解析出具体 cuda:N 传成 self.device 但没写回 config,故在此兜底:
+    'auto'/'cuda'/空 → fallback(已解析的 cuda:N);'none'(offload 关)/'cpu'/'cuda:N' 原样。"""
+    s = str(val or "").strip().lower()
+    if s in ("", "auto", "cuda"):
+        return fallback
+    return s
+
+
 def _clamp_seed(seed: int) -> int:
     """归一到 [0, 2**32-1] —— NumZ set_seed→np.random.seed 的要求(超范围 numpy 抛
     「Seed must be between 0 and 2**32 - 1」)。<2**32 不变,超范围(如 randomize 给的 2**53)
@@ -174,10 +185,14 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         self._debug = Debug(enabled=self.enable_debug)
 
         # DiT / VAE 各自 device(config 优先,回退 self.device);offload device("none"→None)。
-        dit_device = self.dit_cfg.get("device") or self.device
-        vae_device = self.vae_cfg.get("device") or self.device
-        dit_offload_str = str(self.dit_cfg.get("offload_device", "none") or "none")
-        vae_offload_str = str(self.vae_cfg.get("offload_device", "none") or "none")
+        # **关键**:节点 widget device 默认 "auto",但 NumZ 直接 torch.device(str) 不认 "auto"
+        # (model_manager 解析出 target=cuda:N 传给 self.device,却没写回 config)→ 必须在此把
+        # "auto"/"cuda"/空 归一到 self.device(已解析的具体卡),否则 torch.device("auto") 抛
+        # RuntimeError「device type at start of device string: auto」。
+        dit_device = _resolve_dev(self.dit_cfg.get("device"), self.device)
+        vae_device = _resolve_dev(self.vae_cfg.get("device"), self.device)
+        dit_offload_str = _resolve_dev(self.dit_cfg.get("offload_device", "none"), self.device)
+        vae_offload_str = _resolve_dev(self.vae_cfg.get("offload_device", "none"), self.device)
         dit_offload = torch.device(dit_offload_str) if dit_offload_str != "none" else None
         vae_offload = torch.device(vae_offload_str) if vae_offload_str != "none" else None
 
@@ -203,7 +218,9 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         attention_mode = str(self.dit_cfg.get("attention_mode") or "sdpa")
 
         # tensor offload:增强节点 offload_device;"none"→保持 GPU(传 None 让 NumZ 不挪)。
-        tensor_offload = torch.device(self.tensor_offload) if self.tensor_offload not in ("none", "") else None
+        # "auto" 同样归一到 self.device(不能直接 torch.device("auto"))。
+        _tensor_off_str = _resolve_dev(self.tensor_offload, self.device)
+        tensor_offload = torch.device(_tensor_off_str) if _tensor_off_str not in ("none", "") else None
         ctx = setup_generation_context(
             dit_device=dit_device,
             vae_device=vae_device,
