@@ -35,6 +35,36 @@ describe('Lightbox zoom/pan wiring', () => {
     expect(screen.queryByText(/重跑/)).toBeNull()
   })
 
+  it('下载当前 triggers a download', () => {
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({ open: true, images: [URL1], metas: [], index: 0 }))
+    fireEvent.click(screen.getByTitle('下载当前'))
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+    clickSpy.mockRestore()
+  })
+
+  it('下载全部 triggers one download per image', () => {
+    vi.useFakeTimers()
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({ open: true, images: [URL1, URL1, URL1], metas: [], index: 0 }))
+    fireEvent.click(screen.getByTitle(/下载全部/))
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(clickSpy).toHaveBeenCalledTimes(3)
+    clickSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('对比 toggle 显示前后对比视图', () => {
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({ open: true, images: [URL1, URL1], metas: [], index: 1 }))
+    expect(screen.queryByText('当前')).toBeNull()
+    fireEvent.click(screen.getByTitle(/前后对比/))
+    expect(screen.getByText('当前')).toBeTruthy()
+    expect(screen.getByText('对比')).toBeTruthy()
+  })
+
   it('does not render when closed', () => {
     render(<Lightbox />)
     expect(screen.queryByAltText('preview')).toBeNull()
