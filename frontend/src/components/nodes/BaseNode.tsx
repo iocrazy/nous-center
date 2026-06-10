@@ -57,6 +57,16 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
     setRenaming(false)
     if (nodeId) updateNode(nodeId, { title: draft.trim() })
   }
+  // 右键菜单「重命名」→ 触发本节点就地编辑(NodeEditor 派发 'node-rename')。
+  useEffect(() => {
+    const onRename = (e: Event) => {
+      if (!nodeId || (e as CustomEvent).detail?.id !== nodeId) return
+      setDraft(customTitle ?? '')
+      setRenaming(true)
+    }
+    window.addEventListener('node-rename', onRename)
+    return () => window.removeEventListener('node-rename', onRename)
+  }, [nodeId, customTitle])
   const execState = useExecutionStore((s) => (nodeId ? s.nodeStates[nodeId] : undefined))
   const stateOutline = execState ? STATE_OUTLINE[execState] : undefined
   // round5:删掉遗留的 DIAG console.log(每节点状态翻转打,工作流跑起来刷屏 console)。
