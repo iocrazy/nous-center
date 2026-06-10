@@ -115,7 +115,7 @@ markers = [
 target-version = "py312"
 # vendored 第三方代码(NumZ SeedVR2 推理核心,Apache 2.0)—— 不归我们 lint,原样保留
 # 便于跟上游对照/升级(改动它 = 偏离上游 = 难维护)。见 project_seedvr2_integration。
-extend-exclude = ["src/services/inference/seedvr2_vendor"]
+extend-exclude = ["src/services/inference/seedvr2_vendor", "src/services/inference/lcs_vendor"]
 
 [tool.ruff.lint.per-file-ignores]
 # Late imports are intentional — either for model registration order,

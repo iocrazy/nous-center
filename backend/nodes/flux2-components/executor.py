@@ -220,6 +220,13 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
     init_latent = inputs.get("init_latent")
     if isinstance(init_latent, dict) and init_latent.get("_type") == "latent_ref":
         latent["init_latent_ref"] = init_latent
+    # 采样期干预(LCS 等,spec 2026-06-10):interventions 端口接 LCS 节点产的描述符 list →
+    # 透传进 latent → runner → ImageRequest.interventions → 引擎挂 per-step hook。无 = 零回归。
+    iv = inputs.get("interventions") or inputs.get("intervene")
+    if isinstance(iv, dict):
+        iv = [iv]
+    if isinstance(iv, list) and iv:
+        latent["interventions"] = iv
     return {"latent": latent}
 
 

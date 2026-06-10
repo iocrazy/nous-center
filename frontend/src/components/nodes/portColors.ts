@@ -22,4 +22,6 @@ export const PORT_TYPE_COLORS: Record<string, string> = {
   // SeedVR2 三节点(DiT/VAE 配置 bundle):DiT 走青绿、VAE 走红(呼应 flux2 VAE 红)。
   seedvr2_dit: 'rgba(16,185,129,0.85)', // emerald
   seedvr2_vae: 'rgba(239,68,68,0.85)', // red(同 VAE 家族)
+  // LCS 采样期干预描述符(锐化/保色,接 KSampler interventions 端口):琥珀色。
+  intervene: 'rgba(245,158,11,0.9)', // amber
 }
