@@ -405,7 +405,7 @@ def test_reap_orphans_no_root_dir_returns_zero(monkeypatch, tmp_path):
     from src.services.image_output_storage import reap_orphans
 
     summary = reap_orphans(older_than_seconds=3600)
-    assert summary == {"scanned": 0, "deleted": 0, "dirs_pruned": 0, "errors": 0}
+    assert summary == {"scanned": 0, "deleted": 0, "kept": 0, "dirs_pruned": 0, "errors": 0}
 
 
 def test_reap_orphans_floor_60s(storage_tmp):
@@ -423,6 +423,30 @@ def test_reap_orphans_floor_60s(storage_tmp):
     summary = reap_orphans(older_than_seconds=0)  # operator passed 0
     assert summary["deleted"] == 0
     assert fresh.exists()
+
+
+def test_reap_orphans_keeps_referenced_uuids(storage_tmp):
+    """keep_uuids:被任务历史引用的图永久保留(图寿命=任务寿命),只清真 orphan。"""
+    import os as _os
+    from src.services.image_output_storage import reap_orphans
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    bucket = storage_tmp / today
+    bucket.mkdir(parents=True)
+    kept = bucket / "keepme.png"
+    orphan = bucket / "orphan.png"
+    kept.write_bytes(b"k")
+    orphan.write_bytes(b"o")
+    # 两个都 backdate 2 天(都过 age cutoff)
+    old = time.time() - 2 * 24 * 3600
+    _os.utime(kept, (old, old))
+    _os.utime(orphan, (old, old))
+
+    summary = reap_orphans(older_than_seconds=24 * 3600, keep_uuids={"keepme"})
+    assert kept.exists()        # 被引用 → 不删,哪怕过期
+    assert not orphan.exists()  # 无引用 + 过期 → 删
+    assert summary["kept"] == 1
+    assert summary["deleted"] == 1
 
 
 def test_write_image_returns_date(tmp_path, monkeypatch):

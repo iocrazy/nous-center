@@ -146,20 +146,27 @@ def resolve_path(date: str, uuid_str: str, ext: str) -> Path:
     return _outputs_root() / date / f"{uuid_str}.{ext}"
 
 
-def reap_orphans(*, older_than_seconds: int) -> dict:
-    """Delete generated images older than `older_than_seconds`.
+def reap_orphans(*, older_than_seconds: int, keep_uuids: set[str] | None = None) -> dict:
+    """Reap generated images that no longer belong to anything.
 
-    Run from a backend lifespan task. Walks every <date>/ subdir under
-    NOUS_IMAGE_OUTPUTS and unlinks files whose mtime is past the cutoff.
-    Empty <date>/ dirs are pruned afterwards so the listing stays tidy.
+    Walks every <date>/ subdir under NOUS_IMAGE_OUTPUTS. A file is deleted
+    only if BOTH:
+      - its mtime is past `older_than_seconds` (grace window — a just-written
+        image whose ExecutionTask row hasn't committed yet looks orphan but
+        is young, so the age floor protects it from the race), AND
+      - `keep_uuids` is given AND the file's uuid (stem) is NOT in it.
 
-    Returns a summary {scanned, deleted, dirs_pruned, errors} so the
-    caller can log it. Skips non-image extensions (defensive — the
-    static route only serves png/jpg/webp anyway, but operator may have
-    dropped readme/log files alongside).
+    `keep_uuids` = image uuids still referenced by some ExecutionTask.result
+    (see execution_tasks.collect_referenced_image_uuids). Passing it makes
+    image lifetime = task lifetime: /history images stay browsable; only true
+    orphans (failed / deleted-task leftovers) get reclaimed (spec 2026-06-09
+    run-history — gallery persistence). `keep_uuids=None` → pure age reaper
+    (old behavior, back-compat for callers without DB context).
+
+    Returns {scanned, deleted, kept, dirs_pruned, errors}. Skips non-image ext.
     """
     root = _outputs_root()
-    summary = {"scanned": 0, "deleted": 0, "dirs_pruned": 0, "errors": 0}
+    summary = {"scanned": 0, "deleted": 0, "kept": 0, "dirs_pruned": 0, "errors": 0}
     if not root.exists():
         return summary
 
@@ -173,6 +180,10 @@ def reap_orphans(*, older_than_seconds: int) -> dict:
             if not f.is_file() or f.suffix.lower() not in allowed_ext:
                 continue
             summary["scanned"] += 1
+            # 仍被任务历史引用 → 永久保留(图寿命=任务寿命),不看 age。
+            if keep_uuids is not None and f.stem in keep_uuids:
+                summary["kept"] += 1
+                continue
             try:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()

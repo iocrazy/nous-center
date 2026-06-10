@@ -388,3 +388,22 @@ def test_task_to_dict_output_thumbnails():
         error=None, duration_ms=5, created_at=now, updated_at=now,
     )
     assert _task_to_dict(t_txt)["output_thumbnails"] == []
+
+
+async def test_collect_referenced_image_uuids(db_client: AsyncClient, db_session):
+    # reaper 保留集:从 ExecutionTask.result 抽 image_url 的 uuid(spec run-history 图寿命=任务寿命)。
+    from src.api.routes.execution_tasks import collect_referenced_image_uuids
+    from src.models.execution_task import ExecutionTask
+
+    db_session.add(ExecutionTask(
+        workflow_name="img", workflow_id=1, status="completed", nodes_total=1,
+        result={"outputs": {"dec": {"image_url": "/files/images/2026-06-10/abc123def.png?token=t&expires=1"}}},
+    ))
+    db_session.add(ExecutionTask(
+        workflow_name="llm", workflow_id=2, status="completed", nodes_total=1,
+        result={"outputs": {"o": {"text": "no image here"}}},
+    ))
+    await db_session.commit()
+
+    uuids = await collect_referenced_image_uuids(db_session)
+    assert "abc123def" in uuids
