@@ -1389,27 +1389,39 @@ class ModularImageBackend(InferenceAdapter):
         # 留噪 latent 接力 / 分段采样(PR-B2):Z-Image + 任一分段字段非默认 → 走手写去噪循环
         # (整段 pipe() 不暴露 mid-schedule 起步 / 带噪中途导出)。其余照常整段 pipe()。
         segmented = self._wants_segmented(req)
-        if segmented:
-            from types import SimpleNamespace  # noqa: PLC0415
+        # 异常/取消清理(2026-06-11 体检):pipe() 中途抛(OOM/取消/干预崩)时,denoise 的
+        # 中间激活/latents 留在 CUDA caching allocator —— 不清会把失败前的峰值一直占着,
+        # 失败一次卡就「虚占」,后续请求雪上加霜。只清 allocator 缓存块,模型权重不动
+        # (adapter 仍缓存复用);成功路径零开销(不进 except)。
+        try:
+            if segmented:
+                from types import SimpleNamespace  # noqa: PLC0415
 
-            # no_grad 必须裹手写循环 —— ZImagePipeline.__call__ 自带 @torch.no_grad(),我们这条手写
-            # 路径绕过它,不裹会逐步累积 autograd graph(每步全层激活)→ 几步就 OOM(实测 91GB)。
-            def _seg() -> Any:
-                with torch.no_grad():
-                    return self._run_zimage_segmented(
-                        pipe, req, gen, pt, _stage_ts, cancel_flag, interventions=interventions)
-
-            final_latents = await asyncio.to_thread(_seg)
-            if want_latent:
-                out = SimpleNamespace(images=final_latents)
-            else:
-                def _dec() -> Any:
+                # no_grad 必须裹手写循环 —— ZImagePipeline.__call__ 自带 @torch.no_grad(),我们这条手写
+                # 路径绕过它,不裹会逐步累积 autograd graph(每步全层激活)→ 几步就 OOM(实测 91GB)。
+                def _seg() -> Any:
                     with torch.no_grad():
-                        return self._zimage_decode_latents(pipe, final_latents)
+                        return self._run_zimage_segmented(
+                            pipe, req, gen, pt, _stage_ts, cancel_flag, interventions=interventions)
 
-                out = SimpleNamespace(images=[await asyncio.to_thread(_dec)])
-        else:
-            out = await asyncio.to_thread(lambda: pipe(**call_kwargs))
+                final_latents = await asyncio.to_thread(_seg)
+                if want_latent:
+                    out = SimpleNamespace(images=final_latents)
+                else:
+                    def _dec() -> Any:
+                        with torch.no_grad():
+                            return self._zimage_decode_latents(pipe, final_latents)
+
+                    out = SimpleNamespace(images=[await asyncio.to_thread(_dec)])
+            else:
+                out = await asyncio.to_thread(lambda: pipe(**call_kwargs))
+        except BaseException:  # noqa: BLE001 — 含 CancelledError(BaseException 派生)
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001 — 清理 best-effort,不掩真错
+                pass
+            raise
         t_pipe_end = time.monotonic()
         # 逐组件时长:denoise=首→末步;vae_decode=末步→pipe 返回(内嵌 decode 段)。
         # 只在 step 回调真跑过(Flux2Klein + 有 progress/cancel)时算 —— 其余路径(ERNIE

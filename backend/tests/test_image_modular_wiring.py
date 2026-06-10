@@ -630,3 +630,17 @@ def test_step_callback_attaches_for_all_standard_pipelines():
     assert '_step_cb_pipes = ("Flux2KleinPipeline", "ZImagePipeline", "QwenImageEditPlusPipeline")' in src
     assert 'interventions and self.pipeline_class == "Flux2KleinPipeline"' in src, \
         "干预必须守住 Flux2-only(Z-Image 走分段路;Qwen-Edit 未定义干预语义)"
+
+
+def test_infer_pipe_exception_clears_cuda_cache():
+    """pipe() 中途异常/取消必须 empty_cache(否则失败前峰值显存被 allocator 虚占,
+    失败一次卡占死)。源码检查:执行块裹 try/except BaseException + empty_cache + raise。"""
+    import pathlib
+
+    src = (pathlib.Path(__file__).parent.parent
+           / "src/services/inference/image_modular.py").read_text()
+    blk = src[src.find("segmented = self._wants_segmented(req)"):]
+    exc = blk.find("except BaseException:")
+    assert exc != -1, "pipe 执行块缺异常清理"
+    tail = blk[exc:exc + 400]
+    assert "empty_cache()" in tail and "raise" in tail, "异常清理必须 empty_cache 后 re-raise"
