@@ -1,6 +1,7 @@
 // 应用编辑器里的只读节点卡片(spec 2026-06-09 PR-2 → 2026-06-10 弹窗化)。
-// 复刻 Infinite-Canvas:节点卡**整卡可点 → 弹出属性编辑窗**(逐 widget 勾选在弹窗里),
-// 卡上只显示标题 + 类目 badge + 「N 已用」计数。输出节点保留节点级「暴露为输出」开关。
+// 卡片**纯展示**:标题 + 类目 badge + 「N 已用」计数 + 高亮。点击交互统一由
+// WorkflowAppEditor 的 React Flow `onNodeClick` 处理(节点内 DOM onClick 在 React Flow
+// 里不可靠 —— 真机验证逮到卡片 onClick 点不开弹窗)。非输出→开属性弹窗,输出→切「暴露为输出」。
 import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 
@@ -12,11 +13,8 @@ export interface AppEditorNodeData {
   exposedCount: number
   /** 该节点弹窗当前是否打开(高亮)。 */
   active?: boolean
-  /** 非输出节点:点卡片打开属性弹窗。 */
-  onOpenPopup?: () => void
   isOutput?: boolean
   outputChecked?: boolean
-  onToggleOutput?: () => void
   [key: string]: unknown
 }
 
@@ -39,8 +37,7 @@ function AppEditorNodeImpl({ data }: { data: AppEditorNodeData }) {
   const highlight = exposed || data.active
   return (
     <div
-      onClick={data.isOutput ? undefined : data.onOpenPopup}
-      title={data.isOutput ? undefined : '点击配置暴露参数'}
+      title={data.isOutput ? '点击切换暴露为输出' : '点击配置暴露参数'}
       style={{
         width: 220,
         background: 'var(--card)',
@@ -53,7 +50,7 @@ function AppEditorNodeImpl({ data }: { data: AppEditorNodeData }) {
             ? `var(--shadow-md), 0 0 0 1px ${color}`
             : 'var(--shadow-md)',
         fontSize: 12,
-        cursor: data.isOutput ? 'default' : 'pointer',
+        cursor: 'pointer',
       }}
     >
       <Handle type="target" position={Position.Left} style={{ background: 'var(--muted)', width: 10, height: 10, border: '2px solid var(--card)' }} />
@@ -86,20 +83,15 @@ function AppEditorNodeImpl({ data }: { data: AppEditorNodeData }) {
         )}
       </div>
 
-      {/* output node → 节点级「暴露为输出」 */}
+      {/* output node → 节点级「暴露为输出」(点击由 onNodeClick 处理,这里纯展示) */}
       {data.isOutput ? (
-        <button
-          type="button"
-          onClick={data.onToggleOutput}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-            padding: '8px 10px', background: 'transparent', border: 'none',
-            borderTop: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text)', textAlign: 'left',
-          }}
-        >
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+          padding: '8px 10px', borderTop: '1px solid var(--border)', color: 'var(--text)',
+        }}>
           <Box on={!!data.outputChecked} />
           <span>暴露为输出</span>
-        </button>
+        </div>
       ) : (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
