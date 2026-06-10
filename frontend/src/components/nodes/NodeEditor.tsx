@@ -378,6 +378,46 @@ export default function NodeEditor() {
     return () => window.removeEventListener('nodelib-add-node', onAdd)
   }, [createNodeAt])
 
+  // 剪贴板粘贴图片(对齐 Infinite-Canvas):非编辑态 Ctrl+V 含图 → 选中多模态节点则追加,
+  // 否则在视口中心新建多模态输入节点。in-app 节点剪贴板由 keydown 处理,二者互不干扰
+  // (图片走 clipboardData.files,节点走内存 clipboardRef)。
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const tgt = e.target as HTMLElement | null
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return
+      const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'))
+      if (!file) return
+      e.preventDefault()
+      const reader = new FileReader()
+      reader.onload = () => {
+        const url = reader.result as string
+        if (!url) return
+        const mm = nodesRef.current.find((n) => n.selected && n.type === 'multimodal_input')
+        if (mm) {
+          const cur = ((mm.data as Record<string, unknown>)?.images as string[]) || []
+          const next = [...cur, url]
+          updateNode(mm.id, { images: next, image: next[0] })
+          return
+        }
+        const rfi = reactFlowInstance.current
+        const bounds = reactFlowWrapper.current?.getBoundingClientRect()
+        const center = rfi && bounds
+          ? rfi.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+          : { x: 0, y: 0 }
+        const id = crypto.randomUUID().slice(0, 8)
+        const data = { images: [url], image: url }
+        storeAddNode({ id, type: 'multimodal_input', position: center, data })
+        setNodes((nds) => [
+          ...nds.map((n) => ({ ...n, selected: false })),
+          { id, type: 'multimodal_input', position: center, data, style: { width: 320 }, selected: true } as Node,
+        ])
+      }
+      reader.readAsDataURL(file)
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [updateNode, storeAddNode, setNodes])
+
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
       // round5:挡自连(自环)——拖到节点自己的同类型输入会建自环边,要等执行时
