@@ -44,8 +44,11 @@ def test_seedvr2_loaders_produce_typed_config_ports():
     """load_dit → dit(seedvr2_dit)、load_vae → vae(seedvr2_vae);各带配置 widget。"""
     dit = _node_def("seedvr2_load_dit")
     vae = _node_def("seedvr2_load_vae")
-    assert dit["inputs"] == [] and [(p["id"], p["type"]) for p in dit["outputs"]] == [("dit", "seedvr2_dit")]
-    assert vae["inputs"] == [] and [(p["id"], p["type"]) for p in vae["outputs"]] == [("vae", "seedvr2_vae")]
+    # torch_compile 节点接入后,loader 各带一个可选 compile 输入(不连=不编译)。
+    assert [(p["id"], p["type"]) for p in dit["inputs"]] == [("compile", "seedvr2_compile")]
+    assert [(p["id"], p["type"]) for p in dit["outputs"]] == [("dit", "seedvr2_dit")]
+    assert [(p["id"], p["type"]) for p in vae["inputs"]] == [("compile", "seedvr2_compile")]
+    assert [(p["id"], p["type"]) for p in vae["outputs"]] == [("vae", "seedvr2_vae")]
     dit_w = {w["name"] for w in dit["widgets"]}
     assert {"dit_model", "device", "blocks_to_swap", "swap_io_components", "offload_device", "attention_mode"} <= dit_w
     vae_w = {w["name"] for w in vae["widgets"]}
@@ -59,7 +62,7 @@ def test_seedvr2_has_inline_executor_for_loaders():
     spec = importlib.util.spec_from_file_location("_sv2_exec", _PKG / "executor.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert set(mod.EXECUTORS) == {"seedvr2_load_dit", "seedvr2_load_vae"}
+    assert set(mod.EXECUTORS) == {"seedvr2_load_dit", "seedvr2_load_vae", "seedvr2_torch_compile"}
     assert "seedvr2_upscale" not in mod.EXECUTORS, "增强节点是 dispatch,不该进 EXECUTORS"
 
 
