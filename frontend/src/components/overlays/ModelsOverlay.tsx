@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { Copy, Check, X } from 'lucide-react'
+import { Copy, Check, X, Search } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
@@ -74,6 +74,8 @@ export default function ModelsOverlay() {
   const [activeTab, setActiveTab] = useState<TabId>('all')
   // 图像 tab 下的二级子 tab —— 按**文件夹/角色**分:整模型 / 超分 / diffusion_models / clip / vae / loras。
   const [imageBucket, setImageBucket] = useState<string>('all')
+  // 跨 tab/桶的名称搜索 —— 在当前可见列表里再按 display_name/name/路径 子串过滤。统一模型管理收尾 PR-3。
+  const [search, setSearch] = useState('')
 
   const closeMenu = useCallback(() => {
     setCtxMenu((prev) => ({ ...prev, visible: false }))
@@ -327,11 +329,22 @@ export default function ModelsOverlay() {
   ]
 
   const visibleEngines = (() => {
-    if (activeTab === 'all') return allEngines
-    if (activeTab === 'loaded') return allEngines.filter((e) => e.status === 'loaded')
-    let list = allEngines.filter((e) => e.type === activeTab)
-    if (activeTab === 'image' && imageBucket !== 'all') {
-      list = list.filter((e) => imageBucketOf(e) === imageBucket)
+    let list: EngineInfo[]
+    if (activeTab === 'all') list = allEngines
+    else if (activeTab === 'loaded') list = allEngines.filter((e) => e.status === 'loaded')
+    else {
+      list = allEngines.filter((e) => e.type === activeTab)
+      if (activeTab === 'image' && imageBucket !== 'all') {
+        list = list.filter((e) => imageBucketOf(e) === imageBucket)
+      }
+    }
+    const q = search.trim().toLowerCase()
+    if (q) {
+      list = list.filter((e) =>
+        (e.display_name ?? '').toLowerCase().includes(q) ||
+        e.name.toLowerCase().includes(q) ||
+        (e.local_path ?? '').toLowerCase().includes(q),
+      )
     }
     return list
   })()
@@ -382,7 +395,41 @@ export default function ModelsOverlay() {
               底层推理引擎文件与 GPU 常驻管理 · 右键卡片查看更多操作
             </p>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Search
+                size={13}
+                style={{ position: 'absolute', left: 8, color: 'var(--muted)', pointerEvents: 'none' }}
+              />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="搜索模型名 / 路径"
+                style={{
+                  padding: '6px 26px 6px 26px',
+                  fontSize: 12,
+                  width: 200,
+                  borderRadius: 4,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  outline: 'none',
+                }}
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch('')}
+                  title="清除"
+                  style={{
+                    position: 'absolute', right: 6, display: 'flex', alignItems: 'center',
+                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    color: 'var(--muted)',
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
             <button
               onClick={() => scanModels.mutate()}
               disabled={scanModels.isPending}
@@ -514,7 +561,7 @@ export default function ModelsOverlay() {
         {visibleEngines.length === 0 &&
           !(activeTab === 'loaded' && loadedAdapters.length > 0) && !isLoading && (
           <div style={{ fontSize: 11, color: 'var(--muted)', padding: 24, textAlign: 'center' }}>
-            该类目没有模型 · 试试别的 tab
+            {search.trim() ? `没有匹配「${search.trim()}」的模型 · 试试别的关键词` : '该类目没有模型 · 试试别的 tab'}
           </div>
         )}
       </div>
