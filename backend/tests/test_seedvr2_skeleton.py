@@ -234,3 +234,22 @@ def test_load_calls_download_weight_before_prepare_runner():
     call = src.find("if not download_weight(")
     assert call != -1 and call < src.rfind("self._runner, cache_context = prepare_runner("), \
         "download_weight 必须在 prepare_runner 之前"
+
+
+# --- prepend 加帧对称 + batch_size 4n+1 归一 ---
+
+
+def test_prepend_frames_added_before_encode():
+    """上游 compute_generation_info 在 encode 前 pad_video_temporal(prepend=True) 加反转帧,
+    postprocess 删同数量。只传删的那头 = prepend_frames>0 时删真帧。源码检查。"""
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    add = src.find("prepend=True")
+    enc = src.find("ctx = encode_all_batches(")
+    assert add != -1, "缺 prepend 加帧侧(pad_video_temporal prepend=True)"
+    assert enc != -1 and add < enc, "加帧必须在 encode 之前"
+
+
+def test_batch_size_normalized_to_4n_plus_1():
+    """batch_size 必须 4n+1(上游 widget step=4 enforce);引擎边界向下归一。"""
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    assert "// 4) * 4 + 1" in src, "缺 batch_size 4n+1 归一"
