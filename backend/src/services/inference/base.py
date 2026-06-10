@@ -131,6 +131,12 @@ class ImageRequest(InferenceRequest):
     add_noise: bool = True
     return_with_leftover_noise: bool = False
     init_latent_ref: dict | None = None
+    # 采样期 latent 干预(复刻 comfyui-lcs post-CFG hook,spec 2026-06-10-sampling-intervention-hook):
+    # 每个描述符 = {"_type": "lcs_sharpness"|"lcs_color_anchor"|"test_shift", "strength":.., "start_step":..,
+    # "end_step":.., "calib_ref": {"path": <safetensors>}}。引擎 _build_interventions 据此构 per-step hook
+    # (denoised x0 语义点逐步改 latent)。**不落 tensor 进此字段**(标定数据落盘 safetensors,只带 path,
+    # 同 init_latent_ref 铁律)。None/空 = 无干预(零回归)。
+    interventions: list[dict] | None = None
     # PR-4: component path. When set, the runner routes through
     # ModelManager.get_or_load_image_adapter instead of model_key. None ⇒
     # legacy model_key path (back-compat).
