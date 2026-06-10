@@ -280,8 +280,12 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         """UpscaleRequest → InferenceResult(image/png)。decode 输入图 → to_thread 跑
         同步 upscale 内核(CUDA 阻塞,不能占 runner 事件循环)→ PNG bytes。
 
-        progress_callback / cancel_flag 暂未细化(SeedVR2 是 one-step,无 per-step 进度;
-        PR-3b runner 接入时按需桥接 stage 级进度)。
+        progress_callback:桥接 NumZ 四阶段(encode→upscale→decode→post)回调为 stage 级
+        进度(SeedVR2 是 one-step diffusion,无 per-step 采样进度;单图每阶段 1 batch →
+        4 帧 stage 进度;视频/多帧时阶段内逐 batch 更细)。NumZ 回调在 to_thread 工作线程
+        触发 —— 跟 modular 一样 loop.call_soon_threadsafe 调度回事件循环(runner 的
+        _on_progress 要 create_task)。cancel_flag 暂未接(NumZ check_interrupt 是
+        ComfyUI 中断机制,接入需 ctx 注入,后续按需)。
         """
         if not isinstance(req, UpscaleRequest):
             raise TypeError(f"SeedVR2UpscaleBackend 只接受 UpscaleRequest,收到 {type(req).__name__}")
@@ -290,6 +294,38 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         # NumZ set_seed → np.random.seed 要求 [0, 2**32-1];randomize 给的 2**53 超范围会抛。
         # 引擎边界归一;metadata 报折叠后的有效 seed。
         seed = _clamp_seed(req.seed if req.seed is not None else 42)
+
+        # 进度桥接:NumZ progress_callback(done, total, extra, "Phase N: Label")(4 positional)。
+        # 总体进度 = (阶段序号-1 + done/total)/4。工作线程 → call_soon_threadsafe → 事件循环。
+        numz_cb = None
+        if progress_callback is not None:
+            loop = asyncio.get_running_loop()
+            # NumZ 阶段串 → (stage 名, 中文 detail 前缀)。stage 词汇对齐 modular(vae_*/dit_*)。
+            phase_stage = {
+                1: ("vae_encode", "编码"), 2: ("dit_upscale", "超分"),
+                3: ("vae_decode", "解码"), 4: ("postprocess", "后处理"),
+            }
+
+            def numz_cb(done: int, total: int, _extra: Any = None, msg: str = "") -> None:
+                # "Phase 2: Upscaling" → 2;解析失败按 1 兜底(进度只会偏保守,不崩)。
+                try:
+                    pidx = int(str(msg).split(":")[0].strip().split()[-1])
+                except (ValueError, IndexError):
+                    pidx = 1
+                stage, label = phase_stage.get(pidx, ("upscale", str(msg)))
+                frac = (done / total) if total else 1.0
+                overall = min(1.0, (pidx - 1 + frac) / 4)
+
+                def _deferred() -> None:
+                    try:
+                        progress_callback(
+                            done, total, progress=overall, stage=stage,
+                            detail=f"{label} {done}/{total}",
+                        )
+                    except TypeError:  # 老签名 fake 只接 (done, total)
+                        progress_callback(done, total)
+
+                loop.call_soon_threadsafe(_deferred)
 
         def _run() -> Any:
             return self.upscale(
@@ -304,6 +340,7 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
                 temporal_overlap=req.temporal_overlap,
                 prepend_frames=req.prepend_frames,
                 uniform_batch_size=req.uniform_batch_size,
+                progress_callback=numz_cb,
             )
 
         t = time.monotonic()
@@ -338,11 +375,13 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         temporal_overlap: int = 0,
         prepend_frames: int = 0,
         uniform_batch_size: bool = False,
+        progress_callback: "Any | None" = None,
     ) -> "Any":
         """单图超分。image(PIL.Image)→ 超分后 PIL.Image。忠实复刻 NumZ 4 阶段。
 
         resolution = 目标短边(SeedVR2 语义:输出最短边像素;非倍数)。
         max_resolution = 长边上限(0=不限);temporal_overlap/prepend_frames = 视频帧间(单图=0)。
+        progress_callback = NumZ 形状 (done, total, extra, "Phase N: Label"),四阶段都透传。
         """
         if self._runner is None:
             raise RuntimeError("SeedVR2 未 load")
@@ -368,7 +407,7 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         ctx = encode_all_batches(
             self._runner, ctx=ctx, images=frames, debug=self._debug,
             batch_size=batch_size, uniform_batch_size=uniform_batch_size, seed=seed,
-            progress_callback=None, temporal_overlap=temporal_overlap,
+            progress_callback=progress_callback, temporal_overlap=temporal_overlap,
             resolution=resolution, max_resolution=max_resolution,
             input_noise_scale=input_noise_scale, color_correction=color_correction,
         )
@@ -380,15 +419,15 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
         # cache_model=True(keep model loaded between runs);sampler 每次 configure_diffusion
         # 重建,不受 cleanup 置空影响。
         ctx = upscale_all_batches(
-            self._runner, ctx=ctx, debug=self._debug, progress_callback=None,
+            self._runner, ctx=ctx, debug=self._debug, progress_callback=progress_callback,
             seed=seed, latent_noise_scale=latent_noise_scale, cache_model=True,
         )
         ctx = decode_all_batches(
-            self._runner, ctx=ctx, debug=self._debug, progress_callback=None,
+            self._runner, ctx=ctx, debug=self._debug, progress_callback=progress_callback,
             cache_model=True,
         )
         ctx = postprocess_all_batches(
-            ctx=ctx, debug=self._debug, progress_callback=None,
+            ctx=ctx, debug=self._debug, progress_callback=progress_callback,
             color_correction=color_correction, prepend_frames=prepend_frames,
             temporal_overlap=temporal_overlap, batch_size=batch_size,
         )
