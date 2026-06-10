@@ -564,6 +564,13 @@ class ModularImageBackend(InferenceAdapter):
         self._pipe = None
         self._img2img_pipe = None  # PR-A2:与 _pipe 共享组件,随之释放
         self._model = None
+        # 断开 override 模块强引用(分开载入装配,统一模型管理收尾 PR-2):__init__ 把 L1 组件
+        # (transformer/clip/vae)存进 self._*_override 喂 pipe;只 _pipe=None 不够 —— adapter 这三个属性
+        # 仍持着大权重(~20GB),_release_combo_components 把池里 module 置 None 后,adapter 这条引用还在
+        # → gc 收不掉、显存不降(combo 卸载只释放 ~2GB 包装层的真根因)。清掉让权重真释放。
+        self._transformer_override = None
+        self._text_encoder_override = None
+        self._vae_override = None
         self._loaded_loras.clear()
         # round5:复位 scheduler 缓存键。_apply_scheduler 用 _sched_key 做缓存早退不重装;
         # unload 后同实例 rebuild 出的新 pipe 是参考库默认(normal sigmas),若 _sched_key

@@ -91,6 +91,10 @@ class EngineInfo(BaseModel):
     #   component = 单文件组件(diffusion_models/clip/vae)—— 随 pipeline 加载,不独立可加载
     #   lora      = LoRA 文件 —— 随模型加载
     kind: str = "model"
+    # 单文件 diffusion_models 组件的推断架构(z-image/flux2/anima)—— 引擎库预热时传给
+    # /component/preload 的 arch(反推参考库 + 桥接 loader 分派),避免默认 flux2 错配 Z-Image 等。
+    # 统一模型管理收尾 PR-2。None=非组件或无法推断(回退 flux2)。
+    arch: str | None = None
     local_path: str | None = None
     local_exists: bool = False
     status_detail: str | None = None
