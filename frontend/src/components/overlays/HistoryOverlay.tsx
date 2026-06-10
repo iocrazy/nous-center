@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { X, RefreshCw, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { usePanelStore } from '../../stores/panel'
+import { confirmDialog } from '../../stores/confirm'
 import { useImageTasks, useDeleteTask, type ExecutionTask } from '../../api/tasks'
 import { useServices } from '../../api/services'
 
@@ -74,8 +75,8 @@ export default function HistoryOverlay() {
                   canRerun={canRerun}
                   onOpen={() => setLightbox(thumb)}
                   onRerun={() => rerun(t)}
-                  onDelete={() => {
-                    if (confirm('删除这条出图记录?')) del.mutate(t.id)
+                  onDelete={async () => {
+                    if (await confirmDialog({ message: '删除这条出图记录?', danger: true, confirmText: '删除' })) del.mutate(t.id)
                   }}
                 />
               )

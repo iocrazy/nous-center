@@ -13,6 +13,7 @@ import { Play, Loader, Square } from 'lucide-react'
 import PublishDialog from '../workflow/PublishDialog'
 import { useLocation } from 'react-router-dom'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { confirmDialog } from '../../stores/confirm'
 import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
 import { executeWorkflow } from '../../utils/workflowExecutor'
@@ -162,8 +163,8 @@ export default function WorkflowCanvasToolbar() {
 
       <ToolbarBtn onClick={() => {/* TODO templates */}}>Templates</ToolbarBtn>
       <ToolbarBtn
-        onClick={() => {
-          if (window.confirm('清空当前工作流的所有节点和连线？')) {
+        onClick={async () => {
+          if (await confirmDialog({ message: '清空当前工作流的所有节点和连线?', danger: true, confirmText: '清空' })) {
             const wf = getActiveWorkflow()
             setWorkflow({ ...wf, nodes: [], edges: [] })
           }

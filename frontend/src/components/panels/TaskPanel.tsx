@@ -25,6 +25,7 @@ import {
   type ExecutionTask,
 } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
+import { confirmDialog } from '../../stores/confirm'
 import { useTaskProgressStore } from '../../stores/taskProgress'
 import {
   ALL_TASK_STATUSES,
@@ -464,9 +465,9 @@ function ClearQueueButton({ tasks }: { tasks: ExecutionTask[] }) {
   const del = useDeleteTask()
   const queued = tasks.filter((t) => t.status === 'queued')
   const has = queued.length > 0
-  const onClick = () => {
+  const onClick = async () => {
     if (!has) return
-    if (!confirm(`清理 ${queued.length} 个排队任务?`)) return
+    if (!(await confirmDialog({ message: `清理 ${queued.length} 个排队任务?`, danger: true, confirmText: '清理' }))) return
     for (const t of queued) {
       cancel.mutate(t.id, {
         onSettled: () => del.mutate(t.id),

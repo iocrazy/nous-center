@@ -9,6 +9,7 @@ import { useDashboardSummary, type AlertItem, type TopServiceRow } from '../../a
 import { useRuntimeMetrics, type RuntimeSnapshot } from '../../api/observability'
 import { useVLLMMetrics, useUpdateLaunchParams } from '../../api/vllm'
 import { useRunners, type RunnerInfo } from '../../api/runners'
+import { confirmDialog } from '../../stores/confirm'
 
 /**
  * m04 Dashboard — v3 layout.
@@ -548,11 +549,12 @@ function CollapsibleSystem({
                 key={gpu.index}
                 gpu={gpu}
                 runner={(runners ?? []).find((r) => r.gpus.includes(gpu.index)) ?? null}
-                onKill={(pid, mem) => {
+                onKill={async (pid, mem) => {
                   if (
-                    window.confirm(
-                      `Kill process PID ${pid}? This will free ~${(mem / 1024).toFixed(1)}G GPU memory.`,
-                    )
+                    await confirmDialog({
+                      message: `结束进程 PID ${pid}?将释放约 ${(mem / 1024).toFixed(1)}G 显存。`,
+                      danger: true, confirmText: 'Kill',
+                    })
                   ) {
                     killProcess.mutate(pid)
                   }

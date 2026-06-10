@@ -22,6 +22,7 @@ import {
 import CreateServiceDialog from '../components/services/CreateServiceDialog'
 import { useToastStore } from '../stores/toast'
 import { useServiceModelStatus, MODEL_STATE_VIS } from '../api/serviceModels'
+import { confirmDialog } from '../stores/confirm'
 
 type FilterTab = 'all' | ServiceCategory
 
@@ -59,8 +60,8 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
     else navigate(`/services/${id}`)
   }
 
-  const handleDelete = (svc: ServiceRow) => {
-    if (!window.confirm(`确认下线服务 "${svc.name}"？此操作不可撤销。`)) return
+  const handleDelete = async (svc: ServiceRow) => {
+    if (!(await confirmDialog({ message: `确认下线服务 "${svc.name}"?\n此操作不可撤销。`, danger: true, confirmText: '下线' }))) return
     del.mutate(svc.id, {
       onSuccess: () => toast(`已下线 ${svc.name}`, 'success'),
       onError: (e) => toast(`下线失败：${(e as Error).message}`, 'error'),

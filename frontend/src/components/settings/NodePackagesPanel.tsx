@@ -19,6 +19,7 @@ import {
   useUninstallPackage,
 } from '../../api/nodes'
 import { useToastStore } from '../../stores/toast'
+import { confirmDialog } from '../../stores/confirm'
 
 // m12 内嵌版 — 同 NodePackagesOverlay 但去掉了 absolute inset-0 容器，
 // 让 SettingsOverlay 把它作为子页嵌进去。
@@ -60,7 +61,7 @@ export default function NodePackagesPanel() {
   }
 
   const onUninstall = async (name: string) => {
-    if (!confirm(`确定卸载节点包 "${name}" 吗？`)) return
+    if (!(await confirmDialog({ message: `确定卸载节点包 "${name}" 吗?`, danger: true, confirmText: '卸载' }))) return
     try {
       await uninstall.mutateAsync(name)
       toast(`已卸载 ${name}`, 'success')

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import FloatingPanel from '../layout/FloatingPanel'
 import { useWorkflows, useCreateWorkflow, useDeleteWorkflow } from '../../api/workflows'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { confirmDialog } from '../../stores/confirm'
 
 export default function WorkflowsPanel() {
   const [search, setSearch] = useState('')
@@ -79,9 +80,9 @@ export default function WorkflowsPanel() {
             <div className="flex items-center gap-1.5">
               <StatusBadge status={w.status} />
               <button
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation()
-                  if (confirm(`删除工作流「${w.name}」？`)) {
+                  if (await confirmDialog({ message: `删除工作流「${w.name}」?`, danger: true, confirmText: '删除' })) {
                     deleteWf.mutate(w.id)
                   }
                 }}
