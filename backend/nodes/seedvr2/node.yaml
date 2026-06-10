@@ -119,7 +119,8 @@ nodes:
       - { name: resolution, label: "目标分辨率(短边)", widget: slider, min: 256, max: 4320, step: 16, default: 1080 }
       - { name: max_resolution, label: "长边上限(0=不限)", widget: slider, min: 0, max: 7680, step: 16, default: 0 }
       # batch_size/uniform_batch_size 是**多帧/视频**参数(按帧分批)。单图=1 帧 → 无效。对齐 ComfyUI 保留。
-      - { name: batch_size, label: "批大小(视频/多帧;单图无效)", widget: slider, min: 1, max: 16, step: 1, default: 1 }
+      # 必须 4n+1(1,5,9,13,17 —— 上游 step=4 enforce;引擎边界也会向下归一兜底)。
+      - { name: batch_size, label: "批大小(视频/多帧;单图无效)", widget: slider, min: 1, max: 17, step: 4, default: 1 }
       - { name: uniform_batch_size, label: "统一批尺寸(视频;单图无效)", widget: checkbox, default: false }
       - name: color_correction
         label: "色彩校正"

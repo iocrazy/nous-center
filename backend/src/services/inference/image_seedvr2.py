@@ -411,10 +411,24 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
             postprocess_all_batches,
             upscale_all_batches,
         )
+        from src.services.inference.seedvr2_vendor.src.core.generation_utils import (  # noqa: PLC0415
+            pad_video_temporal,
+        )
+
+        # batch_size 必须 4n+1(上游 widget step=4 enforce:1,5,9,...;非法值引擎行为未定义)。
+        # 引擎边界向下归一到最近合法值,不靠 UI 约束。
+        batch_size = max(1, ((int(batch_size) - 1) // 4) * 4 + 1)
 
         # 输入图 → frames_tensor [1,H,W,C] float16 [0,1] RGB(对齐 NumZ extract_frames_from_image)。
         rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
         frames = torch.from_numpy(rgb[None, ...]).to(torch.float16)
+
+        # prepend_frames **加帧侧**(对齐上游 compute_generation_info):encode 前补反转帧,
+        # postprocess 再删同数量。此前只传了删的那头 → >0 时删的是真帧。单图默认 0 无感。
+        if prepend_frames > 0:
+            frames = pad_video_temporal(
+                frames, count=prepend_frames, temporal_dim=0, prepend=True, debug=self._debug,
+            )
 
         # ctx 每次 upscale 重置(NumZ ctx 阶段间 in-place 累积,复用 runner 但 ctx 要新)。
         ctx = dict(self._ctx_base) if self._ctx_base else {}
