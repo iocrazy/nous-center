@@ -699,9 +699,13 @@ class ModularImageBackend(InferenceAdapter):
         # 手动算 sigma / 手写 ancestral 步。normal+euler+无分段 = 整段 pipe(零回归)。
         sched = (getattr(req, "scheduler", "normal") or "normal")
         sampler = (getattr(req, "sampler_name", "euler") or "euler")
+        # 采样期 latent 干预(LCS 等,spec 2026-06-10)需 per-step 挂钩点 —— 仅手写循环有;有干预
+        # 即走手写路(否则标准 pipe() 无挂钩,干预静默失效)。
+        has_interventions = bool(getattr(req, "interventions", None))
         return (start > 0 or end_truncates or (not add_noise)
                 or getattr(req, "init_latent_ref", None) is not None
-                or sched != "normal" or sampler == "euler_ancestral")
+                or sched != "normal" or sampler == "euler_ancestral"
+                or has_interventions)
 
     def _load_init_latent(self, req: Any, device: str) -> Any:
         """读回上段导出的 latent_ref(PR-B1 落盘的 safetensors)→ float32 张量(本段 device)。
@@ -738,8 +742,42 @@ class ModularImageBackend(InferenceAdapter):
         import torch  # noqa: PLC0415
         return latent.to(device=device, dtype=torch.float32)
 
+    def _build_interventions(self, req: Any) -> list:
+        """req.interventions 描述符 list → per-step latent 干预闭包 list(复刻 comfyui-lcs post-CFG hook,
+        spec 2026-06-10)。每个闭包契约:`fn(step_idx, total_steps, sigma, denoised) -> denoised`
+        —— 在 denoised(x0)语义点逐步改 latent(对齐 ComfyUI post_cfg 改 denoised,非改 step 后 latent)。
+        空/None → 空 list(零回归:挂钩点不调用 = byte-identical)。
+
+        PR-1 只实现 `test_shift`(管道验证:沿常向量推 denoised)。`lcs_sharpness`/`lcs_color_anchor`
+        在 PR-2/3 接入(读 calib_ref safetensors → vendor 的 _build_*_fn)。"""
+        import logging  # noqa: PLC0415
+
+        import torch  # noqa: PLC0415
+        descs = getattr(req, "interventions", None) or []
+        fns: list = []
+        for d in descs:
+            if not isinstance(d, dict):
+                continue
+            kind = d.get("_type")
+            if kind == "test_shift":
+                scale = float(d.get("strength", 0.0))
+                start = int(d.get("start_step", 0))
+                end = int(d.get("end_step", 10 ** 9))
+
+                def _fn(step_idx: int, total: int, sigma: float, x: Any,
+                        _s: float = scale, _a: int = start, _b: int = end) -> Any:
+                    if _s == 0.0 or step_idx < _a or step_idx > _b:
+                        return x
+                    return x + _s * torch.ones_like(x)
+                fns.append(_fn)
+            else:
+                logging.getLogger(__name__).warning(
+                    "intervention _type=%r 未实现(PR-2/3 接 lcs_sharpness/lcs_color_anchor),跳过", kind)
+        return fns
+
     def _run_zimage_segmented(
         self, pipe: Any, req: Any, gen: Any, pt: Any, stage_ts: dict, cancel_flag: Any,
+        interventions: list | None = None,
     ) -> Any:
         """手写 Z-Image 分段去噪循环(留噪 latent 接力,PR-B2)—— 逐行对照 diffusers
         `ZImagePipeline.__call__` 的 denoise loop(pipeline_z_image.py),但把一次 N 步去噪劈成一段:
@@ -833,6 +871,15 @@ class ModularImageBackend(InferenceAdapter):
             noise_pred = noise_pred.squeeze(2)
             noise_pred = -noise_pred
             noise_pred = noise_pred.to(torch.float32)
+            # 采样期 latent 干预(spec 2026-06-10):在 denoised(x0)语义点过 chain,再反推 noise_pred
+            # (euler/ancestral 分支都用 noise_pred → 一处接入两路一致)。空 chain 跳过 = byte-identical。
+            if interventions:
+                _sig = float(seg[i])
+                if _sig > 0.0:
+                    _den = latents - _sig * noise_pred
+                    for _fn in interventions:
+                        _den = _fn(i, seg_steps, _sig, _den)
+                    noise_pred = (latents - _den) / _sig
             if sampler_name == "euler_ancestral":
                 # rectified-flow ancestral(PR-1b)—— 逐式对照 ComfyUI sample_euler_ancestral_RF
                 # (k_diffusion/sampling.py:240;Z-Image=CONST/RF,**不是** EDM 版的 get_ancestral_step)。
@@ -1061,6 +1108,9 @@ class ModularImageBackend(InferenceAdapter):
 
         pipe = self._ensure_pipe()
         self._apply_loras(list(getattr(req, "loras", None) or []))
+        # 采样期 latent 干预闭包(spec 2026-06-10);空 list = 无干预(零回归)。两挂钩点(Z-Image 手写
+        # 循环 / Flux2 callback_on_step_end)共用此 list。
+        interventions = self._build_interventions(req)
         # PR-A2:真 img2img(z-image + input_image + 0<strength<1)→ 切到 img2img 变体 pipe(复用组件)。
         # 下方 image= 注入(按 pipe.__call__ 签名)对 img2img pipe 自动生效;再补 strength。
         img2img_mode = self._wants_img2img(req)
@@ -1178,7 +1228,7 @@ class ModularImageBackend(InferenceAdapter):
         # progress_callback(done, total, **extras) → runner 发 P.NodeProgress。仅 Flux2KleinPipeline
         # 走标准 pipe,callback_on_step_end 内置;modular fallback(ERNIE 等)不支持回调,这里不挂。
         if self.pipeline_class == "Flux2KleinPipeline" and (
-                progress_callback is not None or cancel_flag is not None):
+                progress_callback is not None or cancel_flag is not None or interventions):
             def _step_cb(_pipe: Any, i: int, _t: Any, cb_kwargs: dict) -> dict:
                 # 中止:step 边界检查(ComfyUI 是 op 级 / nous diffusers 这条路只能 step 级,
                 # ~250ms/步已够响应)。raise BaseException(CancelledError)穿出 pipe()。
@@ -1191,6 +1241,16 @@ class ModularImageBackend(InferenceAdapter):
                     if latents is not None:
                         from src.services.inference.latent_preview import latent_to_preview_data_uri  # noqa: PLC0415
                         preview_url = latent_to_preview_data_uri(latents)
+                # 采样期 latent 干预(spec 2026-06-10):diffusers callback 给的是 step 后 latents(非
+                # denoised x0);PR-1 在 latents 上过 chain 验管道。**PR-2 精修**:LCS 锐化作用在 denoised,
+                # 需按当前 sigma 换算 denoised 再干预(否则方向语义差)。改后写回 cb_kwargs 交还 diffusers。
+                if interventions:
+                    _lat = cb_kwargs.get("latents")
+                    if _lat is not None:
+                        _sig = float(cb_kwargs.get("sigma", 0.0)) if isinstance(cb_kwargs, dict) else 0.0
+                        for _fn in interventions:
+                            _lat = _fn(i, total_steps, _sig, _lat)
+                        cb_kwargs["latents"] = _lat
                 # 逐组件时长:记 denoise 首/末步时间戳(callback 在每步**末**触发)。
                 _now = time.monotonic()
                 _stage_ts.setdefault("denoise_first", _now)
@@ -1223,7 +1283,8 @@ class ModularImageBackend(InferenceAdapter):
             # 路径绕过它,不裹会逐步累积 autograd graph(每步全层激活)→ 几步就 OOM(实测 91GB)。
             def _seg() -> Any:
                 with torch.no_grad():
-                    return self._run_zimage_segmented(pipe, req, gen, pt, _stage_ts, cancel_flag)
+                    return self._run_zimage_segmented(
+                        pipe, req, gen, pt, _stage_ts, cancel_flag, interventions=interventions)
 
             final_latents = await asyncio.to_thread(_seg)
             if want_latent:

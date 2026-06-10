@@ -408,6 +408,10 @@ def _build_request(node: P.RunNode):
                 return_with_leftover_noise=bool(latent.get("return_with_leftover_noise", False)),
                 init_latent_ref=(latent.get("init_latent_ref")
                                  if isinstance(latent.get("init_latent_ref"), dict) else None),
+                # 采样期 latent 干预描述符 list(LCS 等,spec 2026-06-10):从 ksampler 透传(exec_ksampler
+                # 写进 latent["interventions"])。None/空 = 无干预(零回归)。PR-2/3 接 LCS 节点产描述符。
+                interventions=(latent.get("interventions")
+                               if isinstance(latent.get("interventions"), list) else None),
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
                     "clip": ComponentSpec(**clip_spec),
