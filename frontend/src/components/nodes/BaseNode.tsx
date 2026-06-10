@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, useReactFlow, useNodeId } from '@xyflow/react'
 import type { PortDef } from '../../models/workflow'
 import { useExecutionStore } from '../../stores/execution'
+import { useWorkspaceStore } from '../../stores/workspace'
 import TextareaPortalEditor from './TextareaPortalEditor'
 import { PORT_TYPE_COLORS } from './portColors'
 
@@ -41,6 +42,21 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
   const nodeId = useNodeId()
   const updateNodeInternals = useUpdateNodeInternals()
   const { setNodes } = useReactFlow()
+
+  // 节点内联改名(对齐 Infinite-Canvas/ComfyUI):双击标题就地编辑,存 data.title,
+  // 空则回退默认类型名。改名通过 workspace store(随 store 同步持久)。
+  const updateNode = useWorkspaceStore((s) => s.updateNode)
+  const customTitle = useWorkspaceStore((s) => {
+    if (!nodeId) return undefined
+    return s.getActiveWorkflow().nodes.find((n) => n.id === nodeId)?.data?.title as string | undefined
+  })
+  const displayTitle = customTitle && customTitle.trim() ? customTitle : title
+  const [renaming, setRenaming] = useState(false)
+  const [draft, setDraft] = useState('')
+  const commitRename = () => {
+    setRenaming(false)
+    if (nodeId) updateNode(nodeId, { title: draft.trim() })
+  }
   const execState = useExecutionStore((s) => (nodeId ? s.nodeStates[nodeId] : undefined))
   const stateOutline = execState ? STATE_OUTLINE[execState] : undefined
   // round5:删掉遗留的 DIAG console.log(每节点状态翻转打,工作流跑起来刷屏 console)。
@@ -140,17 +156,45 @@ export default function BaseNode({ title, badge, selected, inputs, outputs, chil
         >
           &#9660;
         </span>
-        <span
-          style={{
-            fontSize: 10.5,
-            fontWeight: 700,
-            color: 'var(--text)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-          }}
-        >
-          {title}
-        </span>
+        {renaming ? (
+          <input
+            className="nodrag"
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); commitRename() }
+              else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false) }
+            }}
+            placeholder={title}
+            style={{
+              flex: 1, minWidth: 0, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em',
+              color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--accent)',
+              borderRadius: 4, padding: '1px 5px', outline: 'none',
+            }}
+          />
+        ) : (
+          <span
+            title="双击重命名"
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => { e.stopPropagation(); setDraft(customTitle ?? ''); setRenaming(true) }}
+            style={{
+              fontSize: 10.5,
+              fontWeight: 700,
+              color: 'var(--text)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {displayTitle}
+          </span>
+        )}
         {badge && (
           <span
             className="ml-auto"
