@@ -201,6 +201,17 @@ def build_bridged_text_encoder(clip_spec: Any, repo: str, device: str) -> Any:
 
     from src.services.inference.quant_loaders import dequant_comfy_mixed  # noqa: PLC0415
 
+    # PR-3:GGUF 文本编码器(CLIPLoaderGGUF 等价,如 Qwen3-4b-Z-Image-Engineer)。
+    # GGUF 用 llama.cpp 命名(blk.N.attn_k.weight)非 HF 键 → 自写 dequant 还得手动 remap;
+    # transformers 原生 from_pretrained(gguf_file=) 内部做 Q8_0 dequant + key 重映射,且
+    # qwen3 在 GGUF_SUPPORTED_ARCHITECTURES(真机验:transformers 5.6)。config/权重均取自 GGUF
+    # 元数据(不读 repo/text_encoder config);tokenizer 仍由 pipe 从参考库取,这里只产模型。
+    if str(getattr(clip_spec, "file", "")).lower().endswith(".gguf"):
+        gguf_path = Path(clip_spec.file)
+        model = AutoModelForCausalLM.from_pretrained(
+            str(gguf_path.parent), gguf_file=gguf_path.name, torch_dtype=torch.bfloat16)
+        return model.to(device)
+
     sd = dequant_comfy_mixed(clip_spec)
     cfg = AutoConfig.from_pretrained(str(Path(repo) / "text_encoder"))
     with init_empty_weights():

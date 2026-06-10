@@ -21,7 +21,9 @@ roles:
     - image/unet/**/*.gguf
   clip:
     - image/text_encoders/**/*.safetensors
+    - image/text_encoders/**/*.gguf             # GGUF 文本编码器(CLIPLoaderGGUF 等价,如 Z-Image-Engineer)
     - image/clip/**/*.safetensors               # ComfyUI clip 文件夹别名
+    - image/clip/**/*.gguf
   vae:
     - image/vae/**/*.safetensors
   loras:
