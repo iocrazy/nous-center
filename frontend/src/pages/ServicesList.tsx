@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Cpu,
   Image as ImageIcon,
+  Images,
   MoreHorizontal,
   Plus,
   Search,
@@ -31,6 +32,10 @@ const TAB_DEFS: { id: FilterTab; label: string }[] = [
   { id: 'llm', label: 'LLM' },
   { id: 'tts', label: 'TTS' },
   { id: 'vl', label: 'VL' },
+  // 图像服务的 category 后端存为 'image'(image_output sink 检测)。少了这个 tab,
+  // image 服务会落进 buildCounts 的 image 桶却无任何子 tab 可筛 → 只在「全部」出现、
+  // 子 tab 计数和与全部对不上(真机:全部 4 但 LLM1+TTS0+VL0+其他2=3)。
+  { id: 'image', label: '图像' },
   { id: 'app', label: '其他' },
 ]
 
@@ -572,6 +577,7 @@ const CATEGORY_TAG_STYLES: Record<string, React.CSSProperties> = {
   llm: { background: 'rgba(34,197,94,0.15)', color: 'var(--accent-2, #22c55e)' },
   tts: { background: 'rgba(168,85,247,0.15)', color: 'var(--purple, #a855f7)' },
   vl: { background: 'rgba(59,130,246,0.15)', color: 'var(--info, #3b82f6)' },
+  image: { background: 'rgba(236,72,153,0.15)', color: 'var(--pink, #ec4899)' },
   app: { background: 'var(--bg)', color: 'var(--muted)' },
 }
 
@@ -702,6 +708,7 @@ function CategoryIcon({ category }: { category: ServiceCategory | null }) {
   const style = { marginTop: 2, color: 'var(--accent)' } as const
   if (category === 'llm') return <Cpu size={16} style={style} />
   if (category === 'vl') return <ImageIcon size={16} style={style} />
+  if (category === 'image') return <Images size={16} style={style} />
   if (category === 'app') return <AppWindow size={16} style={style} />
   return <Activity size={16} style={style} />
 }

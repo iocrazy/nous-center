@@ -129,6 +129,29 @@ describe('ServicesList card click → navigate', () => {
     expect(screen.getByText(/还没有服务/)).toBeInTheDocument()
   })
 
+  it('category=image 的服务有专属 IMAGE tab 可筛(真机:img-flux2 category=image 只在「全部」出现、子 tab 计数和与全部对不上)', () => {
+    useServicesMock.mockReturnValue({
+      data: [
+        makeService({ id: '1', name: 'img-flux2', type: 'inference', category: 'image' }),
+        makeService({ id: '2', name: 'qwen3-5-api', type: 'llm', category: null }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+    // 图像 tab 计数为 1（之前根本没有这个 tab → img-flux2 落进 image 桶但无处可筛）
+    const imageTab = screen.getByRole('button', { name: /图像\s*1/ })
+    expect(imageTab).toBeInTheDocument()
+    // 点图像 tab 只剩 img-flux2
+    fireEvent.click(imageTab)
+    expect(screen.getByText('img-flux2')).toBeInTheDocument()
+    expect(screen.queryByText('qwen3-5-api')).not.toBeInTheDocument()
+  })
+
   it('category=null 的 llm 服务按 type 归入 LLM 分类(真机:qwen3-5-api type=llm/category=null 被误归「其他」)', () => {
     useServicesMock.mockReturnValue({
       data: [
