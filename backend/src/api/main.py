@@ -439,6 +439,25 @@ async def lifespan(app: FastAPI):
                 orphan_published,
             )
 
+    # One-time + self-healing reconcile: re-derive category/meter_dim for
+    # workflow-sourced services from their frozen snapshot. Historically the
+    # image detector only recognized the flux2_vae_decode terminus, so services
+    # published through the integrated image_generate node froze as category
+    # "app" + meter_dim "calls" — misfiled in the UI AND mis-metered (billed as
+    # generic calls, not images). The helper only upgrades to "image", never
+    # clobbering an explicitly-locked llm/tts/vl category.
+    from src.api.routes.workflow_publish import reconcile_service_categories
+    async with sf() as session:
+        recategorized = await reconcile_service_categories(session)
+        if recategorized:
+            await session.commit()
+            from src.api.response_cache import invalidate
+            invalidate("services")
+            logger.info(
+                "startup: reconciled %d service categories from snapshot (image misfiled as app)",
+                recategorized,
+            )
+
     # NOUS_DISABLE_BG_TASKS=1 → skip all background tasks.
     # CRITICAL for tests: the default background set includes memory_guard_loop
     # which polls `nvidia-smi` via subprocess every 5s. When multiple test

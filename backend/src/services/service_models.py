@@ -27,6 +27,13 @@ _COMPONENT_ROLE_BY_TYPE: dict[str, str] = {
     "flux2_load_checkpoint": "checkpoint",
 }
 
+# Registry-engine nodes that reference an *image* model via `model_key` rather
+# than a component file. Without this set the generic `"model_key" in inp`
+# branch below labels their role "llm" (model_key is the LLM node's param name
+# too), so a Flux2 image engine published through the legacy integrated
+# image_generate node shows up as an LLM in the service overview.
+_IMAGE_ENGINE_NODE_TYPES = {"image_generate"}
+
 
 def _iter_nodes(snapshot: dict | None) -> Iterator[dict]:
     """Yield node dicts from either snapshot shape (dict-of-id or list)."""
@@ -111,8 +118,11 @@ def extract_service_models(snapshot: dict | None) -> list[dict[str, Any]]:
         engine_key = inp.get("model_key") or inp.get("engine")
         if engine_key and (ntlow == "llm" or ntlow == "tts_engine"
                            or ntype.endswith("Engine") or "model_key" in inp):
+            # Image-engine nodes are checked FIRST: image_generate carries
+            # model_key, so it would otherwise fall into the llm branch below.
             role_guess = (
-                "llm" if ntlow == "llm" or ntype.startswith("LLM") or "model_key" in inp
+                "diffusion_models" if ntlow in _IMAGE_ENGINE_NODE_TYPES
+                else "llm" if ntlow == "llm" or ntype.startswith("LLM") or "model_key" in inp
                 else "tts" if ntlow == "tts_engine" or ntype.startswith("TTS")
                 else None
             )

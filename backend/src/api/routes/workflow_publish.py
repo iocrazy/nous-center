@@ -61,6 +61,22 @@ _IMAGE_OUTPUT_FIELDS = {
 
 _IMAGE_NODE_TYPES = {"flux2_vae_decode"}
 
+# Category detection set — DISTINCT from `_IMAGE_NODE_TYPES` (the exposed-output
+# field guard above, which is scoped to producing-node terminuses). Detection
+# keys off the canonical image *sink* `image_output`: every image flow ends in
+# it regardless of how the image was produced (component-path flux2_vae_decode,
+# legacy integrated image_generate, Z-Image, Qwen-Edit, SeedVR2 upscale). Keying
+# on the sink — not one specific producer — is why the old single-element
+# `{flux2_vae_decode}` set misclassified image_generate-based services as "app"
+# (their snapshot has no flux2_vae_decode node). Producing terminuses stay in
+# the set as belt-and-suspenders for snapshots without an image_output sink.
+_IMAGE_DETECT_TYPES = {
+    "image_output",       # canonical image sink — primary, producer-agnostic signal
+    "flux2_vae_decode",   # component-path terminus
+    "image_generate",     # legacy integrated image node (Family B frozen snapshots)
+    "seedvr2_upscale",    # image→image upscale terminus
+}
+
 
 def _snapshot_hash(snapshot: dict) -> str:
     payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
@@ -100,14 +116,48 @@ def _node_types_by_id(snapshot: dict) -> dict[str, str]:
 def _detect_category(snapshot: dict) -> str | None:
     """Heuristic per-modality detection from the snapshot's node types.
 
-    Returned value drops into ServiceInstance.category + meter_dim. We
-    only cover image here in PR-7 — LLM/TTS/VL flow through the explicit
-    body.category path that quick-provision already controls.
+    Returned value drops into ServiceInstance.category + meter_dim. We only
+    auto-detect image here (via the image sink node, see `_IMAGE_DETECT_TYPES`)
+    — LLM/TTS/VL flow through the explicit body.category path that
+    quick-provision already controls. Returns None when no image sink is found,
+    so callers fall back to body.category or "app" without clobbering an
+    explicitly-locked modality.
     """
     types = set(_node_types_by_id(snapshot).values())
-    if types & _IMAGE_NODE_TYPES:
+    if types & _IMAGE_DETECT_TYPES:
         return "image"
     return None
+
+
+async def reconcile_service_categories(session: AsyncSession) -> int:
+    """Re-derive category/meter_dim for workflow-sourced services from their
+    frozen snapshot, fixing rows that predate a detector improvement.
+
+    Idempotent and self-healing: `_detect_category` only ever returns "image"
+    or None, so this upgrades misfiled image services (frozen as "app"/"calls"
+    when published through the integrated image_generate node, before detection
+    keyed off the image_output sink) WITHOUT clobbering an explicitly-locked
+    llm/tts/vl category. Returns the number of rows changed. Caller owns the
+    commit + cache invalidation so this stays unit-testable against a session.
+    """
+    from sqlalchemy.orm import undefer
+
+    from src.api.routes.services import _METER_DIM_BY_CATEGORY
+    from src.models.service_instance import ServiceInstance
+
+    stmt = (
+        select(ServiceInstance)
+        .where(ServiceInstance.source_type == "workflow")
+        .options(undefer(ServiceInstance.workflow_snapshot))
+    )
+    changed = 0
+    for svc in (await session.execute(stmt)).scalars():
+        detected = _detect_category(svc.workflow_snapshot or {})
+        if detected and svc.category != detected:
+            svc.category = detected
+            svc.meter_dim = _METER_DIM_BY_CATEGORY.get(detected, svc.meter_dim)
+            changed += 1
+    return changed
 
 
 class PublishBody(BaseModel):

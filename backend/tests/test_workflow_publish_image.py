@@ -196,6 +196,79 @@ async def test_publish_unknown_node_in_image_workflow_still_422(
     assert "ghost" in msg
 
 
+@pytest.mark.asyncio
+async def test_reconcile_backfills_misfiled_image_service(db_session):
+    """Startup backfill: an image service frozen as category="app" +
+    meter_dim="calls" (published via image_generate before sink detection)
+    is re-derived to image/images. This is the billing fix — image gens were
+    metered as generic calls."""
+    from src.models.service_instance import ServiceInstance
+    from src.api.routes.workflow_publish import reconcile_service_categories
+
+    svc = ServiceInstance(
+        name="legacy-img-svc",
+        type="inference",
+        status="active",
+        source_type="workflow",
+        category="app",          # misfiled
+        meter_dim="calls",       # mis-metered
+        workflow_id=123,
+        workflow_snapshot={
+            "schema": "comfy/api-1",
+            "nodes": {
+                "gen": {"class_type": "image_generate",
+                        "inputs": {"model_key": "flux2-klein-9b-true-v2-fp8mixed"}},
+                "out": {"class_type": "image_output", "inputs": {}},
+            },
+        },
+    )
+    db_session.add(svc)
+    await db_session.commit()
+
+    changed = await reconcile_service_categories(db_session)
+    await db_session.commit()
+    await db_session.refresh(svc)
+
+    assert changed == 1
+    assert svc.category == "image"
+    assert svc.meter_dim == "images"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_leaves_non_image_services_untouched(db_session):
+    """The backfill must never clobber an explicitly-locked llm/tts/vl
+    category — _detect_category returns None for non-image snapshots, so
+    those rows are skipped (changed count excludes them)."""
+    from src.models.service_instance import ServiceInstance
+    from src.api.routes.workflow_publish import reconcile_service_categories
+
+    svc = ServiceInstance(
+        name="text-svc-locked",
+        type="inference",
+        status="active",
+        source_type="workflow",
+        category="llm",
+        meter_dim="tokens",
+        workflow_id=456,
+        workflow_snapshot={
+            "schema": "comfy/api-1",
+            "nodes": {
+                "llm": {"class_type": "llm", "inputs": {"model_key": "qwen3-8b"}},
+                "out": {"class_type": "text_output", "inputs": {}},
+            },
+        },
+    )
+    db_session.add(svc)
+    await db_session.commit()
+
+    changed = await reconcile_service_categories(db_session)
+    await db_session.refresh(svc)
+
+    assert changed == 0
+    assert svc.category == "llm"
+    assert svc.meter_dim == "tokens"
+
+
 def test_meter_dim_lookup_includes_image():
     """services.py exposes the canonical category → meter mapping; image
     must appear so quick-provision and publish stay in sync."""
@@ -219,6 +292,41 @@ def test_detect_category_from_snapshot():
     }
     assert _detect_category(img_snap) == "image"
     assert _detect_category(text_snap) is None
+
+
+def test_detect_category_recognises_image_generate_legacy_node():
+    """Regression: services published through the integrated image_generate
+    node have no flux2_vae_decode terminus. The old single-element detection
+    set missed them → froze as category="app" + meter_dim="calls" (misfiled
+    in the UI AND mis-metered as generic calls instead of images)."""
+    from src.api.routes.workflow_publish import _detect_category
+
+    legacy_snap = {
+        "schema": "comfy/api-1",
+        "nodes": {
+            "in": {"class_type": "text_input", "inputs": {}},
+            "gen": {"class_type": "image_generate",
+                    "inputs": {"model_key": "flux2-klein-9b-true-v2-fp8mixed"}},
+            "out": {"class_type": "image_output", "inputs": {}},
+        },
+    }
+    assert _detect_category(legacy_snap) == "image"
+
+
+def test_detect_category_keys_off_image_output_sink():
+    """The robust, producer-agnostic signal is the image_output sink node —
+    every image flow ends in it regardless of which engine produced the image.
+    A snapshot with only a sink (no recognized producer) still detects image."""
+    from src.api.routes.workflow_publish import _detect_category
+
+    sink_only = {
+        "schema": "comfy/api-1",
+        "nodes": {
+            "in": {"class_type": "text_input", "inputs": {}},
+            "out": {"class_type": "image_output", "inputs": {}},
+        },
+    }
+    assert _detect_category(sink_only) == "image"
 
 
 def test_detect_category_recognises_flux2_vae_decode_terminus():
