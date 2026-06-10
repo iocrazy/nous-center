@@ -267,6 +267,10 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
             decode_tile_overlap=(dec_to, dec_to),
             tile_debug=tile_debug,
             attention_mode=attention_mode,
+            # torch.compile(可选,接 seedvr2_torch_compile 节点;None=不编译,行为不变)。
+            # 上游 video_upscaler 同名透传;首跑编译慢、后续 DiT 提速 20-40%。
+            torch_compile_args_dit=self.dit_cfg.get("torch_compile_args") or None,
+            torch_compile_args_vae=self.vae_cfg.get("torch_compile_args") or None,
         )
         # NumZ CLI 在 prepare_runner 后、encode 前手动补的两步(否则 encode 撞 KeyError):
         ctx["cache_context"] = cache_context

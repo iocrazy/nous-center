@@ -13,13 +13,47 @@ author: "NumZ (ComfyUI-SeedVR2_VideoUpscaler, Apache 2.0) / nous-center"
 
 nodes:
 
+  # --- Torch Compile 设置(inline,产 compile args;对齐上游 SeedVR2TorchCompileSettings)---
+  # DiT 提速 20-40% / VAE 15-25%,代价是首跑编译时间。需 PyTorch 2.0+ + Triton(inductor)。
+  seedvr2_torch_compile:
+    label: "SeedVR2 Torch Compile"
+    category: image
+    badge: Settings
+    badgeColor: "var(--muted)"
+    inputs: []
+    outputs:
+      - { id: compile, type: seedvr2_compile, label: Compile }
+    widgets:
+      - name: backend
+        label: "编译后端"
+        widget: select
+        default: inductor
+        options:
+          - { value: inductor, label: "inductor", description: "Triton kernel 生成+融合,完整优化(推荐)" }
+          - { value: cudagraphs, label: "cudagraphs", description: "CUDA graphs 轻量包装,无 kernel 优化" }
+      - name: mode
+        label: "优化档位"
+        widget: select
+        default: default
+        options:
+          - { value: default, label: "default(编译快)" }
+          - { value: reduce-overhead, label: "reduce-overhead(小模型)" }
+          - { value: max-autotune, label: "max-autotune(编译最慢/跑最快)" }
+          - { value: max-autotune-no-cudagraphs, label: "max-autotune 无 CUDA graphs" }
+      - { name: fullgraph, label: "整图编译(动态形状可能失败)", widget: checkbox, default: false }
+      - { name: dynamic, label: "动态形状(多分辨率免重编译)", widget: checkbox, default: false }
+      - { name: dynamo_cache_size_limit, label: "Dynamo 缓存上限", widget: slider, min: 0, max: 1024, step: 1, default: 64 }
+      - { name: dynamo_recompile_limit, label: "重编译上限", widget: slider, min: 0, max: 1024, step: 1, default: 128 }
+
   # --- DiT 加载(inline,产配置)-------------------------------------------------
   seedvr2_load_dit:
     label: "SeedVR2 加载 DiT"
     category: image
     badge: Loader
     badgeColor: "var(--accent)"
-    inputs: []
+    inputs:
+      # 可选:接 seedvr2_torch_compile 输出(不连=不编译,行为不变)。
+      - { id: compile, type: seedvr2_compile, label: Compile }
     outputs:
       - { id: dit, type: seedvr2_dit, label: DiT }
     widgets:
@@ -63,7 +97,9 @@ nodes:
     category: image
     badge: Loader
     badgeColor: "var(--accent)"
-    inputs: []
+    inputs:
+      # 可选:接 seedvr2_torch_compile 输出(不连=不编译,行为不变)。
+      - { id: compile, type: seedvr2_compile, label: Compile }
     outputs:
       - { id: vae, type: seedvr2_vae, label: VAE }
     widgets:

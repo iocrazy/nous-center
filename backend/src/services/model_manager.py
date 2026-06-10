@@ -1433,9 +1433,13 @@ class ModelManager:
             target = f"cuda:{best}" if best is not None and best >= 0 else "cuda:0"
 
         dit_base = splitext(basename(str(dit)))[0] or "main"
-        # 缓存键纳入 dit/vae config 的 load-time 维度(blockswap/tiling/device/attention)——
-        # 不同配置 = 不同 prepare_runner 实例,不能复用。torch_compile/node_id 不进键(前者影响
-        # 实例但极少用,node_id 是 ComfyUI 内部 id 无关)。
+        # 缓存键纳入 dit/vae config 的 load-time 维度(blockswap/tiling/device/attention/
+        # torch_compile)—— 不同配置 = 不同 prepare_runner 实例,不能复用。node_id 不进键
+        # (ComfyUI 内部 id 无关)。compile args 是 dict → repr(sorted items) 稳定串化。
+        def _compile_key(cfg: dict) -> str | None:
+            args = cfg.get("torch_compile_args")
+            return repr(sorted(args.items())) if isinstance(args, dict) else None
+
         key_cfg = {
             "dit_device": dcfg.get("device"), "vae_device": vcfg.get("device"),
             "blocks_to_swap": dcfg.get("blocks_to_swap"), "swap_io": dcfg.get("swap_io_components"),
@@ -1445,6 +1449,7 @@ class ModelManager:
             "enc_to": vcfg.get("encode_tile_overlap"), "dec_tiled": vcfg.get("decode_tiled"),
             "dec_ts": vcfg.get("decode_tile_size"), "dec_to": vcfg.get("decode_tile_overlap"),
             "tensor_offload": tensor_offload,  # 增强阶段 tensor offload(setup_generation_context,load-time)
+            "dit_compile": _compile_key(dcfg), "vae_compile": _compile_key(vcfg),
         }
         payload = repr((model_dir, dit, vae, target, sorted(key_cfg.items()))).encode("utf-8")
         short_hash = hashlib.sha256(payload).hexdigest()[:8]

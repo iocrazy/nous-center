@@ -303,3 +303,47 @@ def test_upscale_calls_complete_cleanup_in_finally():
     assert cc != -1, "缺 complete_cleanup 收尾"
     assert fin != -1 and fin < cc, "complete_cleanup 必须在 finally(异常路径也清)"
     assert "dit_cache=True, vae_cache=True" in src, "收尾必须保模型(双 cache=True)"
+
+
+# --- torch_compile settings 节点(对齐上游 SeedVR2TorchCompileSettings)---
+
+
+def test_torch_compile_executor_shape():
+    """exec_torch_compile 产 compile args dict(键逐字对齐上游 execute);loader 经可选
+    compile 输入合进 config 的 torch_compile_args;没连 → None(不编译)。"""
+    import asyncio as _asyncio
+    import importlib.util as _ilu
+    import pathlib as _pl
+
+    spec = _ilu.spec_from_file_location(
+        "seedvr2_executor", _pl.Path(__file__).parent.parent / "nodes/seedvr2/executor.py")
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    out = _asyncio.run(mod.exec_torch_compile(
+        {"backend": "inductor", "mode": "max-autotune", "fullgraph": True,
+         "dynamic": False, "dynamo_cache_size_limit": 32, "dynamo_recompile_limit": 64}, {}))
+    args = out["compile"]
+    assert args == {
+        "backend": "inductor", "mode": "max-autotune", "fullgraph": True,
+        "dynamic": False, "dynamo_cache_size_limit": 32, "dynamo_recompile_limit": 64,
+    }
+
+    # loader 合入:连了 compile → torch_compile_args;没连 → None
+    dit = _asyncio.run(mod.exec_load_dit({"dit_model": "x"}, {"compile": args}))
+    assert dit["dit"]["torch_compile_args"] == args
+    dit_off = _asyncio.run(mod.exec_load_dit({"dit_model": "x"}, {}))
+    assert dit_off["dit"]["torch_compile_args"] is None
+    vae = _asyncio.run(mod.exec_load_vae({"vae_model": "y"}, {"compile": args}))
+    assert vae["vae"]["torch_compile_args"] == args
+
+
+def test_load_sync_passes_compile_args_to_prepare_runner():
+    """_load_sync 必须把 dit/vae config 的 torch_compile_args 透传 prepare_runner
+    (上游同名参数);缓存键纳入 compile 维度(不同编译配置不能复用实例)。源码检查。"""
+    import pathlib as _pl
+
+    src = (_VENDOR.parent / "image_seedvr2.py").read_text()
+    assert "torch_compile_args_dit=" in src and "torch_compile_args_vae=" in src
+    mm = (_pl.Path(__file__).parent.parent / "src/services/model_manager.py").read_text()
+    assert '"dit_compile"' in mm and '"vae_compile"' in mm, "缓存键未纳入 torch_compile 维度"

@@ -20,8 +20,29 @@ def _int(v: Any, default: int) -> int:
         return default
 
 
+async def exec_torch_compile(data: dict, inputs: dict) -> dict:
+    """widget → TORCH_COMPILE_ARGS dict(对齐上游 SeedVR2TorchCompileSettings.execute,
+    逐键一致)。接 DiT/VAE loader 可选 compile 输入。"""
+    return {
+        "compile": {
+            "backend": data.get("backend") or "inductor",
+            "mode": data.get("mode") or "default",
+            "fullgraph": bool(data.get("fullgraph", False)),
+            "dynamic": bool(data.get("dynamic", False)),
+            "dynamo_cache_size_limit": _int(data.get("dynamo_cache_size_limit"), 64),
+            "dynamo_recompile_limit": _int(data.get("dynamo_recompile_limit"), 128),
+        }
+    }
+
+
+def _compile_args(inputs: dict) -> dict | None:
+    """上游可选 compile 输入(seedvr2_torch_compile 输出);没连 → None(不编译)。"""
+    args = inputs.get("compile")
+    return dict(args) if isinstance(args, dict) else None
+
+
 async def exec_load_dit(data: dict, inputs: dict) -> dict:
-    """widget → SEEDVR2_DIT 配置 dict(device/blockswap/offload/attention)。"""
+    """widget → SEEDVR2_DIT 配置 dict(device/blockswap/offload/attention/torch_compile)。"""
     return {
         "dit": {
             "model": data.get("dit_model") or "",
@@ -30,12 +51,13 @@ async def exec_load_dit(data: dict, inputs: dict) -> dict:
             "swap_io_components": bool(data.get("swap_io_components", False)),
             "offload_device": data.get("offload_device") or "none",
             "attention_mode": data.get("attention_mode") or "sdpa",
+            "torch_compile_args": _compile_args(inputs),
         }
     }
 
 
 async def exec_load_vae(data: dict, inputs: dict) -> dict:
-    """widget → SEEDVR2_VAE 配置 dict(device/tiling)。"""
+    """widget → SEEDVR2_VAE 配置 dict(device/tiling/torch_compile)。"""
     return {
         "vae": {
             "model": data.get("vae_model") or "",
@@ -47,11 +69,13 @@ async def exec_load_vae(data: dict, inputs: dict) -> dict:
             "decode_tile_size": _int(data.get("decode_tile_size"), 512),
             "decode_tile_overlap": _int(data.get("decode_tile_overlap"), 64),
             "offload_device": data.get("offload_device") or "none",
+            "torch_compile_args": _compile_args(inputs),
         }
     }
 
 
 EXECUTORS = {
+    "seedvr2_torch_compile": exec_torch_compile,
     "seedvr2_load_dit": exec_load_dit,
     "seedvr2_load_vae": exec_load_vae,
 }
