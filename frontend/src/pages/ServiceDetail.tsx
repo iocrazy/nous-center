@@ -39,6 +39,7 @@ import SchemaDrivenForm from '../components/playground/SchemaDrivenForm'
 import SchemaDrivenOutput from '../components/playground/SchemaDrivenOutput'
 import { useTasksByWorkflow, type ExecutionTask } from '../api/tasks'
 import { apiFetch } from '../api/client'
+import { confirmDialog } from '../stores/confirm'
 
 export interface ServiceDetailPageProps {
   serviceId: string
@@ -197,8 +198,8 @@ function Header({ svc }: { svc: ServiceDetailT }) {
           </SmallBtn>
         )}
         <SmallBtn
-          onClick={() => {
-            if (confirm(`下线服务 ${svc.name}？此操作不可逆`)) {
+          onClick={async () => {
+            if (await confirmDialog({ message: `下线服务 ${svc.name}?\n此操作不可逆。`, danger: true, confirmText: '下线' })) {
               del.mutate(svc.id, { onSuccess: () => history.back() })
             }
           }}

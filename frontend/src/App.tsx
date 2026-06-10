@@ -6,6 +6,7 @@ import WorkflowCanvasToolbar from './components/layout/WorkflowCanvasToolbar'
 import TaskDetailModal from './components/layout/TaskDetailModal'
 import NodeEditor from './components/nodes/NodeEditor'
 import ToastContainer from './components/common/ToastContainer'
+import ConfirmHost from './components/common/ConfirmHost'
 import { usePanelStore, type OverlayId } from './stores/panel'
 import { useWorkspaceStore } from './stores/workspace'
 import { apiFetch } from './api/client'
@@ -116,6 +117,7 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
         </div>
       </div>
       <ToastContainer />
+      <ConfirmHost />
       <TaskDetailModal />
     </div>
   )

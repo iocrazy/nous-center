@@ -23,6 +23,7 @@ import {
   useCancelTask, useDeleteTask, useRetryTask, useTasks, type ExecutionTask,
 } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
+import { confirmDialog } from '../../stores/confirm'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
 import { groupByDate, sortTasks } from '../panels/taskSort'
 
@@ -74,9 +75,9 @@ export default function QueueProgressOverlay({
   const onInterruptAll = () => {
     for (const r of running) cancelMutation.mutate(r.id)
   }
-  const onClearQueuedAll = () => {
+  const onClearQueuedAll = async () => {
     if (queued.length === 0) return
-    if (!confirm(`清理 ${queued.length} 个排队任务?`)) return
+    if (!(await confirmDialog({ message: `清理 ${queued.length} 个排队任务?`, danger: true, confirmText: '清理' }))) return
     for (const q of queued) {
       cancelMutation.mutate(q.id, { onSettled: () => deleteMutation.mutate(q.id) })
     }
@@ -281,8 +282,8 @@ function ExpandedView({
     {
       label: '清空历史记录', danger: true,
       disabled: done.length === 0,
-      onClick: () => {
-        if (!confirm(`清空 ${done.length} 条历史记录?(不可恢复)`)) return
+      onClick: async () => {
+        if (!(await confirmDialog({ message: `清空 ${done.length} 条历史记录?(不可恢复)`, danger: true, confirmText: '清空' }))) return
         for (const t of done) deleteMutation.mutate(t.id)
       },
     },

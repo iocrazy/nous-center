@@ -10,6 +10,7 @@ import {
 } from '../api/workflows'
 // (legacy duplicate import removed below)
 import { useServices, type ServiceRow } from '../api/services'
+import { confirmDialog } from '../stores/confirm'
 import { useToastStore } from '../stores/toast'
 
 type Tab = 'all' | 'mine' | 'template' | 'published'
@@ -35,8 +36,8 @@ export default function WorkflowsList() {
   const save = useSaveWorkflow()
   const toast = useToastStore((s) => s.add)
 
-  const handleDelete = (wf: WorkflowSummary) => {
-    if (!window.confirm(`确认删除工作流 "${wf.name}"？这是不可撤销的操作。`)) return
+  const handleDelete = async (wf: WorkflowSummary) => {
+    if (!(await confirmDialog({ message: `确认删除工作流 "${wf.name}"?\n这是不可撤销的操作。`, danger: true, confirmText: '删除' }))) return
     del.mutate(String(wf.id), {
       onSuccess: () => toast(`已删除 ${wf.name}`, 'success'),
       onError: (e) => toast(`删除失败：${(e as Error).message}`, 'error'),
