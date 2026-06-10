@@ -27,6 +27,9 @@ export interface EngineInfo {
    *  超分(可独立加载,load 接入在 PR-3) component=单文件组件(随 pipeline 加载,不独立可加载)
    *  lora=LoRA(随模型加载)。缺省 model(向后兼容)。 */
   kind?: 'model' | 'upscale' | 'component' | 'lora'
+  /** diffusion_models 单文件组件推断架构(z-image/flux2/anima)—— 预热时传给后端避免默认 flux2 错配。
+   *  统一模型管理收尾 PR-2。非组件 / 无法推断 → null/undefined。 */
+  arch?: string | null
   /** 已加载单文件组件的 L1 身份串(file|device|dtype|loras,含真实 device)。常驻 toggle 按它
    *  精确匹配,避 device='auto' 错配。未加载 / 非组件 → null。组件 L1 PR-3a。 */
   state_key?: string | null
@@ -196,13 +199,14 @@ export function useSetSeedvr2Resident() {
 export function usePreloadComponent() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ name, dtype, device, resident }:
-      { name: string; dtype?: string; device?: string; resident?: boolean }) =>
+    mutationFn: ({ name, dtype, device, resident, arch }:
+      { name: string; dtype?: string; device?: string; resident?: boolean; arch?: string | null }) =>
       apiFetch('/api/v1/engines/component/preload', {
         method: 'POST',
         body: JSON.stringify({
           name, dtype: dtype ?? 'bfloat16',
           ...(device ? { device } : {}),  // 省略 → 后端 auto 自动选卡
+          ...(arch ? { arch } : {}),      // diffusion_models 推断 arch(避免默认 flux2 错配 Z-Image)
           resident: resident ?? false,
         }),
       }),
@@ -386,6 +390,26 @@ export function useLoadedAdapters() {
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 4000,
+  })
+}
+
+/** 卸载已加载的 combo adapter(引擎库「已加载」卡卸载按钮,统一模型管理收尾 PR-2)。 */
+export function useUnloadAdapter() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ model_id }: { model_id: string }) =>
+      apiFetch('/api/v1/engines/loaded-adapter/unload', {
+        method: 'POST',
+        body: JSON.stringify({ model_id }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['loaded-adapters'] })
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add('已加载模型开始卸载...（几秒后刷新）', 'info')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`卸载失败: ${error.message}`, 'error')
+    },
   })
 }
 

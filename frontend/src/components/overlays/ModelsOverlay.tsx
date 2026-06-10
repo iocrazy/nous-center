@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect } from 'react'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, X } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
-  useLoadedAdapters, usePreloadSeedvr2, useUnloadSeedvr2,
+  useLoadedAdapters, usePreloadSeedvr2, useUnloadSeedvr2, useUnloadAdapter,
   useSetSeedvr2Resident, usePreloadComponent, useSetComponentResident, useUnloadComponent,
   type EngineInfo, type LoadedAdapter,
 } from '../../api/engines'
@@ -101,7 +101,7 @@ export default function ModelsOverlay() {
           if (engine.state_key) unloadComponent.mutate({ state_key: engine.state_key })
           else unloadComponent.mutate({ name: engine.name })
         } else {
-          preloadComponent.mutate({ name: engine.name })
+          preloadComponent.mutate({ name: engine.name, arch: engine.arch })
         }
         return
       }
@@ -186,7 +186,7 @@ export default function ModelsOverlay() {
               submenu: (gpuData?.devices ?? []).map((g) => ({
                 label: `GPU ${g.index}: ${g.name}`,
                 onClick: () => preloadComponent.mutate({
-                  name: ctxMenu.model!.name, device: `cuda:${g.index}`,
+                  name: ctxMenu.model!.name, device: `cuda:${g.index}`, arch: ctxMenu.model!.arch,
                 }),
               })),
             } as MenuItem]
@@ -198,7 +198,7 @@ export default function ModelsOverlay() {
         ...(isComponent && !cmLoaded
           ? [{
               label: '预加载到显存 + 常驻（自动选卡）',
-              onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, resident: true }),
+              onClick: () => preloadComponent.mutate({ name: ctxMenu.model!.name, resident: true, arch: ctxMenu.model!.arch }),
             } as MenuItem]
           : []),
         {
@@ -532,6 +532,7 @@ export default function ModelsOverlay() {
 function AdapterCard({ adapter }: { adapter: LoadedAdapter }) {
   const vramGb = adapter.vram_mb != null ? (adapter.vram_mb / 1024).toFixed(1) : null
   const gpuLabel = adapter.gpu_index != null ? `GPU ${adapter.gpu_index}` : null
+  const unloadAdapter = useUnloadAdapter()
   return (
     <div
       className="rounded-md"
@@ -552,6 +553,21 @@ function AdapterCard({ adapter }: { adapter: LoadedAdapter }) {
           {adapter.display_name}
         </span>
         <span style={{ fontSize: 9, color: 'var(--ok)', flexShrink: 0 }}>running</span>
+        {/* 已加载 combo 从引擎库直接卸载(统一模型管理收尾 PR-2)。 */}
+        <button
+          type="button"
+          title="卸载（释放显存）"
+          onClick={() => unloadAdapter.mutate({ model_id: adapter.model_id })}
+          disabled={unloadAdapter.isPending}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 18, height: 18, borderRadius: 4, flexShrink: 0,
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--muted)', opacity: unloadAdapter.isPending ? 0.4 : 1,
+          }}
+        >
+          <X size={13} />
+        </button>
       </div>
       <div className="flex flex-wrap items-center gap-1.5" style={{ fontSize: 9, color: 'var(--muted)' }}>
         <Tag

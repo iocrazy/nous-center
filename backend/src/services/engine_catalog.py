@@ -109,6 +109,20 @@ _COMPONENT_ROLES = [
 ]
 
 
+def _infer_arch(fn: str, abs_path: str) -> str | None:
+    """diffusion_models 单文件 → 推断架构(引擎库预热传 arch,避免默认 flux2 错配)。统一模型管理收尾 PR-2。
+    文件名/路径启发式(对齐文件命名约定):z-image/z_image → z-image;anima 子目录/名 → anima;其余 → flux2。
+    单组件无元信息无法 100% 准,够引擎库预热反推参考库用(用户也可在工作流 loader 节点显式选 adapter_arch)。"""
+    s = f"{abs_path} {fn}".lower()
+    if "z-image" in s or "z_image" in s or "zimage" in s:
+        return "z-image"
+    if "anima" in s:
+        return "anima"
+    if "qwen" in s and "edit" in s:
+        return "qwen-edit"
+    return "flux2"
+
+
 def component_catalog_entries(app_state: Any) -> list[EngineInfo]:
     """单文件组件 → 引擎库条目(kind=component/lora,不独立可加载)。
     loaded:该文件出现在某 loaded adapter 的 source_files(随 pipeline 加载)。"""
@@ -139,6 +153,8 @@ def component_catalog_entries(app_state: Any) -> list[EngineInfo]:
                 display_name=fn,
                 type="image",
                 kind=kind,
+                # diffusion_models 单文件推断 arch(引擎库预热传给 /component/preload,避免默认 flux2 错配)。
+                arch=_infer_arch(fn, str(c.get("abs_path") or "")) if role == "diffusion_models" else None,
                 status="loaded" if match else "unloaded",
                 gpu=gpu_idx if gpu_idx is not None else 0,
                 vram_gb=round((c.get("size_mb") or 0) / 1024, 1),
