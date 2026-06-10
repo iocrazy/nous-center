@@ -493,6 +493,11 @@ def _place_components_per_device(
                 _wrap_method(module, "encode", dev_t, compute_t, stash)
 
 
+# 非 euler 采样器 —— 走 Z-Image 手写分段循环(_run_zimage_segmented)而非整段 pipe()。
+# euler 仍走整段 pipe() 保 golden;这些经手写步实现(逐式对照 ComfyUI k_diffusion)。
+_SEGMENTED_SAMPLERS = {"euler_ancestral", "dpmpp_2m", "dpmpp_2s_ancestral"}
+
+
 class ModularImageBackend(InferenceAdapter):
     """图像引擎(标准 diffusers Flux2KleinPipeline);class 名是历史包袱(原 ModularPipeline,见模块 docstring)。
 
@@ -702,8 +707,9 @@ class ModularImageBackend(InferenceAdapter):
         steps = int(getattr(req, "steps", 0) or 0)
         end_truncates = end is not None and int(end) < steps
         add_noise = bool(getattr(req, "add_noise", True))
-        # 非 normal 调度器(simple/beta/…,PR-1)或 euler_ancestral 采样器(PR-1b)也走手写循环 ——
-        # 手动算 sigma / 手写 ancestral 步。normal+euler+无分段 = 整段 pipe(零回归)。
+        # 非 normal 调度器(simple/beta/…,PR-1)或非 euler 采样器(euler_ancestral PR-1b /
+        # dpmpp_2m / dpmpp_2s_ancestral dpm++ PR)也走手写循环 —— 手动算 sigma / 手写采样步。
+        # normal+euler+无分段 = 整段 pipe(零回归)。
         sched = (getattr(req, "scheduler", "normal") or "normal")
         sampler = (getattr(req, "sampler_name", "euler") or "euler")
         # 采样期 latent 干预(LCS 等,spec 2026-06-10)需 per-step 挂钩点 —— 仅手写循环有;有干预
@@ -711,7 +717,7 @@ class ModularImageBackend(InferenceAdapter):
         has_interventions = bool(getattr(req, "interventions", None))
         return (start > 0 or end_truncates or (not add_noise)
                 or getattr(req, "init_latent_ref", None) is not None
-                or sched != "normal" or sampler == "euler_ancestral"
+                or sched != "normal" or sampler in _SEGMENTED_SAMPLERS
                 or has_interventions)
 
     def _load_init_latent(self, req: Any, device: str) -> Any:
@@ -886,6 +892,20 @@ class ModularImageBackend(InferenceAdapter):
 
         # 5. denoise loop —— 逐行对照 pipeline_z_image.py(guidance=0 单次前向)。
         import asyncio  # noqa: PLC0415
+        import math  # noqa: PLC0415
+
+        def _predict_noise(lat_in: Any, sigma_scalar: float) -> Any:
+            """在任意 sigma 处再前向一次(dpmpp_2s_ancestral 的中间 D_i 用)。复刻主循环的前向 + negate;
+            timestep = 1 - sigma(主循环 (1000 - σ*1000)/1000 的等价直写)。**仅新 dpmpp 路用,
+            euler/euler_ancestral 主路仍走下方 inline 计算 → golden byte-identical 不受影响。**"""
+            ts = torch.full((lat_in.shape[0],), 1.0 - sigma_scalar,
+                            dtype=torch.float32, device=device)
+            lmi = lat_in.to(transformer.dtype).unsqueeze(2)
+            out = transformer(list(lmi.unbind(dim=0)), ts, prompt_embeds, return_dict=False)[0]
+            npred = torch.stack([o.float() for o in out], dim=0).squeeze(2)
+            return (-npred).to(torch.float32)
+
+        old_denoised: Any = None  # dpmpp_2m 多步状态(上一步 denoised);其余采样器不用
         for i in range(seg_steps):
             if cancel_flag is not None and cancel_flag.is_set():
                 raise asyncio.CancelledError()
@@ -929,6 +949,62 @@ class ModularImageBackend(InferenceAdapter):
                     latents = sdr * latents + (1.0 - sdr) * denoised
                     noise = torch.randn(latents.shape, generator=gen, device=device, dtype=torch.float32)
                     latents = (alpha_ip1 / alpha_down) * latents + noise * renoise_coeff
+            elif sampler_name == "dpmpp_2m":
+                # DPM-Solver++(2M) —— 逐式对照 ComfyUI sample_dpmpp_2m(k_diffusion/sampling.py:796)。
+                # t_fn=-log(σ)、sigma_fn=exp(-t):一阶项展开 == RF euler 一阶(σ_next/σ 漂移),故对
+                # Z-Image(CONST/RF)与 euler 一致基线上做二阶外插。确定性、无额外前向、无噪声。
+                sigma = float(seg[i])
+                sigma_next = float(seg[i + 1])
+                denoised = latents - sigma * noise_pred
+                if sigma_next == 0.0:
+                    latents = denoised
+                else:
+                    t_cur = -math.log(sigma)
+                    t_next = -math.log(sigma_next)
+                    h = t_next - t_cur
+                    ratio = math.exp(-t_next) / math.exp(-t_cur)  # == σ_next/σ
+                    e = math.expm1(-h)
+                    if old_denoised is None:
+                        latents = ratio * latents - e * denoised
+                    else:
+                        # 二阶:r=h_last/h,用上一步 denoised 外插(ComfyUI denoised_d)。
+                        r = (t_cur - (-math.log(float(seg[i - 1])))) / h
+                        denoised_d = (1.0 + 1.0 / (2.0 * r)) * denoised - (1.0 / (2.0 * r)) * old_denoised
+                        latents = ratio * latents - e * denoised_d
+                old_denoised = denoised
+            elif sampler_name == "dpmpp_2s_ancestral":
+                # DPM-Solver++(2S) ancestral, rectified-flow 变体 —— 逐式对照 ComfyUI
+                # sample_dpmpp_2s_ancestral_RF(k_diffusion/sampling.py:686;λ=log((1-σ)/σ)、
+                # sigma_fn=1/(e^λ+1))。二阶单步:中间 sigma_s 处再前向一次(D_i),NFE 翻倍;末步退化
+                # euler;eta=1/s_noise=1(ComfyUI 默认)。
+                sigma = float(seg[i])
+                sigma_next = float(seg[i + 1])
+                denoised = latents - sigma * noise_pred
+                # 末步(sigma_next=0)守卫先于除法 —— Z-Image normal 调度尾部是双 0(sigma_min=0 致
+                # seg[-2]=seg[-1]=0),不先守卫会 0/0。ComfyUI 末步 to_d 到 sigma_down=0 代数化简 ==
+                # latents=denoised(与 euler_ancestral 同),sigma=0 退化亦然。
+                if sigma_next == 0.0:
+                    latents = denoised
+                else:
+                    downstep_ratio = 1.0 + (sigma_next / sigma - 1.0) * 1.0  # eta=1
+                    sigma_down = sigma_next * downstep_ratio
+                    alpha_ip1 = 1.0 - sigma_next
+                    alpha_down = 1.0 - sigma_down
+                    renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
+                    if sigma == 1.0:
+                        sigma_s = 0.9999  # λ(1.0)=log(0) 发散,ComfyUI 同样钳制
+                    else:
+                        t_i = math.log((1.0 - sigma) / sigma)
+                        t_down = math.log((1.0 - sigma_down) / sigma_down)
+                        s = t_i + 0.5 * (t_down - t_i)  # r=1/2
+                        sigma_s = 1.0 / (math.exp(s) + 1.0)
+                    ssr = sigma_s / sigma
+                    u = ssr * latents + (1.0 - ssr) * denoised
+                    d_i = u - sigma_s * _predict_noise(u, sigma_s)  # 中间二阶前向(不过 intervention)
+                    sdr = sigma_down / sigma
+                    latents = sdr * latents + (1.0 - sdr) * d_i
+                    noise = torch.randn(latents.shape, generator=gen, device=device, dtype=torch.float32)
+                    latents = (alpha_ip1 / alpha_down) * latents + noise * renoise_coeff  # s_noise=1
             else:
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
             # 进度 + 逐组件时长(与整段路径对齐:denoise 首/末步时间戳 → VAE Decode 真时长)。
