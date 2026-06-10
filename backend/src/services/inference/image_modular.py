@@ -1254,10 +1254,16 @@ class ModularImageBackend(InferenceAdapter):
 
         # PR-3 进度 + 中止(对齐 ComfyUI):callback_on_step_end 每步触发 ——
         # cancel_flag 置位 → raise CancelledError(中断 pipe(),runner 落 cancelled);
-        # progress_callback(done, total, **extras) → runner 发 P.NodeProgress。仅 Flux2KleinPipeline
-        # 走标准 pipe,callback_on_step_end 内置;modular fallback(ERNIE 等)不支持回调,这里不挂。
-        if self.pipeline_class == "Flux2KleinPipeline" and (
-                progress_callback is not None or cancel_flag is not None or interventions):
+        # progress_callback(done, total, **extras) → runner 发 P.NodeProgress。
+        # 三个标准 pipeline(Flux2/Z-Image/Qwen-Edit)diffusers 原生都支持 callback_on_step_end
+        # (已核 pipeline 源)—— 此前只挂 Flux2 是历史遗留,Z-Image 标准路(normal+euler 纯文生图)
+        # 和 Qwen-Edit 既无逐步进度也无 step 级取消。Z-Image 分段路(_run_zimage_segmented)自带
+        # 进度不经此;modular fallback(ERNIE 等)不支持回调,仍不挂。
+        # interventions 仍 Flux2-only(Z-Image 干预走分段路;Qwen-Edit 未定义干预语义,不悄悄开)。
+        _step_cb_pipes = ("Flux2KleinPipeline", "ZImagePipeline", "QwenImageEditPlusPipeline")
+        if self.pipeline_class in _step_cb_pipes and (
+                progress_callback is not None or cancel_flag is not None
+                or (interventions and self.pipeline_class == "Flux2KleinPipeline")):
             def _step_cb(_pipe: Any, i: int, _t: Any, cb_kwargs: dict) -> dict:
                 # 中止:step 边界检查(ComfyUI 是 op 级 / nous diffusers 这条路只能 step 级,
                 # ~250ms/步已够响应)。raise BaseException(CancelledError)穿出 pipe()。
@@ -1273,7 +1279,8 @@ class ModularImageBackend(InferenceAdapter):
                 # 采样期 latent 干预(spec 2026-06-10):diffusers callback 给的是 step 后 latents(非
                 # denoised x0);PR-1 在 latents 上过 chain 验管道。**PR-2 精修**:LCS 锐化作用在 denoised,
                 # 需按当前 sigma 换算 denoised 再干预(否则方向语义差)。改后写回 cb_kwargs 交还 diffusers。
-                if interventions:
+                # Flux2-only(外层 gate 扩到 Z-Image/Qwen-Edit 后,这里显式守住原行为)。
+                if interventions and self.pipeline_class == "Flux2KleinPipeline":
                     _lat = cb_kwargs.get("latents")
                     if _lat is not None:
                         _sig = float(cb_kwargs.get("sigma", 0.0)) if isinstance(cb_kwargs, dict) else 0.0

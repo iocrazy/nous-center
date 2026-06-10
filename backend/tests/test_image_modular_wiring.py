@@ -617,3 +617,16 @@ def test_ref_class_name_reads_config(tmp_path):
     (tmp_path / "transformer" / "config.json").write_text(json.dumps({"_class_name": "ZImageTransformer2DModel"}))
     assert image_modular._ref_class_name(str(tmp_path), "transformer") == "ZImageTransformer2DModel"
     assert image_modular._ref_class_name(str(tmp_path), "vae") == ""  # 缺 → 空(不崩)
+
+
+def test_step_callback_attaches_for_all_standard_pipelines():
+    """进度/取消的 callback_on_step_end 必须覆盖三个标准 pipeline(Flux2/Z-Image/Qwen-Edit
+    diffusers 原生都支持,已核 pipeline 源)—— 只挂 Flux2 是历史遗留,Z-Image 标准路和
+    Qwen-Edit 无逐步进度也无 step 级取消。interventions 仍 Flux2-only。源码检查。"""
+    import pathlib
+
+    src = (pathlib.Path(__file__).parent.parent
+           / "src/services/inference/image_modular.py").read_text()
+    assert '_step_cb_pipes = ("Flux2KleinPipeline", "ZImagePipeline", "QwenImageEditPlusPipeline")' in src
+    assert 'interventions and self.pipeline_class == "Flux2KleinPipeline"' in src, \
+        "干预必须守住 Flux2-only(Z-Image 走分段路;Qwen-Edit 未定义干预语义)"
