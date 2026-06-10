@@ -104,6 +104,16 @@ class SetComponentResident:
 
 
 @dataclass(frozen=True)
+class UnloadComponent:
+    """主进程 → image runner:卸载**已预加载**的单组件(引擎库「出缓存」,统一模型管理收尾 PR-1)。
+    state_key = component_state_key(file|device|dtype|loras)。runner 走 mm.unload_image_component:
+    清常驻 + refs 空则出 L1 池真释放显存;refs 非空(combo 在用)→ 只清常驻待其自然释放。
+    没加载该组件则 no-op;状态经下个 Pong 快照反映。"""
+    state_key: str
+    kind: Literal["unload_component"] = "unload_component"
+
+
+@dataclass(frozen=True)
 class SetModelResident:
     """主进程 → runner:切已加载 by-key 模型(如 SeedVR2)的常驻位(组件 L1 PR-2c)。
     model_id = runner _models 的键(如 image:SeedVR2:<hash>)。runner 走 mm.set_model_resident;
@@ -206,6 +216,7 @@ _KIND_TO_CLASS: dict[str, type] = {
     "preload_seedvr2": PreloadSeedVR2,
     "preload_component": PreloadComponent,
     "set_component_resident": SetComponentResident,
+    "unload_component": UnloadComponent,
     "set_model_resident": SetModelResident,
     "ready": Ready,
     "node_result": NodeResult,
@@ -218,7 +229,7 @@ _KIND_TO_CLASS: dict[str, type] = {
 # 类型注解仅供调用方做 isinstance / match —— 任意消息的联合类型
 Message = (
     LoadModel | UnloadModel | RunNode | Abort | Ping | PreloadComponents | PreloadSeedVR2
-    | PreloadComponent | SetComponentResident | SetModelResident
+    | PreloadComponent | SetComponentResident | UnloadComponent | SetModelResident
     | Ready | NodeResult | NodeProgress | ModelEvent | Pong | ComponentEvent
 )
 

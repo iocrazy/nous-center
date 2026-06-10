@@ -154,6 +154,16 @@ def _handle_set_component_resident(state: _RunnerState, msg: P.SetComponentResid
               file=sys.stderr, flush=True)
 
 
+def _handle_unload_component(state: _RunnerState, msg: P.UnloadComponent) -> None:
+    """UnloadComponent → mm.unload_image_component(出 L1 + 释放显存)。同步、不抛 ——
+    没加载该组件则 no-op;状态经下个 Pong 快照反映。统一模型管理收尾 PR-1。"""
+    try:
+        state.mm.unload_image_component(msg.state_key)
+    except Exception as e:  # noqa: BLE001
+        print(f"[runner_process] unload_component failed: {type(e).__name__}: {e}",
+              file=sys.stderr, flush=True)
+
+
 def _handle_set_model_resident(state: _RunnerState, msg: P.SetModelResident) -> None:
     """SetModelResident → mm.set_model_resident(切 by-key 模型常驻,如 SeedVR2)。同步、不抛 ——
     没加载则 no-op;状态经下个 Pong 快照反映。组件 L1 PR-2c。"""
@@ -248,6 +258,8 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
             await _handle_preload_component(state, ch, msg)
         elif isinstance(msg, P.SetComponentResident):
             _handle_set_component_resident(state, msg)
+        elif isinstance(msg, P.UnloadComponent):
+            _handle_unload_component(state, msg)
         elif isinstance(msg, P.SetModelResident):
             _handle_set_model_resident(state, msg)
         elif isinstance(msg, P.LoadModel):
