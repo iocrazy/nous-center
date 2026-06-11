@@ -25,16 +25,18 @@ class VoxCPM2Engine(TTSEngine):
 
     def load_sync(self) -> None:
         from voxcpm import VoxCPM
-        from src.config import get_settings
         import os
 
-        settings = get_settings()
-        full_path = os.path.join(settings.LOCAL_MODELS_PATH, self.model_path)
+        # base 类已把 models.yaml 相对路径解析成绝对(#476 起);盘上没有 → HF id 兜底。
+        full_path = str(self.model_path)
         if not os.path.exists(full_path):
             full_path = "openbmb/VoxCPM2"
 
-        logger.info("Loading VoxCPM2 from %s", full_path)
-        self._voxcpm = VoxCPM.from_pretrained(full_path, load_denoiser=False)
+        # device:from_pretrained 原生收 device 参数(2026-06-11 体检 —— 此前没传,
+        # 调度选卡形同虚设全落库默认卡)。"auto"/裸 "cuda"/空 → None 让库自选。
+        dev = self.device if self.device and self.device not in ("auto", "cuda") else None
+        logger.info("Loading VoxCPM2 from %s (device=%s)", full_path, dev or "auto")
+        self._voxcpm = VoxCPM.from_pretrained(full_path, load_denoiser=False, device=dev)
         self._model = True
         logger.info("VoxCPM2 loaded (sample_rate=%d)", self._voxcpm.tts_model.sample_rate)
 

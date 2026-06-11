@@ -64,14 +64,19 @@ def _get_model(model_name: str, device: str = "auto", load_denoiser: bool = Fals
 
     from src.config import get_settings
     settings = get_settings()
-    model_path = os.path.join(settings.LOCAL_MODELS_PATH, "tts", model_name)
+    # TTS 模型盘上目录是 speech/(#476 同口径);兼容旧 tts/ 兜底,两处都没有走 HF。
+    model_path = f"openbmb/{model_name}"
+    for _sub in ("speech", "tts"):
+        cand = os.path.join(settings.LOCAL_MODELS_PATH, _sub, model_name)
+        if os.path.exists(cand):
+            model_path = cand
+            break
 
-    if not os.path.exists(model_path):
-        # Try loading from HuggingFace/ModelScope ID
-        model_path = f"openbmb/{model_name}"
-
-    logger.info("Loading VoxCPM model from %s (device=%s, denoiser=%s)", model_path, device, load_denoiser)
-    model = VoxCPM.from_pretrained(model_path, load_denoiser=load_denoiser)
+    # device:from_pretrained 原生收(2026-06-11 体检 —— 此前没传,缓存键含 device 但
+    # 加载忽略 = widget 形同虚设)。"auto"/裸 "cuda" → None 让库自选。
+    dev = device if device and device not in ("auto", "cuda") else None
+    logger.info("Loading VoxCPM model from %s (device=%s, denoiser=%s)", model_path, dev or "auto", load_denoiser)
+    model = VoxCPM.from_pretrained(model_path, load_denoiser=load_denoiser, device=dev)
     _MODEL_CACHE[cache_key] = model
     logger.info("VoxCPM model loaded")
     return model
@@ -85,7 +90,8 @@ async def exec_voxcpm2_load_model(data: dict, inputs: dict) -> dict:
     device = data.get("device", "auto")
     load_denoiser = data.get("load_denoiser", False)
 
-    model = _get_model(model_name, device, load_denoiser)
+    # 调用即预热模块级 _MODEL_CACHE(generate 同键命中);输出只传配置描述符。
+    _get_model(model_name, device, load_denoiser)
     return {"model": {"_type": "voxcpm2", "model_name": model_name, "device": device, "load_denoiser": load_denoiser}}
 
 
