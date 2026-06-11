@@ -185,17 +185,26 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
     # 多图(多参考):上游多路 → inputs 取到的可能是单 url;前端多图先并成逗号串(后续多端口再扩)。
     # 端口未连 = None → 纯文生图(零回归)。runner 把 URL 解析回本地路径再塞 ImageRequest.input_image。
     input_image = inputs.get("image_url") or inputs.get("image")
+    # 引擎边界归一(2026-06-11 体检):widget 约束(256-2048 step64 / steps / cfg)只是 UI
+    # 滑杆,旧工作流 JSON / API 直发可携非法值 —— VAE 8 倍下采 + patchify 要求尺寸 16 对齐,
+    # 奇数尺寸在 diffusers 深处崩且报错难读。clamp + 16 对齐静默归一(同 seedvr2 batch_size
+    # 4n+1 模式);合法值原样不变(零回归)。
+    def _dim(v, default: int) -> int:
+        d = max(256, min(4096, int(v or default)))
+        return (d // 16) * 16
+
     latent: dict = {
         "_type": "flux2_latent", "model": model, "conditioning": cond,
         # round5:空串 widget(default: "")→ 默认值,不 int("")/float("") 崩
-        "width": int(data.get("width") or 1024), "height": int(data.get("height") or 1024),
-        "steps": int(data.get("steps") or 25), "cfg_scale": float(data.get("cfg_scale") or 4.0),
+        "width": _dim(data.get("width"), 1024), "height": _dim(data.get("height"), 1024),
+        "steps": max(1, min(200, int(data.get("steps") or 25))),
+        "cfg_scale": max(0.0, min(30.0, float(data.get("cfg_scale") or 4.0))),
         "sampler_name": data.get("sampler_name") or "euler",
         "scheduler": data.get("scheduler") or "normal",
         "seed": seed,
         # img2img 重绘强度(PR-A2):默认 1.0 = 全量去噪 ≈ 文生图(零回归)。仅 z-image(有 img2img 变体)
         # + 连了 image 端口 + strength<1 时,引擎走 ZImageImg2ImgPipeline 加噪重去噪。
-        "strength": float(data.get("strength") or 1.0),
+        "strength": max(0.0, min(1.0, float(data.get("strength") or 1.0))),
     }
     if input_image:
         latent["input_image"] = str(input_image)

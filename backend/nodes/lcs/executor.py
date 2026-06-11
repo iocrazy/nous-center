@@ -19,21 +19,27 @@ def _num(v: Any, default: float) -> float:
 
 async def exec_sharpness_intervene(data: dict, inputs: dict) -> dict:
     """widget → lcs_sharpness 描述符,append 到上游干预链 → intervene list。"""
+    # 引擎边界归一(2026-06-11 体检):widget 范围只是 UI 滑杆,旧 JSON/API 直发可携非法值
+    # (strength=100 会把 latent 推爆)。clamp 到 widget 同款范围;合法值原样(零回归)。
     desc = {
         "_type": "lcs_sharpness",
-        "strength": _num(data.get("strength"), 1.0),
-        "start_step": int(_num(data.get("start_step"), 5)),
-        "end_step": int(_num(data.get("end_step"), 15)),
+        "strength": max(-5.0, min(5.0, _num(data.get("strength"), 1.0))),
+        "start_step": max(0, int(_num(data.get("start_step"), 5))),
+        "end_step": max(0, int(_num(data.get("end_step"), 15))),
     }
     return {"intervene": [*_prev_chain(inputs), desc]}
 
 
+_ANCHOR_MODES = {"self_anchor", "smooth"}  # 与 node.yaml options / lcs_integration 真分支同步
+
+
 async def exec_color_anchor(data: dict, inputs: dict) -> dict:
     """widget → lcs_color_anchor 描述符,append 到上游干预链 → intervene list。"""
+    _mode = str(data.get("mode") or "self_anchor")
     desc = {
         "_type": "lcs_color_anchor",
-        "mode": data.get("mode") or "self_anchor",
-        "intensity": _num(data.get("intensity"), 0.8),
+        "mode": _mode if _mode in _ANCHOR_MODES else "self_anchor",
+        "intensity": max(0.0, min(1.0, _num(data.get("intensity"), 0.8))),
     }
     return {"intervene": [*_prev_chain(inputs), desc]}
 
