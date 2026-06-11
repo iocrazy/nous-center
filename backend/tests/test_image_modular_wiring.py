@@ -646,7 +646,8 @@ def test_step_callback_attaches_for_all_standard_pipelines():
 
     src = (pathlib.Path(__file__).parent.parent
            / "src/services/inference/image_modular.py").read_text()
-    assert '_step_cb_pipes = ("Flux2KleinPipeline", "ZImagePipeline", "QwenImageEditPlusPipeline")' in src
+    assert ('_step_cb_pipes = ("Flux2KleinPipeline", "ZImagePipeline", "QwenImageEditPlusPipeline", '
+            '"Ideogram4Pipeline")') in src
     assert 'interventions and self.pipeline_class == "Flux2KleinPipeline"' in src, \
         "干预必须守住 Flux2-only(Z-Image 走分段路;Qwen-Edit 未定义干预语义)"
 
@@ -663,3 +664,36 @@ def test_infer_pipe_exception_clears_cuda_cache():
     assert exc != -1, "pipe 执行块缺异常清理"
     tail = blk[exc:exc + 400]
     assert "empty_cache()" in tail and "raise" in tail, "异常清理必须 empty_cache 后 re-raise"
+
+
+def test_ideogram4_from_pretrained_and_guidance_schedule_none(monkeypatch):
+    """Ideogram-4(2026-06-11):整模型 from_pretrained;call_kwargs 必须显式
+    guidance_schedule=None —— pipeline 的 guidance_scale/guidance_schedule 互斥且
+    schedule 有非 None 默认,只传标量必撞 ValueError。"""
+    import asyncio
+
+    pipe = MagicMock(name="ideo_pipe")
+    out = MagicMock()
+    out.images = [MagicMock()]
+    pipe.return_value = out
+    cls = MagicMock(name="Ideogram4Pipeline")
+    cls.from_pretrained.return_value = pipe
+    monkeypatch.setattr(image_modular, "_import_ideogram4_pipeline", lambda: cls)
+    monkeypatch.setattr(image_modular, "_save_image_and_sign", lambda *a, **k: {"url": "/u.png"}, raising=False)
+
+    be = image_modular.ModularImageBackend(repo="/m/ideo", device="cpu", pipeline_class="Ideogram4Pipeline")
+    be._ensure_pipe()
+    cls.from_pretrained.assert_called_once()
+
+    async def _run():
+        return await be.infer(ImageRequest(
+            request_id="i4", prompt='{"high_level_description": "poster"}',
+            steps=4, width=64, height=64, cfg_scale=7.0))
+    try:
+        asyncio.run(_run())
+    except Exception:
+        pass  # 出图后处理(PIL/签名)在 mock 下可能断;只验 pipe 调用参数
+    assert pipe.called, "pipe 未被调用"
+    kw = pipe.call_args.kwargs
+    assert kw.get("guidance_scale") == 7.0
+    assert "guidance_schedule" in kw and kw["guidance_schedule"] is None

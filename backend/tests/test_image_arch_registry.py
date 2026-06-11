@@ -67,3 +67,17 @@ def test_qwen_edit_arch_registered():
     assert s.caps.default_guidance_scale() == 4.0
     assert s.caps.default_steps() == 40
     assert "QwenImageEditPlusPipeline" in MODEL_ARCH_REGISTRY
+
+
+def test_ideogram4_arch_registered():
+    """Ideogram-4(2026-06-11):ideogram4 → Ideogram4Pipeline,走 modular,纯文生图,
+    双 DiT 非对称 CFG(supports_cfg,default 7.0 / 20 步),无 negative(__call__ 无入参)。"""
+    s = arch_spec_by_name("ideogram4")
+    assert s.pipeline_class == "Ideogram4Pipeline"
+    assert s.adapter == "modular"
+    assert s.needs_image_input is False
+    assert s.caps.supports_cfg() is True
+    assert s.caps.supports_negative_prompt() is False
+    assert s.caps.default_guidance_scale() == 7.0
+    assert s.caps.default_steps() == 20
+    assert s.caps.supported_samplers() == {"euler"}

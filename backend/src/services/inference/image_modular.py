@@ -76,6 +76,16 @@ def _import_qwen_edit_pipeline() -> Any:
     return QwenImageEditPlusPipeline
 
 
+def _import_ideogram4_pipeline() -> Any:
+    """Lazy import Ideogram-4 pipeline(D2:diffusers import 只在本文件)。9.3B 双 DiT
+    (conditional + unconditional_transformer 非对称 CFG)+ Qwen3-VL 文本编码器,HF-layout
+    整模型 from_pretrained(7 组件随 repo 自动加载)。需 diffusers ≥ 784fa626(PR-1 bump)。
+    测试 monkeypatch 注入 fake。"""
+    from diffusers import Ideogram4Pipeline  # noqa: PLC0415
+
+    return Ideogram4Pipeline
+
+
 def _decode_input_image(src: str) -> Any:
     """输入图(编辑/img2img)src(本地路径 或 base64 data URI)→ PIL.Image(RGB)。
     runner 已把节点签名 URL 解析成本地路径再塞 req.input_image;data URI 分支兜底直传场景。
@@ -616,6 +626,8 @@ class ModularImageBackend(InferenceAdapter):
             pipe = self._build_zimage_pipe()
         elif self.pipeline_class == "QwenImageEditPlusPipeline":
             pipe = self._build_qwen_edit_pipe()
+        elif self.pipeline_class == "Ideogram4Pipeline":
+            pipe = self._build_ideogram4_pipe()
         else:
             raise NotImplementedError(
                 f"pipeline_class {self.pipeline_class!r} 暂未接入;已支持 Flux2KleinPipeline / "
@@ -1188,6 +1200,16 @@ class ModularImageBackend(InferenceAdapter):
         return qwen_cls.from_pretrained(
             self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
 
+    def _build_ideogram4_pipe(self) -> Any:
+        """Ideogram-4:HF-layout 整模型,标准 `Ideogram4Pipeline.from_pretrained`(7 组件:
+        双 transformer + Qwen3-VL TE + tokenizer + scheduler + flux2 同款 VAE + 可选
+        prompt_enhancer_head 全随 repo 加载)。组件名 transformer/text_encoder/vae 存在 →
+        fp8/逐组件放置/offload 路径共享(unconditional_transformer 是额外组件,offload 序列
+        pipeline 自带 model_cpu_offload_seq 已含)。bf16 峰值 ~58G(spike 2026-06-11)。"""
+        ideo_cls = _import_ideogram4_pipeline()
+        return ideo_cls.from_pretrained(
+            self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
+
     @staticmethod
     def _lora_adapter_name(name: str) -> str:
         """spec.name → peft adapter 标识。peft 把 adapter_name 当 torch module 名注入,
@@ -1388,6 +1410,11 @@ class ModularImageBackend(InferenceAdapter):
         # Qwen-Image-Edit-2511:CFG 旋钮是 **true_cfg_scale**(非 guidance_scale;后者是 embedded
         # guidance,非 distilled 该模型用 None)。negative 走字符串入参(__call__ 原生支持,不像 Flux2 要预编码)。
         # 真 API 确认:pipeline_qwenimage_edit_plus.py __call__(image=, true_cfg_scale=4.0, guidance_scale=None)。
+        # Ideogram-4:guidance_scale 与 guidance_schedule **互斥且 schedule 有非 None 默认**
+        # ((7.0,)*45+(3.0,)*3)—— 只传标量 guidance_scale 会撞 "Only one of ..." ValueError。
+        # 显式 schedule=None 走标量;cfg 默认 7(arch adapter)。__call__ 无 negative 入参。
+        if self.pipeline_class == "Ideogram4Pipeline":
+            call_kwargs["guidance_schedule"] = None
         if self.pipeline_class == "QwenImageEditPlusPipeline":
             call_kwargs.pop("guidance_scale", None)
             call_kwargs["true_cfg_scale"] = cfg
@@ -1438,7 +1465,7 @@ class ModularImageBackend(InferenceAdapter):
         # 和 Qwen-Edit 既无逐步进度也无 step 级取消。Z-Image 分段路(_run_zimage_segmented)自带
         # 进度不经此;modular fallback(ERNIE 等)不支持回调,仍不挂。
         # interventions 仍 Flux2-only(Z-Image 干预走分段路;Qwen-Edit 未定义干预语义,不悄悄开)。
-        _step_cb_pipes = ("Flux2KleinPipeline", "ZImagePipeline", "QwenImageEditPlusPipeline")
+        _step_cb_pipes = ("Flux2KleinPipeline", "ZImagePipeline", "QwenImageEditPlusPipeline", "Ideogram4Pipeline")
         if self.pipeline_class in _step_cb_pipes and (
                 progress_callback is not None or cancel_flag is not None
                 or (interventions and self.pipeline_class == "Flux2KleinPipeline")):
