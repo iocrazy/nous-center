@@ -697,3 +697,13 @@ def test_ideogram4_from_pretrained_and_guidance_schedule_none(monkeypatch):
     kw = pipe.call_args.kwargs
     assert kw.get("guidance_scale") == 7.0
     assert "guidance_schedule" in kw and kw["guidance_schedule"] is None
+
+
+def test_fp8_quantize_covers_unconditional_transformer():
+    """fp8 weight-only 量化名单必须含 unconditional_transformer(Ideogram-4 第二 DiT)——
+    漏掉则 fp8 只省一半显存(2026-06-11 真机 OOM 教训)。源码检查。"""
+    import pathlib
+
+    src = (pathlib.Path(__file__).parent.parent
+           / "src/services/inference/image_modular.py").read_text()
+    assert '("transformer", "unconditional_transformer", "text_encoder")' in src
