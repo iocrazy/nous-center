@@ -40,7 +40,7 @@ const TAB_LABELS: Record<string, string> = {
   understand: '视觉',
 }
 
-type TabId = 'all' | 'loaded' | typeof TYPE_ORDER[number]
+type TabId = 'all' | typeof TYPE_ORDER[number]
 
 interface ContextMenuState {
   visible: boolean
@@ -297,8 +297,6 @@ export default function ModelsOverlay() {
   const allEngines = engines ?? []
   // Bug 3 PR-2c:runner 里加载的 combo adapter 实体(image/tts),不在 engines 注册卡里。
   const loadedAdapters = loadedAdaptersData?.entries ?? []
-  const loadedCount =
-    allEngines.filter((e) => e.status === 'loaded').length + loadedAdapters.length
   const typeCounts: Record<string, number> = {}
   for (const e of allEngines) typeCounts[e.type] = (typeCounts[e.type] ?? 0) + 1
 
@@ -331,18 +329,28 @@ export default function ModelsOverlay() {
     { id: 'loaded', label: '已加载' },
     ...BUCKET_ORDER.filter((b) => (bucketCounts[b] ?? 0) > 0).map((b) => ({ id: b, label: BUCKET_LABEL[b] ?? b })),
   ]
-  // 非图像类型 tab(语言模型/语音合成/视觉…)的通用子筛:全部 / 已加载。计数按当前 tab 类型。
-  const typeTabEngines = allEngines.filter((e) => e.type === activeTab)
+  // 非图像 tab(全部/语言模型/语音合成/视觉…)的通用子筛:全部 / 已加载。计数按当前 tab 范围;
+  // 「全部」tab 的已加载额外计入 runner combo adapter 实体(与原顶层「已加载」tab 口径一致)。
+  const typeTabEngines = activeTab === 'all'
+    ? allEngines
+    : allEngines.filter((e) => e.type === activeTab)
   const genericSubTabs = [
     { id: 'all', label: '全部', count: typeTabEngines.length },
-    { id: 'loaded', label: '已加载', count: typeTabEngines.filter((e) => e.status === 'loaded').length },
+    {
+      id: 'loaded', label: '已加载',
+      count: typeTabEngines.filter((e) => e.status === 'loaded').length
+        + (activeTab === 'all' ? loadedAdapters.length : 0),
+    },
   ]
+  // 「已加载」子筛下额外列 runner combo adapter 实体(原顶层 tab 行为):全部/图像 tab 适用
+  // (combo 是 image/tts 实体,全部 tab 必含;图像 tab 也展示)。
+  const showAdapters = imageBucket === 'loaded' && (activeTab === 'all' || activeTab === 'image')
 
   const visibleEngines = (() => {
     let list: EngineInfo[]
-    if (activeTab === 'all') list = allEngines
-    else if (activeTab === 'loaded') list = allEngines.filter((e) => e.status === 'loaded')
-    else {
+    if (activeTab === 'all') {
+      list = imageBucket === 'loaded' ? allEngines.filter((e) => e.status === 'loaded') : allEngines
+    } else {
       list = allEngines.filter((e) => e.type === activeTab)
       if (imageBucket !== 'all') {
         // 「已加载」对所有类型 tab 通用;桶(整模型/VAE/LoRA…)仅图像 tab 有意义。
@@ -361,13 +369,13 @@ export default function ModelsOverlay() {
     return list
   })()
 
-  // Tab list — only show type tabs that have at least one engine
+  // Tab list — only show type tabs that have at least one engine。
+  // 「已加载」不再是顶层 tab(用户 2026-06-11:收进「全部」下的子筛行)。
   const tabs: { id: TabId; label: string; count: number }[] = [
     { id: 'all', label: '全部', count: allEngines.length },
     ...TYPE_ORDER
       .filter((t) => (typeCounts[t] ?? 0) > 0)
       .map((t) => ({ id: t as TabId, label: TAB_LABELS[t] ?? t, count: typeCounts[t] })),
-    { id: 'loaded', label: '已加载', count: loadedCount },
   ]
 
   return (
@@ -514,8 +522,8 @@ export default function ModelsOverlay() {
           })}
         </div>
 
-        {/* 类型 tab 下的二级子筛:图像 = 全部/已加载 + 文件夹桶;其余类型 = 全部/已加载。 */}
-        {activeTab !== 'all' && activeTab !== 'loaded' && (
+        {/* 二级子筛:图像 = 全部/已加载 + 文件夹桶;其余 tab(含「全部」)= 全部/已加载。 */}
+        {(
           <div style={{ display: 'flex', gap: 6, marginTop: -8, marginBottom: 16, flexWrap: 'wrap' }}>
             {(activeTab === 'image'
               ? imageSubTabs.map((t) => ({ ...t, count: bucketCounts[t.id] ?? 0 }))
@@ -567,14 +575,14 @@ export default function ModelsOverlay() {
               onToggleResident={handleToggleResident}
             />
           ))}
-          {/* Bug 3 PR-2c:「已加载」tab 额外列出 runner 里加载的 combo adapter 实体 ——
+          {/* Bug 3 PR-2c:「已加载」子筛额外列出 runner 里加载的 combo adapter 实体 ——
               工作流动态组装的单文件 combo,不对应注册卡片,故独立渲染。 */}
-          {activeTab === 'loaded' &&
+          {showAdapters &&
             loadedAdapters.map((a) => <AdapterCard key={a.model_id} adapter={a} />)}
         </div>
 
         {visibleEngines.length === 0 &&
-          !(activeTab === 'loaded' && loadedAdapters.length > 0) && !isLoading && (
+          !(showAdapters && loadedAdapters.length > 0) && !isLoading && (
           <div style={{ fontSize: 11, color: 'var(--muted)', padding: 24, textAlign: 'center' }}>
             {search.trim() ? `没有匹配「${search.trim()}」的模型 · 试试别的关键词` : '该类目没有模型 · 试试别的 tab'}
           </div>
