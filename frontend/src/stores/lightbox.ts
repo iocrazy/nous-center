@@ -28,7 +28,12 @@ export interface LightboxMeta {
 export function collectWorkflowImages(): string[] {
   const wf = useWorkspaceStore.getState().getActiveWorkflow()
   const urls: string[] = []
-  const push = (v: unknown) => { if (typeof v === 'string' && v && !urls.includes(v)) urls.push(v) }
+  // images 可能是 url 字符串数组,也可能是 image_output 累积网格的 {url,...meta} 对象数组。
+  const push = (v: unknown) => {
+    const u = typeof v === 'string' ? v
+      : (v && typeof v === 'object' ? (v as { url?: unknown }).url : null)
+    if (typeof u === 'string' && u && !urls.includes(u)) urls.push(u)
+  }
   for (const n of wf.nodes) {
     const d = n.data as Record<string, unknown> | undefined
     if (!d) continue
