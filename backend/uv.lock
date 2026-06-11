@@ -1278,8 +1278,8 @@ wheels = [
 
 [[package]]
 name = "diffusers"
-version = "0.38.0.dev0"
-source = { git = "https://github.com/huggingface/diffusers.git?rev=c8eba433adf1f90d7fcc70092562ea50789ee8fb#c8eba433adf1f90d7fcc70092562ea50789ee8fb" }
+version = "0.39.0.dev0"
+source = { git = "https://github.com/huggingface/diffusers.git?rev=784fa62652fb2719d415830f918fc32a49ecc7a1#784fa62652fb2719d415830f918fc32a49ecc7a1" }
 dependencies = [
     { name = "filelock" },
     { name = "httpx" },
@@ -3367,7 +3367,7 @@ requires-dist = [
     { name = "celery", extras = ["redis"], specifier = ">=5.4" },
     { name = "color-matcher", specifier = ">=0.6.0" },
     { name = "conformer", marker = "extra == 'tts'", specifier = ">=0.3" },
-    { name = "diffusers", marker = "extra == 'image'", git = "https://github.com/huggingface/diffusers.git?rev=c8eba433adf1f90d7fcc70092562ea50789ee8fb" },
+    { name = "diffusers", marker = "extra == 'image'", git = "https://github.com/huggingface/diffusers.git?rev=784fa62652fb2719d415830f918fc32a49ecc7a1" },
     { name = "einops", marker = "extra == 'image'", specifier = ">=0.8" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gdown", marker = "extra == 'tts'", specifier = ">=5.1" },

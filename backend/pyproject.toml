@@ -80,12 +80,13 @@ inference = [
 # Install: uv sync --extra image
 # Same isolation reasoning as `inference`: API server code never imports these.
 image = [
-    # diffusers main has Flux.2 + Modular Diffusers (ModularPipeline +
+    # diffusers main has Flux.2 + Modular Diffusers + Ideogram4Pipeline(2026-06-11 bump:
+    # Ideogram-4 接入需要;golden 回归 SSIM=1.0 零回归,spike 真机出图验过)。(ModularPipeline +
     # ComponentsManager). Modular Diffusers is EXPERIMENTAL (0.38.0.dev0) — its API
     # breaks across commits. PIN to the exact commit the image engine was validated
     # against (spec 2026-05-22-image-engine-modular-diffusers). 升级前必须跑
     # `tests/manual/smoke_image_ab.py`(见 CLAUDE.md「图像引擎」),SSIM 过阈值再 bump。
-    "diffusers @ git+https://github.com/huggingface/diffusers.git@c8eba433adf1f90d7fcc70092562ea50789ee8fb",
+    "diffusers @ git+https://github.com/huggingface/diffusers.git@784fa62652fb2719d415830f918fc32a49ecc7a1",
     "accelerate>=1.0",
     "peft>=0.13",
     "safetensors>=0.4",
