@@ -295,7 +295,10 @@ def _quantize_fp8_weight_only(pipe: Any) -> None:
     from torchao.quantization import Float8WeightOnlyConfig, quantize_  # noqa: PLC0415
 
     cfg = Float8WeightOnlyConfig()
-    for name in ("transformer", "text_encoder"):
+    # unconditional_transformer = Ideogram-4 的第二个 DiT(双模型非对称 CFG)。漏掉它
+    # fp8 只省一半:bf16 双 DiT 各 18.6G,vLLM 39G 在卡时 e2e VAE decode 差 1.2G OOM
+    # (2026-06-11 真机)。其他架构无此组件,getattr None 跳过,零影响。
+    for name in ("transformer", "unconditional_transformer", "text_encoder"):
         mod = getattr(pipe, name, None)
         if mod is not None:
             quantize_(mod, cfg)
