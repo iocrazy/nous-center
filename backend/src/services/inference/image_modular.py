@@ -497,7 +497,7 @@ def _place_components_per_device(
 # euler 仍走整段 pipe() 保 golden;这些经手写步实现(逐式对照 ComfyUI k_diffusion)。
 _SEGMENTED_SAMPLERS = {
     "euler_ancestral", "dpmpp_2m", "dpmpp_2s_ancestral",
-    "dpmpp_2m_sde", "dpmpp_3m_sde",
+    "dpmpp_2m_sde", "dpmpp_3m_sde", "dpmpp_sde",
 }
 
 
@@ -908,6 +908,13 @@ class ModularImageBackend(InferenceAdapter):
             npred = torch.stack([o.float() for o in out], dim=0).squeeze(2)
             return (-npred).to(torch.float32)
 
+        def _anc_step(s_from: float, s_to: float) -> tuple[float, float]:
+            """get_ancestral_step(eta=1)—— dpmpp_sde 在 e^-λ 空间算降噪步 sd + 加噪量 su。
+            逐式对照 ComfyUI k_diffusion get_ancestral_step。"""
+            su = min(s_to, (s_to ** 2 * (s_from ** 2 - s_to ** 2) / s_from ** 2) ** 0.5)
+            sd = (s_to ** 2 - su ** 2) ** 0.5
+            return sd, su
+
         old_denoised: Any = None  # dpmpp_2m 多步状态(上一步 denoised);其余采样器不用
         sde_d1: Any = None  # dpmpp_2m_sde/3m_sde 历史:上一步 denoised
         sde_d2: Any = None  # dpmpp_3m_sde 历史:上上步 denoised
@@ -1056,6 +1063,38 @@ class ModularImageBackend(InferenceAdapter):
                     latents = latents + noise * sigma_next * math.sqrt(-math.expm1(-2.0 * h))  # s_noise=1
                     sde_d1, sde_d2 = denoised, sde_d1
                     sde_h1, sde_h2 = h, sde_h1
+            elif sampler_name == "dpmpp_sde":
+                # DPM-Solver++ SDE(单步二阶随机)—— 逐式对照 ComfyUI sample_dpmpp_sde(CONST 分支,r=1/2)。
+                # λ=log((1-σ)/σ)、sigma_fn=1/(1+e^λ)、α=1-σ;中间 σ_s1=sigma_fn(λ_s+h/2)处再前向一次(NFE 翻倍);
+                # 两段 ancestral 噪声在 e^-λ 空间(_anc_step)。r=1/2 → fac=1 → denoised_d=denoised_2。
+                # 噪声 seeded randn 代 BrownianTree(同 2m_sde 理由);首 σ≥1 钳 0.9999;末步守卫先于 λ。eta=1/s_noise=1。
+                sigma = 0.9999 if (i == 0 and float(seg[i]) >= 1.0) else float(seg[i])
+                sigma_next = float(seg[i + 1])
+                denoised = latents - sigma * noise_pred
+                if sigma_next == 0.0:
+                    latents = denoised
+                else:
+                    lam_s = math.log((1.0 - sigma) / sigma)
+                    lam_t = math.log((1.0 - sigma_next) / sigma_next)
+                    h = lam_t - lam_s
+                    lam_s1 = lam_s + 0.5 * h  # r=1/2
+                    sigma_s1 = 1.0 / (1.0 + math.exp(lam_s1))
+                    alpha_s = 1.0 - sigma
+                    alpha_s1 = 1.0 - sigma_s1
+                    alpha_t = 1.0 - sigma_next
+                    # Step 1 → 中间 σ_s1 处再前向得 denoised_2
+                    sd1, su1 = _anc_step(math.exp(-lam_s), math.exp(-lam_s1))
+                    h1_ = (-math.log(sd1)) - lam_s
+                    x2 = (alpha_s1 / alpha_s) * math.exp(-h1_) * latents - alpha_s1 * math.expm1(-h1_) * denoised
+                    noise1 = torch.randn(latents.shape, generator=gen, device=device, dtype=torch.float32)
+                    x2 = x2 + alpha_s1 * noise1 * su1  # s_noise=1
+                    denoised_2 = x2 - sigma_s1 * _predict_noise(x2, sigma_s1)
+                    # Step 2(fac=1 → denoised_d=denoised_2)
+                    sd2, su2 = _anc_step(math.exp(-lam_s), math.exp(-lam_t))
+                    h2_ = (-math.log(sd2)) - lam_s
+                    latents = (alpha_t / alpha_s) * math.exp(-h2_) * latents - alpha_t * math.expm1(-h2_) * denoised_2
+                    noise2 = torch.randn(latents.shape, generator=gen, device=device, dtype=torch.float32)
+                    latents = latents + alpha_t * noise2 * su2  # s_noise=1
             else:
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
             # 进度 + 逐组件时长(与整段路径对齐:denoise 首/末步时间戳 → VAE Decode 真时长)。
