@@ -196,6 +196,36 @@ class QwenImageEditArchAdapter:
         return {"normal"}
 
 
+class Ideogram4ArchAdapter:
+    """Ideogram-4(9.3B 双 DiT:conditional + unconditional_transformer 非对称 CFG)via diffusers
+    Ideogram4Pipeline(2026-06-11 接入,源=开源权重 2026-06-03)。
+
+    特性:结构化 JSON caption 当 prompt(文字排版/bbox/色板,Ideogram 招牌);文本编码器
+    Qwen3-VL(VL 模型);VAE 同 Flux2(AutoencoderKLFlux2)。**guidance_scale 与
+    guidance_schedule 互斥且 schedule 有非 None 默认** —— 引擎传标量 cfg 时必须显式
+    guidance_schedule=None(image_modular call_kwargs 处理)。__call__ 无 negative 入参。
+    HF-layout 整模型 from_pretrained(7 组件,unconditional_transformer 随 repo 自动加载)。
+    官方默认 48 步 2048²;ComfyUI 参考工作流 20 步 1024²(spike 真机验过 22s/峰值 58G bf16)。"""
+
+    def supports_cfg(self) -> bool:
+        return True
+
+    def supports_negative_prompt(self) -> bool:
+        return False  # Ideogram4Pipeline.__call__ 无 negative 入参(无条件分支走独立 transformer)
+
+    def default_steps(self) -> int:
+        return 20
+
+    def default_guidance_scale(self) -> float:
+        return 7.0  # ComfyUI 参考工作流 DualModelGuider cfg=7;diffusers 默认 schedule 也是 7→3
+
+    def supported_samplers(self) -> set[str]:
+        return {"euler"}  # pipeline 内 FlowMatchEuler;ancestral 等后续按需扩
+
+    def supported_schedulers(self) -> set[str]:
+        return {"normal"}
+
+
 DEFAULT_IMAGE_ARCH = "flux2"
 
 IMAGE_ARCH_REGISTRY: dict[str, ImageArchSpec] = {
@@ -209,6 +239,9 @@ IMAGE_ARCH_REGISTRY: dict[str, ImageArchSpec] = {
     # Qwen-Image-Edit-2511 角度控制/编辑(P2):needs_image_input=True;走 QwenImageEditPlusPipeline 分支。
     "qwen-edit": ImageArchSpec("qwen-edit", "QwenImageEditPlusPipeline", "modular",
                                QwenImageEditArchAdapter(), needs_image_input=True),
+    # Ideogram-4 文生图(2026-06-11):结构化 JSON caption / 文字排版;双 DiT 整模型
+    # from_pretrained(unconditional_transformer 随 repo);走 ModularImageBackend 分支。
+    "ideogram4": ImageArchSpec("ideogram4", "Ideogram4Pipeline", "modular", Ideogram4ArchAdapter()),
 }
 
 

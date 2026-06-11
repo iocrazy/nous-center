@@ -46,6 +46,7 @@ nodes:
           - { value: flux2,     label: "Flux2",   description: "Flux2-Klein 整模型(HF-layout)" }
           - { value: z-image,   label: "Z-Image", description: "Z-Image-Turbo 文生图(6B distilled,8 步,guidance=0)" }
           - { value: qwen-edit, label: "Qwen-Edit", description: "Qwen-Image-Edit-2511 编辑/角度(需输入图,true_cfg 4.0,40 步)" }
+          - { value: ideogram4, label: "Ideogram-4", description: "Ideogram-4 文生图(9.3B 双 DiT,结构化 JSON caption/文字排版,cfg 7,20 步)" }
 
   flux2_load_diffusion_model:
     label: "Load Diffusion Model"
