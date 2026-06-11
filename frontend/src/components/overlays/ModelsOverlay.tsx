@@ -315,6 +315,9 @@ export default function ModelsOverlay() {
     const b = imageBucketOf(e)
     bucketCounts[b] = (bucketCounts[b] ?? 0) + 1
   }
+  // 「已加载」快速筛(用户 2026-06-11):紧跟「全部」,在**当前 tab 内**按 status 过滤,
+  // 不用切去顶层「已加载」tab(那个跨全类型)。所有类型 tab 通用;图像 tab 额外有桶。
+  bucketCounts.loaded = imageEngines.filter((e) => e.status === 'loaded').length
   // 子 tab 顺序:整模型 → 超分 → 各文件夹。label 友好化。
   // clip 角色对齐 ComfyUI「Load CLIP」节点,但文件实际在 image/text_encoders/ —— 标签用「文本编码器」
   // 对齐文件夹,免「为啥叫 CLIP 不是 text_encoders」的困惑(底层角色 key 仍是 clip,扫描/端点不变)。
@@ -325,7 +328,14 @@ export default function ModelsOverlay() {
   const BUCKET_ORDER = ['model', 'upscale', 'diffusion_models', 'clip', 'vae', 'loras']
   const imageSubTabs = [
     { id: 'all', label: '全部' },
+    { id: 'loaded', label: '已加载' },
     ...BUCKET_ORDER.filter((b) => (bucketCounts[b] ?? 0) > 0).map((b) => ({ id: b, label: BUCKET_LABEL[b] ?? b })),
+  ]
+  // 非图像类型 tab(语言模型/语音合成/视觉…)的通用子筛:全部 / 已加载。计数按当前 tab 类型。
+  const typeTabEngines = allEngines.filter((e) => e.type === activeTab)
+  const genericSubTabs = [
+    { id: 'all', label: '全部', count: typeTabEngines.length },
+    { id: 'loaded', label: '已加载', count: typeTabEngines.filter((e) => e.status === 'loaded').length },
   ]
 
   const visibleEngines = (() => {
@@ -334,8 +344,10 @@ export default function ModelsOverlay() {
     else if (activeTab === 'loaded') list = allEngines.filter((e) => e.status === 'loaded')
     else {
       list = allEngines.filter((e) => e.type === activeTab)
-      if (activeTab === 'image' && imageBucket !== 'all') {
-        list = list.filter((e) => imageBucketOf(e) === imageBucket)
+      if (imageBucket !== 'all') {
+        // 「已加载」对所有类型 tab 通用;桶(整模型/VAE/LoRA…)仅图像 tab 有意义。
+        if (imageBucket === 'loaded') list = list.filter((e) => e.status === 'loaded')
+        else if (activeTab === 'image') list = list.filter((e) => imageBucketOf(e) === imageBucket)
       }
     }
     const q = search.trim().toLowerCase()
@@ -482,7 +494,7 @@ export default function ModelsOverlay() {
             return (
               <button
                 key={t.id}
-                onClick={() => setActiveTab(t.id)}
+                onClick={() => { setActiveTab(t.id); setImageBucket('all') }}
                 style={{
                   padding: '8px 18px',
                   fontSize: 13,
@@ -502,10 +514,13 @@ export default function ModelsOverlay() {
           })}
         </div>
 
-        {/* 图像 tab 下的二级子 tab —— 按文件夹/角色分(整模型/超分/diffusion_models/CLIP/VAE/LoRA)。 */}
-        {activeTab === 'image' && (
+        {/* 类型 tab 下的二级子筛:图像 = 全部/已加载 + 文件夹桶;其余类型 = 全部/已加载。 */}
+        {activeTab !== 'all' && activeTab !== 'loaded' && (
           <div style={{ display: 'flex', gap: 6, marginTop: -8, marginBottom: 16, flexWrap: 'wrap' }}>
-            {imageSubTabs.map((t) => {
+            {(activeTab === 'image'
+              ? imageSubTabs.map((t) => ({ ...t, count: bucketCounts[t.id] ?? 0 }))
+              : genericSubTabs
+            ).map((t) => {
               const active = imageBucket === t.id
               return (
                 <button
@@ -519,7 +534,7 @@ export default function ModelsOverlay() {
                     transition: 'all 0.12s',
                   }}
                 >
-                  {t.label} {bucketCounts[t.id] ?? 0}
+                  {t.label} {t.count}
                 </button>
               )
             })}
