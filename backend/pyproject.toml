@@ -63,6 +63,8 @@ tts = [
     "pyarrow>=18",
     "phonemizer>=3.2",
     "rootutils>=1.0",
+    # VoxCPM2 引擎(openbmb;纯增依赖 torch-complex/torchcodec,不撞钉死项)。
+    "voxcpm>=2.0",
 ]
 
 inference = [
