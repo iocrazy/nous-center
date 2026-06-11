@@ -99,25 +99,25 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
       ) {
         const cur = useWorkspaceStore.getState().getActiveWorkflow().nodes.find((n) => n.id === id)?.data
         const prev: OutImg[] = Array.isArray(cur?.images) ? (cur!.images as OutImg[]) : []
-        const url = detail.image_url as string
-        const item: OutImg = {
-          url,
-          seed: detail.seed ?? null,
-          steps: detail.steps ?? null,
-          cfg: detail.cfg_scale ?? null,
-          width: detail.width ?? null,
-          height: detail.height ?? null,
-          durationMs: detail.duration_ms ?? null,
+        // batch(PR-B1):node_complete 可能带 image_urls 列表(一次 N 张);否则单 image_url。
+        // 同次 batch 共享 seed/steps/cfg 等元信息(node_complete 只回一份)。逐张 append(dedup)。
+        const urls: string[] = Array.isArray(detail.image_urls) && detail.image_urls.length
+          ? (detail.image_urls as string[])
+          : [detail.image_url as string]
+        const base = {
+          seed: detail.seed ?? null, steps: detail.steps ?? null, cfg: detail.cfg_scale ?? null,
+          width: detail.width ?? null, height: detail.height ?? null, durationMs: detail.duration_ms ?? null,
         }
-        const next = appendOutput(prev, item)
+        let next = prev
+        for (const u of urls) next = appendOutput(next, { url: u, ...base })
         if (next !== prev) {
           updateNode(id, {
             images: next,
             // 顶层镜像「最新」一张(灯箱 collectWorkflowImages / compareBase 兜底读 image_url)。
-            image_url: url,
+            image_url: urls[urls.length - 1],
             media_type: detail.media_type ?? 'image/png',
-            width: item.width, height: item.height, seed: item.seed,
-            steps: item.steps, cfg_scale: item.cfg, duration_ms: item.durationMs,
+            width: base.width, height: base.height, seed: base.seed,
+            steps: base.steps, cfg_scale: base.cfg, duration_ms: base.durationMs,
           })
         }
         setAct('idle')  // 清运行态;有图 → 派生 phase=success
