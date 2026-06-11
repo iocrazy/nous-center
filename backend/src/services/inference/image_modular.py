@@ -1188,10 +1188,20 @@ class ModularImageBackend(InferenceAdapter):
         return qwen_cls.from_pretrained(
             self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
 
+    @staticmethod
+    def _lora_adapter_name(name: str) -> str:
+        """spec.name → peft adapter 标识。peft 把 adapter_name 当 torch module 名注入,
+        而 nn.Module 名禁含 "."(add_module KeyError)。画布 lora_select 给的是**带
+        .safetensors 扩展名的文件名** → 直接用必炸(2026-06-11 万物迁移真机坐实);
+        legacy yaml 名不带点所以 #131 当年没暴露。消毒只影响内部 adapter 标识,
+        缓存键/UI 仍用原始 spec.name。"""
+        return name.replace(".", "_")
+
     def _apply_loras(self, loras: list) -> None:
         """LoRA(含 ComfyUI 格式)接 Flux2Klein modular pipe(经 Flux2LoraLoaderMixin,
         与 DiffusionPipeline 同 API)。复用 #125 `_maybe_convert_comfy_flux2_lora`(绕 is_kohya
-        误判)。PR-3:无 cpu_offload(.to(device)),省 legacy 的 offload dance。"""
+        误判)。PR-3:无 cpu_offload(.to(device)),省 legacy 的 offload dance。
+        _loaded_loras 存**消毒后**的 adapter 名(与 pipe 内 peft 状态同口径)。"""
         pipe = self._pipe
         if not loras:
             active = pipe.get_active_adapters() if hasattr(pipe, "get_active_adapters") else []
@@ -1199,7 +1209,8 @@ class ModularImageBackend(InferenceAdapter):
                 pipe.set_adapters([])
             return
         for spec in loras:
-            if spec.name in self._loaded_loras:
+            adapter = self._lora_adapter_name(spec.name)
+            if adapter in self._loaded_loras:
                 continue
             lora_path = getattr(spec, "path", None)
             if not lora_path:
@@ -1210,18 +1221,18 @@ class ModularImageBackend(InferenceAdapter):
                 from safetensors.torch import load_file  # noqa: PLC0415
                 converted = _maybe_convert_comfy_flux2_lora(load_file(lora_path))
             if converted is not None:
-                pipe.load_lora_weights(converted, adapter_name=spec.name)
+                pipe.load_lora_weights(converted, adapter_name=adapter)
             else:
-                pipe.load_lora_weights(lora_path, adapter_name=spec.name)
+                pipe.load_lora_weights(lora_path, adapter_name=adapter)
             active = pipe.get_active_adapters() or []
-            if spec.name not in active and spec.name not in (getattr(pipe, "peft_config", {}) or {}):
+            if adapter not in active and adapter not in (getattr(pipe, "peft_config", {}) or {}):
                 raise ValueError(
                     f"LoRA {spec.name!r} 零匹配(键不符 {type(pipe).__name__})—— 用对架构的 LoRA")
-            self._loaded_loras.add(spec.name)
+            self._loaded_loras.add(adapter)
         # round3 #6:删掉本次请求里不再包含的旧 LoRA。set_adapters 只是停用、不释放权重 →
         # 一个 adapter 生命周期内,用户每换一个 LoRA 旧的都常驻 pipe(显存累积)。这里把
         # 已装但本次没要的删掉,使 pipe 的 LoRA 集合收敛到当前请求。
-        requested = {s.name for s in loras}
+        requested = {self._lora_adapter_name(s.name) for s in loras}
         stale = self._loaded_loras - requested
         if stale and hasattr(pipe, "delete_adapters"):
             try:
@@ -1229,7 +1240,8 @@ class ModularImageBackend(InferenceAdapter):
             except Exception:  # noqa: BLE001 — 删 LoRA 失败不该挡出图
                 pass
             self._loaded_loras -= stale
-        pipe.set_adapters([s.name for s in loras], adapter_weights=[s.strength for s in loras])
+        pipe.set_adapters([self._lora_adapter_name(s.name) for s in loras],
+                          adapter_weights=[s.strength for s in loras])
 
     def _apply_scheduler(self, pipe: Any, sampler_name: str, scheduler: str) -> None:
         """PR-2:换 pipe.scheduler 实现采样器/调度器选择(复刻 ComfyUI KSampler 两下拉)。
