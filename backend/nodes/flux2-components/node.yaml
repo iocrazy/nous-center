@@ -174,10 +174,12 @@ nodes:
     inputs:
       - { id: model,         type: MODEL,        label: MODEL }
       - { id: conditioning,  type: CONDITIONING, label: CONDITIONING }
-      # 可选输入图(编辑/img2img/多参考,spec 2026-06-07):接 image_input(上传图)或 flux2_vae_decode
-      # (链式编辑)的 image 端口。连了 → 编辑模式(Flux2 多参考 / Qwen-Image-Edit);不连 → 纯文生图。
-      # 引擎按 pipeline 是否支持 image= 决定注入(Z-Image 不支持 → 忽略);零回归。
-      - { id: image,         type: image,        label: "输入图(可选)", optional: true }
+      # 可选输入图(spec 2026-06-07):接 image_input(上传图)或 flux2_vae_decode(链式)的 image 端口。
+      # 语义随架构 —— **不是 img2img**:Flux2-Klein = 参考编辑(Kontext,diffusers 原生:参考图编码成干净 token
+      # 拼进序列、注意力保身份重绘,采样仍从噪声起,无 strength,支持多参考 image=[list]);Qwen-Edit = 编辑;
+      # Z-Image = 真 img2img(配下方 strength)。连了 → 进对应模式;不连 → 纯文生图。引擎按 pipeline 是否
+      # 支持 image= 决定注入(Z-Image 文生图 pipe 不支持 → 忽略);零回归。
+      - { id: image,         type: image,        label: "输入图 / 参考图(可选)", optional: true }
       # 续采输入(留噪 latent 接力,PR-B2):接上一段 VAE Decode(output_mode=latent)的 latent_ref。
       # 连了 + start_at_step>0 + 加噪关 → 不重加噪从中段续采(KSamplerAdvanced add_noise=disable 语义)。
       # 仅 Z-Image 同 16ch latent 空间;跨架构注入引擎派发前人话报错。不连 = 普通采样(零回归)。
@@ -192,10 +194,10 @@ nodes:
       - { name: height,     label: "高度",  widget: slider, min: 256, max: 2048, step: 64, default: 1024 }
       - { name: steps,      label: "步数",  widget: slider, min: 1,   max: 100,  step: 1,  default: 25 }
       - { name: cfg_scale,  label: "CFG",   widget: slider, min: 0,   max: 20,   step: 0.1, default: 4.0 }
-      # img2img 重绘强度(PR-A2):默认 1.0 = 全量去噪 ≈ 文生图(零回归)。仅当架构有 img2img 变体
-      # (Z-Image)+ 连了 image 端口 + <1 时生效(从输入图加噪到该比例再去噪);Flux2-Klein 接图走多
-      # 参考编辑条件、忽略此值。
-      - { name: strength,   label: "重绘强度(img2img)", widget: slider, min: 0, max: 1, step: 0.05, default: 1.0 }
+      # img2img 重绘强度(PR-A2):**仅 Z-Image img2img 用**。默认 1.0 = 全量去噪 ≈ 文生图(零回归)。仅当架构有
+      # img2img 变体(Z-Image)+ 连了 image 端口 + <1 时生效(从输入图加噪到该比例再去噪)。**Flux2-Klein 接图
+      # 走参考编辑(Kontext),Qwen-Edit 走编辑 —— 两者都忽略此值**,调它无效果。
+      - { name: strength,   label: "重绘强度(仅 Z-Image img2img)", widget: slider, min: 0, max: 1, step: 0.05, default: 1.0 }
       # 复刻 ComfyUI KSampler 两下拉(结构对齐,选项是 diffusers 的)。Flux2 是 flow-matching,
       # diffusers 只 3 个采样器兼容;sampler_name=scheduler 类,scheduler=sigma 调度(use_*_sigmas)。
       # 选了不支持的 → 后端 _validate_sampler_scheduler 清晰报错不出图。
