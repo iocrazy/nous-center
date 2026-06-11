@@ -330,7 +330,7 @@ class WorkflowExecutor:
                     # ImageOutputNode 据此显示预览(旧同步 unwrapOutputs 已移除——它在
                     # /execute 的 202 响应上必崩 "reading 'out'")。
                     if output.get("image_url"):
-                        for _k in ("image_url", "media_type", "width", "height",
+                        for _k in ("image_url", "image_urls", "media_type", "width", "height",
                                    "seed", "steps", "cfg_scale"):
                             if output.get(_k) is not None:
                                 complete_event[_k] = output[_k]

@@ -1440,6 +1440,18 @@ class ModularImageBackend(InferenceAdapter):
         # _wants_img2img 已保证 image= 已注入(input_image 非空)且 pipe 是 img2img 变体(接受 strength)。
         if img2img_mode:
             call_kwargs["strength"] = float(req.strength)
+        # batch 出图(num_images>1):标准 pipe 经 num_images_per_prompt 一次前向出 N 张。段路(手写
+        # 分段循环)暂只 1 张 → log 跳过(follow-up)。仅当 pipe.__call__ 接受该参时传(diffusers pipe 基本都有)。
+        num_images = int(getattr(req, "num_images", 1) or 1)
+        if num_images > 1:
+            import inspect  # noqa: PLC0415
+            import logging  # noqa: PLC0415
+            if self._wants_segmented(req):
+                logging.getLogger(__name__).warning(
+                    "段路采样器(%s/%s)暂不支持 batch,num_images=%d → 出 1 张(follow-up)",
+                    req.sampler_name, req.scheduler, num_images)
+            elif "num_images_per_prompt" in inspect.signature(pipe.__call__).parameters:
+                call_kwargs["num_images_per_prompt"] = num_images
         # injected scheduler(simple/sgm_uniform/ddim_uniform/linear_quadratic/kl_optimal):
         # diffusers FlowMatch 原生无对应 use_*_sigmas,手动算 sigma 传 pipe(sigmas=...)。
         # pipe 期望不含末尾 0(它自己 append),compute_sigmas 返回含末尾 0 → 去掉末尾 0。
@@ -1597,12 +1609,18 @@ class ModularImageBackend(InferenceAdapter):
                 usage=UsageMeter(image_count=0, latency_ms=latency_ms),
             )
 
-        img = out.images[0]
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
+        # batch:out.images 是 PIL 列表(标准 pipe num_images_per_prompt=N → N 张;段路 → 1 张)。
+        # 全部编码 PNG:首张进 data,其余进 extra_images(加法字段,单图消费者只读 data 不变)。
+        imgs = list(out.images) if isinstance(out.images, (list, tuple)) else [out.images]
+        png_blobs: list[bytes] = []
+        for im in imgs:
+            _buf = io.BytesIO()
+            im.save(_buf, format="PNG")
+            png_blobs.append(_buf.getvalue())
         return InferenceResult(
             media_type="image/png",
-            data=buf.getvalue(),
+            data=png_blobs[0],
+            extra_images=png_blobs[1:],
             metadata={
                 "width": req.width,
                 "height": req.height,
@@ -1611,5 +1629,5 @@ class ModularImageBackend(InferenceAdapter):
                 # 逐组件时长(空 dict 时不影响下游;executor 据此给 KSampler/VAE Decode 真时长)。
                 **({"stage_latency_ms": stage_latency_ms} if stage_latency_ms else {}),
             },
-            usage=UsageMeter(image_count=1, latency_ms=latency_ms),
+            usage=UsageMeter(image_count=len(png_blobs), latency_ms=latency_ms),
         )

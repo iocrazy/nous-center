@@ -202,6 +202,8 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
         "sampler_name": data.get("sampler_name") or "euler",
         "scheduler": data.get("scheduler") or "normal",
         "seed": seed,
+        # batch 出图张数(对齐 ComfyUI batch_size):标准 pipe 一次出 N 张 → image_output 网格累积。
+        "num_images": max(1, min(8, int(data.get("num_images") or 1))),
         # img2img 重绘强度(PR-A2):默认 1.0 = 全量去噪 ≈ 文生图(零回归)。仅 z-image(有 img2img 变体)
         # + 连了 image 端口 + strength<1 时,引擎走 ZImageImg2ImgPipeline 加噪重去噪。
         "strength": max(0.0, min(1.0, float(data.get("strength") or 1.0))),
