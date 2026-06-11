@@ -330,6 +330,25 @@ async def test_apply_loras_loads_and_sets_adapters(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_apply_loras_sanitizes_dotted_filename(monkeypatch):
+    """回归(2026-06-11 万物迁移):画布 lora_select 的 name 是带 .safetensors 的文件名,
+    peft 把 adapter_name 当 torch module 名 → 含 "." 直接 KeyError。消毒后注入,
+    set_adapters/_loaded_loras 同口径。"""
+    _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
+    pipe.get_active_adapters.return_value = ["Klein-万物迁移_safetensors"]
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu")
+
+    await be.infer(ImageRequest(
+        request_id="L2", prompt="x", steps=4, width=64, height=64,
+        loras=[LoRASpec(name="Klein-万物迁移.safetensors", path="/m/loras/w.bin", strength=0.8)]))
+
+    adapter = pipe.load_lora_weights.call_args.kwargs.get("adapter_name")
+    assert adapter == "Klein-万物迁移_safetensors" and "." not in adapter
+    pipe.set_adapters.assert_called_once_with(["Klein-万物迁移_safetensors"], adapter_weights=[0.8])
+    assert be._loaded_loras == {"Klein-万物迁移_safetensors"}
+
+
+@pytest.mark.asyncio
 async def test_no_loras_does_not_load(monkeypatch):
     _klein, _tok, _sch, pipe = _fake_klein(monkeypatch)
     pipe.get_active_adapters.return_value = []
