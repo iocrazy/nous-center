@@ -125,6 +125,15 @@ def test_granular_carries_loras():
     req = _build_request(_node(inp))
     assert req.components["diffusion_models"].loras[0].name == "a"
     assert req.components["diffusion_models"].loras[0].path == "/m/loras/a.safe"
+    # 回归(2026-06-11 万物迁移):loras 还必须进 req.loras —— 引擎 infer() 的
+    # _apply_loras 只读这里。早先只进 components = 缓存键变了但权重从不应用(静默基模)。
+    assert [(lo.name, lo.path, lo.strength) for lo in req.loras] == [("a", "/m/loras/a.safe", 0.8)]
+
+
+def test_granular_no_lora_req_loras_empty():
+    """无 LoRA 时 req.loras 空(零回归:_apply_loras 收空 list 走清空分支)。"""
+    req = _build_request(_node(_granular_inputs()))
+    assert req.loras == []
 
 
 def test_granular_auto_device_passthrough():

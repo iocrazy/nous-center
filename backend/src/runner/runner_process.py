@@ -424,6 +424,11 @@ def _build_request(node: P.RunNode):
                 # 写进 latent["interventions"])。None/空 = 无干预(零回归)。PR-2/3 接 LCS 节点产描述符。
                 interventions=(latent.get("interventions")
                                if isinstance(latent.get("interventions"), list) else None),
+                # loras 必须同时进两处:components(L1/L2 缓存键,装错权重就错命中)和
+                # req.loras(引擎 infer() 里 _apply_loras 真正读的字段)。早先只进了前者 →
+                # 细粒度图挂 LoRA 是「键变了、adapter 重建了、权重从没应用」的静默 no-op,
+                # 出图 = 基模(2026-06-11 万物迁移 A/B bit 同图坐实)。
+                loras=model_d.get("loras") or [],
                 components={
                     "diffusion_models": ComponentSpec(loras=model_d.get("loras") or [], **unet_spec),
                     "clip": ComponentSpec(**clip_spec),
