@@ -75,12 +75,48 @@ def _merge_inputs(nodes: list, exposed_inputs: list | None, inputs: dict) -> Non
                 data[primary] = inputs[api_name]
 
 
+# 图像采样节点 —— 外部 API n / batch 把 num_images 设在这里。
+_BATCH_SAMPLER_TYPES = {"flux2_ksampler", "image_generate"}
+
+
+def _inject_num_images(nodes: list, edges: list, exposed_outputs: list | None, num_images: int) -> None:
+    """把 num_images 设到「喂进输出的那个采样节点」(对齐 OpenAI n = 一次出 N 张)。
+
+    从 exposed output(没有则所有 image_output)上溯,命中的**最近**采样节点设 num_images 即返回 ——
+    多段链(写真双采+Flux2)只 batch 末段,避免给每段都设 → N^段 爆炸。单段 = 唯一采样节点。
+    """
+    if num_images <= 1:
+        return
+    by_id = {str(n.get("id")): n for n in nodes}
+    incoming: dict[str, list[str]] = {}
+    for e in (edges or []):
+        incoming.setdefault(str(e.get("target")), []).append(str(e.get("source")))
+    starts = [str(p.get("node_id")) for p in (exposed_outputs or [])
+              if isinstance(p, dict) and p.get("node_id") is not None]
+    if not starts:
+        starts = [str(n.get("id")) for n in nodes
+                  if str(n.get("type") or "").lower() == "image_output"]
+    seen: set[str] = set()
+    queue = list(starts)
+    while queue:
+        cur = queue.pop(0)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        node = by_id.get(cur)
+        if node and str(node.get("type") or "").lower() in _BATCH_SAMPLER_TYPES:
+            node.setdefault("data", {})["num_images"] = num_images
+            return  # 最近采样节点已设,完成
+        queue.extend(incoming.get(cur, []))
+
+
 async def run_published_workflow(
     request: Request,
     session: AsyncSession,
     svc: ServiceInstance,
     inputs: dict,
     api_key: InstanceApiKey | None,
+    num_images: int = 1,
 ) -> dict:
     """Execute a published workflow service end to end.
 
@@ -106,6 +142,8 @@ async def run_published_workflow(
     nodes = _normalize_nodes(snapshot)
     edges = snapshot.get("edges", [])
     _merge_inputs(nodes, svc.exposed_inputs, inputs)
+    # 外部 API n / batch:一次出 N 张(设到喂输出的末段采样节点)。
+    _inject_num_images(nodes, edges, svc.exposed_outputs, num_images)
 
     task = ExecutionTask(
         workflow_name=svc.name,

@@ -48,6 +48,60 @@ def test_extract_image_urls_from_outputs():
     assert _extract_image_urls({"outputs": {}}) == []
 
 
+def test_extract_image_urls_batch_image_urls_list():
+    """batch(num_images>1):节点 output 带 image_urls 列表 → 取全部 N 张(不止首张 image_url)。"""
+    result = {
+        "outputs": {
+            "dec": {
+                "image_url": "/files/images/a0.png",  # 首张(兼容)
+                "image_urls": ["/files/images/a0.png", "/files/images/a1.png", "/files/images/a2.png"],
+            },
+        }
+    }
+    exposed_outputs = [{"node_id": "dec", "input_name": "image_url"}]
+    snapshot = {"nodes": [{"id": "dec", "type": "flux2_vae_decode", "data": {}}]}
+    assert _extract_image_urls(result, snapshot, exposed_outputs) == [
+        "/files/images/a0.png", "/files/images/a1.png", "/files/images/a2.png"]
+
+
+def test_inject_num_images_single_sampler():
+    from src.services.workflow_service_runner import _inject_num_images
+    nodes = [
+        {"id": "ks", "type": "flux2_ksampler", "data": {}},
+        {"id": "dec", "type": "flux2_vae_decode", "data": {}},
+        {"id": "out", "type": "image_output", "data": {}},
+    ]
+    edges = [{"source": "ks", "target": "dec"}, {"source": "dec", "target": "out"}]
+    _inject_num_images(nodes, edges, [{"node_id": "out"}], 4)
+    assert nodes[0]["data"]["num_images"] == 4
+
+
+def test_inject_num_images_multistage_only_terminal_sampler():
+    """多段链(双采):只给喂输出的末段采样设 num_images,前段不动 → 避免 N^段 爆炸。"""
+    from src.services.workflow_service_runner import _inject_num_images
+    nodes = [
+        {"id": "ks1", "type": "flux2_ksampler", "data": {}},   # 前段
+        {"id": "dec1", "type": "flux2_vae_decode", "data": {}},
+        {"id": "ks2", "type": "flux2_ksampler", "data": {}},   # 末段(喂输出)
+        {"id": "dec2", "type": "flux2_vae_decode", "data": {}},
+        {"id": "out", "type": "image_output", "data": {}},
+    ]
+    edges = [
+        {"source": "ks1", "target": "dec1"}, {"source": "dec1", "target": "ks2"},
+        {"source": "ks2", "target": "dec2"}, {"source": "dec2", "target": "out"},
+    ]
+    _inject_num_images(nodes, edges, [{"node_id": "out"}], 3)
+    assert nodes[2]["data"]["num_images"] == 3   # 末段 ks2 设
+    assert "num_images" not in nodes[0]["data"]   # 前段 ks1 不动
+
+
+def test_inject_num_images_noop_when_one():
+    from src.services.workflow_service_runner import _inject_num_images
+    nodes = [{"id": "ks", "type": "flux2_ksampler", "data": {}}]
+    _inject_num_images(nodes, [], [{"node_id": "ks"}], 1)
+    assert "num_images" not in nodes[0]["data"]
+
+
 def test_extract_image_urls_prefers_exposed_outputs():
     """exposed_outputs 指定产图终端 → 精确取它,不受其他节点 image_url 干扰。"""
     result = {

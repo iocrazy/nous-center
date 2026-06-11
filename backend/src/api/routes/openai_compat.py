@@ -559,11 +559,19 @@ def _extract_image_urls(
         str(p.get("node_id")) for p in (exposed_outputs or [])
         if isinstance(p, dict) and p.get("node_id") is not None
     ]
+    # batch(num_images>1):节点 output 带 image_urls 列表(全部 N 张);否则单 image_url。
+    def _node_urls(node_out: object) -> list[str]:
+        if not isinstance(node_out, dict):
+            return []
+        many = node_out.get("image_urls")
+        if isinstance(many, list) and many:
+            return [u for u in many if isinstance(u, str) and u]
+        one = node_out.get("image_url")
+        return [one] if isinstance(one, str) and one else []
+
     urls: list[str] = []
     for nid in declared:
-        node_out = outputs.get(nid)
-        if isinstance(node_out, dict) and node_out.get("image_url"):
-            urls.append(node_out["image_url"])
+        urls.extend(_node_urls(outputs.get(nid)))
     if urls:
         return urls
 
@@ -571,8 +579,7 @@ def _extract_image_urls(
     for nid, node_out in outputs.items():
         if str(nid) in input_ids:
             continue
-        if isinstance(node_out, dict) and node_out.get("image_url"):
-            urls.append(node_out["image_url"])
+        urls.extend(_node_urls(node_out))
     return urls
 
 
@@ -655,8 +662,10 @@ async def images_generations(
     snapshot = svc.workflow_snapshot
     out_params = svc.exposed_outputs
 
+    # OpenAI n:一次出 N 张 —— 注入到喂输出的末段采样节点 num_images(batch,B1 全栈)。
+    # 段路(非 euler 采样器手写循环)暂只 1 张(引擎层 follow-up),其余路径真出 N 张。
     result = await run_published_workflow(
-        request, session, svc, inputs, api_key,
+        request, session, svc, inputs, api_key, num_images=max(1, int(body.n)),
     )
 
     urls = _extract_image_urls(result, snapshot, out_params)
@@ -668,8 +677,8 @@ async def images_generations(
 
     base = str(request.base_url).rstrip("/")
     abs_urls = [u if u.startswith("http") else base + u for u in urls]
-    # 工作流当前出单图;n 仅作 OpenAI 契约占位(>1 不重复采样,返回现有那张)。
-    data = [{"url": u} for u in abs_urls[: max(1, body.n)]]
+    # 真出了 N 张就返 N 张;截到 n 作上限保护(避免工作流意外多产)。
+    data = [{"url": u} for u in abs_urls[: max(1, int(body.n))]]
     return {"created": int(time.time()), "data": data}
 
 
