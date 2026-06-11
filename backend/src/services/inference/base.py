@@ -94,6 +94,11 @@ class ImageRequest(InferenceRequest):
     steps: int = Field(25, ge=1, le=200)
     seed: int | None = None
     cfg_scale: float = Field(7.0, ge=0, le=30)
+    # 一次出图张数(batch,对齐 ComfyUI batch_size / OpenAI n)。N>1 经 diffusers
+    # num_images_per_prompt 一次前向出 N 张(共享 prompt,seed 派生 N 个噪声)→ 结果首张进 data、
+    # 其余进 extra_images。**显存按 N 近似线性涨**(同一前向的 batch 维),大模型大图慎调高。
+    # 段路(非 euler 采样器手写循环)暂只出 1 张(留 follow-up),其余路径(标准 pipe)支持。
+    num_images: int = Field(1, ge=1, le=8)
     # 采样控制(复刻 ComfyUI KSampler 两下拉,映射 diffusers flow-match scheduler):
     # sampler_name = scheduler 类(euler→FlowMatchEulerDiscrete / heun→Heun / lcm→LCM);
     # scheduler = sigma 调度(normal=默认 / karras / exponential / beta → use_*_sigmas)。
@@ -229,6 +234,8 @@ class InferenceResult(BaseModel):
 
     media_type: str  # "application/json" | "audio/wav" | "image/png" | ...
     data: bytes
+    # batch 出图(num_images>1)的额外张(第 1 张在 data,其余在此)。加法字段,单图消费者读 data 不变。
+    extra_images: list[bytes] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     usage: UsageMeter
 

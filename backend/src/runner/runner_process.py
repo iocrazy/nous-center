@@ -402,6 +402,7 @@ def _build_request(node: P.RunNode):
                 cfg_scale=float(latent.get("cfg_scale") or 4.0),
                 sampler_name=str(latent.get("sampler_name") or "euler"),
                 scheduler=str(latent.get("scheduler") or "normal"),
+                num_images=int(latent.get("num_images") or 1),
                 # PR-A2:img2img 重绘强度(默认 1.0 = 全量去噪 ≈ 文生图,零回归;<1 + input_image
                 # + arch 有 img2img 变体 → 引擎走 ZImageImg2ImgPipeline 加噪重去噪)。
                 strength=float(latent.get("strength") or 1.0),
@@ -455,6 +456,7 @@ def _build_request(node: P.RunNode):
             sampler_name=str(node.inputs.get("sampler_name") or "euler"),
             scheduler=str(node.inputs.get("scheduler") or "normal"),
             seed=seed,
+            num_images=int(node.inputs.get("num_images") or 1),
             loras=loras_raw if isinstance(loras_raw, list) else [],
         )
     if node.node_type == "tts":
@@ -491,8 +493,10 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             continue
 
         # PR-6: L2 output cache —— 确定性 image 节点二跑命中则跳过 load+infer。
+        # batch(num_images>1)跳过:L2 单图缓存只存/返一张,会吞掉其余 N-1 张。
         l2_key = None
-        if node.node_type == "image" and getattr(node, "is_deterministic", False):
+        if (node.node_type == "image" and getattr(node, "is_deterministic", False)
+                and int(getattr(req, "num_images", 1) or 1) == 1):
             from src.services.inference.image_l2_cache import image_l2_key, serve_image_l2
             l2_key = image_l2_key(node, req)
             entry = state.image_l2.get(l2_key)
@@ -707,6 +711,13 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             ttl = int(get_settings().IMAGE_URL_TTL_SECONDS)  # PR-4:TTL 归服务层配置
             record = write_image(result.data, ext=ext, ttl_seconds=ttl)
             meta = result.metadata or {}
+            # batch:首张在 result.data,其余在 extra_images → 各自落盘签 URL。image_url 仍是首张
+            # (单图消费者 / 外部 API 不变);image_urls 是全部(含首张),前端累积网格逐张展示。
+            extra = list(getattr(result, "extra_images", None) or [])
+            image_urls = [record["url"]]
+            for blob in extra:
+                rec2 = write_image(blob, ext=ext, ttl_seconds=ttl)
+                image_urls.append(rec2["url"])
             outputs.update({
                 "image_url": record["url"],
                 "image_uuid": record["uuid"],
@@ -714,6 +725,8 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
                 "width": meta.get("width"),
                 "height": meta.get("height"),
             })
+            if len(image_urls) > 1:
+                outputs["image_urls"] = image_urls
             if l2_key is not None:
                 state.image_l2.put(l2_key, {
                     "image_uuid": record["uuid"], "date": record["date"], "ext": ext,
