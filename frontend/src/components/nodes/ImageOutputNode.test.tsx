@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { appendOutput } from './ImageOutputNode'
+import { appendOutput } from './imageOutputGallery'
 
 const img = (url: string) => ({ url, seed: 1, steps: 8, cfg: 1, width: 1024, height: 1024, durationMs: 100 })
 

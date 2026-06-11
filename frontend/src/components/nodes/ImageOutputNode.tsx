@@ -4,28 +4,10 @@ import { NodeResizer, type NodeProps } from '@xyflow/react'
 import { NODE_DEFS } from '../../models/workflow'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { useLightboxStore, type LightboxMeta } from '../../stores/lightbox'
+import { appendOutput, type OutImg } from './imageOutputGallery'
 import BaseNode from './BaseNode'
 
 type Phase = 'empty' | 'loading' | 'success' | 'error'
-
-/** 一张累积出图(对齐 Infinite-Canvas OUTPUT:节点是「你这条流所有生成的画廊」)。 */
-interface OutImg {
-  url: string
-  seed?: number | null
-  steps?: number | null
-  cfg?: number | null
-  width?: number | null
-  height?: number | null
-  durationMs?: number | null
-}
-
-const MAX_IMAGES = 60  // 防止跑太多次撑爆节点 data;超出丢最旧。
-
-/** 累积一张出图(dedup by url + 截断最旧)。纯函数,便于单测。 */
-export function appendOutput(prev: OutImg[], item: OutImg, max = MAX_IMAGES): OutImg[] {
-  if (prev.some((x) => x.url === item.url)) return prev
-  return [...prev, item].slice(-max)
-}
 
 export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   const def = NODE_DEFS.image_output
@@ -66,7 +48,8 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
     return null
   }, [tabs, activeTabId, id])
 
-  const [phase, setPhase] = useState<Phase>('empty')
+  // 仅持有「活动态」(运行中/失败);success/empty 从 images.length 派生 —— 避免 setState-in-effect。
+  const [act, setAct] = useState<'idle' | 'loading' | 'error'>('idle')
   const [error, setError] = useState<string>('')
   const openItems = useLightboxStore((s) => s.openItems)
 
@@ -90,21 +73,21 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
 
   const mediaType = (data.media_type as string) || 'image/png'
 
-  useEffect(() => {
-    if (images.length && phase !== 'success' && phase !== 'loading') setPhase('success')
-    if (!images.length && phase === 'success') setPhase('empty')
-  }, [images.length, phase])
+  // 派生显示态:运行中/失败优先,否则有图=success / 无图=empty(含恢复已存图的工作流,无需事件)。
+  const phase: Phase = act === 'loading' ? 'loading'
+    : act === 'error' ? 'error'
+      : images.length ? 'success' : 'empty'
 
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail
       const src = upstreamNodeId
       if (detail.type === 'node_start' && src && detail.node_id === src) {
-        setPhase('loading')
+        setAct('loading')
         setError('')
       }
       if (detail.type === 'node_error' && src && detail.node_id === src) {
-        setPhase('error')
+        setAct('error')
         setError(typeof detail.error === 'string' ? detail.error : '生成失败')
       }
       // Lane S 异步:图像结果经 node_complete 带回。**累积**(对齐 IC):每次运行 append 一张,
@@ -137,7 +120,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
             steps: item.steps, cfg_scale: item.cfg, duration_ms: item.durationMs,
           })
         }
-        setPhase('success')
+        setAct('idle')  // 清运行态;有图 → 派生 phase=success
         setError('')
       }
     }
@@ -178,12 +161,9 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   const removeAt = (i: number) => {
     const next = images.filter((_, j) => j !== i)
     updateNode(id, { images: next, image_url: next.length ? next[next.length - 1].url : '' })
-    if (!next.length) setPhase('empty')
+    // 空了 → 派生 phase=empty,无需手动置态
   }
-  const clearAll = () => {
-    updateNode(id, { images: [], image_url: '' })
-    setPhase('empty')
-  }
+  const clearAll = () => updateNode(id, { images: [], image_url: '' })
 
   const single = images.length === 1
   const multi = images.length > 1
