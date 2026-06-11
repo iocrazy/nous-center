@@ -27,4 +27,11 @@ describe('ImageOutputNode 累积画廊 appendOutput', () => {
     const a = appendOutput([], img('u1'))
     expect(a[0]).toMatchObject({ url: 'u1', seed: 1, steps: 8, cfg: 1, width: 1024, height: 1024, durationMs: 100 })
   })
+
+  it('batch:一次 node_complete 的 image_urls 列表逐张 fold append(PR-B1 后端一次出 N 张)', () => {
+    // 模拟 handler 对 detail.image_urls=[u1,u2,u3] 的折叠累积
+    let next = appendOutput([], img('existing'))
+    for (const u of ['u1', 'u2', 'u3']) next = appendOutput(next, img(u))
+    expect(next.map((x) => x.url)).toEqual(['existing', 'u1', 'u2', 'u3'])
+  })
 })
