@@ -150,11 +150,13 @@ class ZImageTurboArchAdapter:
         return 0.0  # distilled — 必须 0
 
     def supported_samplers(self) -> set[str]:
-        # euler 原生;euler_ancestral 经 PR-1b 手写 rectified-flow ancestral 步;dpmpp_2m / dpmpp_2s_ancestral
-        # 经 dpm++ PR 手写(_run_zimage_segmented 内,逐式对照 ComfyUI k_diffusion sample_dpmpp_2m /
-        # sample_dpmpp_2s_ancestral_RF)。SDE 族(dpmpp_2m_sde/dpmpp_sde)依赖 model_sampling half-log-snr +
-        # Brownian 噪声,留 follow-up。
-        return {"euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2s_ancestral"}
+        # 全部 _run_zimage_segmented 内手写,逐式对照 ComfyUI k_diffusion(RF/CONST 分支):
+        # euler 原生;euler_ancestral(sample_euler_ancestral_RF);dpmpp_2m / dpmpp_2s_ancestral
+        # (sample_dpmpp_2m / _2s_ancestral_RF);dpmpp_2m_sde / dpmpp_3m_sde(sample_dpmpp_2m_sde / _3m_sde,
+        # half-log-snr λ=log((1-σ)/σ)、噪声 seeded randn 代 BrownianTree)。dpmpp_sde(单步 SDE,需额外前向 +
+        # get_ancestral_step)留 follow-up。
+        return {"euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2s_ancestral",
+                "dpmpp_2m_sde", "dpmpp_3m_sde"}
 
     def supported_schedulers(self) -> set[str]:
         # 放开到 9 个(对齐 Flux2 / ComfyUI;spec 2026-06-09 Z-Image 引擎地基 PR-1)。Z-Image 走手写
