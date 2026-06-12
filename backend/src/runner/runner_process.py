@@ -209,7 +209,11 @@ async def _handle_load_model(state: _RunnerState, ch: PipeChannel, msg: P.LoadMo
 
 
 async def _handle_unload_model(state: _RunnerState, ch: PipeChannel, msg: P.UnloadModel) -> None:
-    await state.mm.unload_model(msg.model_key, force=True)
+    # RAM stash(spec 2026-06-12 PR-2):整模型 adapter 先试 stash(权重挪 CPU 待命,
+    # 命中 restore 秒回;Ideogram-4 冷载 95s → 秒级)。不可 stash(组件路线 combo /
+    # offload pipe / RAM 水位不足 / 引擎不支持)→ 旧销毁。两条路对外都是「显存已腾」。
+    if not await state.mm.stash_model(msg.model_key):
+        await state.mm.unload_model(msg.model_key, force=True)
     # 显存就在这个 runner 进程持有的卡上 —— empty_cache 必须在这里跑(主进程跑无效)。
     try:
         import torch  # noqa: PLC0415

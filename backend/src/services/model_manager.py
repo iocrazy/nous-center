@@ -124,6 +124,9 @@ class LoadedModel(BaseModel):
     gpu_indices: list[int] = Field(default_factory=list)  # all GPUs (for tensor-parallel)
     loaded_at: float = Field(default_factory=time.monotonic)
     last_used: float = Field(default_factory=time.monotonic)
+    # RAM stash(spec 2026-06-12 PR-2):整模型 adapter 权重已挪 CPU 待命(不占显存,
+    # 命中 restore 秒回)。组件路线 combo 不用此位(组件层 stash 在 L1 池)。
+    stashed: bool = False
 
     # InferenceAdapter is a non-pydantic ABC instance; allow as field value.
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -796,6 +799,40 @@ class ModelManager:
             logger.info("TTL expired: unloading %s", mid)
             await self.unload_model(mid)
 
+    async def stash_model(self, model_id: str) -> bool:
+        """整模型 adapter RAM stash(spec 2026-06-12 PR-2):权重挪 CPU,entry 保留,
+        命中时 restore 秒回。不可 stash(in_use/resident/被引用/引擎不支持/RAM 水位不足/
+        L1 池组件 combo)→ False,调用方走旧销毁。"""
+        async with self._lock_for(model_id):
+            entry = self._models.get(model_id)
+            if entry is None:
+                return False
+            if entry.stashed:
+                # 已 stash 再收卸载请求 = 用户要真清(RAM 也还回去)→ False 走销毁。
+                return False
+            if model_id in self._in_use or entry.spec.resident or self._references.get(model_id):
+                return False
+            # 组件路线 combo:其组件在 L1 池有 refs,整 pipe .to(cpu) 会把池组件一起挪走
+            # 而池记账不知情 → 不在 adapter 层 stash(组件层 PR-1 已覆盖)。
+            if any(model_id in c["refs"] for c in self._components.values()):
+                return False
+            try:
+                import psutil  # noqa: PLC0415
+                need = int(getattr(entry.spec, "vram_mb", 0) or 0) * 1024 * 1024
+                if psutil.virtual_memory().available - need < self._stash_ram_reserve_bytes():
+                    logger.info("adapter stash 跳过(RAM 水位不足)id=%s", model_id)
+                    return False
+                ok = await asyncio.to_thread(entry.adapter.stash)
+            except Exception as e:  # noqa: BLE001 — stash 失败不挡调用方销毁路径
+                logger.warning("adapter stash 失败 id=%s:%s", model_id, e)
+                return False
+            if not ok:
+                return False
+            entry.stashed = True
+            logger.info("adapter stash → RAM id=%s(~%dMB,命中秒回)", model_id,
+                        int(getattr(entry.spec, "vram_mb", 0) or 0))
+            return True
+
     async def evict_lru(self, gpu_index: int | None = None) -> str | None:
         """Evict the least-recently-used non-resident, non-referenced model.
 
@@ -900,6 +937,8 @@ class ModelManager:
                 continue
             if e.spec.resident or self._references.get(mid) or mid in self._in_use:
                 continue
+            if getattr(e, "stashed", False):
+                continue  # RAM stash:权重已挪 CPU,该卡 free 已含这部分,计入=双计
             total += max(0, int(getattr(e.spec, "vram_mb", 0) or 0))
         return total
 
@@ -1174,6 +1213,7 @@ class ModelManager:
                 "gpu_indices": list(entry.gpu_indices),
                 "vram_mb": entry.spec.vram_mb,
                 "pipeline_class": params.get("pipeline_class"),
+                "stashed": entry.stashed,  # RAM 待命(不占显存,命中秒回;spec 2026-06-12)
                 "source_files": list(params.get("source_files") or []),
                 "last_used_ago_sec": round(now - entry.last_used, 2),
             })
@@ -1756,6 +1796,21 @@ class ModelManager:
         async with self._lock_for(model_id):
             # cache hit → touch LRU + return adapter from unified _models dict
             entry = self._models.get(model_id)
+            if entry is not None and entry.stashed:
+                try:
+                    t0 = time.monotonic()
+                    await asyncio.to_thread(entry.adapter.restore)
+                    entry.stashed = False
+                    logger.info("adapter restore ← RAM id=%s(%.1fs)",
+                                model_id, time.monotonic() - t0)
+                except Exception as e:  # noqa: BLE001 — restore 失败按缓存失效处理,走重建
+                    logger.warning("adapter restore 失败,销毁重建 id=%s:%s", model_id, e)
+                    try:
+                        entry.adapter.unload()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._models.pop(model_id, None)
+                    entry = None
             if entry is not None:
                 logger.info("image adapter HIT id=%s (modular)", model_id)
                 entry.touch()
