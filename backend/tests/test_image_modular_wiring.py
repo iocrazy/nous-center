@@ -743,3 +743,62 @@ def test_resolve_seg_batch_upstream_batched_conflicting_n_raises():
     """上段已批 N + num_images 既非 1 又非 N → 批维冲突,派发前人话报错。"""
     with pytest.raises(ValueError, match="批维冲突"):
         image_modular._resolve_segmented_init_batch(3, 2, True)
+
+
+class _StreamModBase:
+    """真实基类替身 —— CI mock torch 下 isinstance(x, torch.nn.Module) 需要真 type。"""
+
+
+class _StreamMod(_StreamModBase):
+    def __init__(self):
+        self.to_calls = []
+
+    def to(self, dev):
+        self.to_calls.append(str(dev))
+        return self
+
+
+def _stream_pipe(monkeypatch):
+    """fake pipe(components: transformer×2 是 Module,tokenizer 不是)+ mock group offloading。"""
+    import torch as _t
+
+    calls = []
+    monkeypatch.setattr(image_modular, "_import_group_offloading",
+                        lambda: lambda mod, **kw: calls.append((mod, kw)))
+    monkeypatch.setattr(_t.nn, "Module", _StreamModBase, raising=False)
+
+    pipe = MagicMock(name="pipe")
+    tr, utr, te, vae = _StreamMod(), _StreamMod(), _StreamMod(), _StreamMod()
+    pipe.components = {"transformer": tr, "unconditional_transformer": utr,
+                       "text_encoder": te, "vae": vae, "tokenizer": object()}
+    return pipe, calls, (tr, utr, te, vae)
+
+
+def test_stream_offload_routes_transformers_and_parks_rest(monkeypatch):
+    """offload=stream:transformer 类走 group offloading,TE/VAE 驻卡(spike:TE 流式会崩)。"""
+    pipe, calls, (tr, utr, te, vae) = _stream_pipe(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/i", device="cpu",
+                                           pipeline_class="Ideogram4Pipeline", offload="stream")
+    be._apply_stream_offload(pipe)
+    assert {id(c[0]) for c in calls} == {id(tr), id(utr)}, "只有 transformer 类流式"
+    for kw in (c[1] for c in calls):
+        assert kw["offload_type"] == "block_level" and kw["use_stream"] is True
+    assert te.to_calls and vae.to_calls, "TE/VAE 驻卡"
+
+
+def test_stream_offload_rejects_fp8(monkeypatch):
+    """stream + fp8 在线量化 → 人话 fail-loud(Float8Tensor 不可预 pin)。"""
+    _fake_klein(monkeypatch)
+    be = image_modular.ModularImageBackend(repo="/m/i", device="cpu",
+                                           pipeline_class="Flux2KleinPipeline",
+                                           offload="stream", dtype="fp8_e4m3")
+    with pytest.raises(ValueError, match="不支持 fp8"):
+        be._ensure_pipe()
+
+
+def test_stream_pipe_not_stashable():
+    """stream pipe(hook)不可 RAM stash —— offload!=none 守卫覆盖(#500)。"""
+    be = image_modular.ModularImageBackend(repo="/m/i", device="cuda:1",
+                                           pipeline_class="Ideogram4Pipeline", offload="stream")
+    be._pipe = MagicMock()
+    assert be.stash() is False

@@ -35,6 +35,7 @@ nodes:
           - { value: "cuda:0", label: "GPU stash → cuda:0", description: "跨卡 offload:权重常驻 cuda:0,forward 时挪到所选卡" }
           - { value: "cuda:1", label: "GPU stash → cuda:1", description: "跨卡 offload:权重常驻 cuda:1,forward 时挪到所选卡" }
           - { value: "cuda:2", label: "GPU stash → cuda:2", description: "跨卡 offload:权重常驻 cuda:2,forward 时挪到所选卡" }
+          - { value: stream,   label: "流式分块(大模型跑小卡)", description: "权重驻内存,DiT 分块流式上卡边算边搬(~6× 慢);54G 模型可跑 24G 卡;精度须 bf16" }
       # 整模型架构(spec 2026-06-07):flux2=Flux2-Klein 整模型;z-image=Z-Image-Turbo
       # (走 ZImagePipeline.from_pretrained,distilled 8 步/guidance 0);qwen-edit=Qwen-Image-Edit-2511
       # (编辑/角度控制,需输入图,走 QwenImageEditPlusPipeline,true_cfg 4.0/40 步)。
@@ -75,6 +76,7 @@ nodes:
           - { value: "cuda:0", label: "GPU stash → cuda:0", description: "跨卡 offload:权重常驻 cuda:0,forward 时挪到 device 卡" }
           - { value: "cuda:1", label: "GPU stash → cuda:1", description: "跨卡 offload:权重常驻 cuda:1,forward 时挪到 device 卡" }
           - { value: "cuda:2", label: "GPU stash → cuda:2", description: "跨卡 offload:权重常驻 cuda:2,forward 时挪到 device 卡" }
+          - { value: stream,   label: "流式分块(大模型跑小卡)", description: "权重驻内存,DiT 分块流式上卡边算边搬(~6× 慢);54G 模型可跑 24G 卡;精度须 bf16" }
       - name: adapter_arch
         label: "架构"
         widget: select
