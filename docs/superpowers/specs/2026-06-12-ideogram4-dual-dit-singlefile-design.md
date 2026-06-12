@@ -76,20 +76,29 @@ runner 管线(PR-3)收口让工作流真能跑。
 
 ### PR-2:Loader UX —— 表达两个 DiT(架构决策)
 
-破「一 diffusion_models 单文件 → 一 MODEL」假设。三选一,**推荐方案 B**:
+破「一 diffusion_models 单文件 → 一 MODEL」假设。
 
-- **方案 A(专用节点)**:新 `ideogram4_load_checkpoint` 节点,两个 file widget(cond / uncond DiT)
-  → 一个 MODEL(spec 带两文件)。语义最清晰,但新增节点 + 与现有 combo/runner 分叉。
-- **方案 B(扩展 MODEL spec + 条件第二槽)推荐**:`flux2_load_diffusion_model` 加 `adapter_arch=ideogram4`
-  选项 + 一个**仅 ideogram4 显示**的 `unconditional_file` file widget(component_select role=diffusion_models)。
-  MODEL spec(`flux2_model`)加可选 `unconditional_file`。复用现有 loader/combo/runner 主干,新增面最小,
-  且显式(非约定推断,不脆)。`_ARCH_CLIP_COMPAT` 加 `ideogram4→{qwen}`(Qwen3-VL TE)。
-- **方案 C(约定推断)否决**:`ideogram4_fp8_scaled` 自动找同目录 `..._unconditional_...`。零 UX 但命名约定脆,
+**ComfyUI 上游怎么做(读了用户 `【83】Ideogram4全自动流程` 工作流 JSON,feedback_read_comfyui_source)**:
+**两个独立 `UNETLoader`**(各加载 `ideogram4_fp8_scaled` / `ideogram4_unconditional_fp8_scaled`,各出一个 MODEL)
++ **`DualModelGuider` 合并节点**(吃两个 MODEL + cfg 值 → 喂采样器的非对称 CFG guider)。即上游是
+「两 loader + 合并节点」,**不是**单 loader 双 widget。CLIPLoader type=`ideogram4`、VAELoader=flux2-vae。
+
+四选一,**推荐方案 D(对齐 ComfyUI)**:
+
+- **方案 D(两 loader + 合并节点,= ComfyUI)推荐**:复用现有 `flux2_load_diffusion_model`(arch=ideogram4)
+  各加载一个 DiT → 各出 MODEL;新增 `ideogram4_dual_guider` 合并节点(两 MODEL 输入 → 一 MODEL,
+  spec 带 `unconditional_file` = 第二 DiT 文件)喂 KSampler。**用户已熟悉这个连法**(ComfyUI 同构),
+  单 loader 不变(零回归),双 DiT 的「不对称」语义显式落在合并节点。`_ARCH_CLIP_COMPAT` 加 `ideogram4→{qwen}`。
+- **方案 B(单 loader 条件第二槽)**:`flux2_load_diffusion_model` 加仅 ideogram4 显示的 `unconditional_file`
+  widget。最省节点,但与 ComfyUI 连法分叉、且 loader 渐成 arch-special。
+- **方案 A(专用节点)**:新 `ideogram4_load_checkpoint`,两 file widget → 一 MODEL。清晰但分叉 combo/runner。
+- **方案 C(约定推断)否决**:`ideogram4_fp8_scaled` 自动找同目录 `..._unconditional_...`。命名约定脆,
   违 [[feedback_long_term_robustness]]。
 
-方案 B 的前端:`unconditional_file` widget 在 DeclarativeNode 按 `adapter_arch==ideogram4` 条件渲染
-(对齐现有按 arch 显隐的字段);节点定义动态从 node.yaml 渲染。`engine_catalog._infer_arch` 加
-`ideogram4_*` → ideogram4。
+方案 D 的前端:新合并节点(两 MODEL 输入端口 + 一 MODEL 输出),节点定义从 node.yaml 动态渲染;
+`exec_ideogram4_dual_guider` 把第二 MODEL 的 spec.file 写进第一 MODEL 的 `unconditional_file`。
+`engine_catalog._infer_arch` 加 `ideogram4_*` → ideogram4(单文件选 DiT 时 loader 下拉默认对)。
+**实施 PR-2 前用 AskUserQuestion 跟用户确认 D vs B**(loader UX 是口味决策,且影响用户既有连图习惯)。
 
 ### PR-3:Runner / 组件管线 —— 第二 DiT 落地 + 卸载
 
