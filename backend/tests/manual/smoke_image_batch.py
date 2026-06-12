@@ -2,7 +2,9 @@
 
 验:① num_images=3 → InferenceResult.data(首张)+ extra_images(2 张)= 共 3 张;② 3 张各为合法
 非损坏 PNG;③ 3 张互不相同(SSIM<0.99 两两 → 真出了不同变体,非复制);④ num_images=1 仍单图
-(extra_images 空,零回归)。Z-Image euler 走标准 pipe(非段路)。
+(extra_images 空,零回归)。Z-Image euler 走标准 pipe(非段路)。⑤ 段路纯生成 batch(euler_ancestral
+num_images=3)。⑥ 段路 img2img 续采 batch(init_latent + add_noise=enable + num_images=3 → 3 张变体);
+⑦ 段路留噪续采(add_noise=disable)单 latent + num_images=3 → 守卫退回 1 张。
 
 用法:cd backend && SMOKE_DEVICE=cuda:2 uv run python tests/manual/smoke_image_batch.py
 """
@@ -96,6 +98,40 @@ async def main() -> int:
         if s is not None:
             print(f"    SSIM(0,1)={s:.4f} → {'异 ✓' if s < 0.99 else 'FAIL 相同'}")
             ok = ok and s < 0.99
+
+    # ⑥ 段路 batch 续采(init_latent img2img,add_noise=enable):单 init latent 复制 N 份 + N 个独立噪声
+    #    → N 张变体。先导出一个 latent_ref(output_mode=latent),再喂回作 img2img 续采 num_images=3。
+    exp = await be.infer(ImageRequest(request_id="export-lat", prompt=PROMPT, negative_prompt="", cfg_scale=0.0,
+                                      steps=STEPS, width=SIZE, height=SIZE, seed=SEED,
+                                      sampler_name="euler_ancestral", output_mode="latent"))
+    lat_path = Path(tempfile.gettempdir(), "seg_batch_init.safetensors")
+    lat_path.write_bytes(exp.data)
+    lat_meta = exp.metadata["latent"]
+    print(f"  ⑥ 导出 latent_ref shape={lat_meta['shape']} arch={lat_meta['arch']}")
+    ref = {"path": str(lat_path), "arch": lat_meta["arch"], "latent_channels": lat_meta["latent_channels"]}
+    ri = await be.infer(ImageRequest(request_id="seg-i2i-batch", prompt=PROMPT, negative_prompt="", cfg_scale=0.0,
+                                     steps=STEPS, width=SIZE, height=SIZE, seed=SEED, num_images=3,
+                                     sampler_name="euler_ancestral", init_latent_ref=ref,
+                                     add_noise=True, start_at_step=6))
+    i2i_blobs = [ri.data, *ri.extra_images]
+    i2i_ok = len(i2i_blobs) == 3 and all(_valid_png(b) for b in i2i_blobs)
+    print(f"     段路 img2img num_images=3 → {len(i2i_blobs)} 张 (image_count={ri.usage.image_count}) {'✓' if i2i_ok else 'FAIL'}")
+    ok = ok and i2i_ok
+    for i in range(len(i2i_blobs)):
+        for j in range(i + 1, len(i2i_blobs)):
+            s = _ssim(i2i_blobs[i], i2i_blobs[j])
+            if s is not None:
+                print(f"     SSIM({i},{j})={s:.4f} → {'异 ✓' if s < 0.99 else 'FAIL 相同'}")
+                ok = ok and s < 0.99
+
+    # ⑦ 段路留噪续采(add_noise=disable)单 latent + num_images=3 → 退回 1 张(无加噪无变体源,守卫)。
+    rr = await be.infer(ImageRequest(request_id="seg-relay-batch", prompt=PROMPT, negative_prompt="", cfg_scale=0.0,
+                                     steps=STEPS, width=SIZE, height=SIZE, seed=SEED, num_images=3,
+                                     sampler_name="euler_ancestral", init_latent_ref=ref,
+                                     add_noise=False, start_at_step=6))
+    relay_ok = _valid_png(rr.data) and not rr.extra_images
+    print(f"  ⑦ 段路留噪续采单 latent num_images=3 → 退回 1 张(extra 空): {relay_ok}")
+    ok = ok and relay_ok
 
     be.unload()
     print(f"\n{'✅ smoke_image_batch PASS' if ok else '❌ FAIL'}")

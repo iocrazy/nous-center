@@ -707,3 +707,39 @@ def test_fp8_quantize_covers_unconditional_transformer():
     src = (pathlib.Path(__file__).parent.parent
            / "src/services/inference/image_modular.py").read_text()
     assert '("transformer", "unconditional_transformer", "text_encoder")' in src
+
+
+# ── 段路 batch 续采(init_latent):目标批维解析(_resolve_segmented_init_batch)纯逻辑测 ──
+# 手写分段循环本身按 batch 维流转(#497);本 PR 放开 init_latent 注入时的批维。真出图(N 张
+# 互异 / 首图复现单图)走 standalone smoke_image_batch ⑥。
+
+def test_resolve_seg_batch_pure_generation_path_not_used():
+    """纯生成(无 init_latent)不经此函数 —— sanity:src_bs=1/n=1 → 1。"""
+    assert image_modular._resolve_segmented_init_batch(1, 1, True) == 1
+
+
+def test_resolve_seg_batch_img2img_replicates_to_n():
+    """img2img 续采(单 init latent + add_noise=enable):复制到 N → N 张变体。"""
+    assert image_modular._resolve_segmented_init_batch(1, 4, True) == 4
+
+
+def test_resolve_seg_batch_leftover_noise_relay_single_falls_back_to_1():
+    """留噪续采(add_noise=disable)单 latent:复制得 N 张相同 → 退回 1(调用方告警)。"""
+    assert image_modular._resolve_segmented_init_batch(1, 4, False) == 1
+
+
+def test_resolve_seg_batch_upstream_batched_flows_through():
+    """上段已批(src_bs=N)+ num_images=1(默认沿用上段批维)→ 整批 N 流过。"""
+    assert image_modular._resolve_segmented_init_batch(3, 1, False) == 3
+    assert image_modular._resolve_segmented_init_batch(3, 1, True) == 3
+
+
+def test_resolve_seg_batch_upstream_batched_matching_n_ok():
+    """上段已批 N + num_images 恰等 N → N(允许显式同值)。"""
+    assert image_modular._resolve_segmented_init_batch(3, 3, True) == 3
+
+
+def test_resolve_seg_batch_upstream_batched_conflicting_n_raises():
+    """上段已批 N + num_images 既非 1 又非 N → 批维冲突,派发前人话报错。"""
+    with pytest.raises(ValueError, match="批维冲突"):
+        image_modular._resolve_segmented_init_batch(3, 2, True)

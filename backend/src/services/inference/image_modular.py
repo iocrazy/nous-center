@@ -514,6 +514,30 @@ _SEGMENTED_SAMPLERS = {
 }
 
 
+def _resolve_segmented_init_batch(src_bs: int, n_images: int, add_noise: bool) -> int:
+    """段路续采(init_latent 注入)的目标批维 —— 由「上段导出 latent 批维 src_bs」与「请求 num_images」
+    共同决定。纯逻辑(无 torch),抽出便于在 CI(mock torch)单测。调用方据 src_bs vs 返回值决定是否
+    把单 latent repeat 到批维。
+
+    - src_bs > 1(上段已批,N 个 latent 接力):整批流过;num_images 须为 1(沿用上段批维)或恰等 src_bs,
+      否则批维冲突 → ValueError(对齐 [[project_anima_arch_mismatch]] 的「派发前人话报错」)。
+    - src_bs == 1 & num_images > 1 & add_noise(img2img 续采):单 init latent 复制 N 份 + N 个独立噪声
+      → N 张变体(meaningful batch)。
+    - src_bs == 1 & num_images > 1 & !add_noise(留噪续采):单 latent 复制只会得 N 张完全相同图
+      (无加噪 → 无变体源)→ 退回 1(调用方告警)。要 batch 续采须在上段分段导出 N 个 latent。
+    - 否则:1。
+    """
+    if src_bs > 1:
+        if n_images > 1 and n_images != src_bs:
+            raise ValueError(
+                f"段路 batch 接力:上段导出 {src_bs} 个 latent,但本段 num_images={n_images} —— 批维冲突。"
+                f"num_images 须为 1(沿用上段批维)或恰好等于 {src_bs}。")
+        return src_bs
+    if n_images > 1 and add_noise:
+        return n_images
+    return 1
+
+
 class ModularImageBackend(InferenceAdapter):
     """图像引擎(标准 diffusers Flux2KleinPipeline);class 名是历史包袱(原 ModularPipeline,见模块 docstring)。
 
@@ -967,16 +991,30 @@ class ModularImageBackend(InferenceAdapter):
         #    base / 无注入 = randn(经 pipe.prepare_latents,与整段 pipe() 同 generator → 同初噪 → bit 一致)。
         num_channels = transformer.in_channels
         init_latent = self._load_init_latent(req, device) if getattr(req, "init_latent_ref", None) else None
-        # batch 出图(段路):仅纯生成(无 init_latent)时 prepare_latents(N) 出 N 个不同噪声 → N 张。
-        # 续采/接力(init_latent)= 接上段单 latent,保持 1(batch 接力语义复杂,留后续)。手写循环本身
-        # 按 batch 维流转(unbind→list→stack、采样分支标量系数广播),只这里 + decode 需放开。
-        n_images = int(getattr(req, "num_images", 1) or 1) if init_latent is None else 1
+        n_images = int(getattr(req, "num_images", 1) or 1)
+        # batch 出图(段路,#497 纯生成 + 本 PR 续采):手写循环本身按 batch 维流转(unbind→list→stack、
+        # 采样分支标量系数广播、noise=randn(latents.shape) 天然逐元素独立),decode 也已放开(#497)。
+        # 只「初始 latent」这一处要按场景定批维。
         if init_latent is not None:
+            # prepare_latents 给定 latents 时 batch_size 必须与张量批维严格一致(shape!=则 raise),
+            # 故先据 src_bs/num_images 解析目标批维、必要时把单 latent 复制到批维,再传一致的 batch。
+            src_bs = int(init_latent.shape[0])
+            target_bs = _resolve_segmented_init_batch(src_bs, n_images, add_noise)
+            if n_images > 1 and target_bs == 1 and src_bs == 1 and not add_noise:
+                import logging  # noqa: PLC0415
+                logging.getLogger(__name__).warning(
+                    "段路留噪续采(add_noise=disable)单 latent 无法产生 batch 变体(N 张会完全相同),"
+                    "已退回 1 张;要 batch 续采请在上段分段导出 N 个 latent。num_images=%d 被忽略。", n_images)
+            if src_bs == 1 and target_bs > 1:
+                # 单 init latent 复制到批维 N(img2img:配下方 N 个独立噪声 → N 张变体)。
+                init_latent = init_latent.repeat(target_bs, *([1] * (init_latent.dim() - 1)))
             latents = pipe.prepare_latents(
-                1, num_channels, req.height, req.width, torch.float32, device, gen, init_latent)
+                target_bs, num_channels, req.height, req.width, torch.float32, device, gen, init_latent)
             if add_noise:
                 # add_noise=enable + 注入图:按本段起始 sigma 重加噪(ComfyUI KSamplerAdvanced add_noise=enable
                 # 配 start_at_step 的 img2img 风;留噪接力主路是 add_noise=disable → 跳过)。
+                # noise 形状 = latents([target_bs,...])→ 批维逐张独立噪声 → N 张变体(且第 0 张与
+                # num_images=1 时同 generator 序列前缀一致 → batch 首图可复现单图结果)。
                 noise = torch.randn(
                     latents.shape, generator=gen, device=device, dtype=torch.float32)
                 latents = scheduler.scale_noise(latents, scheduler.timesteps[:1], noise)
