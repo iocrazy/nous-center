@@ -13,6 +13,7 @@ import { useLoras } from '../../api/loras'
 import { useComponents, useComponentState, useAllComponentStates, loadedStateByFile, useSeedvr2DitModels, componentStateKey, type ComponentRole, type ComponentLoadState } from '../../api/components'
 import BaseNode, { NodeWidgetRow, NodeInput, NodeNumberDrag, NodeTextarea } from './BaseNode'
 import NodeSelectPopover from './NodeSelectPopover'
+import { readImageDropUrl, isDisplayableImageValue } from './imageDragDrop'
 
 function LoraSelectWidget({
   value,
@@ -579,7 +580,9 @@ function ImageUploadWidget({
     reader.onload = (e) => onChange((e.target?.result as string) || '')
     reader.readAsDataURL(file)
   }
-  const hasImage = value.startsWith('data:')
+  // 接受 base64 data URI、本站签名 URL(/files/...)或绝对 http(s) URL。
+  // URL 形态来自「出图拖到输入」:画廊缩略图拖进来 / 「转为输入」生成的节点。
+  const hasImage = isDisplayableImageValue(value)
   return (
     <div className="nodrag" style={{ width: '100%' }}>
       <input
@@ -597,6 +600,12 @@ function ImageUploadWidget({
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault()
+          // 优先吃拖进来的图片 URL(画廊缩略图 → 输入)。后端 image_input PR-1 已接受本站 URL。
+          const url = readImageDropUrl(e.dataTransfer)
+          if (url) {
+            onChange(url)
+            return
+          }
           const f = e.dataTransfer.files?.[0]
           if (f) readFile(f)
         }}
