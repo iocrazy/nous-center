@@ -88,7 +88,26 @@ nodes:
           # + Qwen3 文本编码器(架构选 qwen)+ ae VAE(Flux1 16ch)。引擎经 build_bridged_*
           # (from_single_file)装配成 ZImagePipeline,与整模型同权重(smoke_zimage_singlefile SSIM≥0.95)。
           - { value: z-image, label: "Z-Image", description: "Z-Image 单文件(z_image_turbo_bf16;配 Qwen3 编码器 + ae VAE;8 步 distilled guidance=0)" }
+          # ideogram4 双 DiT 单文件:每个 DiT(条件 / 无条件)各用一个本节点(arch=ideogram4)加载,
+          # 再经「Ideogram-4 双 DiT 合并」节点合一(对齐 ComfyUI 两 UNETLoader + DualModelGuider)。
+          # 配 Qwen3-VL 编码器(架构选 qwen)+ flux2-vae。引擎走 dequant+键转装配 Ideogram4Pipeline。
+          - { value: ideogram4, label: "Ideogram-4", description: "Ideogram-4 单 DiT(双 DiT 各一个,经合并节点合一;配 Qwen3-VL 编码器 + flux2 VAE)" }
           - { value: anima, label: "Anima", description: "Anima 2B 自定义 DiT(自动选 AnimaPipeline + qwen3 TE + Qwen-Image VAE)" }
+
+  # Ideogram-4 双 DiT 合并(对齐 ComfyUI DualModelGuider):两个 Load Diffusion Model(arch=ideogram4,
+  # 一个条件 DiT ideogram4_fp8_scaled / 一个无条件 DiT ideogram4_unconditional_fp8_scaled)→ 合成一个
+  # MODEL(带 unconditional_file)喂 KSampler。非对称 CFG 的两个 DiT 由此节点显式合一。inline(无 GPU)。
+  ideogram4_dual_guider:
+    label: "Ideogram-4 双 DiT 合并"
+    category: image
+    badge: Dual
+    badgeColor: "var(--info)"
+    inputs:
+      - { id: model, type: MODEL, label: 条件 DiT }
+      - { id: unconditional_model, type: MODEL, label: 无条件 DiT }
+    outputs:
+      - { id: model, type: MODEL, label: MODEL }
+    widgets: []
 
   flux2_load_clip:
     label: "Load CLIP"

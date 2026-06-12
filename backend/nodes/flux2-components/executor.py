@@ -86,6 +86,34 @@ async def exec_load_diffusion_model(data: dict, inputs: dict) -> dict:
     }
 
 
+async def exec_ideogram4_dual_guider(data: dict, inputs: dict) -> dict:
+    """Ideogram-4 双 DiT 合并(对齐 ComfyUI DualModelGuider):两个 ideogram4 MODEL(条件 / 无条件 DiT)
+    → 一个 MODEL,把无条件 DiT 文件挂到 `unconditional_file`(runner PR-3 据此建第二个 DiT override)。
+
+    破「一 DiT → 一 MODEL」假设的合一点:KSampler 仍只见一个 MODEL,但带 unconditional_file。
+    inline(无 GPU)。两个上游都须 arch=ideogram4(派发前人话校验,防接错单 DiT 模型)。"""
+    cond = inputs.get("model")
+    uncond = inputs.get("unconditional_model")
+    if not isinstance(cond, dict) or cond.get("_type") != "flux2_model":
+        raise RuntimeError("双 DiT 合并:条件 DiT(MODEL)端口未连接,或上游不是 Load Diffusion Model")
+    if not isinstance(uncond, dict) or uncond.get("_type") != "flux2_model":
+        raise RuntimeError("双 DiT 合并:无条件 DiT(MODEL)端口未连接,或上游不是 Load Diffusion Model")
+    cond_spec = cond.get("spec") or {}
+    uncond_spec = uncond.get("spec") or {}
+    for label, sp in (("条件", cond_spec), ("无条件", uncond_spec)):
+        if (sp.get("adapter_arch") or "flux2") != "ideogram4":
+            raise RuntimeError(
+                f"双 DiT 合并:{label} DiT 架构须为 ideogram4(当前 '{sp.get('adapter_arch') or 'flux2'}')。"
+                f"两个 Load Diffusion Model 都要选架构 Ideogram-4,分别载 ideogram4_fp8_scaled / "
+                f"ideogram4_unconditional_fp8_scaled。")
+    uncond_file = uncond_spec.get("file")
+    if not uncond_file:
+        raise RuntimeError("双 DiT 合并:无条件 DiT 未选文件(file 空)")
+    merged = dict(cond)
+    merged["unconditional_file"] = uncond_file  # runner PR-3 透传成第二个 diffusion_models ComponentSpec
+    return {"model": merged}
+
+
 async def exec_load_clip(data: dict, inputs: dict) -> dict:
     """CLIP —— 动态多编码器(clip_stack:每条 file + weight_dtype)+ type(架构)。
     逐组件选卡(2026-06-04):node 级 device/offload(套用所有 encoder);device=auto 跟随
@@ -151,6 +179,7 @@ _ARCH_CLIP_COMPAT = {
     "flux2": {"flux2", "flux1"},       # Flux2 family
     "flux1": {"flux1", "flux2"},
     "z-image": {"qwen", "z-image"},    # Z-Image 单文件配 Qwen3 文本编码器(qwen_3_4b,架构选 qwen)
+    "ideogram4": {"qwen", "ideogram4"},  # Ideogram-4 双 DiT 配 Qwen3-VL 编码器(qwen3vl_8b,架构选 qwen)
 }
 
 
@@ -250,6 +279,7 @@ async def exec_ksampler(data: dict, inputs: dict) -> dict:
 EXECUTORS = {
     "flux2_load_checkpoint": exec_load_checkpoint,
     "flux2_load_diffusion_model": exec_load_diffusion_model,
+    "ideogram4_dual_guider": exec_ideogram4_dual_guider,
     "flux2_load_clip": exec_load_clip,
     "flux2_load_vae": exec_load_vae,
     "flux2_load_lora": exec_load_lora,

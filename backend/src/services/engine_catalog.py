@@ -114,6 +114,8 @@ def _infer_arch(fn: str, abs_path: str) -> str | None:
     文件名/路径启发式(对齐文件命名约定):z-image/z_image → z-image;anima 子目录/名 → anima;其余 → flux2。
     单组件无元信息无法 100% 准,够引擎库预热反推参考库用(用户也可在工作流 loader 节点显式选 adapter_arch)。"""
     s = f"{abs_path} {fn}".lower()
+    if "ideogram" in s:
+        return "ideogram4"
     if "z-image" in s or "z_image" in s or "zimage" in s:
         return "z-image"
     if "anima" in s:
