@@ -93,7 +93,8 @@ def _reference_repo_for_arch(arch: str) -> str | None:
         return None
     # hint 子串匹配 model_index._class_name(小写)。z-image 的 _class_name=ZImagePipeline(无连字符)
     # → 映射成 "zimage" 才命中(PR-2,spec 2026-06-09 分开载入借参考库 config)。
-    hint = {"flux2": "flux2", "flux1": "flux", "ernie": "ernie", "z-image": "zimage"}.get(arch_lower, arch_lower)
+    hint = {"flux2": "flux2", "flux1": "flux", "ernie": "ernie", "z-image": "zimage",
+            "ideogram4": "ideogram"}.get(arch_lower, arch_lower)
     if not hint:
         return None
     for d in sorted(base.iterdir()):
