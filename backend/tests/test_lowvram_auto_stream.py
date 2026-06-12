@@ -114,3 +114,17 @@ async def test_auto_zero_regression_when_fits(mm, monkeypatch):
     await m.get_or_load_image_adapter(_comps(), "Ideogram4Pipeline")
     tr = calls["transformer"][0]
     assert tr["device"] == "cuda:1" and tr["offload"] == "none"
+
+
+def test_repo_total_mb_counts_all_repo_weights(tmp_path):
+    """PR-3:HF-layout 整模型 footprint 按 repo 总权重(含三件套之外的 unconditional_transformer
+    ——Ideogram-4 漏算 18.6G 让 auto 误判装得下,贴边挤卡,真机逮到)。"""
+    (tmp_path / "model_index.json").write_text("{}")
+    for sub, mb in (("transformer", 4), ("unconditional_transformer", 4), ("text_encoder", 2), ("vae", 1)):
+        d = tmp_path / sub
+        d.mkdir()
+        (d / "w.safetensors").write_bytes(b"\0" * (mb * 1024 * 1024))
+    got = ModelManager._repo_total_mb(str(tmp_path / "transformer" / "w.safetensors"))
+    assert got == 11, f"应计 repo 全部权重(11MB),得 {got}"
+    # 非 repo(无 model_index)→ 0(回退逐件旧逻辑)
+    assert ModelManager._repo_total_mb("/m/loose/transformer/w.safetensors") == 0

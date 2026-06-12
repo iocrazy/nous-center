@@ -916,6 +916,23 @@ class ModelManager:
             pass
         return need
 
+    @staticmethod
+    def _repo_total_mb(transformer_file: str) -> int:
+        """HF-layout 整模型 repo 总权重(MB):file=<repo>/transformer/x.safetensors 上溯两级,
+        有 model_index.json 才算 repo(否则 0 = 单文件细粒度,走旧逻辑)。
+        为什么需要:checkpoint 三件套(transformer/clip/vae)之外 repo 还有组件 ——
+        Ideogram-4 的 unconditional_transformer(18.6G)不在三件套,按三件之和估 footprint
+        低估 ~25G,auto 误判「装得下」贴边挤卡(2026-06-12 PR-3 验收真机逮到)。"""
+        from pathlib import Path  # noqa: PLC0415
+        try:
+            repo = Path(transformer_file).parent.parent
+            if not (repo / "model_index.json").exists():
+                return 0
+            total = sum(f.stat().st_size for f in repo.rglob("*.safetensors"))
+            return int(total / (1024 * 1024))
+        except OSError:
+            return 0
+
     def _colocated_auto_footprint_mb(self, components: dict) -> int:
         """transformer(lead)device=auto 选卡用的**整模型同卡 footprint**(MB):会跟 transformer
         同卡常驻的所有组件 need 之和 = device=auto 且 offload=none 的组件(auto 组件下游被强制跟
@@ -925,6 +942,16 @@ class ModelManager:
         transformer 单件估值小、让 24G 小卡看着够 → get_best_gpu 选小卡 → clip/vae 强制跟卡 →
         整模型(transformer+clip+vae)压小卡 OOM(Flux2 派 3090)。按整模型 footprint 选卡后,
         auto 会路由到「真空闲+可驱逐」装得下整模型的大卡(如驱逐 Z-Image 残留后的 Pro6000)。"""
+        # checkpoint 整模型(HF-layout repo):按 repo 总权重一把估(含 unconditional_transformer
+        # 等三件套之外的组件)。三件套都是 auto+none(整模型同卡常驻)才适用;否则回退逐件。
+        dm = components.get("diffusion_models")
+        if dm is not None and all(
+                (c := components.get(k)) is not None and c.device == "auto"
+                and (getattr(c, "offload", "none") or "none") == "none"
+                for k in ("diffusion_models", "clip", "vae")):
+            repo_mb = self._repo_total_mb(dm.file)
+            if repo_mb:
+                return int(repo_mb * 1.1)
         total = 0
         for k in ("diffusion_models", "clip", "vae"):
             s = components.get(k)
