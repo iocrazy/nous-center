@@ -1,7 +1,13 @@
 # Ideogram-4 双 DiT 单文件精细路(整装/精细双线对齐)
 
-日期:2026-06-12 | 状态:spec | 来源:用户「都补一下」双线并行 arc(Z-Image #512 之后,
-ideogram4 单文件补齐);可行性已 spike 验过(分支 `spike/ideogram4-singlefile`,真机出图)
+日期:2026-06-12 | 状态:✅ 实现完成(3 PR 全合,2026-06-13) | 来源:用户「都补一下」双线并行 arc
+(Z-Image #512 之后,ideogram4 单文件补齐);可行性已 spike 验过(分支 `spike/ideogram4-singlefile`,真机出图)
+
+**实现**:PR-1 引擎(#515,build_bridged ideogram 分支 + Qwen3-VL TE + 第二 DiT override + 4-override 装配
++ 仓内 bundle;smoke 非对称 CFG 判据真机验)/ PR-2 loader UX 方案 D(#517,两 loader + `ideogram4_dual_guider`
+合并节点,对齐 ComfyUI)/ PR-3 runner 管线(#518,`unconditional_file` 透传 + `to_component_key` 扩 5 元 +
+footprint 补算 + 派发路径真机 e2e 出图 peak 53G)。坑:`to_component_key` 改 5 元要修全栈 6 处 unpack
+(本地 sweep 漏 2 处 snapshot/stash,CI 逮到补)。
 
 ## 动机
 
