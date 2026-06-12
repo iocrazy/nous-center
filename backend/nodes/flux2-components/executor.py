@@ -147,9 +147,10 @@ async def exec_encode_prompt(data: dict, inputs: dict) -> dict:
 # (AutoencoderKLQwenImage / unexpected weight keys),用户看不懂。这里在主进程派发前拦,
 # 给人话错误(node.yaml 注释的意图:catch category mismatches at draw time)。
 _ARCH_CLIP_COMPAT = {
-    "anima": {"anima", "qwen"},      # Anima 2B DiT 自带 qwen3 text encoder
-    "flux2": {"flux2", "flux1"},     # Flux2 family
+    "anima": {"anima", "qwen"},        # Anima 2B DiT 自带 qwen3 text encoder
+    "flux2": {"flux2", "flux1"},       # Flux2 family
     "flux1": {"flux1", "flux2"},
+    "z-image": {"qwen", "z-image"},    # Z-Image 单文件配 Qwen3 文本编码器(qwen_3_4b,架构选 qwen)
 }
 
 
@@ -161,6 +162,8 @@ def _check_arch_compat(unet_arch: str, clip_type: str) -> None:
             f"'{unet_arch}' 需配 {sorted(allowed)} 之一的 CLIP/text encoder"
             + ("。Anima 用 qwen_3_06b_base.safetensors(架构选 anima/qwen)+ "
                "qwen_image_vae.safetensors" if unet_arch == "anima" else "")
+            + ("。Z-Image 用 qwen_3_4b.safetensors(架构选 qwen)+ ae.safetensors VAE"
+               if unet_arch == "z-image" else "")
             + "。请在 Load CLIP / Load VAE 选对应架构的组件。"
         )
 

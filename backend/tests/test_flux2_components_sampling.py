@@ -186,6 +186,35 @@ async def test_ksampler_accepts_anima_dit_with_anima_clip():
     assert out["latent"]["_type"] == "flux2_latent"
 
 
+@pytest.mark.asyncio
+async def test_ksampler_rejects_arch_mismatch_zimage_dit_flux2_clip():
+    """Z-Image 单文件双线(2026-06-12):z-image DiT 配 flux2 CLIP → 派发前人话报错
+    (z-image 文本编码器是 Qwen3,须配 qwen)。"""
+    mod = _load_mod()
+    zimage_model = {"_type": "flux2_model",
+                    "spec": {"kind": "diffusion_models", "file": "/m/z_image_turbo_bf16.safe",
+                             "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "z-image"},
+                    "loras": []}
+    flux2_cond = {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""}
+    with pytest.raises(RuntimeError, match="架构不匹配"):
+        await mod.exec_ksampler({"steps": 8}, {"model": zimage_model, "conditioning": flux2_cond})
+
+
+@pytest.mark.asyncio
+async def test_ksampler_accepts_zimage_dit_with_qwen_clip():
+    """z-image DiT + qwen CLIP(Qwen3-4B 文本编码器)→ 放行(单文件 z-image 精细路)。"""
+    mod = _load_mod()
+    zimage_model = {"_type": "flux2_model",
+                    "spec": {"kind": "diffusion_models", "file": "/m/z_image_turbo_bf16.safe",
+                             "device": "cuda:1", "dtype": "bfloat16", "adapter_arch": "z-image"},
+                    "loras": []}
+    qwen_clip = {"_type": "flux2_clip", "type": "qwen",
+                 "encoders": [{"kind": "clip", "file": "/m/qwen_3_4b.safe", "dtype": "bfloat16"}]}
+    zimage_cond = {"_type": "flux2_conditioning", "clip": qwen_clip, "text": "x", "negative": ""}
+    out = await mod.exec_ksampler({"steps": 8}, {"model": zimage_model, "conditioning": zimage_cond})
+    assert out["latent"]["_type"] == "flux2_latent"
+
+
 def test_yaml_declares_eight_total_nodes():
     import yaml
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
