@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Download, Maximize2, ImageOff, X, Trash2, DownloadCloud } from 'lucide-react'
+import { Download, Maximize2, ImageOff, X, Trash2, DownloadCloud, ImagePlus } from 'lucide-react'
 import { NodeResizer, type NodeProps } from '@xyflow/react'
 import { NODE_DEFS } from '../../models/workflow'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { useLightboxStore, type LightboxMeta } from '../../stores/lightbox'
 import { appendOutput, type OutImg } from './imageOutputGallery'
+import { setImageDrag } from './imageDragDrop'
+import { uid } from '../../utils/uid'
 import BaseNode from './BaseNode'
 
 type Phase = 'empty' | 'loading' | 'success' | 'error'
@@ -14,6 +16,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   const tabs = useWorkspaceStore((s) => s.tabs)
   const activeTabId = useWorkspaceStore((s) => s.activeTabId)
   const updateNode = useWorkspaceStore((s) => s.updateNode)
+  const addNode = useWorkspaceStore((s) => s.addNode)
   const upstreamNodeId = useMemo(() => {
     const wf = tabs.find((t) => t.id === activeTabId)?.workflow
     const edge = wf?.edges.find((e) => e.target === id)
@@ -165,6 +168,20 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
   }
   const clearAll = () => updateNode(id, { images: [], image_url: '' })
 
+  // 出图拖到输入(迭代):落一个预填该 URL 的 image_input 节点到本节点附近,用户再连线即可
+  // 拿这张图当下一轮的输入(超分/编辑/参考)。节点落在本节点左侧(输入在左),竖直错位避免重叠。
+  const spawnInput = (url: string) => {
+    const self = useWorkspaceStore.getState().getActiveWorkflow().nodes.find((n) => n.id === id)
+    const px = self ? self.position.x - 320 : 0
+    const py = self ? self.position.y + 40 : 0
+    addNode({
+      id: uid(),
+      type: 'image_input',
+      data: { image: url },
+      position: { x: px, y: py },
+    })
+  }
+
   const single = images.length === 1
   const multi = images.length > 1
 
@@ -203,13 +220,28 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
                 <div
                   key={im.url}
                   className="nodrag"
+                  draggable
+                  onDragStart={(e) => setImageDrag(e, im.url)}
                   onClick={() => openAt(i)}
+                  title="点开放大;拖到「图像输入」可当下一轮输入"
                   style={{
                     position: 'relative', aspectRatio: '1 / 1', borderRadius: 3, overflow: 'hidden',
-                    background: 'var(--bg)', border: '1px solid var(--border)', cursor: 'zoom-in',
+                    background: 'var(--bg)', border: '1px solid var(--border)', cursor: 'grab',
                   }}
                 >
-                  <img src={im.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <img src={im.url} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <button
+                    className="nodrag"
+                    onClick={(e) => { e.stopPropagation(); spawnInput(im.url) }}
+                    title="转为输入(新建图像输入节点)"
+                    style={{
+                      position: 'absolute', bottom: 2, left: 2, width: 16, height: 16, borderRadius: 3,
+                      border: 'none', background: 'rgba(0,0,0,0.55)', color: '#fff', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+                    }}
+                  >
+                    <ImagePlus size={10} />
+                  </button>
                   <button
                     className="nodrag"
                     onClick={(e) => { e.stopPropagation(); removeAt(i) }}
@@ -237,7 +269,14 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
               onClick={() => phase === 'success' && single && openAt(0)}
             >
               {phase === 'success' && single ? (
-                <img src={images[0].url} alt="generated" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                <img
+                  src={images[0].url}
+                  alt="generated"
+                  draggable
+                  onDragStart={(e) => setImageDrag(e, images[0].url)}
+                  title="点开放大;拖到「图像输入」可当下一轮输入"
+                  style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                />
               ) : phase === 'loading' ? (
                 <div style={{ fontSize: 11, color: 'var(--muted)' }}>生成中...</div>
               ) : phase === 'error' ? (
@@ -258,6 +297,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
                 <>
                   <NodeBtn onClick={() => downloadOne(images[0].url)} icon={<Download size={10} />} label="下载" />
                   <NodeBtn onClick={() => openAt(0)} icon={<Maximize2 size={10} />} label="放大" />
+                  <NodeBtn onClick={() => spawnInput(images[0].url)} icon={<ImagePlus size={10} />} label="转为输入" />
                 </>
               ) : (
                 <>
