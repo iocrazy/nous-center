@@ -895,6 +895,10 @@ class ModularImageBackend(InferenceAdapter):
         #    base / 无注入 = randn(经 pipe.prepare_latents,与整段 pipe() 同 generator → 同初噪 → bit 一致)。
         num_channels = transformer.in_channels
         init_latent = self._load_init_latent(req, device) if getattr(req, "init_latent_ref", None) else None
+        # batch 出图(段路):仅纯生成(无 init_latent)时 prepare_latents(N) 出 N 个不同噪声 → N 张。
+        # 续采/接力(init_latent)= 接上段单 latent,保持 1(batch 接力语义复杂,留后续)。手写循环本身
+        # 按 batch 维流转(unbind→list→stack、采样分支标量系数广播),只这里 + decode 需放开。
+        n_images = int(getattr(req, "num_images", 1) or 1) if init_latent is None else 1
         if init_latent is not None:
             latents = pipe.prepare_latents(
                 1, num_channels, req.height, req.width, torch.float32, device, gen, init_latent)
@@ -906,7 +910,14 @@ class ModularImageBackend(InferenceAdapter):
                 latents = scheduler.scale_noise(latents, scheduler.timesteps[:1], noise)
         else:
             latents = pipe.prepare_latents(
-                1, num_channels, req.height, req.width, torch.float32, device, gen, None)
+                n_images, num_channels, req.height, req.width, torch.float32, device, gen, None)
+
+        # batch:prompt_embeds 是 list[每图一个],复制到批维 N(对齐 ZImagePipeline.__call__ 的
+        # `prompt_embeds = [pe for pe in prompt_embeds for _ in range(num_images_per_prompt)]`)。
+        # 否则 transformer(N 个 latent + 1 个 prompt)在 unpatchify 断言 len(size)==bsz 处崩。
+        bs = latents.shape[0]
+        if bs > 1 and len(prompt_embeds) == 1:
+            prompt_embeds = [pe for pe in prompt_embeds for _ in range(bs)]
 
         # 5. denoise loop —— 逐行对照 pipeline_z_image.py(guidance=0 单次前向)。
         import asyncio  # noqa: PLC0415
@@ -1124,12 +1135,12 @@ class ModularImageBackend(InferenceAdapter):
         return latents
 
     def _zimage_decode_latents(self, pipe: Any, latents: Any) -> Any:
-        """Z-Image latent → PIL(逐行对照 ZImagePipeline.__call__ 末段 decode)。分段路径出图时用。"""
+        """Z-Image latent(batch N)→ PIL 列表(逐行对照 ZImagePipeline.__call__ 末段 decode)。分段路径出图用。
+        latents 批维 N(batch 出图)→ 返回 N 张 PIL;N=1 时也是 1 元素列表(caller 统一按 list 处理)。"""
         latents = latents.to(pipe.vae.dtype)
         latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
         image = pipe.vae.decode(latents, return_dict=False)[0]
-        image = pipe.image_processor.postprocess(image, output_type="pil")
-        return image[0]
+        return pipe.image_processor.postprocess(image, output_type="pil")  # list[PIL]，长度=批维
 
     def _build_klein_pipe(self) -> Any:
         """comfy Flux2 单文件 → 标准 `Flux2KleinPipeline(is_distilled=False)` = true-CFG。
@@ -1444,16 +1455,12 @@ class ModularImageBackend(InferenceAdapter):
         if img2img_mode:
             call_kwargs["strength"] = float(req.strength)
         # batch 出图(num_images>1):标准 pipe 经 num_images_per_prompt 一次前向出 N 张。段路(手写
-        # 分段循环)暂只 1 张 → log 跳过(follow-up)。仅当 pipe.__call__ 接受该参时传(diffusers pipe 基本都有)。
+        # 分段循环)走 _run_zimage_segmented 自身的 prepare_latents(N)(读 req.num_images),不经 call_kwargs。
+        # 仅当 pipe.__call__ 接受该参时传(diffusers pipe 基本都有)。
         num_images = int(getattr(req, "num_images", 1) or 1)
-        if num_images > 1:
+        if num_images > 1 and not self._wants_segmented(req):
             import inspect  # noqa: PLC0415
-            import logging  # noqa: PLC0415
-            if self._wants_segmented(req):
-                logging.getLogger(__name__).warning(
-                    "段路采样器(%s/%s)暂不支持 batch,num_images=%d → 出 1 张(follow-up)",
-                    req.sampler_name, req.scheduler, num_images)
-            elif "num_images_per_prompt" in inspect.signature(pipe.__call__).parameters:
+            if "num_images_per_prompt" in inspect.signature(pipe.__call__).parameters:
                 call_kwargs["num_images_per_prompt"] = num_images
         # injected scheduler(simple/sgm_uniform/ddim_uniform/linear_quadratic/kl_optimal):
         # diffusers FlowMatch 原生无对应 use_*_sigmas,手动算 sigma 传 pipe(sigmas=...)。
@@ -1556,7 +1563,8 @@ class ModularImageBackend(InferenceAdapter):
                         with torch.no_grad():
                             return self._zimage_decode_latents(pipe, final_latents)
 
-                    out = SimpleNamespace(images=[await asyncio.to_thread(_dec)])
+                    # _zimage_decode_latents 返回 PIL 列表(批维 N);直接当 out.images(下方逐张编码 PNG)。
+                    out = SimpleNamespace(images=await asyncio.to_thread(_dec))
             else:
                 out = await asyncio.to_thread(lambda: pipe(**call_kwargs))
         except BaseException:  # noqa: BLE001 — 含 CancelledError(BaseException 派生)

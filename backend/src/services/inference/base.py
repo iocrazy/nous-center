@@ -97,7 +97,8 @@ class ImageRequest(InferenceRequest):
     # 一次出图张数(batch,对齐 ComfyUI batch_size / OpenAI n)。N>1 经 diffusers
     # num_images_per_prompt 一次前向出 N 张(共享 prompt,seed 派生 N 个噪声)→ 结果首张进 data、
     # 其余进 extra_images。**显存按 N 近似线性涨**(同一前向的 batch 维),大模型大图慎调高。
-    # 段路(非 euler 采样器手写循环)暂只出 1 张(留 follow-up),其余路径(标准 pipe)支持。
+    # 标准 pipe 走 num_images_per_prompt;段路(非 euler 采样器手写分段循环)走 prepare_latents(N) 同样出
+    # N 张;仅续采/接力(init_latent)保持 1(batch 接力语义复杂)。
     num_images: int = Field(1, ge=1, le=8)
     # 采样控制(复刻 ComfyUI KSampler 两下拉,映射 diffusers flow-match scheduler):
     # sampler_name = scheduler 类(euler→FlowMatchEulerDiscrete / heun→Heun / lcm→LCM);

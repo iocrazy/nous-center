@@ -196,7 +196,7 @@ nodes:
       - { name: steps,      label: "步数",  widget: slider, min: 1,   max: 100,  step: 1,  default: 25 }
       - { name: cfg_scale,  label: "CFG",   widget: slider, min: 0,   max: 20,   step: 0.1, default: 4.0 }
       # batch 出图张数(对齐 ComfyUI batch_size)。N>1 一次前向出 N 张 → image_output 网格累积。
-      # 显存按 N 近似线性涨(同一 batch 维),大模型大图慎调高;段路(非 euler 采样器)暂只 1 张。
+      # 显存按 N 近似线性涨(同一 batch 维),大模型大图慎调高。标准 pipe + 段路(非 euler 采样器)均出 N 张。
       - { name: num_images, label: "出图张数", widget: slider, min: 1, max: 8, step: 1, default: 1 }
       # img2img 重绘强度(PR-A2):**仅 Z-Image img2img 用**。默认 1.0 = 全量去噪 ≈ 文生图(零回归)。仅当架构有
       # img2img 变体(Z-Image)+ 连了 image 端口 + <1 时生效(从输入图加噪到该比例再去噪)。**Flux2-Klein 接图

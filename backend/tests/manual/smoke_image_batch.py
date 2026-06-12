@@ -83,6 +83,20 @@ async def main() -> int:
     print(f"  ④ num_images=1 → 单图 + extra_images 空: {solo}")
     ok = ok and solo
 
+    # ⑤ 段路 batch(非 euler 采样器走手写分段循环 prepare_latents(N)):euler_ancestral num_images=3 → 3 张互异。
+    rs = await be.infer(ImageRequest(request_id="batch-seg", prompt=PROMPT, negative_prompt="", cfg_scale=0.0,
+                                     steps=STEPS, width=SIZE, height=SIZE, seed=SEED, num_images=3,
+                                     sampler_name="euler_ancestral"))
+    seg_blobs = [rs.data, *rs.extra_images]
+    seg_ok = len(seg_blobs) == 3 and all(_valid_png(b) for b in seg_blobs)
+    print(f"  ⑤ 段路 euler_ancestral num_images=3 → {len(seg_blobs)} 张 (image_count={rs.usage.image_count}) {'✓' if seg_ok else 'FAIL'}")
+    ok = ok and seg_ok
+    if len(seg_blobs) == 3:
+        s = _ssim(seg_blobs[0], seg_blobs[1])
+        if s is not None:
+            print(f"    SSIM(0,1)={s:.4f} → {'异 ✓' if s < 0.99 else 'FAIL 相同'}")
+            ok = ok and s < 0.99
+
     be.unload()
     print(f"\n{'✅ smoke_image_batch PASS' if ok else '❌ FAIL'}")
     return 0 if ok else 1
