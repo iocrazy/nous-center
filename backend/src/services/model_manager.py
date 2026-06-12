@@ -935,6 +935,22 @@ class ModelManager:
             total += self._component_need_mb(s)
         return total
 
+    # 流式分块工作集(MB):单块上卡 + stream 预取 + 激活。spike 2026-06-12:Ideogram-4
+    # 峰值 22.8G - TE 实占 ~16.3G - vae ≈ ~6G,但 _component_need_mb 对驻卡件已 ×1.3 过保守,
+    # 这里取 5G 平衡(过保守会把 24G 卡误判装不下,降级路径永远不触发)。
+    _STREAM_WORKSET_MB = 5120
+
+    def _stream_footprint_mb(self, components: dict) -> int:
+        """offload=stream 模式的同卡 footprint:驻卡组件(clip/vae,offload=none)之和
+        + 流式工作集。transformer 权重驻 RAM 轮转,不计。"""
+        total = self._STREAM_WORKSET_MB
+        for k in ("clip", "vae"):
+            comp = components.get(k)
+            if comp is None or (getattr(comp, "offload", "none") or "none") != "none":
+                continue
+            total += self._component_need_mb(comp)
+        return total
+
     def _evictable_mb_on_card(self, idx: int) -> int:
         """该卡上「可驱逐」image adapter 的估计显存之和(非常驻/未被引用/未在 infer)——
         = 守卫「先腾后载」能从这张卡腾出来的量。已加载在用的 combo 自身也算可驱逐(若没在
@@ -1278,6 +1294,22 @@ class ModelManager:
         for k, s in components.items():
             if k == "diffusion_models" and s.device == "auto":
                 idx = self._resolve_auto_card(_auto_fp)
+                # lowvram PR-2(spec 2026-06-12):整模型无卡可容(含先腾后载)→ 退 CPU 前
+                # 按「流式分块」口径(TE/VAE 驻卡 + 流式工作集)再试 —— 装得下则自动降级
+                # offload=stream(~6× 慢但从不能跑到能跑)。只在用户没显式选 offload
+                # (=none)且非 fp8(stream 不支持在线量化,引擎 fail-loud)时降级。
+                if (idx < 0 and (getattr(s, "offload", "none") or "none") == "none"
+                        and "fp8" not in (s.dtype or "")):
+                    stream_fp = self._stream_footprint_mb(components)
+                    s_idx = self._resolve_auto_card(stream_fp)
+                    if s_idx >= 0:
+                        logger.info(
+                            "auto 选卡:整模型 ~%dMB 无卡可容 → 自动启用流式分块落 cuda:%d"
+                            "(驻卡口径 ~%dMB,速度约 1/6;权重驻内存逐块上卡)",
+                            _auto_fp, s_idx, stream_fp)
+                        resolved[k] = s.model_copy(
+                            update={"device": f"cuda:{s_idx}", "offload": "stream"})
+                        continue
                 resolved[k] = s.model_copy(update={"device": f"cuda:{idx}" if idx >= 0 else "cpu"})
             else:
                 resolved[k] = self._resolve_component_device(s)
