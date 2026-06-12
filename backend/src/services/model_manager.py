@@ -1623,6 +1623,10 @@ class ModelManager:
                     await asyncio.to_thread(self._restore_component, comp)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("component restore 失败,出池重建:%s", e)
+                    regs = comp.pop("pin_regs", None)
+                    if regs:
+                        from src.services.inference.pinned_stash import unpin  # noqa: PLC0415
+                        unpin(regs)
                     self._components.pop(key, None)
                     comp = None
         if comp is not None:
@@ -1697,6 +1701,10 @@ class ModelManager:
             comp["stashed"] = True
             comp["stashed_at"] = time.monotonic()
             comp["stash_bytes"] = need
+            # PR-4:原地页锁定(cudaHostRegister)→ restore 走 DMA 真异步(2.8× 带宽,
+            # 真机 spike 19.4→53.3 GB/s)。预算/subclass/失败自动降级 pageable(无害)。
+            from src.services.inference.pinned_stash import pin_module_inplace  # noqa: PLC0415
+            comp["pin_regs"] = pin_module_inplace(comp["module"])
             logger.info("component L1 stash → RAM role=%s file=%s(~%dMB,命中秒回)",
                         comp.get("role"), _basename(comp["key"][0]), need // (1024 * 1024))
             self._trim_stash_lru()
@@ -1711,7 +1719,14 @@ class ModelManager:
             return
         dev = comp["device"]
         t0 = time.monotonic()
-        comp["module"].to(dev)
+        regs = comp.pop("pin_regs", None)
+        if regs:  # 非空才走快路;空列表 = 没 pin 上(CI 无 GPU/预算外),整体 .to() 即可
+            # PR-4 快路:per-tensor non_blocking 批量 issue + 单次 synchronize
+            #(pinned 源 DMA;subclass 同步兜底;函数内完成 unpin)。
+            from src.services.inference.pinned_stash import restore_module_fast  # noqa: PLC0415
+            restore_module_fast(comp["module"], dev, regs)
+        else:
+            comp["module"].to(dev)
         comp["stashed"] = False
         comp.pop("stash_bytes", None)
         logger.info("component L1 restore ← RAM role=%s file=%s dev=%s(%.1fs)",
@@ -1726,6 +1741,10 @@ class ModelManager:
                 if not stashed:
                     return
                 key, comp = min(stashed, key=lambda kc: kc[1].get("stashed_at", 0.0))
+                regs = comp.pop("pin_regs", None)
+                if regs:
+                    from src.services.inference.pinned_stash import unpin  # noqa: PLC0415
+                    unpin(regs)  # 必须在 module 释放前注销(防悬挂注册)
                 self._components.pop(key, None)
                 comp["module"] = None
                 logger.info("component stash LRU 销毁(RAM 水位)role=%s file=%s",
@@ -1769,6 +1788,10 @@ class ModelManager:
                 await asyncio.to_thread(self._restore_component, comp)
             except Exception as e:  # noqa: BLE001
                 logger.warning("component restore 失败(预加载),出池重建:%s", e)
+                regs = comp.pop("pin_regs", None)
+                if regs:
+                    from src.services.inference.pinned_stash import unpin  # noqa: PLC0415
+                    unpin(regs)
                 self._components.pop(key, None)
                 comp = None
         if comp is not None:
