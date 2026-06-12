@@ -55,8 +55,58 @@ def test_image_input_executor_registered_and_rejects_missing_image():
     import asyncio
     with pytest.raises(RuntimeError, match="未上传图"):
         asyncio.run(mod.exec_image_input({}, {}))
-    with pytest.raises(RuntimeError, match="未上传图"):
+    # 非 data-URI 且非本站图 URL → reject(消息提到两种合法来源)。
+    with pytest.raises(RuntimeError, match="base64 data URI"):
         asyncio.run(mod.exec_image_input({"image": "/not/a/data/uri.png"}, {}))
+
+
+def _load_imgio_mod():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_imgio_exec_pt", _PKG / "executor.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_image_input_passthrough_existing_storage_url():
+    """出图拖到输入(spec 2026-06-12):本站已生成图 URL → 透传 + 重签,不重新落盘。"""
+    import asyncio
+    import io as _io
+
+    from PIL import Image
+    from src.services.image_output_storage import write_image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (32, 24), (10, 20, 30)).save(buf, format="PNG")
+    rec = write_image(buf.getvalue(), ext="png", ttl_seconds=3600)  # 落盘签 URL
+
+    mod = _load_imgio_mod()
+    out = asyncio.run(mod.exec_image_input({"image": rec["url"]}, {}))
+    assert out["image_uuid"] == rec["uuid"]
+    assert "/files/images/" in out["image_url"]
+    assert out["width"] == 32 and out["height"] == 24
+    assert out["media_type"] == "image/png"
+
+
+def test_image_input_passthrough_rejects_path_traversal():
+    """本站图 URL segment 白名单:含 .. / 非法字符 → reject(防路径遍历任意读盘)。"""
+    import asyncio
+
+    mod = _load_imgio_mod()
+    with pytest.raises(RuntimeError, match="非法字符|无法解析"):
+        asyncio.run(mod.exec_image_input({"image": "/files/images/..%2f..%2fetc/passwd.png"}, {}))
+    with pytest.raises(RuntimeError, match="非法字符|无法解析"):
+        asyncio.run(mod.exec_image_input({"image": "/files/images/2026-06-12/../../secret.png"}, {}))
+
+
+def test_image_input_passthrough_missing_file_rejects():
+    """引用的图不在盘(过期清理)→ 清晰报错,不静默。"""
+    import asyncio
+
+    mod = _load_imgio_mod()
+    with pytest.raises(RuntimeError, match="不在盘"):
+        asyncio.run(mod.exec_image_input(
+            {"image": "/files/images/2026-06-12/deadbeefdeadbeef.png"}, {}))
 
 
 def _ref_join_def() -> dict:
