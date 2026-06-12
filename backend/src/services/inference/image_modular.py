@@ -86,6 +86,14 @@ def _import_ideogram4_pipeline() -> Any:
     return Ideogram4Pipeline
 
 
+def _import_group_offloading() -> Any:
+    """Lazy import group offloading(D2:diffusers import 只在本文件)。lowvram 流式分块
+    (spec 2026-06-12-lowvram-streaming)。测试 monkeypatch 注入 fake。"""
+    from diffusers.hooks import apply_group_offloading  # noqa: PLC0415
+
+    return apply_group_offloading
+
+
 def _decode_input_image(src: str) -> Any:
     """输入图(编辑/img2img)src(本地路径 或 base64 data URI)→ PIL.Image(RGB)。
     runner 已把节点签名 URL 解析成本地路径再塞 req.input_image;data URI 分支兜底直传场景。
@@ -731,6 +739,26 @@ class ModularImageBackend(InferenceAdapter):
             raise NotImplementedError(
                 f"pipeline_class {self.pipeline_class!r} 暂未接入;已支持 Flux2KleinPipeline / "
                 f"ZImagePipeline / QwenImageEditPlusPipeline。新架构在 IMAGE_ARCH_REGISTRY 注册并在此加 builder 分支。")
+        # lowvram 流式分块(spec 2026-06-12-lowvram-streaming PR-1):必须在 fp8 量化与
+        # 逐组件放置**之前**拦 —— "stream" 掉进 _offload_stash 会 torch.device("stream") 崩;
+        # fp8(Float8Tensor subclass)与 group offloading 的预 pin 不兼容(data_ptr=0)。
+        wants_stream = (self.offload == "stream"
+                        or "stream" in (self.comp_offloads or {}).values())
+        if wants_stream:
+            if _wants_fp8(self.dtype):
+                raise ValueError(
+                    "流式分块(offload=stream)暂不支持 fp8 在线量化(量化权重不可预 pin)"
+                    "—— 精度请选 bfloat16(流式本身已大幅省显存)。")
+            import torch  # noqa: PLC0415
+            if self.comp_devices and any(
+                    torch.device(d) != torch.device(self.device) for d in self.comp_devices.values()):
+                raise ValueError(
+                    "流式分块(offload=stream)要求全部组件同卡 —— 请把 CLIP/VAE 的显卡设为 auto "
+                    "或与 Diffusion Model 相同。")
+            self._apply_stream_offload(pipe)
+            self._pipe = pipe
+            self._model = pipe
+            return pipe
         if _wants_fp8(self.dtype):
             # fp8 weight-only(torchao):transformer + text_encoder 权重 fp8 存储,省 ~½ 显存,
             # 让大模型塞进 24GB 3090(出图正确,见 spec 2026-05-25)。作用于最终组件(override 或 repo)。
@@ -776,6 +804,32 @@ class ModularImageBackend(InferenceAdapter):
         self._pipe = pipe
         self._model = pipe  # is_loaded → True
         return pipe
+
+    def _apply_stream_offload(self, pipe: Any) -> None:
+        """lowvram 流式分块(spec 2026-06-12-lowvram-streaming):transformer 类组件
+        `apply_group_offloading`(block_level + use_stream 异步预取,权重驻 RAM 自动预 pin,
+        边算边搬);其余组件(TE/VAE)驻卡 —— transformers 模型 block 检测不稳(spike 实测
+        Qwen3-VL embedding 留 CPU device 错配崩),不流式。
+        真机(spike 2026-06-12):24G 3090 跑 54G Ideogram-4 bf16,峰值 22G,6.4s/step
+        (全驻卡 1.07,~6× 慢但从不能跑到能跑)。use_stream 强制 num_blocks_per_group=1。"""
+        import torch  # noqa: PLC0415
+        apply_group_offloading = _import_group_offloading()
+        dev = torch.device(self.device)
+        streamed: list[str] = []
+        for name, comp in (getattr(pipe, "components", None) or {}).items():
+            if not isinstance(comp, torch.nn.Module):
+                continue
+            if "transformer" in name or name == "unet":
+                apply_group_offloading(
+                    comp, onload_device=dev, offload_device=torch.device("cpu"),
+                    offload_type="block_level", num_blocks_per_group=1,
+                    use_stream=True, record_stream=True)
+                streamed.append(name)
+            else:
+                comp.to(dev)
+        import logging  # noqa: PLC0415
+        logging.getLogger(__name__).info(
+            "流式分块已挂载:%s 流式轮转 / 其余驻 %s", streamed, self.device)
 
     def _wants_img2img(self, req: Any) -> bool:
         """是否走真 img2img(PR-A2):arch 注册了 img2img_pipeline_class + 连了 input_image + 0<strength<1。
