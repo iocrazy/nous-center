@@ -802,3 +802,59 @@ def test_stream_pipe_not_stashable():
                                            pipeline_class="Ideogram4Pipeline", offload="stream")
     be._pipe = MagicMock()
     assert be.stash() is False
+
+
+# ── Ideogram-4 双 DiT 单文件键转换(纯逻辑,CI mock torch 可测;真出图走 smoke_ideogram4_singlefile)──
+
+class _FakeChunkTensor:
+    """假张量:.chunk(3, dim=0) → 三个标记,验 qkv 切分键命名(不依赖真 torch)。"""
+    def chunk(self, n, dim):  # noqa: D102
+        return (f"q{n}d{dim}", "k_part", "v_part")
+
+
+def test_convert_ideogram4_dit_keys_qkv_split_and_o_rename():
+    """comfy DiT 键 → diffusers:qkv 三分(to_q/to_k/to_v)+ o→to_out.0;其余原样。"""
+    sd = {
+        "layers.0.attention.qkv.weight": _FakeChunkTensor(),
+        "layers.0.attention.o.weight": "O",
+        "layers.0.attention.norm_q.weight": "NQ",
+        "final_layer.linear.weight": "FL",
+    }
+    out = image_modular._convert_ideogram4_dit_keys(sd)
+    assert "layers.0.attention.to_q.weight" in out
+    assert "layers.0.attention.to_k.weight" in out
+    assert "layers.0.attention.to_v.weight" in out
+    assert "layers.0.attention.qkv.weight" not in out
+    assert out["layers.0.attention.to_out.0.weight"] == "O"
+    assert "layers.0.attention.o.weight" not in out
+    # 非 attention 键原样透传
+    assert out["layers.0.attention.norm_q.weight"] == "NQ"
+    assert out["final_layer.linear.weight"] == "FL"
+
+
+def test_convert_ideogram4_te_keys_prefix_remap_drop_lmhead():
+    """comfy Qwen3-VL 键 → diffusers:model.visual.→visual. / model.→language_model. / 丢 lm_head。"""
+    sd = {
+        "model.embed_tokens.weight": "E",
+        "model.layers.0.self_attn.q_proj.weight": "Q",
+        "model.visual.blocks.0.attn.proj.weight": "V",
+        "model.norm.weight": "N",
+        "lm_head.weight": "LM",
+    }
+    out = image_modular._convert_ideogram4_te_keys(sd)
+    assert out["language_model.embed_tokens.weight"] == "E"
+    assert out["language_model.layers.0.self_attn.q_proj.weight"] == "Q"
+    assert out["visual.blocks.0.attn.proj.weight"] == "V"
+    assert out["language_model.norm.weight"] == "N"
+    assert "lm_head.weight" not in out  # 基座 VL 模型无生成头
+    assert "model.embed_tokens.weight" not in out
+
+
+def test_ideogram4_bundle_complete():
+    """仓内 ideogram4 bundle 含双 transformer + TE + tokenizer + scheduler + vae config(无权重)。"""
+    import pathlib
+    b = pathlib.Path(__file__).parent.parent / "configs" / "image_arch" / "ideogram4"
+    for sub in ("transformer", "unconditional_transformer", "text_encoder", "vae", "scheduler"):
+        assert (b / sub / "config.json").is_file() or (b / sub / "scheduler_config.json").is_file(), sub
+    assert (b / "model_index.json").is_file()
+    assert (b / "tokenizer" / "tokenizer.json").is_file()

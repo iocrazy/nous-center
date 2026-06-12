@@ -158,22 +158,79 @@ def _bf16_or(dtype_str: str) -> Any:
     return _torch_dtype(dtype_str) or torch.bfloat16
 
 
-def build_bridged_transformer(unet_spec: Any, repo: str, device: str) -> Any:
+def _convert_ideogram4_dit_keys(sd: dict) -> dict:
+    """comfy Ideogram-4 DiT 键 → diffusers `Ideogram4Transformer2DModel`(spike 验过 load 0/0)。
+    仅两处不同(其余 27 pattern 同名):融合 `attention.qkv` → 三分 `to_q`/`to_k`/`to_v`
+    (`chunk(3, dim=0)`,顺序经 weight-diff 坐实正确);`attention.o` → `attention.to_out.0`。"""
+    out: dict = {}
+    for k, v in sd.items():
+        if k.endswith("attention.qkv.weight"):
+            base = k[: -len("qkv.weight")]
+            q, kk, vv = v.chunk(3, dim=0)
+            out[base + "to_q.weight"] = q
+            out[base + "to_k.weight"] = kk
+            out[base + "to_v.weight"] = vv
+        elif k.endswith("attention.o.weight"):
+            out[k.replace("attention.o.weight", "attention.to_out.0.weight")] = v
+        else:
+            out[k] = v
+    return out
+
+
+def _convert_ideogram4_te_keys(sd: dict) -> dict:
+    """comfy Qwen3-VL 键 → diffusers `Qwen3VLModel`(spike 验过 load 0/0)。前缀重映射:
+    `model.visual.` → `visual.`(视觉塔);`model.` → `language_model.`(LLM 塔);丢 `lm_head.weight`
+    (基座 VL 模型无生成头,文本编码不用)。"""
+    out: dict = {}
+    for k, v in sd.items():
+        if k == "lm_head.weight":
+            continue
+        if k.startswith("model.visual."):
+            out[k[len("model."):]] = v
+        elif k.startswith("model."):
+            out["language_model." + k[len("model."):]] = v
+        else:
+            out[k] = v
+    return out
+
+
+def build_bridged_transformer(unet_spec: Any, repo: str, device: str, config_sub: str = "transformer") -> Any:
     """comfy 单文件 → diffusers transformer module(桥接)。按参考库 transformer config 的 `_class_name` 选路径:
 
     - **Z-Image(`ZImageTransformer2DModel`)= diffusers 原生 from_single_file**(PR-2,spec 2026-06-09):
       diffusers `single_file_model.py` 注册了 `convert_z_image_transformer_checkpoint_to_diffusers`,
       comfy 单文件 bf16 直接吃,**无需手写转键**(probe_zimage_singlefile 真机验过)。
+    - **Ideogram-4(`Ideogram4Transformer2DModel`)= dequant + 手写键转换**(双 DiT 单文件,spec
+      2026-06-12):diffusers 钉的 commit 没注册 ideogram4 的 from_single_file → 走 `dequant_comfy_mixed`
+      (fp8_scaled→bf16)+ `_convert_ideogram4_dit_keys`(qkv 三分 + o→to_out.0)。`config_sub` 选
+      transformer / unconditional_transformer(双 DiT 各一,config 实同)。
     - Flux2(`Flux2Transformer2DModel`)= 现有手写桥接(dequant_and_convert 反量化 + 转键 + from_config)。
-    喂 `ModularImageBackend(transformer_override=)`。
+    喂 `ModularImageBackend(transformer_override= / unconditional_transformer_override=)`。
     """
-    cls_name = _ref_class_name(repo, "transformer")
+    cls_name = _ref_class_name(repo, config_sub)
     if cls_name.startswith("ZImage"):
         from diffusers import ZImageTransformer2DModel  # noqa: PLC0415
         module = ZImageTransformer2DModel.from_single_file(
-            unet_spec.file, config=str(Path(repo) / "transformer"),
+            unet_spec.file, config=str(Path(repo) / config_sub),
             torch_dtype=_bf16_or(unet_spec.dtype))
         return module.to(device)
+
+    if cls_name.startswith("Ideogram4"):
+        import torch  # noqa: PLC0415
+        from accelerate import init_empty_weights  # noqa: PLC0415
+        from diffusers import Ideogram4Transformer2DModel  # noqa: PLC0415
+
+        from src.services.inference.quant_loaders import dequant_comfy_mixed  # noqa: PLC0415
+        sd = _convert_ideogram4_dit_keys(dequant_comfy_mixed(unet_spec))
+        cfg = Ideogram4Transformer2DModel.load_config(str(Path(repo) / config_sub))
+        with init_empty_weights():
+            module = Ideogram4Transformer2DModel.from_config(cfg)
+        missing, unexpected = module.load_state_dict(sd, strict=False, assign=True)
+        if missing or unexpected:
+            import logging  # noqa: PLC0415
+            logging.getLogger(__name__).warning(
+                "build_bridged_transformer(ideogram4): missing=%d unexpected=%d", len(missing), len(unexpected))
+        return module.to(device, dtype=torch.bfloat16)
 
     from src.services.inference.quant_loaders import dequant_and_convert  # noqa: PLC0415
 
@@ -230,8 +287,28 @@ def build_bridged_text_encoder(clip_spec: Any, repo: str, device: str) -> Any:
             str(gguf_path.parent), gguf_file=gguf_path.name, torch_dtype=torch.bfloat16)
         return model.to(device)
 
-    sd = dequant_comfy_mixed(clip_spec)
     cfg = AutoConfig.from_pretrained(str(Path(repo) / "text_encoder"))
+
+    # Ideogram-4 文本编码器 = Qwen3-VL(`Qwen3VLModel`,model_type=qwen3_vl)—— **基座 VL 模型,非
+    # CausalLM**:用 `AutoModel`(AutoModelForCausalLM 给的是 ...ForConditionalGeneration,键不符)。
+    # comfy 单文件键前缀不同:`model.visual.`→`visual.` / `model.`→`language_model.` / 丢 `lm_head`
+    # (基座无)。spec 2026-06-12,load 0/0 真机验。其余架构走下方 CausalLM 路(零回归)。
+    _mt = str(getattr(cfg, "model_type", "")).lower()
+    _arches = " ".join(getattr(cfg, "architectures", None) or [])
+    if _mt == "qwen3_vl" or "Qwen3VL" in _arches:
+        from transformers import AutoModel  # noqa: PLC0415
+        sd = _convert_ideogram4_te_keys(dequant_comfy_mixed(clip_spec))
+        with init_empty_weights():
+            model = AutoModel.from_config(cfg)
+        missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
+        if missing or unexpected:
+            import logging  # noqa: PLC0415
+            logging.getLogger(__name__).warning(
+                "build_bridged_text_encoder(qwen3-vl): missing=%d unexpected=%d", len(missing), len(unexpected))
+        _materialize_meta_params(model)
+        return model.to(device, dtype=torch.bfloat16)
+
+    sd = dequant_comfy_mixed(clip_spec)
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(cfg)
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
@@ -567,6 +644,7 @@ class ModularImageBackend(InferenceAdapter):
         transformer_override: Any = None,
         text_encoder_override: Any = None,
         vae_override: Any = None,
+        unconditional_transformer_override: Any = None,
         comp_devices: dict[str, str] | None = None,
         comp_offloads: dict[str, str] | None = None,
         **params: Any,
@@ -589,6 +667,8 @@ class ModularImageBackend(InferenceAdapter):
         self._transformer_override = transformer_override
         self._text_encoder_override = text_encoder_override
         self._vae_override = vae_override
+        # Ideogram-4 第二 DiT(unconditional,非对称 CFG)单文件 override(spec 2026-06-12)。
+        self._unconditional_transformer_override = unconditional_transformer_override
         self._pipe: Any = None
         # PR-A2:img2img 变体 pipe(复用 _pipe 的 components,惰性建)。仅 arch 注册了 img2img_pipeline_class
         # 且请求带 input_image + 0<strength<1 时构建/使用。unload 随 _pipe 一起清(共享组件)。
@@ -624,7 +704,7 @@ class ModularImageBackend(InferenceAdapter):
             if any(torch.device(d) != torch.device(self.device) for d in self.comp_devices.values()):
                 return False
         if (self._transformer_override is not None or self._text_encoder_override is not None
-                or self._vae_override is not None):
+                or self._vae_override is not None or self._unconditional_transformer_override is not None):
             return False
         self._pipe.to("cpu")
         # PR-4:原地页锁定各 nn.Module 组件 → restore DMA 真异步(预算/subclass 自动降级)。
@@ -696,6 +776,7 @@ class ModularImageBackend(InferenceAdapter):
         self._transformer_override = None
         self._text_encoder_override = None
         self._vae_override = None
+        self._unconditional_transformer_override = None
         self._loaded_loras.clear()
         # round5:复位 scheduler 缓存键。_apply_scheduler 用 _sched_key 做缓存早退不重装;
         # unload 后同实例 rebuild 出的新 pipe 是参考库默认(normal sigmas),若 _sched_key
@@ -1379,12 +1460,33 @@ class ModularImageBackend(InferenceAdapter):
             self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
 
     def _build_ideogram4_pipe(self) -> Any:
-        """Ideogram-4:HF-layout 整模型,标准 `Ideogram4Pipeline.from_pretrained`(7 组件:
-        双 transformer + Qwen3-VL TE + tokenizer + scheduler + flux2 同款 VAE + 可选
-        prompt_enhancer_head 全随 repo 加载)。组件名 transformer/text_encoder/vae 存在 →
-        fp8/逐组件放置/offload 路径共享(unconditional_transformer 是额外组件,offload 序列
-        pipeline 自带 model_cpu_offload_seq 已含)。bf16 峰值 ~58G(spike 2026-06-11)。"""
+        """Ideogram-4:HF-layout 整模型(`from_pretrained`),或**双 DiT 单文件分开载入**(spec 2026-06-12,
+        对齐 _build_zimage_pipe)。
+
+        分开载入(4 override):双单文件 DiT(transformer + unconditional_transformer,非对称 CFG)+
+        Qwen3-VL TE + flux2 VAE 经 build_bridged_*(ideogram4 走 dequant+键转)预建,经 *_override 灌入;
+        tokenizer/scheduler 从参考库(self.repo,整模型或仓内 bundle)。**4 override 齐**才走装配,
+        缺则 from_pretrained(零回归)。组件名 transformer/text_encoder/vae 存在 → fp8/逐组件/offload 路径
+        共享;unconditional_transformer 是额外组件(model_cpu_offload_seq 已含)。bf16 峰值 ~58G。"""
         ideo_cls = _import_ideogram4_pipeline()
+        overrides = {k: v for k, v in (
+            ("transformer", self._transformer_override),
+            ("unconditional_transformer", self._unconditional_transformer_override),
+            ("text_encoder", self._text_encoder_override),
+            ("vae", self._vae_override),
+        ) if v is not None}
+        if len(overrides) == 4:
+            from transformers import AutoTokenizer  # noqa: PLC0415
+            tokenizer = AutoTokenizer.from_pretrained(str(Path(self.repo) / "tokenizer"))
+            scheduler = _import_flow_schedulers()["euler"].from_pretrained(str(Path(self.repo) / "scheduler"))
+            return ideo_cls(
+                scheduler=scheduler,
+                vae=overrides["vae"],
+                text_encoder=overrides["text_encoder"],
+                tokenizer=tokenizer,
+                transformer=overrides["transformer"],
+                unconditional_transformer=overrides["unconditional_transformer"],
+            )
         return ideo_cls.from_pretrained(
             self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
 
