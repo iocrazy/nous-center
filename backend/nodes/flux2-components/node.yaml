@@ -84,6 +84,10 @@ nodes:
         options:
           - { value: flux2, label: "Flux2", description: "Flux2 family — Flux2-Klein-9B-True 等 ComfyUI 单文件" }
           - { value: flux1, label: "Flux1", description: "Flux1 family(legacy)" }
+          # z-image 单文件分开载入(对齐整装 Load Checkpoint 的 z-image):z_image_turbo_bf16 单文件 DiT
+          # + Qwen3 文本编码器(架构选 qwen)+ ae VAE(Flux1 16ch)。引擎经 build_bridged_*
+          # (from_single_file)装配成 ZImagePipeline,与整模型同权重(smoke_zimage_singlefile SSIM≥0.95)。
+          - { value: z-image, label: "Z-Image", description: "Z-Image 单文件(z_image_turbo_bf16;配 Qwen3 编码器 + ae VAE;8 步 distilled guidance=0)" }
           - { value: anima, label: "Anima", description: "Anima 2B 自定义 DiT(自动选 AnimaPipeline + qwen3 TE + Qwen-Image VAE)" }
 
   flux2_load_clip:
