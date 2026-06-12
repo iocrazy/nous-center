@@ -572,6 +572,42 @@ class ModularImageBackend(InferenceAdapter):
         """对齐 ABC;实际 pipeline 构建在首次 infer 时 lazy(_ensure_pipe)。"""
         self.device = device
 
+    def stash(self) -> bool:
+        """整 pipe 挪 CPU(RAM stash spec 2026-06-12 PR-2,整模型路线 Z-Image/Qwen-Edit/
+        Ideogram-4)。命中时 restore 搬回,免磁盘冷载(Ideogram-4 真机 95s → 秒级)。
+
+        三类不搬(返回 False,调用方走旧销毁):
+        - offload != none / 逐组件跨卡:accelerate hook 状态机与整体 .to() 不兼容;
+        - override 装配(组件来自 L1 池):组件层 stash(PR-1)已覆盖,pipe 壳销毁即可;
+        - 还没建 pipe。
+        torchao fp8 量化权重 .to 往返 bit 一致已 spike 验证(2026-06-12)。"""
+        if self._pipe is None:
+            return False
+        if (self.offload or "none") != "none":
+            return False
+        if any((v or "none") != "none" for v in (self.comp_offloads or {}).values()):
+            return False
+        if self.comp_devices:
+            import torch  # noqa: PLC0415
+            if any(torch.device(d) != torch.device(self.device) for d in self.comp_devices.values()):
+                return False
+        if (self._transformer_override is not None or self._text_encoder_override is not None
+                or self._vae_override is not None):
+            return False
+        self._pipe.to("cpu")
+        try:
+            import torch  # noqa: PLC0415
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    def restore(self) -> None:
+        """stash 的整 pipe 搬回 self.device(秒级)。失败抛 —— 调用方按加载失败处理。"""
+        if self._pipe is not None:
+            self._pipe.to(self.device)
+
     def unload(self) -> None:
         """真正释放 GPU pipeline —— base.unload 只置 `_model=None`,远远不够。
 

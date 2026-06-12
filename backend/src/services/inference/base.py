@@ -296,6 +296,14 @@ class InferenceAdapter(ABC):
         """Release model from memory."""
         self._model = None
 
+    def stash(self) -> bool:
+        """RAM stash(spec 2026-06-12):权重挪 CPU 待命,腾显存但保留实例(命中 restore
+        秒回)。默认不支持(False)—— 调用方回退销毁;支持的引擎(ModularImageBackend)覆写。"""
+        return False
+
+    def restore(self) -> None:
+        """stash 的权重搬回原卡。默认 no-op(配合 stash()=False)。"""
+
     @abstractmethod
     async def infer(self, req: InferenceRequest) -> InferenceResult:
         """Run inference with a typed request."""
