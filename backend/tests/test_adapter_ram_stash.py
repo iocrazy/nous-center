@@ -179,3 +179,28 @@ def test_engine_stash_guards(monkeypatch):
     be3._pipe = MagicMock()
     be3._transformer_override = object()
     assert be3.stash() is False, "override 装配走组件层 stash"
+
+
+@pytest.mark.asyncio
+async def test_evict_lru_stashes_first(mm):
+    """守卫驱逐优先 stash(PR-3):可 stash 的 entry → evict 返回 id 且 entry 留存(stashed)。"""
+    e, a = _entry(mm, mid="mA")
+    out = await mm.evict_lru(gpu_index=1)
+    assert out == "mA"
+    assert mm._models["mA"].stashed is True and a.stash_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_evict_lru_skips_stashed_candidates(mm):
+    """stashed entry 不占卡 → 不是驱逐候选(选它销毁腾不出显存,守卫空转)。"""
+    e, _ = _entry(mm, mid="mB")
+    e.stashed = True
+    assert await mm.evict_lru(gpu_index=1) is None
+
+
+@pytest.mark.asyncio
+async def test_evict_lru_falls_back_to_destroy(mm):
+    """不可 stash(引擎不支持)→ 旧销毁路径,entry 出 _models。"""
+    e, a = _entry(mm, adapter=_FakeAdapter(stash_ok=False), mid="mC")
+    out = await mm.evict_lru(gpu_index=1)
+    assert out == "mC" and "mC" not in mm._models
