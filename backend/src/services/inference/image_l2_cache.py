@@ -19,8 +19,8 @@ def image_l2_key(node, req) -> str:
     if comps:
         comp_part: list = []
         for kind in ("diffusion_models", "clip", "vae"):
-            f, dev, dt, lset = to_component_key(comps[kind])
-            comp_part.append([kind, f, dev, dt, sorted(list(lset))])
+            f, dev, dt, lset, uncond = to_component_key(comps[kind])
+            comp_part.append([kind, f, dev, dt, sorted(list(lset)), uncond])
         model_part: dict[str, Any] = {
             "pipeline_class": getattr(req, "pipeline_class", None),
             "components": comp_part,

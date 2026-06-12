@@ -367,6 +367,10 @@ def _build_request(node: P.RunNode):
             unet_spec = dict(model_d["spec"])
             unet_offload = str(model_d.get("offload") or "none")
             unet_spec["offload"] = unet_offload  # 让 unet ComponentSpec 带上(与全局 offload 一致)
+            # Ideogram-4 双 DiT(spec 2026-06-12):合并节点把无条件 DiT 文件挂在 model_d.unconditional_file
+            # → 透传进 diffusion_models ComponentSpec.unconditional_file(get_or_load 据此建第二 DiT override)。
+            if model_d.get("unconditional_file"):
+                unet_spec["unconditional_file"] = model_d["unconditional_file"]
             encoders = cond_d["clip"]["encoders"]
             if len(encoders) != 1:
                 clip_type = cond_d["clip"].get("type", "?")

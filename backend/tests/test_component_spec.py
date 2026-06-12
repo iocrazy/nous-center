@@ -57,13 +57,14 @@ def test_component_key_is_hashable_tuple():
     )
     key = to_component_key(spec)
     assert isinstance(key, tuple)
-    assert len(key) == 4
-    file_path, device, dtype, lora_frozenset = key
+    assert len(key) == 5  # + unconditional_file(ideogram4 双 DiT,spec 2026-06-12)
+    file_path, device, dtype, lora_frozenset, uncond = key
     assert file_path == "/p/u.safe"
     assert device == "cuda:1"
     assert dtype == "bfloat16"
     assert isinstance(lora_frozenset, frozenset)
     assert lora_frozenset == frozenset({("a", 0.8), ("b", 0.4)})
+    assert uncond is None  # 非 ideogram4 单 DiT → None(零回归)
     # Hashable → usable as dict key
     d = {key: "loaded"}
     assert d[key] == "loaded"
@@ -170,3 +171,23 @@ def test_offload_stream_accepted():
     s = ComponentSpec(kind="diffusion_models", file="/m/x", device="cuda:2",
                       dtype="bfloat16", offload="stream")
     assert s.offload == "stream"
+
+
+def test_uncond_file_differentiates_component_key():
+    """ideogram4 双 DiT:同 cond DiT 配不同 uncond DiT → 不同 component key(防错命中缓存)。"""
+    base = dict(kind="diffusion_models", file="/p/cond.safe", device="cuda:1", dtype="bfloat16")
+    k_none = to_component_key(ComponentSpec(**base))
+    k_u1 = to_component_key(ComponentSpec(**base, unconditional_file="/p/uncondA.safe"))
+    k_u2 = to_component_key(ComponentSpec(**base, unconditional_file="/p/uncondB.safe"))
+    assert k_none != k_u1
+    assert k_u1 != k_u2
+    assert k_none[-1] is None and k_u1[-1] == "/p/uncondA.safe"
+
+
+def test_uncond_file_not_in_state_key_string():
+    """uncond DiT 不进 component_state_key 串(cond file 已唯一标识对;保前端四态匹配串不变)。"""
+    from src.services.inference.component_spec import component_state_key
+    base = dict(kind="diffusion_models", file="/p/cond.safe", device="cuda:1", dtype="bfloat16")
+    s1 = component_state_key(ComponentSpec(**base))
+    s2 = component_state_key(ComponentSpec(**base, unconditional_file="/p/uncond.safe"))
+    assert s1 == s2  # 串相同(uncond 不进串)
