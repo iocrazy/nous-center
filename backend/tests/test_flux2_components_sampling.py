@@ -215,13 +215,72 @@ async def test_ksampler_accepts_zimage_dit_with_qwen_clip():
     assert out["latent"]["_type"] == "flux2_latent"
 
 
-def test_yaml_declares_eight_total_nodes():
+def _ideo_model(file: str):
+    return {"_type": "flux2_model",
+            "spec": {"kind": "diffusion_models", "file": file, "device": "cuda:1",
+                     "dtype": "fp8_e4m3", "adapter_arch": "ideogram4"}, "loras": []}
+
+
+@pytest.mark.asyncio
+async def test_ideogram4_dual_guider_merges_unconditional_file():
+    """双 DiT 合并:两个 ideogram4 MODEL → 一个 MODEL,无条件 DiT 文件挂 unconditional_file。"""
+    mod = _load_mod()
+    out = await mod.exec_ideogram4_dual_guider({}, {
+        "model": _ideo_model("/m/ideogram4_fp8_scaled.safe"),
+        "unconditional_model": _ideo_model("/m/ideogram4_unconditional_fp8_scaled.safe"),
+    })
+    m = out["model"]
+    assert m["_type"] == "flux2_model"
+    assert m["spec"]["file"] == "/m/ideogram4_fp8_scaled.safe"  # 条件 DiT 作主 spec
+    assert m["unconditional_file"] == "/m/ideogram4_unconditional_fp8_scaled.safe"
+
+
+@pytest.mark.asyncio
+async def test_ideogram4_dual_guider_rejects_non_ideogram_arch():
+    """合并节点接了非 ideogram4 的 DiT(如误接 flux2 单 DiT)→ 派发前人话报错。"""
+    mod = _load_mod()
+    with pytest.raises(RuntimeError, match="架构须为 ideogram4"):
+        await mod.exec_ideogram4_dual_guider({}, {
+            "model": _ideo_model("/m/a.safe"),
+            "unconditional_model": _MODEL,  # flux2 arch
+        })
+
+
+@pytest.mark.asyncio
+async def test_ideogram4_dual_guider_rejects_missing_port():
+    mod = _load_mod()
+    with pytest.raises(RuntimeError, match="无条件 DiT.*未连接"):
+        await mod.exec_ideogram4_dual_guider({}, {"model": _ideo_model("/m/a.safe")})
+
+
+@pytest.mark.asyncio
+async def test_ksampler_accepts_ideogram4_dit_with_qwen_clip():
+    """ideogram4 DiT + qwen CLIP(Qwen3-VL)→ 放行。"""
+    mod = _load_mod()
+    qwen_clip = {"_type": "flux2_clip", "type": "qwen",
+                 "encoders": [{"kind": "clip", "file": "/m/qwen3vl.safe", "dtype": "bfloat16"}]}
+    cond = {"_type": "flux2_conditioning", "clip": qwen_clip, "text": "x", "negative": ""}
+    out = await mod.exec_ksampler({"steps": 12}, {"model": _ideo_model("/m/a.safe"), "conditioning": cond})
+    assert out["latent"]["_type"] == "flux2_latent"
+
+
+@pytest.mark.asyncio
+async def test_ksampler_rejects_ideogram4_dit_flux2_clip():
+    """ideogram4 DiT + flux2 CLIP → 派发前人话报错(须配 Qwen3-VL=qwen)。"""
+    mod = _load_mod()
+    cond = {"_type": "flux2_conditioning", "clip": _CLIP, "text": "x", "negative": ""}
+    with pytest.raises(RuntimeError, match="架构不匹配"):
+        await mod.exec_ksampler({"steps": 12}, {"model": _ideo_model("/m/a.safe"), "conditioning": cond})
+
+
+def test_yaml_declares_nine_total_nodes():
     import yaml
     cfg = yaml.safe_load((PKG_DIR / "node.yaml").read_text())
     assert set(cfg["nodes"]) == {
         "flux2_load_checkpoint", "flux2_load_diffusion_model",
         "flux2_load_clip", "flux2_load_vae", "flux2_load_lora",
         "flux2_encode_prompt", "flux2_ksampler", "flux2_vae_decode",
+        "ideogram4_dual_guider",
     }
 
 
