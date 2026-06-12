@@ -65,6 +65,26 @@ models:
   type: llm
   vram_mb: 23325
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
+  id: qwen3_embedding_4b
+  paths:
+    main: text/embedding/Qwen3-Embedding-4B
+  type: embedding
+  vram_mb: 9500
+  ttl_seconds: 3600
+  params:
+    vllm_runner: pooling      # embedding 模型走 vLLM pooling runner(/v1/embeddings)
+    max_model_len: 8192       # 模型支持 32k;embedding 输入给 8k 足够,省 KV/激活
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
+  id: qwen3_embedding_8b
+  paths:
+    main: text/embedding/Qwen3-Embedding-8B
+  type: embedding
+  vram_mb: 17500
+  ttl_seconds: 3600
+  params:
+    vllm_runner: pooling
+    max_model_len: 8192
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_6_35b_a3b_fp8
   paths:
     main: llm/Qwen3.6-35B-A3B-FP8

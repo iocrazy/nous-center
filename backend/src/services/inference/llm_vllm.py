@@ -56,6 +56,7 @@ class VLLMAdapter(InferenceAdapter):
         dtype: str | None = None,
         max_num_seqs: int | None = None,
         enable_prefix_caching: bool | None = None,
+        vllm_runner: str | None = None,
         adopt_pid: int | None = None,
         **kwargs: Any,
     ):
@@ -72,6 +73,10 @@ class VLLMAdapter(InferenceAdapter):
         # If True, vLLM is launched with --enable-prefix-caching.
         # Per-model override; reads from models.yaml `params` block.
         self._enable_prefix_caching = enable_prefix_caching
+        # vLLM --runner(0.22):pooling = embedding/分类模型(Qwen3-Embedding 等),
+        # 起的还是同一个 openai api_server,只是暴露 /v1/embeddings 而非 chat。
+        # None/缺省 = 不传(vLLM auto,生成模型零回归)。models.yaml params 块透传。
+        self._vllm_runner = vllm_runner
         # Port resolved lazily in load() if not set
         if self._port:
             self._base_url = f"http://localhost:{self._port}"
@@ -273,6 +278,8 @@ class VLLMAdapter(InferenceAdapter):
             "--max-model-len", str(max_model_len),
             "--gpu-memory-utilization", str(utilization),
         ]
+        if self._vllm_runner:
+            cmd += ["--runner", self._vllm_runner]
         if tp > 1:
             cmd += ["--tensor-parallel-size", str(tp)]
         if quantization:

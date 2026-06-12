@@ -13,13 +13,14 @@ import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
 
 const TYPE_LABELS: Record<string, string> = {
   llm: '语言模型 LLM',
+  embedding: '向量嵌入 Embedding',
   tts: '语音合成 TTS',
   image: '图像生成 Image',
   video: '视频生成 Video',
   understand: '多模态理解 VL',
 }
 
-const TYPE_ORDER = ['llm', 'tts', 'image', 'video', 'understand']
+const TYPE_ORDER = ['llm', 'embedding', 'tts', 'image', 'video', 'understand']
 
 // m11-style tag colors per model type — keeps semantic differentiation
 // without the eye-watering rainbow of the legacy "everything is a chip" UI.
@@ -29,11 +30,13 @@ const TYPE_TAG_STYLE: Record<string, { bg: string; color: string }> = {
   image:      { bg: 'rgba(20,184,166,0.18)',  color: 'var(--accent-2)' },                           // teal (slightly stronger)
   video:      { bg: 'rgba(244,114,182,0.15)', color: 'rgb(244,114,182)' },                          // pink
   understand: { bg: 'rgba(59,130,246,0.15)',  color: 'var(--info, #3b82f6)' },                      // blue
+  embedding:  { bg: 'rgba(234,179,8,0.15)',   color: 'rgb(234,179,8)' },                            // yellow
 }
 
 // Short labels for tabs (vs full names in section headers)
 const TAB_LABELS: Record<string, string> = {
   llm: '语言模型',
+  embedding: '向量',
   tts: '语音合成',
   image: '图像',
   video: '视频',

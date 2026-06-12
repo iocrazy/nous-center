@@ -481,6 +481,86 @@ def _convert_audio(audio_bytes: bytes, src_fmt: str, dst_fmt: str, sample_rate: 
     return buf_out.read()
 
 
+# --- /v1/embeddings ---
+
+
+@router.post("/v1/embeddings")
+async def embeddings(
+    request: Request,
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """OpenAI 兼容 embeddings(2026-06-12 embedding 模态接入)。
+
+    解析链与 chat/completions 同款:body.model → 服务(M:N grant / legacy 1:1)→
+    source_type=model → vLLM 子进程(models.yaml `vllm_runner: pooling` 起的
+    pooling 实例,如 qwen3_embedding_4b/8b)→ 透传 `/v1/embeddings`。
+    body.model 置空让 vLLM 用自己的 served 模型(同 chat 的处理);input/
+    encoding_format/dimensions 等字段原样透传。usage 计 prompt_tokens
+    (embedding 无 completion)。
+    """
+    instance, api_key = auth
+
+    body = await request.json()
+    requested_model = body.get("model") or None
+
+    if instance is None:
+        try:
+            instance = await resolve_target_service(
+                session, api_key=api_key, requested_model=requested_model,
+            )
+        except ModelNotFound as e:
+            raise NotFoundError(str(e), code="model_not_found")
+        if instance.status != "active":
+            raise HTTPException(403, detail="Instance is inactive")
+        from src.api.deps_auth import enforce_instance_rate_limit
+        await enforce_instance_rate_limit(instance)
+
+    if instance.source_type != "model":
+        raise HTTPException(
+            400,
+            detail=f"embeddings 只支持 model-backed 服务(got source_type={instance.source_type})",
+        )
+
+    engine_name = instance.source_name or str(instance.source_id)
+    model_mgr = getattr(request.app.state, "model_manager", None)
+    try:
+        base_url = get_vllm_base_url(model_mgr, engine_name)
+    except VLLMNotLoaded as e:
+        raise HTTPException(503, detail=str(e)) from e
+    except VLLMNoEndpoint as e:
+        raise HTTPException(500, detail=str(e)) from e
+
+    body["model"] = ""  # vLLM uses its own model path(同 chat)
+
+    start_ms = time.monotonic()
+    async with httpx.AsyncClient(timeout=120, proxy=None) as client:
+        resp = await client.post(f"{base_url.rstrip('/')}/v1/embeddings", json=body)
+
+    duration = int((time.monotonic() - start_ms) * 1000)
+    if resp.status_code != 200:
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+
+    data = resp.json()
+    usage = data.get("usage", {}) or {}
+    from src.services.usage_service import record_llm_usage
+    await record_llm_usage(
+        model=engine_name,
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=0,
+        duration_ms=duration,
+        instance_id=instance.id,
+        api_key_id=api_key.id,
+        agent_id=None,
+    )
+    await _post_consume_quota(
+        api_key.id, instance.id, usage.get("total_tokens", 0),
+    )
+    # 响应里的 model 回填服务名(对外契约:caller 看到自己请求的 model 名,不暴露本地路径)
+    data["model"] = requested_model or engine_name
+    return data
+
+
 # --- /v1/images/generations ---
 
 
