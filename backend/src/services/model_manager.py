@@ -1197,6 +1197,7 @@ class ModelManager:
                 "dtype": dtype,
                 "resident": comp["resident"],
                 "refs_count": len(comp["refs"]),
+                "stashed": bool(comp.get("stashed")),  # RAM 待命(不占显存,命中秒回)
                 "last_used_ago_sec": round(now - comp["last_used"], 2),
             })
         return out
@@ -1568,6 +1569,15 @@ class ModelManager:
         key = self._l1_component_key(spec, load_device)
         comp = self._components.get(key)
         if comp is not None:
+            if comp.get("stashed"):
+                # RAM stash 命中:搬回身份卡(秒级,免磁盘冷载)。失败 → 出池走 MISS 重建。
+                try:
+                    await asyncio.to_thread(self._restore_component, comp)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("component restore 失败,出池重建:%s", e)
+                    self._components.pop(key, None)
+                    comp = None
+        if comp is not None:
             comp["refs"].add(combo_id)
             comp["last_used"] = time.monotonic()
             logger.info(
@@ -1599,6 +1609,11 @@ class ModelManager:
                 continue
             comp["refs"].discard(combo_id)
             if not comp["refs"] and not comp["resident"]:
+                # RAM stash(spec 2026-06-12):优先挪 CPU 留池待命(下次同键命中秒级搬回,
+                # 免磁盘冷载);RAM 水位不够或 .to() 失败 → 旧行为出池销毁。
+                if self._stash_component(comp):
+                    freed = True  # 权重已离卡,调用方仍需 empty_cache 让显存真降
+                    continue
                 self._components.pop(key, None)
                 comp["module"] = None  # 断最后一个强引用,让 gc 回收 CUDA 存储
                 freed = True
@@ -1606,6 +1621,69 @@ class ModelManager:
                     "component L1 释放 role=%s file=%s(refs 空+非常驻)",
                     comp.get("role"), _basename(key[0]))
         return freed
+
+    # --- RAM stash(spec 2026-06-12-ram-stash-eviction)---------------------------
+    #
+    # 驱逐/释放默认「挪内存留池」而非销毁(借鉴 ComfyUI ModelPatcher offload_device):
+    # stash = module.to("cpu") + 标记,键/身份不变;命中时 .to(键里的卡) 搬回(秒级,
+    # 免磁盘冷载)。RAM 水位(psutil)守住:不够不 stash;stash 池超水位按最旧销毁。
+    # torchao fp8 量化权重(Float8Tensor)cpu↔cuda 往返 bit 一致已 spike 验证(2026-06-12)。
+
+    @staticmethod
+    def _stash_ram_reserve_bytes() -> int:
+        import os  # noqa: PLC0415
+        return int(float(os.getenv("NOUS_STASH_RAM_RESERVE_GB", "24")) * 1e9)
+
+    def _stash_component(self, comp: dict) -> bool:
+        """组件挪 CPU 留池(成功 True)。RAM 余量不足水位 / 搬运失败 → False(调用方走销毁)。"""
+        if comp.get("stashed"):
+            return True
+        try:
+            import psutil  # noqa: PLC0415
+            need = self._component_bytes(comp["key"][0])
+            if psutil.virtual_memory().available - need < self._stash_ram_reserve_bytes():
+                logger.info("component stash 跳过(RAM 水位不足)role=%s file=%s",
+                            comp.get("role"), _basename(comp["key"][0]))
+                return False
+            comp["module"].to("cpu")
+            comp["stashed"] = True
+            comp["stashed_at"] = time.monotonic()
+            comp["stash_bytes"] = need
+            logger.info("component L1 stash → RAM role=%s file=%s(~%dMB,命中秒回)",
+                        comp.get("role"), _basename(comp["key"][0]), need // (1024 * 1024))
+            self._trim_stash_lru()
+            return True
+        except Exception as e:  # noqa: BLE001 — stash 失败不挡释放主流程
+            logger.warning("component stash 失败,回退销毁:%s", e)
+            return False
+
+    def _restore_component(self, comp: dict) -> None:
+        """stashed 组件搬回键里的卡(身份卡)。失败抛 —— 调用方按组件加载失败处理。"""
+        if not comp.get("stashed"):
+            return
+        dev = comp["device"]
+        t0 = time.monotonic()
+        comp["module"].to(dev)
+        comp["stashed"] = False
+        comp.pop("stash_bytes", None)
+        logger.info("component L1 restore ← RAM role=%s file=%s dev=%s(%.1fs)",
+                    comp.get("role"), _basename(comp["key"][0]), dev, time.monotonic() - t0)
+
+    def _trim_stash_lru(self) -> None:
+        """stash 池超 RAM 水位 → 按 stashed_at 最旧销毁,直至回水位内。"""
+        try:
+            import psutil  # noqa: PLC0415
+            while psutil.virtual_memory().available < self._stash_ram_reserve_bytes():
+                stashed = [(k, c) for k, c in self._components.items() if c.get("stashed")]
+                if not stashed:
+                    return
+                key, comp = min(stashed, key=lambda kc: kc[1].get("stashed_at", 0.0))
+                self._components.pop(key, None)
+                comp["module"] = None
+                logger.info("component stash LRU 销毁(RAM 水位)role=%s file=%s",
+                            comp.get("role"), _basename(key[0]))
+        except Exception:  # noqa: BLE001 — 水位裁剪 best-effort
+            pass
 
     # 组件 kind(扫描器/节点用)→ L1 role(pipeline 子模块名)。
     _KIND_TO_ROLE = {"diffusion_models": "transformer", "clip": "text_encoder", "vae": "vae"}
@@ -1638,6 +1716,13 @@ class ModelManager:
         key = self._l1_component_key(resolved_spec, load_device)
         state_key = self._state_key_from_l1(key)  # 单一来源,与存进 dict 的一致
         comp = self._components.get(key)
+        if comp is not None and comp.get("stashed"):
+            try:
+                await asyncio.to_thread(self._restore_component, comp)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("component restore 失败(预加载),出池重建:%s", e)
+                self._components.pop(key, None)
+                comp = None
         if comp is not None:
             if resident and not comp["resident"]:
                 comp["resident"] = True
