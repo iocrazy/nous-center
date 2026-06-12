@@ -595,6 +595,16 @@ class ModularImageBackend(InferenceAdapter):
                 or self._vae_override is not None):
             return False
         self._pipe.to("cpu")
+        # PR-4:原地页锁定各 nn.Module 组件 → restore DMA 真异步(预算/subclass 自动降级)。
+        try:
+            import torch  # noqa: PLC0415
+            from src.services.inference.pinned_stash import pin_module_inplace  # noqa: PLC0415
+            self._stash_pin_regs = []
+            for comp in (getattr(self._pipe, "components", None) or {}).values():
+                if isinstance(comp, torch.nn.Module):
+                    self._stash_pin_regs.extend(pin_module_inplace(comp))
+        except Exception:  # noqa: BLE001 — pin 是纯优化
+            self._stash_pin_regs = []
         try:
             import torch  # noqa: PLC0415
             if torch.cuda.is_available():
@@ -605,8 +615,25 @@ class ModularImageBackend(InferenceAdapter):
 
     def restore(self) -> None:
         """stash 的整 pipe 搬回 self.device(秒级)。失败抛 —— 调用方按加载失败处理。"""
-        if self._pipe is not None:
-            self._pipe.to(self.device)
+        if self._pipe is None:
+            return
+        regs = getattr(self, "_stash_pin_regs", None)
+        if regs:
+            # PR-4 快路:逐组件 non_blocking 批量搬运(pinned DMA),单组件内单次 sync;
+            # 任一组件失败 → unpin 兜底后整体回退 .to()(restore_module_fast 已内部 unpin
+            # 自己负责的 regs,这里传整段 regs 由首个调用注销 —— 见下:统一一次性处理)。
+            import torch  # noqa: PLC0415
+            from src.services.inference.pinned_stash import restore_module_fast  # noqa: PLC0415
+            mods = [c for c in (getattr(self._pipe, "components", None) or {}).values()
+                    if isinstance(c, torch.nn.Module)]
+            try:
+                for i, m in enumerate(mods):
+                    # regs 只在最后一个组件完成后注销(权重引用在各 module 上,安全)
+                    restore_module_fast(m, self.device, regs if i == len(mods) - 1 else [])
+            finally:
+                self._stash_pin_regs = []
+            return
+        self._pipe.to(self.device)
 
     def unload(self) -> None:
         """真正释放 GPU pipeline —— base.unload 只置 `_model=None`,远远不够。
@@ -618,6 +645,15 @@ class ModularImageBackend(InferenceAdapter):
         的块 → 显存只增不减。这里显式拆 pipe + 清缓存,让换模型时显存真降。
         """
         pipe = self._pipe
+        # PR-4:stash 期间被销毁(二次卸载/驱逐)→ 先注销页锁定(此时权重还活着)。
+        regs = getattr(self, "_stash_pin_regs", None)
+        if regs:
+            try:
+                from src.services.inference.pinned_stash import unpin  # noqa: PLC0415
+                unpin(regs)
+            except Exception:  # noqa: BLE001
+                pass
+            self._stash_pin_regs = []
         self._pipe = None
         self._img2img_pipe = None  # PR-A2:与 _pipe 共享组件,随之释放
         self._model = None

@@ -186,3 +186,33 @@ async def test_snapshot_reports_stashed_flag(l1):
     await mm.unload_model(mid, force=True)
     snap_after = mm.loaded_components_snapshot()
     assert snap_after and all(item["stashed"] is True for item in snap_after)
+
+
+def test_pinned_stash_budget_and_whitelist(monkeypatch):
+    """PR-4 纯逻辑:预算记账 + 仅常规 Tensor 可 pin(无 GPU 环境直接空清单,零回归)。"""
+    from src.services.inference import pinned_stash as PS
+
+    # 无 cuda(CI)→ pin 返回空,restore 走 .to() 等价路径不崩
+    class _M:
+        def parameters(self):
+            return iter([])
+
+        def buffers(self):
+            return iter([])
+    assert PS.pin_module_inplace(_M()) == []
+    PS.unpin([])  # 空清单安全
+    assert PS.total_pinned_bytes() == 0
+
+
+@pytest.mark.asyncio
+async def test_stash_records_pin_regs_and_restore_consumes(l1, monkeypatch):
+    """stash 写 pin_regs(CI 无 GPU 为空列表),restore 后消费掉(pop)。"""
+    mm, calls = l1
+    await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline")
+    mid = next(iter(mm._models))
+    await mm.unload_model(mid, force=True)
+    comp = _comp_by_file(mm, "/m/X-bf16.safe")
+    assert "pin_regs" in comp and comp["pin_regs"] == []
+    await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline")
+    comp = _comp_by_file(mm, "/m/X-bf16.safe")
+    assert "pin_regs" not in comp and comp["stashed"] is False
