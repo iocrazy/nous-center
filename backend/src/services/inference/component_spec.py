@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from src.services.inference.base import LoRASpec
 
 _DEVICE_RE = re.compile(r"^(cpu|auto|cuda:(0|[1-9]\d*))$")
-_OFFLOAD_RE = re.compile(r"^(none|cpu|cuda:(0|[1-9]\d*))$")
+_OFFLOAD_RE = re.compile(r"^(none|cpu|stream|cuda:(0|[1-9]\d*))$")  # stream=流式分块(lowvram spec 2026-06-12)
 
 
 class ComponentSpec(BaseModel):
@@ -42,7 +42,7 @@ class ComponentSpec(BaseModel):
     def _validate_offload(cls, v: str) -> str:
         v = v or "none"
         if not _OFFLOAD_RE.match(v):
-            raise ValueError(f"offload must match none|cpu|cuda:N (no leading zero) — got {v!r}")
+            raise ValueError(f"offload must match none|cpu|stream|cuda:N (no leading zero) — got {v!r}")
         if v.startswith("cuda:"):
             idx = int(v.split(":", 1)[1])
             return f"cuda:{idx}"

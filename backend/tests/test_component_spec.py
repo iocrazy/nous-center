@@ -161,3 +161,12 @@ def test_component_state_key_stable_and_lora_aware():
     b = base.model_copy(update={"loras": [LoRASpec(name="y", strength=0.4), LoRASpec(name="x", strength=0.8)]})
     assert component_state_key(a) == component_state_key(b)
     assert component_state_key(a) != component_state_key(base)
+
+
+def test_offload_stream_accepted():
+    """lowvram 流式分块(spec 2026-06-12):offload=stream 过校验 —— 漏改此白名单曾让
+    画布 e2e 在 runner 描述符层被 pydantic 拒(2026-06-12 真机逮到)。"""
+    from src.services.inference.component_spec import ComponentSpec
+    s = ComponentSpec(kind="diffusion_models", file="/m/x", device="cuda:2",
+                      dtype="bfloat16", offload="stream")
+    assert s.offload == "stream"
