@@ -11,10 +11,13 @@ def _node(inputs):
     return P.RunNode(task_id=1, node_id="dec", node_type="image", model_key=None, inputs=inputs)
 
 
-def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2", input_image=None, output_mode=None):
+def _granular_inputs(unet_dev="cuda:1", loras=None, arch="flux2", input_image=None, output_mode=None,
+                     unconditional_file=None):
     model = {"_type": "flux2_model",
              "spec": {"kind": "diffusion_models", "file": "/m/u.safe", "device": unet_dev, "dtype": "fp8_e4m3", "adapter_arch": arch},
              "loras": loras or []}
+    if unconditional_file is not None:
+        model["unconditional_file"] = unconditional_file  # ideogram4 双 DiT 合并节点挂的第二 DiT
     cond = {"_type": "flux2_conditioning",
             "clip": {"_type": "flux2_clip", "type": "flux2",
                      "encoders": [{"kind": "clip", "file": "/m/c.safe", "dtype": "default"}]},
@@ -35,6 +38,20 @@ def test_granular_default_output_mode_image():
     """无 output_mode widget → req.output_mode='image'(默认,字节零回归)。"""
     req = _build_request(_node(_granular_inputs()))
     assert req.output_mode == "image"
+
+
+def test_granular_ideogram4_unconditional_file_passthrough():
+    """ideogram4 双 DiT:合并节点挂的 unconditional_file → diffusion_models ComponentSpec.unconditional_file
+    (get_or_load 据此建第二 DiT override)。"""
+    req = _build_request(_node(_granular_inputs(
+        arch="ideogram4", unconditional_file="/m/ideogram4_unconditional_fp8_scaled.safe")))
+    assert req.components["diffusion_models"].unconditional_file == "/m/ideogram4_unconditional_fp8_scaled.safe"
+
+
+def test_granular_no_unconditional_file_default_none():
+    """非 ideogram4(无 unconditional_file)→ ComponentSpec.unconditional_file None(零回归)。"""
+    req = _build_request(_node(_granular_inputs()))
+    assert req.components["diffusion_models"].unconditional_file is None
 
 
 def test_granular_output_mode_latent():

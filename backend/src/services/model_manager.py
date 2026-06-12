@@ -961,6 +961,15 @@ class ModelManager:
             if (getattr(s, "offload", "none") or "none") != "none":
                 continue
             total += self._component_need_mb(s)
+        # Ideogram-4 单文件第二 DiT(unconditional)不在三件套 —— 与 cond DiT 同卡常驻,补进 footprint
+        # (整模型路走 _repo_total_mb 已含;单文件路 repo_mb=0 落到这里,漏了它会低估 ~9-18G 误派小卡 OOM)。
+        if dm is not None and dm.device == "auto" and (getattr(dm, "offload", "none") or "none") == "none":
+            _uf = getattr(dm, "unconditional_file", None)
+            if _uf:
+                try:
+                    total += int(self._component_bytes(_uf) / (1024 * 1024) * 1.3)
+                except (OSError, AttributeError, TypeError):
+                    pass
         return total
 
     # 流式分块工作集(MB):单块上卡 + stream 预取 + 激活。spike 2026-06-12:Ideogram-4
@@ -1169,7 +1178,7 @@ class ModelManager:
         def _explain_comp(ck: tuple) -> dict:
             if not isinstance(ck, tuple) or len(ck) < 4:
                 return {"raw": repr(ck)}
-            file, device, dtype, loras = ck
+            file, device, dtype, loras = ck[0], ck[1], ck[2], ck[3]
             return {
                 "file": file,
                 "device": device,
@@ -1280,7 +1289,7 @@ class ModelManager:
         now = time.monotonic()
         out: list[dict] = []
         for comp in self._components.values():
-            file_, dev, dtype, _loras = comp["key"]
+            file_, dev, dtype = comp["key"][0], comp["key"][1], comp["key"][2]  # 第5元 uncond_file 不入快照
             out.append({
                 "state_key": comp.get("state_key"),
                 "role": comp["role"],
@@ -1607,8 +1616,8 @@ class ModelManager:
         字段换成真实 load_device,保证同卡才命中。file/dtype/loras 仍来自 to_component_key。
         """
         from src.services.inference.component_spec import to_component_key  # noqa: PLC0415
-        file_, _dev, dtype, loras = to_component_key(spec)
-        return (file_, load_device, dtype, loras)
+        file_, _dev, dtype, loras, uncond = to_component_key(spec)
+        return (file_, load_device, dtype, loras, uncond)
 
     @staticmethod
     def _state_key_from_l1(key) -> str:
@@ -1617,7 +1626,7 @@ class ModelManager:
         与 `component_state_key(spec)` 格式严格一致(前端按 loader-node 描述符算同款串来匹配)。
         存进组件 dict 供 resident toggle / 跨进程快照按串匹配,不用反构 ComponentSpec。
         """
-        file_, dev, dtype, loras = key
+        file_, dev, dtype, loras = key[0], key[1], key[2], key[3]  # 第5元 unconditional_file 不进状态串
         lora_sig = "+".join(sorted(f"{name}@{strength}" for name, strength in loras))
         return f"{file_}|{dev}|{dtype}|{lora_sig}"
 
@@ -1970,6 +1979,16 @@ class ModelManager:
                     v_ov = await self._get_or_build_image_component(
                         "vae", build_bridged_vae, resolved["vae"],
                         repo, _load_device_for("vae"), _pool_arg("vae"), model_id)
+                # Ideogram-4 第二 DiT(unconditional,非对称 CFG,spec 2026-06-12):cond DiT spec 携带
+                # unconditional_file → 用 build_bridged_transformer(config_sub=unconditional_transformer)直接建。
+                # 不走 L1 池(uncond 恒与 cond 同 combo 配对,池化无收益);跟 cond DiT 同卡。
+                tu_ov = None
+                _uncond_file = getattr(resolved["diffusion_models"], "unconditional_file", None)
+                if _uncond_file and _is_standalone_single_file(resolved["diffusion_models"]):
+                    uncond_spec = resolved["diffusion_models"].model_copy(update={"file": _uncond_file})
+                    tu_ov = await asyncio.to_thread(
+                        build_bridged_transformer, uncond_spec, repo,
+                        _load_device_for("diffusion_models"), "unconditional_transformer")
                 def _build_adapter():
                     return ModularImageBackend(
                         repo=repo,
@@ -1980,6 +1999,7 @@ class ModelManager:
                         transformer_override=t_ov,
                         text_encoder_override=c_ov,
                         vae_override=v_ov,
+                        unconditional_transformer_override=tu_ov,
                         comp_devices=comp_devices,
                         comp_offloads=comp_offloads,
                     )

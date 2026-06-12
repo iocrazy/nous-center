@@ -35,6 +35,9 @@ class ComponentSpec(BaseModel):
     offload: str = Field("none", description="'none' | 'cpu' | 'cuda:N'")
     loras: list[LoRASpec] = Field(default_factory=list)
     adapter_arch: str | None = Field(None, description="unet only: 'flux2' | 'flux1'")
+    # Ideogram-4 双 DiT(非对称 CFG):diffusion_models 单文件携带第二个(unconditional)DiT 单文件路径。
+    # runner 据此建 unconditional_transformer override(spec 2026-06-12)。其余架构 None(零回归)。
+    unconditional_file: str | None = Field(None, description="ideogram4 only: second (unconditional) DiT single-file")
     clip_arch: str | None = Field(None, description="clip only: 'flux2' | 'flux1' | 'sdxl' | 'qwen'")
 
     @field_validator("offload")
@@ -90,7 +93,7 @@ class ComponentSpec(BaseModel):
 # the same fp8mixed safetensors dequant'd to bfloat16 vs float16 produces
 # different in-memory tensors (same numerical values, different storage layout
 # + different SM compute path). Cache must distinguish them.
-ComponentKey = tuple[str, str, str, frozenset[tuple[str, float]]]
+ComponentKey = tuple[str, str, str, frozenset[tuple[str, float]], str | None]
 
 
 def to_component_key(spec: ComponentSpec) -> ComponentKey:
@@ -100,7 +103,9 @@ def to_component_key(spec: ComponentSpec) -> ComponentKey:
     Two specs with identical file/device/dtype + same LoRAs (any order) produce equal keys.
     """
     lora_set = frozenset((lora.name, float(lora.strength)) for lora in spec.loras)
-    return (spec.file, spec.device, spec.dtype, lora_set)
+    # 第 5 元 = unconditional_file(ideogram4 双 DiT;None 不影响其余架构身份,零回归)。
+    # 不同 uncond DiT 配同 cond → 不同 combo,避免错命中。
+    return (spec.file, spec.device, spec.dtype, lora_set, spec.unconditional_file)
 
 
 def component_state_key(spec: ComponentSpec) -> str:
@@ -108,8 +113,9 @@ def component_state_key(spec: ComponentSpec) -> str:
     to_component_key so it matches the L1 cache identity: file|device|dtype|loras.
     LoRAs are sorted (order-independent) as 'name@strength' joined by '+'. The
     frontend (PR-5b) computes the identical string from the loader-node descriptor."""
-    file, device, dtype, lora_set = to_component_key(spec)
+    file, device, dtype, lora_set, _uncond = to_component_key(spec)
     lora_sig = "+".join(sorted(f"{name}@{strength}" for name, strength in lora_set))
+    # uncond DiT 不进 state_key 串(cond file 已唯一标识双 DiT 对;保持前端四态匹配串不变,零回归)。
     return f"{file}|{device}|{dtype}|{lora_sig}"
 
 
