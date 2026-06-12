@@ -214,6 +214,16 @@ def scan_local_models() -> set[str]:
         # model_index.json), while ComfyUI-style component buckets
         # (diffusion_models/<MODEL>, vae/<MODEL>, ...) sit at depth 3.
         # Pick depth based on the marker file.
+        if type_dir.name == "text":
+            # text/ 树按用途分桶(embedding/…)—— 模型在 depth-3:text/<bucket>/<model>
+            # (2026-06-12 embedding 接入,与 model_scanner._iter_candidate_model_dirs 同口径)。
+            for sub in type_dir.iterdir():
+                if not sub.is_dir():
+                    continue
+                for model_dir in sub.iterdir():
+                    if model_dir.is_dir():
+                        found.add(f"{type_dir.name}/{sub.name}/{model_dir.name}")
+            continue
         if type_dir.name == "image":
             for child in type_dir.iterdir():
                 if not child.is_dir():

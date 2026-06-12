@@ -34,6 +34,16 @@ def _iter_candidate_model_dirs(type_dir: Path):
                 if model_dir.is_dir():
                     yield model_dir, f"{type_dir.name}/{sub.name}/{model_dir.name}"
         return
+    if type_dir.name == "text":
+        # text/ 树按用途分桶(embedding/…),模型在 depth-3:text/<bucket>/<model>
+        # (2026-06-12 embedding 接入;models.yaml main=text/embedding/Qwen3-Embedding-4B)。
+        for sub in sorted(type_dir.iterdir()):
+            if not sub.is_dir():
+                continue
+            for model_dir in sorted(sub.iterdir()):
+                if model_dir.is_dir():
+                    yield model_dir, f"{type_dir.name}/{sub.name}/{model_dir.name}"
+        return
     for model_dir in sorted(type_dir.iterdir()):
         if model_dir.is_dir():
             yield model_dir, f"{type_dir.name}/{model_dir.name}"
