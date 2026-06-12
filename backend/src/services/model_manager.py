@@ -851,6 +851,9 @@ class ModelManager:
             if not entry.spec.resident
             and not self._references.get(mid)
             and mid not in self._in_use  # 不驱逐正在 infer 的(否则 segfault)
+            # stashed 的不占卡 —— 选它销毁腾不出显存,守卫会误以为腾了 → 重试仍 OOM 空转。
+            # 它的 RAM 回收出口 = 手动二次卸载 / stash 水位拒绝(spec 2026-06-12 PR-3)。
+            and not getattr(entry, "stashed", False)
             and (gpu_index is None or entry.gpu_index == gpu_index)
         ]
 
@@ -859,6 +862,11 @@ class ModelManager:
 
         lru = min(candidates, key=lambda e: e.last_used)
         model_id = lru.spec.id
+        # RAM stash(spec 2026-06-12 PR-3):守卫驱逐优先 stash(挪 RAM 待命,命中秒回;
+        # 显存同样立即腾出)。不可 stash(L1-combo/offload/水位/已 stashed)→ 旧销毁。
+        if await self.stash_model(model_id):
+            logger.info("Evicted(stash) LRU model %r from gpu %s", model_id, lru.gpu_index)
+            return model_id
         await self.unload_model(model_id, force=True)
         logger.info("Evicted LRU model %r from gpu %s", model_id, lru.gpu_index)
         return model_id
