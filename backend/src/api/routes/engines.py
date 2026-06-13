@@ -793,6 +793,96 @@ async def set_launch_params(name: str, body: dict):
     return {"name": name, "params": updates, "applied": False, "hint": "unload + load to apply"}
 
 
+def _card_total_gb_for_engine(cfg: dict) -> float:
+    """目标卡总显存(GB)。cfg.gpu 显式则用之,否则走 detector 推断;查不到回退 24。"""
+    from src.gpu.detector import get_device_for_engine, gpu_summary
+    devices = gpu_summary().get("devices", [])
+    by_index = {d["index"]: d.get("vram_gb") for d in devices}
+    gpu_field = cfg.get("gpu")
+    if gpu_field is None:
+        try:
+            dev = get_device_for_engine(cfg)
+            gpu_field = int(dev.split(":")[-1]) if dev.startswith("cuda") else 0
+        except (ValueError, IndexError):
+            gpu_field = 0
+    if isinstance(gpu_field, str) and gpu_field.startswith("cuda"):
+        try:
+            gpu_field = int(gpu_field.split(":")[-1])
+        except (ValueError, IndexError):
+            gpu_field = 0
+    return float(by_index.get(gpu_field) or 24.0)
+
+
+_VLLM_ADAPTER = "src.services.inference.llm_vllm.VLLMAdapter"
+
+
+@router.get("/{name}/vram-budget", dependencies=[Depends(require_admin)])
+async def get_vram_budget(name: str):
+    """返回该引擎当前显存预算设置 + 推荐值 + 目标卡总显存(spec 2026-06-13)。
+    仅 vLLM 类(llm/embedding/vl)有意义;image/tts(非 vLLM)返回 applicable=false。"""
+    from src.config import load_model_configs, load_runtime_overrides, recommend_vram_budget_gb
+
+    cfgs = load_model_configs()
+    cfg = cfgs.get(name)
+    if cfg is None:
+        raise HTTPException(404, detail=f"Unknown engine: {name}")
+
+    applicable = cfg.get("adapter") == _VLLM_ADAPTER
+    card_total_gb = _card_total_gb_for_engine(cfg)
+    weights_gb = float(cfg.get("vram_gb") or 0)  # load_model_configs 已把 vram_mb 转成 vram_gb
+    rec_gb = recommend_vram_budget_gb(cfg.get("type", "llm"), weights_gb)
+    rec_percent = round(min(0.98, rec_gb / card_total_gb), 3) if card_total_gb > 0 else None
+
+    current = (load_runtime_overrides().get(name) or {}).get("vram_budget") or {"mode": "auto"}
+    return {
+        "name": name,
+        "applicable": applicable,
+        "current": current,
+        "recommended_gb": rec_gb,
+        "recommended_percent": rec_percent,
+        "card_total_gb": round(card_total_gb, 1),
+        "yaml_gpu_memory_utilization": (cfg.get("params") or {}).get("gpu_memory_utilization"),
+    }
+
+
+@router.patch("/{name}/vram-budget", dependencies=[Depends(require_admin)])
+async def set_vram_budget(name: str, body: dict = Body(...)):
+    """写每模型显存预算 overlay(runtime_overrides.json)。body: {mode, value}。
+    mode=auto 清除 overlay 走 adapter 公式;percent(0–1)/absolute(GB)。需重载生效。"""
+    from src.config import load_model_configs, set_runtime_override
+
+    cfg = load_model_configs().get(name)
+    if cfg is None:
+        raise HTTPException(404, detail=f"Unknown engine: {name}")
+
+    mode = str(body.get("mode") or "auto").lower()
+    if mode not in ("auto", "percent", "absolute"):
+        raise HTTPException(400, detail="mode must be auto|percent|absolute")
+
+    if mode == "auto":
+        set_runtime_override(name, "vram_budget", {"mode": "auto"})
+        invalidate("engines")
+        return {"name": name, "vram_budget": {"mode": "auto"}, "applied": False,
+                "hint": "需重新加载模型生效(unload + load)"}
+
+    val = body.get("value")
+    if not isinstance(val, (int, float)) or val <= 0:
+        raise HTTPException(400, detail="value must be a positive number")
+    if mode == "percent" and not (0 < val <= 0.98):
+        raise HTTPException(400, detail="percent value must be in (0, 0.98]")
+    if mode == "absolute":
+        card_total_gb = _card_total_gb_for_engine(cfg)
+        if val > card_total_gb:
+            raise HTTPException(
+                400, detail=f"absolute {val}GB exceeds card total {card_total_gb:.1f}GB")
+
+    budget = {"mode": mode, "value": float(val)}
+    set_runtime_override(name, "vram_budget", budget)
+    invalidate("engines")
+    return {"name": name, "vram_budget": budget, "applied": False,
+            "hint": "需重新加载模型生效(unload + load)"}
+
+
 @router.patch("/{name}/gpu", dependencies=[Depends(require_admin)])
 async def set_gpu(name: str, gpu: int = 0):
     """Change GPU assignment for an engine."""
