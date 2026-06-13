@@ -1153,6 +1153,18 @@ class ModelManager:
                             sz += os.path.getsize(lp)
                         except OSError:
                             pass
+                # Ideogram-4 第二 DiT(unconditional)与 cond DiT 同卡常驻 —— 计进该卡守卫预算
+                # (否则少算 ~9-18G,先腾后载会少驱逐 → 装到一半 OOM 而非优雅报错。选卡 footprint
+                # 已含,守卫漏算是 2026-06-13 review 逮到的 PR-3 缺口)。fp8 同 cond 减半。
+                _uf = getattr(spec, "unconditional_file", None)
+                if _uf:
+                    try:
+                        _usz = self._component_bytes(_uf)
+                        if (spec.dtype or "").lower().startswith("fp8"):
+                            _usz //= 2
+                        sz += _usz
+                    except OSError:
+                        pass
             need_by_card[dev] = need_by_card.get(dev, 0) + sz
         for dev, need_bytes in need_by_card.items():
             need_mb = int(need_bytes / (1024 * 1024) * 1.3)
@@ -1393,6 +1405,17 @@ class ModelManager:
             "text_encoder": getattr(resolved["clip"], "offload", "none") or "none",
             "vae": getattr(resolved["vae"], "offload", "none") or "none",
         }
+        # Ideogram-4 双 DiT 单文件 + offload≠none 暂不支持(2026-06-13 review):逐组件 offload 不放置
+        # 第二 DiT(comp_devices 仅三件套,_place_components_per_device 漏挂 unconditional_transformer)
+        # + Qwen3-VL TE 嵌套 embed_tokens 有 cpu-offload device 错配。两者未修前 offload 会静默错/OOM →
+        # fail-loud 给清晰出路,胜过半坏。要塞小卡:用整模型 + lowvram 流式(offload=stream,已验 24G 跑 54G),
+        # 或单文件双 DiT 用 offload=none + 大卡。
+        if getattr(resolved["diffusion_models"], "unconditional_file", None) and (
+                offload != "none" or any(v != "none" for v in comp_offloads.values())):
+            raise RuntimeError(
+                "Ideogram-4 双 DiT 单文件暂不支持 offload(逐组件 offload 未覆盖第二 DiT + Qwen3-VL TE "
+                "embed_tokens 卸载错配)。要塞小卡请用『整模型 + 流式分块』(offload=stream),或单文件双 DiT "
+                "用 offload=none 跑大卡(Pro6000)。")
         # LLM 卡保护:**逐卡**检查空闲显存(每张卡上**常驻**组件之和 vs 该卡空闲)→ 装载前清晰报错。
         # 守卫内部跳过 offload!=none 的组件(它们 forward 时才挪上卡,不常驻)。
         # combo_key 包含 offload(整管线)+ 逐组件 offload:不同 offload 模式是不同的 pipe 实例
