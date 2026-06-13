@@ -27,9 +27,32 @@ logger = logging.getLogger(__name__)
 # 全局已 pin 字节数(runner 进程内单线程串行队列,无需加锁)。
 _total_pinned_bytes = 0
 
+# 外部 pinned 占用账本(spec 2026-06-12 ram-pinned-linkage PR-1):diffusers 流式分块的
+# 预 pin 走 `tensor.pin_memory()`(cudaHostAlloc 拷贝),不经本模块 cudaHostRegister,
+# 历史上完全绕过账本(~37G pinned RAM 隐身)。挂载方实测/估算字节后 register_external
+# 入账,卸载时 release_external 出账 —— total_pinned_bytes() 自此 = 真实 pinned 总量,
+# 预算(NOUS_STASH_PIN_BUDGET_GB)对两类占用统一生效,不会叠到远超物理合理值。
+_external_pinned: dict[int, int] = {}
+_next_external_handle = 1
+
 
 def _pin_budget_bytes() -> int:
     return int(float(os.getenv("NOUS_STASH_PIN_BUDGET_GB", "64")) * 1e9)
+
+
+def register_external(nbytes: int) -> int:
+    """外部 pinned 占用入账(流式分块预 pin)。返回 handle,释放时传给 release_external。"""
+    global _next_external_handle
+    handle = _next_external_handle
+    _next_external_handle += 1
+    _external_pinned[handle] = max(0, int(nbytes))
+    return handle
+
+
+def release_external(handle: int | None) -> None:
+    """外部 pinned 占用出账。handle 为 None / 重复释放均安全(no-op)。"""
+    if handle is not None:
+        _external_pinned.pop(handle, None)
 
 
 def _tensors_of(module: Any):
@@ -58,7 +81,9 @@ def pin_module_inplace(module: Any) -> list[tuple[int, int]]:
             if (not t.device.type == "cpu") or (not t.is_contiguous()) or t.is_pinned():
                 continue
             size = t.nbytes
-            if size <= 0 or _total_pinned_bytes + size > _pin_budget_bytes():
+            # 预算按真实总量(stash 原地 pin + 外部流式 pin)统一卡 —— 旧口径只看 stash
+            # 自己,流式占 37G 后 stash 还能再 pin 满 64G,叠到远超物理合理值。
+            if size <= 0 or total_pinned_bytes() + size > _pin_budget_bytes():
                 continue
             ptr = t.data_ptr()
             if ptr == 0:
@@ -115,4 +140,5 @@ def restore_module_fast(module: Any, device: str, regs: list[tuple[int, int]]) -
 
 
 def total_pinned_bytes() -> int:
-    return _total_pinned_bytes
+    """真实 pinned 总量 = stash 原地注册 + 外部入账(流式预 pin)。"""
+    return _total_pinned_bytes + sum(_external_pinned.values())

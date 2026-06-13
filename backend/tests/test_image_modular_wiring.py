@@ -790,6 +790,50 @@ def test_stream_offload_routes_transformers_and_parks_rest(monkeypatch):
     assert te.to_calls and vae.to_calls, "TE/VAE 驻卡"
 
 
+class _PinTensor:
+    """假权重张量:仅暴露 nbytes,验流式预 pin 字节入账(不依赖真 torch)。"""
+    def __init__(self, nbytes):
+        self.nbytes = nbytes
+
+
+class _PinnedStreamMod(_StreamModBase):
+    """带权重的流式组件替身 —— parameters() 报 nbytes,供入账求和。"""
+    def __init__(self, total_bytes):
+        self._t = _PinTensor(total_bytes)
+
+    def parameters(self):
+        return iter([self._t])
+
+    def buffers(self):
+        return iter([])
+
+
+def test_stream_offload_registers_and_unload_releases_pin_ledger(monkeypatch):
+    """spec ram-pinned-linkage PR-1:流式挂载把预 pin 字节 register_external 入账,
+    unload() release_external 出账(账本闭环,预算不被幽灵占用)。"""
+    import torch as _t
+    from src.services.inference import pinned_stash as PS
+
+    monkeypatch.setattr(image_modular, "_import_group_offloading",
+                        lambda: lambda mod, **kw: None)
+    monkeypatch.setattr(_t.nn, "Module", _StreamModBase, raising=False)
+
+    pipe = MagicMock(name="pipe")
+    tr = _PinnedStreamMod(3 * 1024**3)  # 3G transformer 权重
+    pipe.components = {"transformer": tr, "tokenizer": object()}
+
+    base = PS.total_pinned_bytes()
+    be = image_modular.ModularImageBackend(repo="/m/i", device="cpu",
+                                           pipeline_class="Ideogram4Pipeline", offload="stream")
+    be._apply_stream_offload(pipe)
+    assert PS.total_pinned_bytes() == base + 3 * 1024**3, "预 pin 入账"
+    assert be._stream_pin_handle is not None
+    be._pipe = pipe
+    be.unload()
+    assert PS.total_pinned_bytes() == base, "unload 出账"
+    assert be._stream_pin_handle is None
+
+
 def test_stream_offload_rejects_fp8(monkeypatch):
     """stream + fp8 在线量化 → 人话 fail-loud(Float8Tensor 不可预 pin)。"""
     _fake_klein(monkeypatch)
