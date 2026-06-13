@@ -483,8 +483,10 @@ async def test_guard_counts_ideogram4_uncond_dit(mm, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ideogram4_dual_dit_offload_fails_loud(mm, tmp_path):
-    """2026-06-13 review:ideogram4 双 DiT 单文件 + offload≠none 暂不支持 → fail-loud(非半坏)。"""
+async def test_ideogram4_te_offload_fails_loud(mm, tmp_path):
+    """2026-06-13 offload 支持:ideogram4 双 DiT 可 offload(DiT cpu-stash + TE 驻卡),但 **TE 自己被
+    offload** 不行(Qwen3-VL embed_tokens 直调绕过 hook → device 错配)→ fail-loud。
+    (DiT-only offload 现已支持,真出图走 smoke_ideogram4_offload_fit;此处只验 TE-offload 的人话拦截。)"""
     cond = tmp_path / "cond.safe"
     cond.write_bytes(b"\0" * 1000)
     uncond = tmp_path / "uncond.safe"
@@ -493,8 +495,8 @@ async def test_ideogram4_dual_dit_offload_fails_loud(mm, tmp_path):
         "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(cond), device="cuda:1",
                                           dtype="bfloat16", adapter_arch="ideogram4",
                                           unconditional_file=str(uncond), offload="cpu"),
-        "clip": ComponentSpec(kind="clip", file=str(cond), device="cuda:1", dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file=str(cond), device="cuda:1", dtype="bfloat16", offload="cpu"),
         "vae": ComponentSpec(kind="vae", file=str(cond), device="cuda:1", dtype="bfloat16"),
     }
-    with pytest.raises(RuntimeError, match="暂不支持 offload"):
-        await mm.get_or_load_image_adapter(comps, "Ideogram4Pipeline", offload="cpu")
+    with pytest.raises(RuntimeError, match="Qwen3-VL.*offload"):
+        await mm.get_or_load_image_adapter(comps, "Ideogram4Pipeline")

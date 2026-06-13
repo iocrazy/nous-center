@@ -1405,17 +1405,20 @@ class ModelManager:
             "text_encoder": getattr(resolved["clip"], "offload", "none") or "none",
             "vae": getattr(resolved["vae"], "offload", "none") or "none",
         }
-        # Ideogram-4 双 DiT 单文件 + offload≠none 暂不支持(2026-06-13 review):逐组件 offload 不放置
-        # 第二 DiT(comp_devices 仅三件套,_place_components_per_device 漏挂 unconditional_transformer)
-        # + Qwen3-VL TE 嵌套 embed_tokens 有 cpu-offload device 错配。两者未修前 offload 会静默错/OOM →
-        # fail-loud 给清晰出路,胜过半坏。要塞小卡:用整模型 + lowvram 流式(offload=stream,已验 24G 跑 54G),
-        # 或单文件双 DiT 用 offload=none + 大卡。
-        if getattr(resolved["diffusion_models"], "unconditional_file", None) and (
-                offload != "none" or any(v != "none" for v in comp_offloads.values())):
-            raise RuntimeError(
-                "Ideogram-4 双 DiT 单文件暂不支持 offload(逐组件 offload 未覆盖第二 DiT + Qwen3-VL TE "
-                "embed_tokens 卸载错配)。要塞小卡请用『整模型 + 流式分块』(offload=stream),或单文件双 DiT "
-                "用 offload=none 跑大卡(Pro6000)。")
+        # Ideogram-4 第二 DiT(unconditional)逐组件放置/offload:跟 cond DiT 同卡同 offload
+        # (spec 2026-06-13:_place_components_per_device 据此把它一并挂 cpu-stash 轮转 hook,
+        # 双 DiT 一时刻只一个上卡 → 峰值降到 TE+1DiT,spike 验 53G→35G)。
+        if getattr(resolved["diffusion_models"], "unconditional_file", None):
+            comp_devices["unconditional_transformer"] = resolved["diffusion_models"].device
+            comp_offloads["unconditional_transformer"] = comp_offloads["transformer"]
+            # **TE(Qwen3-VL)不能 offload**:diffusers pipeline 直调 `text_encoder.language_model.
+            # embed_tokens(token_ids)`(绕过 forward hook),offload 后 embed_tokens 权重留 CPU、token 在卡
+            # → device 错配。策略 = 只卸 DiT、TE 驻卡(spike 验)。故仅当 TE 被 offload 时 fail-loud。
+            if comp_offloads["text_encoder"] != "none":
+                raise RuntimeError(
+                    "Ideogram-4 的 Qwen3-VL 文本编码器暂不支持 offload(embed_tokens 直调绕过 hook → device "
+                    "错配)。请让 Load CLIP 的 offload=none(驻卡);双 DiT(Load Diffusion Model)可 offload=cpu "
+                    "塞小卡(TE 驻卡 + 双 DiT 轮转,fp8 下 ~17G 入 24G 卡)。")
         # LLM 卡保护:**逐卡**检查空闲显存(每张卡上**常驻**组件之和 vs 该卡空闲)→ 装载前清晰报错。
         # 守卫内部跳过 offload!=none 的组件(它们 forward 时才挪上卡,不常驻)。
         # combo_key 包含 offload(整管线)+ 逐组件 offload:不同 offload 模式是不同的 pipe 实例
