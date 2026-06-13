@@ -5,7 +5,8 @@ import {
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
   useLoadedAdapters, usePreloadSeedvr2, useUnloadSeedvr2, useUnloadAdapter,
   useSetSeedvr2Resident, usePreloadComponent, useSetComponentResident, useUnloadComponent,
-  type EngineInfo, type LoadedAdapter,
+  useVramBudget, useSetVramBudget,
+  type EngineInfo, type LoadedAdapter, type VramBudgetMode, type VramBudgetInfo,
 } from '../../api/engines'
 import { apiFetch } from '../../api/client'
 import { useToastStore } from '../../stores/toast'
@@ -21,6 +22,9 @@ const TYPE_LABELS: Record<string, string> = {
 }
 
 const TYPE_ORDER = ['llm', 'embedding', 'tts', 'image', 'video', 'understand']
+
+// 走 vLLM 适配器的类目 —— 只有它们有 gpu_memory_utilization 旋钮可配显存预算(spec 2026-06-13)。
+const VLLM_TYPES = new Set(['llm', 'embedding', 'understand', 'vl'])
 
 // m11-style tag colors per model type — keeps semantic differentiation
 // without the eye-watering rainbow of the legacy "everything is a chip" UI.
@@ -75,6 +79,8 @@ export default function ModelsOverlay() {
     model: null,
   })
   const [activeTab, setActiveTab] = useState<TabId>('all')
+  // 显存预算弹窗目标(vLLM 类引擎),null = 关闭。
+  const [budgetTarget, setBudgetTarget] = useState<EngineInfo | null>(null)
   // 图像 tab 下的二级子 tab —— 按**文件夹/角色**分:整模型 / 超分 / diffusion_models / clip / vae / loras。
   const [imageBucket, setImageBucket] = useState<string>('all')
   // 跨 tab/桶的名称搜索 —— 在当前可见列表里再按 display_name/name/路径 子串过滤。统一模型管理收尾 PR-3。
@@ -285,6 +291,17 @@ export default function ModelsOverlay() {
           onClick: () => refreshMeta.mutate(ctxMenu.model!.name),
           disabled: false,
         },
+        // 显存预算:只对 vLLM 类(llm/embedding/vl)开放 —— image/tts 走别的机制。
+        ...(VLLM_TYPES.has(ctxMenu.model.type)
+          ? [
+              { label: '', divider: true } as MenuItem,
+              {
+                label: '显存预算…',
+                onClick: () => setBudgetTarget(ctxMenu.model!),
+                disabled: false,
+              } as MenuItem,
+            ]
+          : []),
           ] as MenuItem[]
           : []),
         {
@@ -595,7 +612,152 @@ export default function ModelsOverlay() {
       {ctxMenu.visible && ctxMenu.model && (
         <ContextMenu items={menuItems} position={ctxMenu.position} onClose={closeMenu} />
       )}
+
+      {budgetTarget && (
+        <VramBudgetModal engine={budgetTarget} onClose={() => setBudgetTarget(null)} />
+      )}
     </div>
+  )
+}
+
+/** 显存预算弹窗(spec 2026-06-13 PR-2):拉当前设置 + 推荐值,数据就绪后挂载表单。 */
+function VramBudgetModal({ engine, onClose }: { engine: EngineInfo; onClose: () => void }) {
+  const { data, isLoading } = useVramBudget(engine.name)
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="rounded-lg"
+        style={{
+          width: 420, maxWidth: '92vw', background: 'var(--bg-elevated, #1a1a1a)',
+          border: '1px solid var(--border)', padding: 20,
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>显存预算 · {engine.display_name}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)' }}>
+            <X size={16} />
+          </button>
+        </div>
+        {isLoading || !data ? (
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>加载中…</div>
+        ) : (
+          // data 就绪后才挂表单 → 初值用 useState initializer 一次性读取,免 set-state-in-effect。
+          <VramBudgetForm name={engine.name} data={data} onClose={onClose} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function VramBudgetForm(
+  { name, data, onClose }:
+  { name: string; data: VramBudgetInfo; onClose: () => void },
+) {
+  const setBudget = useSetVramBudget()
+  const cur = data.current || { mode: 'auto' as VramBudgetMode }
+  const [mode, setMode] = useState<VramBudgetMode>(cur.mode)
+  const [value, setValue] = useState<string>(() => {
+    if (cur.mode === 'percent' && cur.value != null) return String(Math.round(cur.value * 1000) / 10)
+    if (cur.mode === 'absolute' && cur.value != null) return String(cur.value)
+    return ''
+  })
+
+  const card = data.card_total_gb ?? 0
+  const recGb = data.recommended_gb ?? null
+  const recPct = data.recommended_percent != null ? Math.round(data.recommended_percent * 1000) / 10 : null
+
+  // 实时预览:当前输入将换算成多少 GB / 整卡百分比。
+  const num = parseFloat(value)
+  let previewGb: number | null = null
+  let previewPct: number | null = null
+  if (mode === 'percent' && num > 0 && card > 0) { previewPct = num; previewGb = Math.round(card * num) / 1000 * 10 }
+  else if (mode === 'absolute' && num > 0 && card > 0) { previewGb = num; previewPct = Math.round(num / card * 1000) / 10 }
+
+  const canSave = mode === 'auto' || (num > 0 && (mode !== 'percent' || num <= 98) && (mode !== 'absolute' || num <= card))
+
+  const onSave = () => {
+    if (mode === 'auto') { setBudget.mutate({ name, mode: 'auto' }, { onSuccess: onClose }); return }
+    const v = mode === 'percent' ? num / 100 : num  // percent UI 百分数 → 0–1
+    setBudget.mutate({ name, mode, value: v }, { onSuccess: onClose })
+  }
+
+  return (
+    <>
+      {recGb != null && (
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+          推荐 <b style={{ color: 'var(--text)' }}>{recGb} GB</b>
+          {recPct != null && <>（约 {recPct}%）</>}
+          {card > 0 && <> · 目标卡共 {card} GB</>}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        {(['auto', 'percent', 'absolute'] as VramBudgetMode[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className="rounded-md"
+            style={{
+              flex: 1, padding: '6px 0', fontSize: 12, cursor: 'pointer',
+              border: '1px solid var(--border)',
+              background: mode === m ? 'var(--accent-2-subtle)' : 'transparent',
+              color: mode === m ? 'var(--accent-2)' : 'var(--text)',
+            }}
+          >
+            {m === 'auto' ? '自动' : m === 'percent' ? '百分比' : '绝对值'}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'auto' ? (
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>按引擎自动公式分配(权重 + 该模态典型 KV/激活余量)。</div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="number"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={mode === 'percent' ? (recPct != null ? String(recPct) : '0–98') : (recGb != null ? String(recGb) : '')}
+            style={{
+              flex: 1, padding: '6px 8px', fontSize: 13, borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)',
+            }}
+          />
+          <span style={{ fontSize: 13, color: 'var(--muted)', width: 28 }}>{mode === 'percent' ? '%' : 'GB'}</span>
+        </div>
+      )}
+
+      {mode !== 'auto' && previewGb != null && previewPct != null && (
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+          ≈ {previewGb} GB · 整卡 {previewPct}%
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: 'var(--warning, #d4a017)' }}>需重新加载模型生效(卸载后再加载)。</div>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <button onClick={onClose} className="rounded-md" style={{ padding: '6px 14px', fontSize: 12, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)' }}>取消</button>
+        <button
+          onClick={onSave}
+          disabled={!canSave || setBudget.isPending}
+          className="rounded-md"
+          style={{
+            padding: '6px 14px', fontSize: 12, cursor: canSave ? 'pointer' : 'not-allowed',
+            border: 'none', background: 'var(--accent-2)', color: '#fff', opacity: canSave && !setBudget.isPending ? 1 : 0.5,
+          }}
+        >
+          保存
+        </button>
+      </div>
+    </>
   )
 }
 

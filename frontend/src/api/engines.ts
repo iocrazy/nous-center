@@ -299,6 +299,53 @@ export function useSetResident() {
   })
 }
 
+// 每模型显存预算(spec 2026-06-13 PR-2)。overlay {mode,value} → vLLM gpu_memory_utilization。
+export type VramBudgetMode = 'auto' | 'percent' | 'absolute'
+export interface VramBudget {
+  mode: VramBudgetMode
+  value?: number
+}
+export interface VramBudgetInfo {
+  name: string
+  applicable: boolean
+  current: VramBudget
+  recommended_gb: number
+  recommended_percent: number | null
+  card_total_gb: number
+  yaml_gpu_memory_utilization: number | null
+}
+
+/** 拉某引擎当前显存预算设置 + 推荐值 + 卡总显存。仅在弹窗打开(name 非空)时请求。 */
+export function useVramBudget(name: string | null) {
+  return useQuery({
+    queryKey: ['vram-budget', name],
+    queryFn: () => apiFetch<VramBudgetInfo>(`/api/v1/engines/${name}/vram-budget`),
+    enabled: !!name,
+    staleTime: 0,
+  })
+}
+
+/** 写显存预算 overlay。需 unload + load 重载模型生效(响应带 hint)。 */
+export function useSetVramBudget() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, mode, value }: { name: string; mode: VramBudgetMode; value?: number }) =>
+      apiFetch<{ name: string; vram_budget: VramBudget; hint: string }>(
+        `/api/v1/engines/${name}/vram-budget`,
+        { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, value }) },
+      ),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['vram-budget', data.name] })
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      useToastStore.getState().add(`显存预算已保存 · ${data.hint}`, 'success')
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`保存失败: ${error.message}`, 'error')
+    },
+  })
+}
+
 export function useScanModels() {
   const qc = useQueryClient()
   return useMutation({
