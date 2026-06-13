@@ -452,3 +452,49 @@ async def test_guard_need_sums_shards(mm, monkeypatch, tmp_path):
     monkeypatch.setattr(mm, "evict_lru", _no_evict)
     with pytest.raises(RuntimeError, match="显存不足|cuda:1"):
         await mm._guard_image_vram_per_card(comps)
+
+
+@pytest.mark.asyncio
+async def test_guard_counts_ideogram4_uncond_dit(mm, monkeypatch, tmp_path):
+    """2026-06-13 review 修:守卫 per-card need 须含第二 DiT(unconditional_file)。
+    捕获守卫向 _free_image_vram_on_card 报的 need:含 uncond(cond+uncond+clip+vae,各 40MB ≈ 208MB)
+    才会明显 > 不含 uncond(三件 ≈ 156MB)。"""
+    cond = tmp_path / "cond.safe"
+    cond.write_bytes(b"\0" * 40_000_000)
+    uncond = tmp_path / "uncond.safe"
+    uncond.write_bytes(b"\0" * 40_000_000)
+    resolved = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(cond), device="cuda:1",
+                                          dtype="bfloat16", adapter_arch="ideogram4",
+                                          unconditional_file=str(uncond)),
+        "clip": ComponentSpec(kind="clip", file=str(cond), device="cuda:1", dtype="bfloat16"),
+        "vae": ComponentSpec(kind="vae", file=str(cond), device="cuda:1", dtype="bfloat16"),
+    }
+    seen = {}
+
+    async def _free(dev, need_plus_reserve):
+        seen["need"] = need_plus_reserve
+        return 10 ** 9  # 充裕 → 不报错;只验 need 计算含 uncond
+
+    monkeypatch.setattr(mm, "_free_image_vram_on_card", _free)
+    await mm._guard_image_vram_per_card(resolved)
+    # need = (cond+uncond+clip+vae)×1.3 + reserve ≈ 208 + reserve;不含 uncond 才 ~156 + reserve。
+    assert seen.get("need", 0) > 180, f"守卫 need={seen.get('need')}MB 似未含第二 DiT(~9-18G 漏算)"
+
+
+@pytest.mark.asyncio
+async def test_ideogram4_dual_dit_offload_fails_loud(mm, tmp_path):
+    """2026-06-13 review:ideogram4 双 DiT 单文件 + offload≠none 暂不支持 → fail-loud(非半坏)。"""
+    cond = tmp_path / "cond.safe"
+    cond.write_bytes(b"\0" * 1000)
+    uncond = tmp_path / "uncond.safe"
+    uncond.write_bytes(b"\0" * 1000)
+    comps = {
+        "diffusion_models": ComponentSpec(kind="diffusion_models", file=str(cond), device="cuda:1",
+                                          dtype="bfloat16", adapter_arch="ideogram4",
+                                          unconditional_file=str(uncond), offload="cpu"),
+        "clip": ComponentSpec(kind="clip", file=str(cond), device="cuda:1", dtype="bfloat16"),
+        "vae": ComponentSpec(kind="vae", file=str(cond), device="cuda:1", dtype="bfloat16"),
+    }
+    with pytest.raises(RuntimeError, match="暂不支持 offload"):
+        await mm.get_or_load_image_adapter(comps, "Ideogram4Pipeline", offload="cpu")
