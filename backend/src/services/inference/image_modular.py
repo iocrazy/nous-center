@@ -1487,8 +1487,15 @@ class ModularImageBackend(InferenceAdapter):
                 transformer=overrides["transformer"],
                 unconditional_transformer=overrides["unconditional_transformer"],
             )
+        # 整装(无 override)走纯 from_pretrained:此分支后续**不**赋值任何 override 组件,故 z-image
+        # 那条「meta-init 与本仓桥接路径冲突」的顾虑(单文件分开载入分支才有)在此不成立 → 可安全用
+        # low_cpu_mem_usage=True。必须用 True:False 会瞬时 2× materialize bf16 整包(~54G→~108G RAM),
+        # 撞 systemd 单元 MemoryMax=64G cgroup → host-RAM OOM-kill 整个后端(2026-06-13 活机 e2e 坐实,
+        # 见 [[project_ideogram4_integration]])。True 走 meta-init + 逐 shard assign,峰值 ≈ 模型本身
+        # (~54G,stream 下本就要 pin 在 RAM)→ 稳进 64G cap。仅 ideogram4 整装;z-image/qwen-edit 的
+        # False 是各自 HF README 厂商加载建议,不在本 PR 动。
         return ideo_cls.from_pretrained(
-            self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=False)
+            self.repo, torch_dtype=_torch_dtype(self.dtype), low_cpu_mem_usage=True)
 
     @staticmethod
     def _lora_adapter_name(name: str) -> str:
