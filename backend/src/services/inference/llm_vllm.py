@@ -57,6 +57,7 @@ class VLLMAdapter(InferenceAdapter):
         max_num_seqs: int | None = None,
         enable_prefix_caching: bool | None = None,
         vllm_runner: str | None = None,
+        vram_budget: dict | None = None,
         adopt_pid: int | None = None,
         **kwargs: Any,
     ):
@@ -77,6 +78,9 @@ class VLLMAdapter(InferenceAdapter):
         # 起的还是同一个 openai api_server,只是暴露 /v1/embeddings 而非 chat。
         # None/缺省 = 不传(vLLM auto,生成模型零回归)。models.yaml params 块透传。
         self._vllm_runner = vllm_runner
+        # 每模型显存预算({mode,value};spec 2026-06-13)—— runtime overlay 注入,加载时
+        # 解析成 gpu_memory_utilization。优先级高于 models.yaml 的 gpu_memory_utilization。
+        self._vram_budget = vram_budget
         # Port resolved lazily in load() if not set
         if self._port:
             self._base_url = f"http://localhost:{self._port}"
@@ -219,6 +223,7 @@ class VLLMAdapter(InferenceAdapter):
             "max_num_seqs": max_num_seqs,
             "gpu_idx": gpu_idx,
             "model_size_gb": round(model_size_gb, 2),
+            "gpu_total_gb": round(gpu_total_gb, 2),
             "is_multimodal": is_multimodal,
         }
 
@@ -248,7 +253,11 @@ class VLLMAdapter(InferenceAdapter):
         tp = self._tp or auto["tp"]
         max_model_len = self._max_model_len or auto["max_model_len"]
         self.max_model_len = max_model_len  # expose for clamp logic
-        utilization = self._gpu_mem_util or auto["utilization"]
+        # 显存预算优先级:overlay vram_budget(percent/absolute) > yaml gpu_memory_utilization > auto 公式
+        from src.config import resolve_vram_utilization
+        utilization = resolve_vram_utilization(
+            self._vram_budget, auto["gpu_total_gb"], self._gpu_mem_util, auto["utilization"],
+        )
         quantization = self._quantization or auto["quantization"]
         dtype = self._dtype or auto["dtype"]
         max_num_seqs = self._max_num_seqs or auto["max_num_seqs"]

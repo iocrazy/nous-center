@@ -108,7 +108,9 @@ def save_settings(updates: dict) -> None:
 # 写进去就是未提交本地改动,任何 git checkout/pull/reset 都会冲掉(用户报告:标了常驻还是丢)。
 # 把运行时状态分离到不跟踪的 overlay,既即时持久又不被 git 动。形如 {"<model_id>": {"resident": true}}。
 _RUNTIME_OVERRIDES_REL = "configs/runtime_overrides.json"
-_OVERRIDABLE_KEYS = ("resident", "gpu")
+# vram_budget:每模型显存预算({"mode":"auto|percent|absolute","value":N}),overlay 可配
+# (spec 2026-06-13)。adapter 加载时解析成 vLLM --gpu-memory-utilization。
+_OVERRIDABLE_KEYS = ("resident", "gpu", "vram_budget")
 
 
 def load_runtime_overrides() -> dict:
@@ -197,8 +199,45 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
     return models
 
 
+def recommend_vram_budget_gb(model_type: str, weights_gb: float) -> float:
+    """每模型显存预算推荐值(GB)—— 权重 + 该模态典型激活/KV 余量(spec 2026-06-13)。
+    embedding/tts 几乎不用 KV(单次前向)→ ×1.25;llm/vl 自回归解码要 KV → +6G 一档实用。
+    其余(保守)×1.3。给 UI 显示「推荐」+ auto 落地参考。"""
+    w = max(0.0, float(weights_gb or 0))
+    t = (model_type or "").lower()
+    if t in ("embedding", "tts"):
+        rec = w * 1.25
+    elif t in ("llm", "understand", "vl"):
+        rec = w + 6.0
+    else:
+        rec = w * 1.3
+    return round(max(1.0, rec), 1)
+
+
+def resolve_vram_utilization(
+    vram_budget: dict | None,
+    gpu_total_gb: float,
+    fallback: float | None,
+    auto_util: float,
+) -> float:
+    """vram_budget({mode,value}) → vLLM gpu_memory_utilization(0–1)。
+    优先级:显式 overlay vram_budget(percent/absolute)> models.yaml 的 fallback
+    (gpu_memory_utilization)> auto 公式。mode=auto 或缺省 → 走 fallback/auto。
+    absolute(GB)按目标卡真实总显存换算成比例;clamp 到 (0, 0.98]。"""
+    if isinstance(vram_budget, dict):
+        mode = str(vram_budget.get("mode") or "auto").lower()
+        val = vram_budget.get("value")
+        if mode == "percent" and isinstance(val, (int, float)) and val > 0:
+            return max(0.01, min(0.98, float(val)))
+        if mode == "absolute" and isinstance(val, (int, float)) and val > 0 and gpu_total_gb > 0:
+            return max(0.01, min(0.98, float(val) / gpu_total_gb))
+    if fallback:
+        return max(0.01, min(0.98, float(fallback)))
+    return auto_util
+
+
 def _apply_runtime_overrides(cfgs: dict) -> None:
-    """把 runtime_overrides.json 的 resident/gpu 叠加进 cfgs(原地改)。overlay 优先于 models.yaml。"""
+    """把 runtime_overrides.json 的 resident/gpu/vram_budget 叠加进 cfgs(原地改)。overlay 优先于 models.yaml。"""
     overrides = load_runtime_overrides()
     for mid, ov in overrides.items():
         if mid in cfgs and isinstance(ov, dict):

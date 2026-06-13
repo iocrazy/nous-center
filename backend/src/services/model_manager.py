@@ -231,6 +231,21 @@ class ModelManager:
         # accepts_lora_archs is yaml-only metadata, never passed to adapter
         params.pop("accepts_lora_archs", None)
 
+        # 每模型显存预算 overlay(runtime_overrides.json,spec 2026-06-13)。registry 直读
+        # models.yaml 不过 overlay,这里按需注入。只给接受该 kwarg 的适配器(vLLM 类),
+        # image 等不接受的不传以免 unexpected-kwarg。
+        import inspect
+
+        from src.config import load_runtime_overrides
+        ov = load_runtime_overrides().get(spec.id) or {}
+        vb = ov.get("vram_budget")
+        if (
+            isinstance(vb, dict)
+            and "vram_budget" not in params
+            and "vram_budget" in inspect.signature(cls.__init__).parameters
+        ):
+            params["vram_budget"] = vb
+
         return cls(paths=spec.paths, **params)
 
     def _detect_vllm_gpus_for_adapter(self, adapter) -> list[int]:
