@@ -80,12 +80,16 @@ def mm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_auto_downgrades_to_stream_when_nothing_fits(mm):
-    """整模型无卡可容 + stream 口径装得下 → transformer 自动 offload=stream 落该卡。"""
+    """整模型无卡可容 + stream 口径装得下 → transformer 自动 offload=stream 落该卡(cuda:2)。
+    单文件桥接组件 stream 时**建在 CPU**(_apply_stream_offload 再挂 group offloading 流式到 cuda:2);
+    onload/compute 卡仍 cuda:2(传给 ModularImageBackend 的 device)。2026-06-13 _load_device_for
+    修(stream→cpu build)后,build 设备从 cuda:2 变 cpu(否则单文件双 DiT bf16 直建 GPU 37G 在小卡 OOM)。"""
     m, calls, be = mm
     await m.get_or_load_image_adapter(_comps(), "Ideogram4Pipeline")
     tr = calls["transformer"][0]
-    assert tr["device"] == "cuda:2"
+    assert tr["device"] == "cpu"             # stream 桥接组件建在 CPU
     assert tr["offload"] == "stream"
+    assert be.last_kw["device"] == "cuda:2"  # onload/compute 卡仍 cuda:2(stream 流式上卡)
 
 
 @pytest.mark.asyncio
