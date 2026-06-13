@@ -1970,7 +1970,10 @@ class ModelManager:
 
                 def _load_device_for(role_key: str) -> str:
                     o = _comp_offload(role_key)
-                    if o == "cpu":
+                    if o in ("cpu", "stream"):
+                        # stream:单文件桥接组件先建在 CPU,_apply_stream_offload 再挂 group offloading
+                        # (offload_device=cpu)逐块流式 —— 否则双 DiT bf16 直建 GPU(37G)在小卡 OOM
+                        # (2026-06-13:单文件 ideogram4 双 DiT stream 塞 24G 真机逮到)。
                         return "cpu"
                     if o.startswith("cuda:"):
                         return o
