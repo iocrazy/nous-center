@@ -684,6 +684,10 @@ def test_ideogram4_from_pretrained_and_guidance_schedule_none(monkeypatch):
     be = image_modular.ModularImageBackend(repo="/m/ideo", device="cpu", pipeline_class="Ideogram4Pipeline")
     be._ensure_pipe()
     cls.from_pretrained.assert_called_once()
+    # 整装(无 override)from_pretrained 必须 low_cpu_mem_usage=True:False 会瞬时 2× materialize
+    # bf16 整包(~54G→~108G RAM)撞 systemd MemoryMax=64G cgroup → OOM-kill 后端(2026-06-13 活机坐实)。
+    # 本分支后续不赋 override → 无 meta-init/桥接冲突,True 安全。回归守卫。
+    assert cls.from_pretrained.call_args.kwargs.get("low_cpu_mem_usage") is True
 
     async def _run():
         return await be.infer(ImageRequest(
