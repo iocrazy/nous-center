@@ -483,8 +483,12 @@ async def test_guard_counts_ideogram4_uncond_dit(mm, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ideogram4_dual_dit_offload_fails_loud(mm, tmp_path):
-    """2026-06-13 review:ideogram4 双 DiT 单文件 + offload≠none 暂不支持 → fail-loud(非半坏)。"""
+async def test_ideogram4_dual_dit_offload_now_supported(mm, tmp_path):
+    """2026-06-13:ideogram4 双 DiT 单文件 + offload **现已支持**(只卸两个 DiT、TE/VAE 强制驻卡,
+    绕开 Qwen3-VL embed_tokens 错配;真机 fp8+offload 在 24G 3090 出图 20.5G 峰值,见
+    smoke_ideogram4_dual_dispatch DTYPE=fp8_e4m3 OFFLOAD=cpu)。→ 不再 fail-loud。
+    真加载需 GPU/真权重(mock 下在 build/guard 阶段因别的原因失败),这里只断言**旧的
+    『暂不支持 offload』fail-loud 已移除**(routing 不再拦)。"""
     cond = tmp_path / "cond.safe"
     cond.write_bytes(b"\0" * 1000)
     uncond = tmp_path / "uncond.safe"
@@ -496,5 +500,6 @@ async def test_ideogram4_dual_dit_offload_fails_loud(mm, tmp_path):
         "clip": ComponentSpec(kind="clip", file=str(cond), device="cuda:1", dtype="bfloat16"),
         "vae": ComponentSpec(kind="vae", file=str(cond), device="cuda:1", dtype="bfloat16"),
     }
-    with pytest.raises(RuntimeError, match="暂不支持 offload"):
+    with pytest.raises(Exception) as ei:  # noqa: PT011 — 加载在 mock 下必失败,只断言不是旧 fail-loud
         await mm.get_or_load_image_adapter(comps, "Ideogram4Pipeline", offload="cpu")
+    assert "暂不支持 offload" not in str(ei.value)

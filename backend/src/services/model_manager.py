@@ -1405,17 +1405,29 @@ class ModelManager:
             "text_encoder": getattr(resolved["clip"], "offload", "none") or "none",
             "vae": getattr(resolved["vae"], "offload", "none") or "none",
         }
-        # Ideogram-4 双 DiT 单文件 + offload≠none 暂不支持(2026-06-13 review):逐组件 offload 不放置
-        # 第二 DiT(comp_devices 仅三件套,_place_components_per_device 漏挂 unconditional_transformer)
-        # + Qwen3-VL TE 嵌套 embed_tokens 有 cpu-offload device 错配。两者未修前 offload 会静默错/OOM →
-        # fail-loud 给清晰出路,胜过半坏。要塞小卡:用整模型 + lowvram 流式(offload=stream,已验 24G 跑 54G),
-        # 或单文件双 DiT 用 offload=none + 大卡。
-        if getattr(resolved["diffusion_models"], "unconditional_file", None) and (
-                offload != "none" or any(v != "none" for v in comp_offloads.values())):
-            raise RuntimeError(
-                "Ideogram-4 双 DiT 单文件暂不支持 offload(逐组件 offload 未覆盖第二 DiT + Qwen3-VL TE "
-                "embed_tokens 卸载错配)。要塞小卡请用『整模型 + 流式分块』(offload=stream),或单文件双 DiT "
-                "用 offload=none 跑大卡(Pro6000)。")
+        # Ideogram-4 双 DiT 单文件 + offload:**只卸两个 DiT(大件),TE/VAE 强制驻卡**(spike
+        # 2026-06-13 验证机制可行,真机 35G 峰值出连贯图)。两个关键:
+        #  ① TE 驻卡 → pipeline 直调 `text_encoder.…embed_tokens(token_ids)` 时权重始终在卡上 →
+        #     绕开 Qwen3-VL 嵌套 embed_tokens 的 cpu-offload device 错配(PR-4 fail-loud 的根因之一);
+        #  ② 双 DiT 各挂 cpu-stash 轮转 hook(_place_components_per_device 非锚点分支)→ 一时刻只一个
+        #     DiT 上卡,峰值从「全驻 53G」降到「TE+1DiT ~35G」(bf16),配 fp8 更低 → 双 DiT 塞 24G 3090。
+        # 走逐组件 offload(comp_offloads),**不**用整管线 enable_model_cpu_offload(那会连 TE 一起卸 → ①坑)。
+        if getattr(resolved["diffusion_models"], "unconditional_file", None):
+            _dit_off = offload if offload != "none" else comp_offloads["transformer"]
+            if _dit_off != "none":
+                comp_devices["unconditional_transformer"] = resolved["diffusion_models"].device
+                comp_offloads["transformer"] = _dit_off
+                comp_offloads["unconditional_transformer"] = _dit_off
+                # 桥接 build 的落卡按 ComponentSpec.offload(_load_device_for 读它,非 comp_offloads dict)
+                # → 双 DiT 须 build 在 CPU(否则 37G bf16 直接上 24G 卡 OOM,2026-06-13 实测)。
+                resolved["diffusion_models"].offload = _dit_off
+                for _r in ("text_encoder", "vae"):
+                    if comp_offloads.get(_r, "none") != "none":
+                        logger.warning(
+                            "Ideogram-4 双 DiT offload:%s 强制驻卡(避 Qwen3-VL embed_tokens 错配 / VAE 小不值当),"
+                            "忽略其 offload=%s", _r, comp_offloads[_r])
+                    comp_offloads[_r] = "none"
+                offload = "none"  # 整管线 offload 改走逐组件(避免 enable_model_cpu_offload 卸 TE)
         # LLM 卡保护:**逐卡**检查空闲显存(每张卡上**常驻**组件之和 vs 该卡空闲)→ 装载前清晰报错。
         # 守卫内部跳过 offload!=none 的组件(它们 forward 时才挪上卡,不常驻)。
         # combo_key 包含 offload(整管线)+ 逐组件 offload:不同 offload 模式是不同的 pipe 实例

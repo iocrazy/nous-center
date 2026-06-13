@@ -61,15 +61,18 @@ async def main() -> int:
     print(f"[ideo-dispatch] {torch.cuda.get_device_properties(dev).name} device={DEVICE} size={SIZE}")
     torch.cuda.reset_peak_memory_stats(dev)
 
+    # DTYPE=fp8_e4m3 + OFFLOAD=cpu → 双 DiT fp8 + cpu-stash 轮转(只卸 DiT、TE/VAE 驻卡)→ 塞 24G 3090。
+    dtype = os.environ.get("DTYPE", "bfloat16")
     # 关键:cond DiT 的 ComponentSpec 携带 unconditional_file(= PR-2 合并节点透传给 runner 的形态)。
     components = {
         "diffusion_models": ComponentSpec(
-            kind="diffusion_models", file=DIT, device=DEVICE, dtype="bfloat16",
+            kind="diffusion_models", file=DIT, device=DEVICE, dtype=dtype,
             adapter_arch="ideogram4", unconditional_file=DIT_U, loras=[]),
-        "clip": ComponentSpec(kind="clip", file=TE, device=DEVICE, dtype="bfloat16"),
+        "clip": ComponentSpec(kind="clip", file=TE, device=DEVICE, dtype=dtype),
         "vae": ComponentSpec(kind="vae", file=VAE, device=DEVICE, dtype="bfloat16"),
     }
     offload = os.environ.get("OFFLOAD", "none")  # cpu = 卡紧时逐组件流(峰值=单组件)
+    print(f"[ideo-dispatch] dtype={dtype} offload={offload}")
     mm = ModelManager(registry=_EmptyRegistry(), allocator=GPUAllocator())
     print(f"[ideo-dispatch] get_or_load_image_adapter(Ideogram4Pipeline, offload={offload}) — 派发建双 DiT override…")
     adapter = await mm.get_or_load_image_adapter(components, "Ideogram4Pipeline", offload=offload)
