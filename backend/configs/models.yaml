@@ -74,6 +74,9 @@ models:
   params:
     vllm_runner: pooling      # embedding 模型走 vLLM pooling runner(/v1/embeddings)
     max_model_len: 8192       # 模型支持 32k;embedding 输入给 8k 足够,省 KV/激活
+    # auto 公式(权重+4G KV+1G)对 pooling 偏紧:8k 长输入 profile 激活峰值吃掉后
+    # KV 块分不出 →「No available memory for cache blocks」。显式给足(96G 卡≈19G)。
+    gpu_memory_utilization: 0.2
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_embedding_8b
   paths:
@@ -84,6 +87,7 @@ models:
   params:
     vllm_runner: pooling
     max_model_len: 8192
+    gpu_memory_utilization: 0.3   # 8B 权重 15.3G,同上口径(96G 卡≈29G)
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_6_35b_a3b_fp8
   paths:
