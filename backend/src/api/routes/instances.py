@@ -71,12 +71,21 @@ async def create_instance(
     else:
         raise HTTPException(400, detail=f"Unsupported source_type: {data.source_type}")
 
+    # category:model-backed 服务按引擎 type 派生(此前只工作流服务自动探测 → model 服务恒
+    # None,前端按 category 给调用示例端点时 embedding/tts 落不到对的端点)。引擎 type 直接
+    # 当 category(llm/embedding/tts/image/understand),与工作流侧的 image/app 不冲突。
+    category: str | None = None
+    if data.source_type == "model":
+        from src.config import load_model_configs  # noqa: PLC0415
+        category = (load_model_configs().get(source_name) or {}).get("type")
+
     instance = ServiceInstance(
         source_type=data.source_type,
         source_id=data.source_id,
         source_name=source_name if data.source_type == "model" else None,
         name=data.name,
         type=data.type,
+        category=category,
         params_override=data.params_override,
     )
     session.add(instance)

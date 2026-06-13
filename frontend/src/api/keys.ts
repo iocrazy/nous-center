@@ -196,23 +196,45 @@ export function useToggleGrant() {
 
 // ---------- helpers ----------
 
-/** 给某个 key + service 组合渲染三种调用 endpoint URL（OpenAI/Ollama/Anthropic）。 */
-export function endpointsFor(serviceName: string, baseUrl: string) {
+export interface EndpointInfo {
+  label: string
+  url: string
+  hint: string
+}
+
+/** 给某个 key + service 组合渲染调用 endpoint URL —— **按服务 category 给对端点**:
+ *  llm→chat/completions(+ollama/anthropic) / embedding→embeddings / image→images
+ *  generations / tts→audio/speech。null/未知 → 退回 chat(向后兼容)。 */
+export function endpointsFor(
+  serviceName: string,
+  baseUrl: string,
+  category?: string | null,
+): Record<string, EndpointInfo> {
+  const hint = `model: ${serviceName}`
+  if (category === 'embedding') {
+    return { embeddings: { label: 'OpenAI 兼容 · Embeddings', url: `${baseUrl}/v1/embeddings`, hint } }
+  }
+  if (category === 'image') {
+    return { images: { label: 'OpenAI 兼容 · Images', url: `${baseUrl}/v1/images/generations`, hint } }
+  }
+  if (category === 'tts') {
+    return { audio: { label: 'OpenAI 兼容 · Speech', url: `${baseUrl}/v1/audio/speech`, hint } }
+  }
   return {
     openai: {
       label: 'OpenAI 兼容',
       url: `${baseUrl}/v1/chat/completions`,
-      hint: `model: ${serviceName}`,
+      hint,
     },
     ollama: {
       label: 'Ollama 兼容',
       url: `${baseUrl}/api/chat`,
-      hint: `model: ${serviceName}`,
+      hint,
     },
     anthropic: {
       label: 'Anthropic 兼容',
       url: `${baseUrl}/v1/messages`,
-      hint: `model: ${serviceName}`,
+      hint,
     },
   }
 }

@@ -49,9 +49,18 @@ export default function ApiKeyDetail() {
     return key?.grants.find((g) => g.status === 'active') ?? key?.grants[0]
   }, [key])
 
+  // 示例调用地址:UI 与 API 同源(生产 = api.iocrazy.com,dev = localhost:8000)→ 用
+  // window.location.origin 才能给出**外部真实可调**的 URL。仅当用户在设置里显式改过
+  // apiBaseUrl(非默认 localhost)才尊重其覆盖;否则一律用当前访问域名。
+  const exampleBase = useMemo(() => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000'
+    return apiBaseUrl && apiBaseUrl !== 'http://localhost:8000' ? apiBaseUrl : origin
+  }, [apiBaseUrl])
+
   const endpoints = useMemo(() => {
-    return endpointsFor(sampleService?.service_name ?? '<service>', apiBaseUrl)
-  }, [sampleService, apiBaseUrl])
+    return endpointsFor(
+      sampleService?.service_name ?? '<service>', exampleBase, sampleService?.service_category)
+  }, [sampleService, exampleBase])
 
   const handleCopy = async (text: string, tag: string) => {
     await navigator.clipboard.writeText(text)
@@ -96,7 +105,8 @@ export default function ApiKeyDetail() {
   const sampleSecret = visibleSecret ?? key.secret_plaintext ?? '<your-api-key>'
   const sampleModel = sampleService?.service_name ?? '<service>'
 
-  const snippets = buildSnippets(apiBaseUrl, sampleModel, sampleSecret)
+  const snippets = buildSnippets(
+    exampleBase, sampleModel, sampleSecret, sampleService?.service_category)
 
   return (
     <div
@@ -241,7 +251,7 @@ export default function ApiKeyDetail() {
               gap: 10,
             }}
           >
-            {(['openai', 'ollama', 'anthropic'] as const).map((proto) => {
+            {Object.keys(endpoints).map((proto) => {
               const ep = endpoints[proto]
               return (
                 <div
@@ -667,7 +677,43 @@ function buildSnippets(
   baseUrl: string,
   model: string,
   apiKey: string,
-): Record<'openai' | 'ollama' | 'anthropic', string> {
+  category?: string | null,
+): Record<string, string> {
+  // 按 category 给对应模态的 curl —— 键必须与 endpointsFor 同(渲染遍历共用)。
+  if (category === 'embedding') {
+    return {
+      embeddings: `curl ${baseUrl}/v1/embeddings \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -d '{
+    "model": "${model}",
+    "input": ["第一段文本", "second text"]
+  }'`,
+    }
+  }
+  if (category === 'image') {
+    return {
+      images: `curl ${baseUrl}/v1/images/generations \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -d '{
+    "model": "${model}",
+    "prompt": "a serene mountain lake at sunrise"
+  }'`,
+    }
+  }
+  if (category === 'tts') {
+    return {
+      audio: `curl ${baseUrl}/v1/audio/speech \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -d '{
+    "model": "${model}",
+    "input": "你好，世界",
+    "voice": "default"
+  }' --output speech.wav`,
+    }
+  }
   return {
     openai: `curl ${baseUrl}/v1/chat/completions \\
   -H "Content-Type: application/json" \\
