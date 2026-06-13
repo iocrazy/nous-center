@@ -58,7 +58,10 @@ async def exec_load_checkpoint(data: dict, inputs: dict) -> dict:
         "model": {"_type": "flux2_model", "spec": {
             "kind": "diffusion_models", "file": _first_safetensors(repo, "transformer"),
             "device": device, "dtype": dtype, "adapter_arch": arch}, "loras": [], "offload": offload},
-        "clip": {"_type": "flux2_clip", "type": "flux2", "device": device, "offload": offload,
+        # clip type 跟随整模型 arch(#512 给兼容表加 z-image 条目后,这里硬编码 "flux2" 会让
+        # z-image 整模型在 _check_arch_compat 被误杀:'z-image' DiT 配 'flux2' CLIP 报架构不匹配。
+        # 整模型三件套天然同架构 → type=arch(flux2 不变零回归;无表条目的 arch 不校验,同样安全)。
+        "clip": {"_type": "flux2_clip", "type": arch, "device": device, "offload": offload,
                  "encoders": [{"kind": "clip", "file": _first_safetensors(repo, "text_encoder"), "dtype": dtype}]},
         "vae": {"_type": "flux2_vae", "spec": {"kind": "vae", "file": _first_safetensors(repo, "vae"),
                                                "dtype": dtype, "device": device, "offload": offload}},
