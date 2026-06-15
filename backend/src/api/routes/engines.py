@@ -793,11 +793,19 @@ async def set_launch_params(name: str, body: dict):
     return {"name": name, "params": updates, "applied": False, "hint": "unload + load to apply"}
 
 
-def _card_total_gb_for_engine(cfg: dict) -> float:
-    """目标卡总显存(GB)。cfg.gpu 显式则用之,否则走 detector 推断;查不到回退 24。"""
+def _card_total_gb_for_engine(cfg: dict, loaded_gpu: int | None = None) -> float:
+    """目标卡总显存(GB)。优先级:**真实落卡(已加载)> cfg.gpu 钉卡 > detector 推断** → 回退 24。
+
+    未钉卡的引擎,detector 的 get_device_for_engine 与运行时 GPUAllocator 的实际落卡可能分歧
+    (如 embedding 无 gpu 字段:detector 给 3090 24G,实际 vLLM 落 Pro6000 96G)。已加载时直接
+    用真实落卡总显存,否则推荐%/absolute-cap 校验会按错卡算 → 误拒合法预算(用户报告诱因)。"""
     from src.gpu.detector import get_device_for_engine, gpu_summary
     devices = gpu_summary().get("devices", [])
     by_index = {d["index"]: d.get("vram_gb") for d in devices}
+
+    if loaded_gpu is not None and loaded_gpu in by_index:
+        return float(by_index[loaded_gpu] or 24.0)
+
     gpu_field = cfg.get("gpu")
     if gpu_field is None:
         try:
@@ -817,7 +825,7 @@ _VLLM_ADAPTER = "src.services.inference.llm_vllm.VLLMAdapter"
 
 
 @router.get("/{name}/vram-budget", dependencies=[Depends(require_admin)])
-async def get_vram_budget(name: str):
+async def get_vram_budget(name: str, request: Request):
     """返回该引擎当前显存预算设置 + 推荐值 + 目标卡总显存(spec 2026-06-13)。
     仅 vLLM 类(llm/embedding/vl)有意义;image/tts(非 vLLM)返回 applicable=false。"""
     from src.config import load_model_configs, load_runtime_overrides, recommend_vram_budget_gb
@@ -828,7 +836,7 @@ async def get_vram_budget(name: str):
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
     applicable = cfg.get("adapter") == _VLLM_ADAPTER
-    card_total_gb = _card_total_gb_for_engine(cfg)
+    card_total_gb = _card_total_gb_for_engine(cfg, _get_loaded_gpu(name, request))
     weights_gb = float(cfg.get("vram_gb") or 0)  # load_model_configs 已把 vram_mb 转成 vram_gb
     rec_gb = recommend_vram_budget_gb(cfg.get("type", "llm"), weights_gb)
     rec_percent = round(min(0.98, rec_gb / card_total_gb), 3) if card_total_gb > 0 else None
@@ -846,7 +854,7 @@ async def get_vram_budget(name: str):
 
 
 @router.patch("/{name}/vram-budget", dependencies=[Depends(require_admin)])
-async def set_vram_budget(name: str, body: dict = Body(...)):
+async def set_vram_budget(name: str, request: Request, body: dict = Body(...)):
     """写每模型显存预算 overlay(runtime_overrides.json)。body: {mode, value}。
     mode=auto 清除 overlay 走 adapter 公式;percent(0–1)/absolute(GB)。需重载生效。"""
     from src.config import load_model_configs, set_runtime_override
@@ -871,7 +879,7 @@ async def set_vram_budget(name: str, body: dict = Body(...)):
     if mode == "percent" and not (0 < val <= 0.98):
         raise HTTPException(400, detail="percent value must be in (0, 0.98]")
     if mode == "absolute":
-        card_total_gb = _card_total_gb_for_engine(cfg)
+        card_total_gb = _card_total_gb_for_engine(cfg, _get_loaded_gpu(name, request))
         if val > card_total_gb:
             raise HTTPException(
                 400, detail=f"absolute {val}GB exceeds card total {card_total_gb:.1f}GB")
