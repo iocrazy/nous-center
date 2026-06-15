@@ -273,10 +273,24 @@ async def _pipe_reader(state: _RunnerState, ch: PipeChannel) -> None:
         elif isinstance(msg, P.Ping):
             # 结构化快照(不只 id):带 source_files/gpu/vram,让主进程把 runner 里的
             # adapter 映射回引擎卡 + 还原系统状态「已加载模型」。
+            # host RAM 占用快照(spec ram-pinned-linkage PR-1b):pinned 是本进程 pinned_stash
+            # 全局账本(含流式预 pin 外部入账);stash 是本进程 RAM stash 池字节。两者 best-effort,
+            # 失败不挡 Pong(import 失败/无 cuda 时 0)。
+            try:
+                from src.services.inference.pinned_stash import total_pinned_bytes  # noqa: PLC0415
+                _pinned_mb = total_pinned_bytes() // (1024 * 1024)
+            except Exception:  # noqa: BLE001
+                _pinned_mb = 0
+            try:
+                _stash_mb = state.mm.stash_ram_bytes() // (1024 * 1024)
+            except Exception:  # noqa: BLE001
+                _stash_mb = 0
             await ch.send_message(P.Pong(
                 runner_id=state.runner_id,
                 loaded_models=state.mm.loaded_models_snapshot(),
                 loaded_components=state.mm.loaded_components_snapshot(),
+                pinned_ram_mb=_pinned_mb,
+                stash_ram_mb=_stash_mb,
             ))
         # 其余消息类型（runner→主进程方向的）不应收到，忽略
 

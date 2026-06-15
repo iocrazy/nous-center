@@ -41,6 +41,9 @@ ALL_MESSAGES = [
     ),
     P.ModelEvent(event="loaded", model_key="flux2-dev", error=None),
     P.Pong(runner_id="runner-i", loaded_models=["flux2-dev"]),
+    # spec ram-pinned-linkage PR-1b:Pong 带 host RAM 占用快照,验编解码 round-trip 不丢。
+    P.Pong(runner_id="runner-i", loaded_models=["flux2-dev"],
+           pinned_ram_mb=35397, stash_ram_mb=22800),
     P.PreloadComponents(
         task_id=7,
         components={
@@ -77,6 +80,16 @@ def test_decode_unknown_kind_raises():
     bogus = msgpack.packb({"kind": "not_a_real_message", "x": 1})
     with pytest.raises(P.ProtocolError):
         P.decode(bogus, fmt="msgpack")
+
+
+def test_pong_backward_compat_without_ram_fields():
+    """老 runner 发的 Pong 不带 pinned_ram_mb/stash_ram_mb（spec PR-1b 新增）→
+    decode 用默认 0,不抛(向后兼容)。"""
+    import msgpack
+    old = msgpack.packb({"kind": "pong", "runner_id": "r", "loaded_models": [],
+                         "loaded_components": []})
+    pong = P.decode(old, fmt="msgpack")
+    assert pong.pinned_ram_mb == 0 and pong.stash_ram_mb == 0
 
 
 def test_default_format_from_env(monkeypatch):

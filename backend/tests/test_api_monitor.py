@@ -30,6 +30,34 @@ async def test_monitor_stats(db_client: AsyncClient):
     data = resp.json()
     assert "gpus" in data
     assert "system" in data
+    # spec ram-pinned-linkage PR-1b:host RAM 锁页/待命占用入 system 块。
+    assert "pinned_ram_mb" in data["system"]
+    assert "stash_ram_mb" in data["system"]
+
+
+async def test_monitor_aggregates_pinned_and_stash_ram(monkeypatch):
+    """spec ram-pinned-linkage PR-1b:/monitor/stats 聚合各 runner Pong 上报的
+    pinned_ram_mb/stash_ram_mb + 主进程本体。"""
+    from types import SimpleNamespace
+    from src.api.routes import monitor as m
+
+    monkeypatch.setattr(m, "_gpu_stats_nvidia_smi", lambda: [])
+    monkeypatch.setattr(m, "_gpu_processes", lambda pid_map=None: {})
+    monkeypatch.setattr(m, "_top_processes", lambda: [])
+    # 主进程账本归零(只验 runner 聚合)
+    import src.services.inference.pinned_stash as PS
+    monkeypatch.setattr(PS, "total_pinned_bytes", lambda: 0)
+
+    sups = [
+        SimpleNamespace(pinned_ram_mb=35397, stash_ram_mb=22800, group_id="image", pid=None),
+        SimpleNamespace(pinned_ram_mb=0, stash_ram_mb=5000, group_id="tts", pid=None),
+    ]
+    app_state = SimpleNamespace(model_manager=None, runner_supervisors=sups)
+    request = SimpleNamespace(app=SimpleNamespace(state=app_state))
+
+    data = await m.get_system_stats(request)
+    assert data["system"]["pinned_ram_mb"] == 35397
+    assert data["system"]["stash_ram_mb"] == 27800
 
 
 def test_monitor_loaded_models_from_model_manager():

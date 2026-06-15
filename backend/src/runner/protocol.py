@@ -192,6 +192,12 @@ class Pong:
     # 含预加载的孤组件(不属于任何 combo)—— 引擎库标组件 loaded@卡 + resident。组件 L1 PR-3a。
     # 默认空 list 向后兼容(老 runner 不带 → 主进程聚合得空)。
     loaded_components: list[dict] = field(default_factory=list)
+    # 本 runner 进程的 host RAM 占用快照(MB,spec ram-pinned-linkage PR-1b):pinned =
+    # pinned_stash.total_pinned_bytes()(stash 原地注册 + 流式预 pin 外部入账);stash =
+    # RAM stash 池(组件 stash_bytes + adapter stash vram)之和。主进程 /monitor/stats 聚合
+    # 各 runner + 主进程本体,答「RAM 去哪了」(流式预 pin ~35G 历史上隐身)。默认 0 向后兼容。
+    pinned_ram_mb: int = 0
+    stash_ram_mb: int = 0
     kind: Literal["pong"] = "pong"
 
 

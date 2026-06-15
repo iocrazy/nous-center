@@ -1381,6 +1381,22 @@ class ModelManager:
             })
         return out
 
+    def stash_ram_bytes(self) -> int:
+        """本进程 RAM stash 池占用字节(spec ram-pinned-linkage PR-1b,/monitor/stats 用):
+        组件级 stash(`comp["stash_bytes"]`,已 stash 才有)+ adapter 级 stash(整 pipe 挪 CPU,
+        按 `entry.spec.vram_mb` 估,无精确字节)。best-effort,异常 → 0。"""
+        total = 0
+        try:
+            for comp in self._components.values():
+                if comp.get("stashed"):
+                    total += int(comp.get("stash_bytes") or 0)
+            for entry in self._models.values():
+                if getattr(entry, "stashed", False):
+                    total += int(getattr(entry.spec, "vram_mb", 0) or 0) * 1024 * 1024
+        except Exception:  # noqa: BLE001
+            return 0
+        return total
+
     async def get_or_load_image_adapter(self, components: dict, pipeline_class: str = "Flux2KleinPipeline", on_event=None, offload: str = "none"):
         """PR-4 entry for the runner component path. Resolves auto devices,
         loads/reuses base modules via the component L1 cache, assembles (or

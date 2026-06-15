@@ -93,6 +93,10 @@ class RunnerSupervisor:
         # 同上,但单组件 L1 池快照(loaded_components_snapshot):引擎库标组件 loaded@卡 + resident
         # (含预加载的孤组件)。组件 L1 PR-3a。
         self.loaded_components: list[dict] = []
+        # 本 runner 进程的 host RAM 占用(MB,Pong 上报;spec ram-pinned-linkage PR-1b):
+        # pinned = pinned_stash 账本(含流式预 pin),stash = RAM stash 池。/monitor/stats 聚合。
+        self.pinned_ram_mb: int = 0
+        self.stash_ram_mb: int = 0
         self._reconcile_inflight = False  # PR-2b:去重并发 node-done reconcile
         self._inflight: set[int] = set()
         self._last_spawn_at = 0.0
@@ -182,6 +186,8 @@ class RunnerSupervisor:
             pong = await asyncio.wait_for(self.client.ping(), timeout=self.ping_timeout)
             self.loaded_models = list(pong.loaded_models or [])
             self.loaded_components = list(getattr(pong, "loaded_components", None) or [])
+            self.pinned_ram_mb = int(getattr(pong, "pinned_ram_mb", 0) or 0)
+            self.stash_ram_mb = int(getattr(pong, "stash_ram_mb", 0) or 0)
         except Exception:  # noqa: BLE001 — 状态刷新失败不影响监管主流程
             pass
         finally:
@@ -318,6 +324,8 @@ class RunnerSupervisor:
         # 不会自动 reconcile —— 等下一个 watchdog ping 重新填,期间显示为空是正确的)。
         self.loaded_models = []
         self.loaded_components = []
+        self.pinned_ram_mb = 0  # runner 进程没了,其 pinned/stash RAM 随之释放
+        self.stash_ram_mb = 0
         self._unresponsive_since = None
 
         # 2. inflight task 全标 failed (runner_crashed)，不重试
