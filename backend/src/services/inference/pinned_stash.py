@@ -40,6 +40,11 @@ def _pin_budget_bytes() -> int:
     return int(float(os.getenv("NOUS_STASH_PIN_BUDGET_GB", "64")) * 1e9)
 
 
+def pin_budget_bytes() -> int:
+    """pinned 内存预算上限(字节)。调用方(RAM 门禁)据此判降级,与本模块预算口径一致。"""
+    return _pin_budget_bytes()
+
+
 def register_external(nbytes: int) -> int:
     """外部 pinned 占用入账(流式分块预 pin)。返回 handle,释放时传给 release_external。"""
     global _next_external_handle
