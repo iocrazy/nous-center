@@ -15,6 +15,7 @@ import src.services.model_manager as MM
 from src.services.gpu_allocator import GPUAllocator
 from src.services.inference.base import InferenceAdapter as _IA
 from src.services.inference.component_spec import ComponentSpec
+from src.services.inference.registry import ModelRegistry
 from src.services.model_manager import ModelManager
 
 
@@ -252,3 +253,37 @@ async def test_stash_records_pin_regs_and_restore_consumes(l1, monkeypatch):
     await mm.get_or_load_image_adapter(_comps(), "Flux2KleinPipeline")
     comp = _comp_by_file(mm, "/m/X-bf16.safe")
     assert "pin_regs" not in comp and comp["stashed"] is False
+
+
+def test_stash_ram_bytes_sums_components_and_adapters():
+    """spec ram-pinned-linkage PR-1b:stash_ram_bytes = stashed 组件 stash_bytes 之和
+    + stashed adapter 的 vram_mb 字节(/monitor/stats 聚合用)。未 stash 的不计。"""
+    class _Reg(ModelRegistry):
+        def __init__(self):
+            self._config_path = ""
+            self._specs = {}
+
+    mm = ModelManager(registry=_Reg(), allocator=GPUAllocator())
+    # 组件池:一个 stashed(2GB)、一个未 stash(不计)
+    mm._components = {
+        ("a",): {"stashed": True, "stash_bytes": 2 * 1024**3},
+        ("b",): {"stashed": False, "stash_bytes": 9 * 1024**3},
+    }
+    # adapter:一个 stashed(spec.vram_mb=3000MB)、一个未 stash(不计)
+    mm._models = {
+        "m1": SimpleNamespace(stashed=True, spec=SimpleNamespace(vram_mb=3000)),
+        "m2": SimpleNamespace(stashed=False, spec=SimpleNamespace(vram_mb=8000)),
+    }
+    expected = 2 * 1024**3 + 3000 * 1024 * 1024
+    assert mm.stash_ram_bytes() == expected
+
+
+def test_stash_ram_bytes_empty_is_zero():
+    """无 stash → 0(不抛)。"""
+    class _Reg(ModelRegistry):
+        def __init__(self):
+            self._config_path = ""
+            self._specs = {}
+
+    mm = ModelManager(registry=_Reg(), allocator=GPUAllocator())
+    assert mm.stash_ram_bytes() == 0

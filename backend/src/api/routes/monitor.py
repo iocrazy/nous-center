@@ -332,6 +332,22 @@ async def get_system_stats(request: Request):
     # Top processes
     processes = _top_processes()
 
+    # pinned / stash RAM 聚合(spec ram-pinned-linkage PR-1b):各 runner 经 Pong 上报本进程
+    # 的 pinned(含流式预 pin)+ stash 池字节;主进程本体也算上(主进程模型/组件若 stash)。
+    # 答「host RAM 去哪了」—— 流式预 pin ~35G 历史上对面板隐身。best-effort,失败不挡 stats。
+    pinned_ram_mb = 0
+    stash_ram_mb = 0
+    for sup in getattr(request.app.state, "runner_supervisors", []) or []:
+        pinned_ram_mb += int(getattr(sup, "pinned_ram_mb", 0) or 0)
+        stash_ram_mb += int(getattr(sup, "stash_ram_mb", 0) or 0)
+    try:
+        from src.services.inference.pinned_stash import total_pinned_bytes
+        pinned_ram_mb += total_pinned_bytes() // (1024 * 1024)
+        if model_mgr is not None and hasattr(model_mgr, "stash_ram_bytes"):
+            stash_ram_mb += model_mgr.stash_ram_bytes() // (1024 * 1024)
+    except Exception:  # noqa: BLE001 — 主进程口径 best-effort
+        pass
+
     return {
         "gpus": {"count": len(gpus), "gpus": gpus},
         "system": {
@@ -346,6 +362,9 @@ async def get_system_stats(request: Request):
             "disk_total_gb": round(disk.total / 1024**3, 1),
             "disk_used_gb": round(disk.used / 1024**3, 1),
             "disk_percent": disk.percent,
+            # host RAM 锁页/待命占用(MB)—— pinned 不可换页,stash 是 RAM 待命模型(命中秒回)。
+            "pinned_ram_mb": pinned_ram_mb,
+            "stash_ram_mb": stash_ram_mb,
         },
         "processes": processes,
         "uptime_seconds": int(uptime_seconds),
