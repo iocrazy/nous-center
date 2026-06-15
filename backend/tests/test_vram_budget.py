@@ -102,6 +102,28 @@ def test_overlay_rejects_unknown_key(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _card_total_gb_for_engine：真实落卡(已加载)优先于 detector 推断
+# ---------------------------------------------------------------------------
+
+def test_card_total_prefers_loaded_gpu(monkeypatch):
+    import src.api.routes.engines as eng
+
+    # gpu_summary/get_device_for_engine 在 _card_total_gb_for_engine 内部 import,patch 源模块。
+    # 三卡:0=3090(24G) 1=Pro6000(96G) 2=3090(24G)。
+    import src.gpu.detector as det
+    monkeypatch.setattr(det, "gpu_summary", lambda: {"devices": [
+        {"index": 0, "vram_gb": 24.0}, {"index": 1, "vram_gb": 96.0}, {"index": 2, "vram_gb": 24.0},
+    ]})
+    monkeypatch.setattr(det, "get_device_for_engine", lambda cfg: "cuda:0")  # detector 默认给 3090
+
+    cfg = {"gpu": None, "type": "embedding"}
+    # 未加载 → 走 detector → 24G(3090)
+    assert eng._card_total_gb_for_engine(cfg, None) == 24.0
+    # 已加载在 cuda:1 → 用真实落卡 96G,压过 detector
+    assert eng._card_total_gb_for_engine(cfg, 1) == 96.0
+
+
+# ---------------------------------------------------------------------------
 # API wiring：GET / PATCH（admin gate 在测试里关闭）
 # ---------------------------------------------------------------------------
 
