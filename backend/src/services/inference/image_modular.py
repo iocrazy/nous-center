@@ -679,6 +679,8 @@ class ModularImageBackend(InferenceAdapter):
         self._sched_key: tuple[str, str] = ("euler", "normal")
         # injected scheduler 名(simple/sgm_uniform/...);非 None 时 infer 传 pipe(sigmas=...)。
         self._injected_scheduler: str | None = None
+        # 流式分块预 pin 入账 handle(spec ram-pinned-linkage PR-1);None = 未挂流式。
+        self._stream_pin_handle: int | None = None
 
     async def load(self, device: str) -> None:
         """对齐 ABC;实际 pipeline 构建在首次 infer 时 lazy(_ensure_pipe)。"""
@@ -766,6 +768,16 @@ class ModularImageBackend(InferenceAdapter):
             except Exception:  # noqa: BLE001
                 pass
             self._stash_pin_regs = []
+        # 流式分块预 pin 出账(spec ram-pinned-linkage PR-1):pipe 销毁 → group offloading
+        # 的 pin_memory 拷贝随之释放,账本同步扣除,否则预算被幽灵占用越积越满。
+        handle = getattr(self, "_stream_pin_handle", None)
+        if handle is not None:
+            try:
+                from src.services.inference.pinned_stash import release_external  # noqa: PLC0415
+                release_external(handle)
+            except Exception:  # noqa: BLE001
+                pass
+            self._stream_pin_handle = None
         self._pipe = None
         self._img2img_pipe = None  # PR-A2:与 _pipe 共享组件,随之释放
         self._model = None
@@ -897,6 +909,7 @@ class ModularImageBackend(InferenceAdapter):
         apply_group_offloading = _import_group_offloading()
         dev = torch.device(self.device)
         streamed: list[str] = []
+        pin_bytes = 0
         for name, comp in (getattr(pipe, "components", None) or {}).items():
             if not isinstance(comp, torch.nn.Module):
                 continue
@@ -906,11 +919,26 @@ class ModularImageBackend(InferenceAdapter):
                     offload_type="block_level", num_blocks_per_group=1,
                     use_stream=True, record_stream=True)
                 streamed.append(name)
+                # 账本口径(spec ram-pinned-linkage PR-1):use_stream 预 pin = streamed
+                # 组件全部权重的 pin_memory() 拷贝(挂载即生成)→ 入账字节 = 该组件权重总和。
+                # CI mock 张量无 nbytes → getattr 兜 0,不入账(无害)。
+                try:
+                    for t in list(comp.parameters()) + list(comp.buffers()):
+                        pin_bytes += int(getattr(getattr(t, "data", t), "nbytes", 0) or 0)
+                except Exception:  # noqa: BLE001 — 记账失败不挡挂载
+                    pass
             else:
                 comp.to(dev)
+        # diffusers 预 pin 走 pin_memory()(cudaHostAlloc),不经 pinned_stash 的
+        # cudaHostRegister → 历史上对账本/预算隐身。显式入账,unload() 出账,
+        # total_pinned_bytes() 自此反映真实总量(spec ram-pinned-linkage PR-1)。
+        if pin_bytes > 0:
+            from src.services.inference.pinned_stash import register_external  # noqa: PLC0415
+            self._stream_pin_handle = register_external(pin_bytes)
         import logging  # noqa: PLC0415
         logging.getLogger(__name__).info(
-            "流式分块已挂载:%s 流式轮转 / 其余驻 %s", streamed, self.device)
+            "流式分块已挂载:%s 流式轮转 / 其余驻 %s(预 pin 入账 ~%dMB)",
+            streamed, self.device, pin_bytes // (1024 * 1024))
 
     def _wants_img2img(self, req: Any) -> bool:
         """是否走真 img2img(PR-A2):arch 注册了 img2img_pipeline_class + 连了 input_image + 0<strength<1。

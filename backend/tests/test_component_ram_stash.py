@@ -204,6 +204,42 @@ def test_pinned_stash_budget_and_whitelist(monkeypatch):
     assert PS.total_pinned_bytes() == 0
 
 
+def test_external_pinned_ledger_accounts_and_releases():
+    """spec ram-pinned-linkage PR-1:流式预 pin 经 register_external 入账,
+    total_pinned_bytes() 计入,release_external 出账;重复释放 / None 安全。"""
+    from src.services.inference import pinned_stash as PS
+
+    base = PS.total_pinned_bytes()
+    h1 = PS.register_external(10 * 1024**3)  # 10G
+    h2 = PS.register_external(5 * 1024**3)   # 5G
+    assert PS.total_pinned_bytes() == base + 15 * 1024**3
+    PS.release_external(h1)
+    assert PS.total_pinned_bytes() == base + 5 * 1024**3
+    PS.release_external(h1)   # 重复释放 no-op
+    PS.release_external(None)  # None 安全
+    assert PS.total_pinned_bytes() == base + 5 * 1024**3
+    PS.release_external(h2)
+    assert PS.total_pinned_bytes() == base
+
+
+def test_external_pin_counts_against_stash_budget(monkeypatch):
+    """流式预 pin 入账后,stash 原地 pin 的预算按真实总量(stash + 外部)统一卡 ——
+    外部已占满预算时,后续 pin_module_inplace 直接跳过(无 GPU 环境本就空清单,
+    这里验证记账口径:total_pinned_bytes 含外部)。"""
+    from src.services.inference import pinned_stash as PS
+
+    monkeypatch.setenv("NOUS_STASH_PIN_BUDGET_GB", "8")
+    base = PS.total_pinned_bytes()
+    assert base == 0  # 干净起点(前序测试已出账)
+    h = PS.register_external(8 * 1024**3)  # 占满 8G 预算
+    try:
+        # 预算口径已含外部占用 → 真实总量 == 预算上限
+        assert PS.total_pinned_bytes() >= PS._pin_budget_bytes()
+    finally:
+        PS.release_external(h)
+    assert PS.total_pinned_bytes() == 0
+
+
 @pytest.mark.asyncio
 async def test_stash_records_pin_regs_and_restore_consumes(l1, monkeypatch):
     """stash 写 pin_regs(CI 无 GPU 为空列表),restore 后消费掉(pop)。"""
