@@ -132,3 +132,123 @@ def test_repo_total_mb_counts_all_repo_weights(tmp_path):
     assert got == 11, f"应计 repo 全部权重(11MB),得 {got}"
     # 非 repo(无 model_index)→ 0(回退逐件旧逻辑)
     assert ModelManager._repo_total_mb("/m/loose/transformer/w.safetensors") == 0
+
+
+# ── PR-2(spec ram-pinned-linkage):流式挂载 RAM 门禁 + 降级梯子 ──
+
+from types import SimpleNamespace
+
+import src.services.inference.pinned_stash as PS
+
+
+def test_stream_pin_estimate_repo_vs_single_file(mm, tmp_path):
+    """预 pin 估算:HF-layout repo → repo 总权重;单文件 → DiT 文件 + uncond 文件。"""
+    m, _, _ = mm
+    # repo 路:model_index + transformer 权重
+    (tmp_path / "model_index.json").write_text("{}")
+    d = tmp_path / "transformer"
+    d.mkdir()
+    (d / "w.safetensors").write_bytes(b"\0" * (8 * 1024 * 1024))
+    repo_spec = ComponentSpec(kind="diffusion_models",
+                              file=str(tmp_path / "transformer" / "w.safetensors"),
+                              device="cuda:2", dtype="bfloat16")
+    assert m._stream_pin_estimate_mb(repo_spec) == 8
+
+    # 单文件路:DiT 5MB + uncond 3MB = 8MB
+    dit = tmp_path / "dit.safetensors"
+    dit.write_bytes(b"\0" * (5 * 1024 * 1024))
+    unc = tmp_path / "unc.safetensors"
+    unc.write_bytes(b"\0" * (3 * 1024 * 1024))
+    sf_spec = ComponentSpec(kind="diffusion_models", file=str(dit), device="cuda:2",
+                            dtype="bfloat16", unconditional_file=str(unc))
+    assert m._stream_pin_estimate_mb(sf_spec) == 8
+
+
+def test_should_stream_low_ram_false_when_ample(mm, monkeypatch):
+    """host RAM 充裕 + pinned 远低于预算 → 不降级(全量预 pin,最快)。"""
+    m, _, _ = mm
+    monkeypatch.setattr(m, "_stream_pin_estimate_mb", lambda s: 37000)
+    monkeypatch.setattr(m, "_stash_ram_reserve_bytes", lambda: 24 * 1024**3)
+    monkeypatch.setattr("psutil.virtual_memory",
+                        lambda: SimpleNamespace(available=100 * 1024**3))
+    monkeypatch.setattr(PS, "total_pinned_bytes", lambda: 0)
+    monkeypatch.setattr(PS, "pin_budget_bytes", lambda: 64 * 1024**3)
+    assert m._should_stream_low_ram(_comps()["diffusion_models"]) is False
+
+
+def test_should_stream_low_ram_true_when_ram_tight(mm, monkeypatch):
+    """腾 stash 后 host RAM 仍不足水位 → 降级 low_cpu_mem_usage。"""
+    m, _, _ = mm
+    monkeypatch.setattr(m, "_stream_pin_estimate_mb", lambda s: 37000)
+    monkeypatch.setattr(m, "_stash_ram_reserve_bytes", lambda: 24 * 1024**3)
+    monkeypatch.setattr(m, "_trim_stash_lru", lambda extra_need=0: None)  # 腾不出
+    monkeypatch.setattr("psutil.virtual_memory",
+                        lambda: SimpleNamespace(available=40 * 1024**3))  # 40-37<24
+    monkeypatch.setattr(PS, "total_pinned_bytes", lambda: 0)
+    monkeypatch.setattr(PS, "pin_budget_bytes", lambda: 64 * 1024**3)
+    assert m._should_stream_low_ram(_comps()["diffusion_models"]) is True
+
+
+def test_should_stream_low_ram_true_when_over_pin_budget(mm, monkeypatch):
+    """host RAM 够,但已 pin + 预 pin 超 pinned 预算 → 降级(pinned 不可换页,不能叠爆)。"""
+    m, _, _ = mm
+    monkeypatch.setattr(m, "_stream_pin_estimate_mb", lambda s: 37000)
+    monkeypatch.setattr(m, "_stash_ram_reserve_bytes", lambda: 24 * 1024**3)
+    monkeypatch.setattr("psutil.virtual_memory",
+                        lambda: SimpleNamespace(available=100 * 1024**3))
+    monkeypatch.setattr(PS, "total_pinned_bytes", lambda: 40 * 1024**3)  # 40+37>64
+    monkeypatch.setattr(PS, "pin_budget_bytes", lambda: 64 * 1024**3)
+    assert m._should_stream_low_ram(_comps()["diffusion_models"]) is True
+
+
+def test_should_stream_low_ram_estimate_failure_keeps_prepin(mm, monkeypatch):
+    """估算/psutil 抛 → False(保持全量预 pin 最快路径,零回归)。"""
+    m, _, _ = mm
+
+    def _boom(s):
+        raise RuntimeError("nope")
+    monkeypatch.setattr(m, "_stream_pin_estimate_mb", _boom)
+    assert m._should_stream_low_ram(_comps()["diffusion_models"]) is False
+
+
+def test_trim_stash_lru_extra_need_evicts_for_incoming_pin(mm, monkeypatch):
+    """_trim_stash_lru(extra_need) 为即将 pin 的权重腾地方:available-extra_need<reserve
+    时按最旧 stashed 销毁(直至无 stashed)。"""
+    m, _, _ = mm
+    m._components = {
+        ("/m/a.safe", "cuda:2", "bf16"): {
+            "stashed": True, "stashed_at": 1.0, "module": object(),
+            "role": "vae", "key": ("/m/a.safe",)},
+        ("/m/b.safe", "cuda:2", "bf16"): {
+            "stashed": True, "stashed_at": 2.0, "module": object(),
+            "role": "text_encoder", "key": ("/m/b.safe",)},
+    }
+    monkeypatch.setattr(m, "_stash_ram_reserve_bytes", lambda: 24 * 1024**3)
+    # available 恒等于 reserve → extra_need>0 时恒不足 → 把 stashed 全清(然后 stashed 空,返回)
+    monkeypatch.setattr("psutil.virtual_memory",
+                        lambda: SimpleNamespace(available=24 * 1024**3))
+    m._trim_stash_lru(extra_need=5 * 1024**3)
+    assert not any(c.get("stashed") for c in m._components.values())
+
+
+@pytest.mark.asyncio
+async def test_gate_passes_stream_low_ram_to_backend(mm, monkeypatch):
+    """门禁判定 low_ram=True → 透传给 ModularImageBackend(stream_low_ram=True),
+    不进 combo_key(同 combo 两种 pin 策略出图相同)。"""
+    m, calls, be = mm
+    monkeypatch.setattr(m, "_should_stream_low_ram", lambda dm: True)
+    await m.get_or_load_image_adapter(_comps(), "Ideogram4Pipeline")
+    assert be.last_kw["stream_low_ram"] is True
+
+
+@pytest.mark.asyncio
+async def test_gate_no_stream_no_low_ram_check(mm, monkeypatch):
+    """非流式(装得下,offload=none)→ 不跑门禁,stream_low_ram=False(零回归)。"""
+    m, calls, be = mm
+    monkeypatch.setattr(m, "_resolve_auto_card", lambda need: 1)  # 装得下,不降级 stream
+    called = {"gate": False}
+    monkeypatch.setattr(m, "_should_stream_low_ram",
+                        lambda dm: called.__setitem__("gate", True) or True)
+    await m.get_or_load_image_adapter(_comps(), "Ideogram4Pipeline")
+    assert be.last_kw["stream_low_ram"] is False
+    assert called["gate"] is False, "非流式不应触发门禁"

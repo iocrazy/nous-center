@@ -192,7 +192,7 @@ async def test_guard_skipped_when_free_unknown(mm, monkeypatch):
     # 无 GPU / 查询失败 → free=None → 跳过保护(不阻塞)。modular 装配 stub 让流程走通。
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None, stream_low_ram=False):
         return object()
 
     monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
@@ -216,7 +216,7 @@ async def test_guard_skipped_when_combo_already_loaded(mm, monkeypatch):
         guard_calls.append(True)
     monkeypatch.setattr(mm, "_guard_image_vram_per_card", _spy_guard)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None, stream_low_ram=False):
         return "stub-adapter"
 
     monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
@@ -257,7 +257,7 @@ async def test_explicit_per_component_cards_honored(mm, monkeypatch):
     seen = {}
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None, stream_low_ram=False):
         seen["resolved"] = resolved
         seen["comp_devices"] = comp_devices
         return object()
@@ -275,7 +275,7 @@ async def test_auto_clip_vae_follow_unet_card(mm, monkeypatch):
     seen = {}
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None, stream_low_ram=False):
         seen["comp_devices"] = comp_devices
         return object()
 
@@ -383,7 +383,7 @@ async def test_auto_transformer_card_uses_whole_model_footprint(mm, monkeypatch,
     monkeypatch.setattr(mm, "_resolve_auto_card", lambda need: seen_need.append(need) or 1)
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)  # 跳守卫
 
-    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None):
+    async def _fake_modular(resolved, combo_key, pc, target, emit, offload="none", comp_devices=None, comp_offloads=None, stream_low_ram=False):
         return object()
     monkeypatch.setattr(mm, "_get_or_load_modular_adapter", _fake_modular)
 

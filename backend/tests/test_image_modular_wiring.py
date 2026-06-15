@@ -834,6 +834,47 @@ def test_stream_offload_registers_and_unload_releases_pin_ledger(monkeypatch):
     assert be._stream_pin_handle is None
 
 
+def test_stream_low_ram_passes_low_cpu_mem_usage_and_skips_prepin(monkeypatch):
+    """spec ram-pinned-linkage PR-2:stream_low_ram=True → group offloading 走
+    low_cpu_mem_usage=True(逐块临时锁页),且不预 pin → 不入外部账本。"""
+    import torch as _t
+    from src.services.inference import pinned_stash as PS
+
+    calls = []
+    monkeypatch.setattr(image_modular, "_import_group_offloading",
+                        lambda: lambda mod, **kw: calls.append(kw))
+    monkeypatch.setattr(_t.nn, "Module", _StreamModBase, raising=False)
+
+    pipe = MagicMock(name="pipe")
+    tr = _PinnedStreamMod(3 * 1024**3)
+    pipe.components = {"transformer": tr, "tokenizer": object()}
+
+    base = PS.total_pinned_bytes()
+    be = image_modular.ModularImageBackend(repo="/m/i", device="cpu",
+                                           pipeline_class="Ideogram4Pipeline",
+                                           offload="stream", stream_low_ram=True)
+    be._apply_stream_offload(pipe)
+    assert calls and calls[0]["low_cpu_mem_usage"] is True, "降级走 low_cpu_mem_usage"
+    assert PS.total_pinned_bytes() == base, "降级不预 pin → 不入账"
+    assert be._stream_pin_handle is None
+
+
+def test_stream_full_prepin_passes_low_cpu_mem_usage_false(monkeypatch):
+    """全量预 pin(默认)→ low_cpu_mem_usage=False(diffusers 预 pin 全部 DiT 权重)。"""
+    import torch as _t
+
+    calls = []
+    monkeypatch.setattr(image_modular, "_import_group_offloading",
+                        lambda: lambda mod, **kw: calls.append(kw))
+    monkeypatch.setattr(_t.nn, "Module", _StreamModBase, raising=False)
+    pipe = MagicMock(name="pipe")
+    pipe.components = {"transformer": _StreamMod(), "tokenizer": object()}
+    be = image_modular.ModularImageBackend(repo="/m/i", device="cpu",
+                                           pipeline_class="Ideogram4Pipeline", offload="stream")
+    be._apply_stream_offload(pipe)
+    assert calls and calls[0]["low_cpu_mem_usage"] is False
+
+
 def test_stream_offload_rejects_fp8(monkeypatch):
     """stream + fp8 在线量化 → 人话 fail-loud(Float8Tensor 不可预 pin)。"""
     _fake_klein(monkeypatch)

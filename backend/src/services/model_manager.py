@@ -1003,6 +1003,57 @@ class ModelManager:
             total += self._component_need_mb(comp)
         return total
 
+    def _stream_pin_estimate_mb(self, dm_spec) -> int:
+        """流式分块预 pin 的 RAM 占用估计(MB):被流式的 = DiT 权重(transformer +
+        Ideogram-4 第二 DiT)。整模型 repo 路按 repo 总权重估(偏保守:含 TE/VAE,
+        但它们加载期本也在 RAM,保守=更早降级,err-safe);单文件路 = DiT 文件 + uncond 文件。
+        spec ram-pinned-linkage PR-2:门禁据此判 host RAM/pinned 预算装不装得下。"""
+        repo_mb = self._repo_total_mb(dm_spec.file)
+        if repo_mb:
+            return repo_mb
+        try:
+            total = self._component_bytes(dm_spec.file)
+            uf = getattr(dm_spec, "unconditional_file", None)
+            if uf:
+                total += self._component_bytes(uf)
+            return int(total / (1024 * 1024))
+        except (OSError, AttributeError, TypeError):
+            return self._component_need_mb(dm_spec)
+
+    def _should_stream_low_ram(self, dm_spec) -> bool:
+        """流式挂载前的 RAM 门禁 + 降级判定(spec ram-pinned-linkage PR-2)。
+
+        预 pin(DiT ~37G,pin_memory 拷贝)不可换页,叠加 stash 池可能压爆 host RAM/swap。
+        梯子:① 先腾 stash 池给预 pin 腾地方;② 腾完仍不足水位 **或** 超 pinned 预算 →
+        返回 True = 降级 low_cpu_mem_usage(逐块临时锁页,pinned 有界,挂载快但每步重 pin)。
+        估算失败 → False(保持全量预 pin 最快路径,零回归)。永不拒绝。"""
+        try:
+            import psutil  # noqa: PLC0415
+            from src.services.inference.pinned_stash import (  # noqa: PLC0415
+                pin_budget_bytes, total_pinned_bytes,
+            )
+            need = self._stream_pin_estimate_mb(dm_spec) * 1024 * 1024
+            reserve = self._stash_ram_reserve_bytes()
+            avail = psutil.virtual_memory().available
+            if avail - need < reserve:
+                self._trim_stash_lru(extra_need=need)  # ① 先腾 stash 池
+                avail = psutil.virtual_memory().available
+            if avail - need < reserve:  # ② 腾完仍不足
+                logger.info(
+                    "流式分块:腾 stash 后 host RAM 仍紧(可用 ~%dMB,预 pin 需 ~%dMB,水位 ~%dMB)"
+                    "→ 降级逐块临时锁页(挂载快/每步重 pin)",
+                    avail // (1024 * 1024), need // (1024 * 1024), reserve // (1024 * 1024))
+                return True
+            if total_pinned_bytes() + need > pin_budget_bytes():  # ② 超 pinned 预算
+                logger.info(
+                    "流式分块:预 pin ~%dMB + 已 pin ~%dMB 超预算 ~%dMB → 降级逐块临时锁页",
+                    need // (1024 * 1024), total_pinned_bytes() // (1024 * 1024),
+                    pin_budget_bytes() // (1024 * 1024))
+                return True
+            return False
+        except Exception:  # noqa: BLE001 — 门禁 best-effort,失败保持全量预 pin
+            return False
+
     def _evictable_mb_on_card(self, idx: int) -> int:
         """该卡上「可驱逐」image adapter 的估计显存之和(非常驻/未被引用/未在 infer)——
         = 守卫「先腾后载」能从这张卡腾出来的量。已加载在用的 combo 自身也算可驱逐(若没在
@@ -1434,6 +1485,14 @@ class ModelManager:
                     "Ideogram-4 的 Qwen3-VL 文本编码器暂不支持 offload(embed_tokens 直调绕过 hook → device "
                     "错配)。请让 Load CLIP 的 offload=none(驻卡);双 DiT(Load Diffusion Model)可 offload=cpu "
                     "塞小卡(TE 驻卡 + 双 DiT 轮转,fp8 下 ~17G 入 24G 卡)。")
+        # lowvram 流式 RAM 门禁 + 降级(spec ram-pinned-linkage PR-2):流式预 pin(DiT 权重
+        # ~37G,pin_memory 拷贝)不可换页,叠 stash 池可能压爆 host RAM/swap。挂载前先腾 stash、
+        # 仍不足或超 pinned 预算则降级 low_cpu_mem_usage(逐块临时锁页,永不拒绝)。auto 降级与
+        # 用户显式选 stream 共用此门禁。**不进 combo_key**(同 combo 两种 pin 策略出图相同,进键
+        # 白白翻倍缓存)。
+        wants_stream = (offload == "stream"
+                        or any(v == "stream" for v in comp_offloads.values()))
+        stream_low_ram = self._should_stream_low_ram(resolved["diffusion_models"]) if wants_stream else False
         # LLM 卡保护:**逐卡**检查空闲显存(每张卡上**常驻**组件之和 vs 该卡空闲)→ 装载前清晰报错。
         # 守卫内部跳过 offload!=none 的组件(它们 forward 时才挪上卡,不常驻)。
         # combo_key 包含 offload(整管线)+ 逐组件 offload:不同 offload 模式是不同的 pipe 实例
@@ -1461,7 +1520,8 @@ class ModelManager:
                 resolved, combo_key, target, _emit, offload)
         else:
             adapter = await self._get_or_load_modular_adapter(
-                resolved, combo_key, pipeline_class, target, _emit, offload, comp_devices, comp_offloads)
+                resolved, combo_key, pipeline_class, target, _emit, offload, comp_devices, comp_offloads,
+                stream_low_ram=stream_low_ram)
         # 记住这工作流落的卡 —— 下次 auto 粘回来(load 与 cache hit 都刷新,target 即当前卡)。
         if target.startswith("cuda:"):
             self._image_stick[stick_key] = int(target.split(":", 1)[1])
@@ -1842,11 +1902,15 @@ class ModelManager:
         logger.info("component L1 restore ← RAM role=%s file=%s dev=%s(%.1fs)",
                     comp.get("role"), _basename(comp["key"][0]), dev, time.monotonic() - t0)
 
-    def _trim_stash_lru(self) -> None:
-        """stash 池超 RAM 水位 → 按 stashed_at 最旧销毁,直至回水位内。"""
+    def _trim_stash_lru(self, extra_need: int = 0) -> None:
+        """stash 池超 RAM 水位 → 按 stashed_at 最旧销毁,直至回水位内。
+
+        extra_need(spec ram-pinned-linkage PR-2):即将额外占用的字节(如流式预 pin),
+        要求腾到「available - extra_need ≥ reserve」—— 主动给马上要 pin 的权重腾地方,
+        而非等占用发生后才补救。默认 0 = 旧行为(仅腾到水位线)。"""
         try:
             import psutil  # noqa: PLC0415
-            while psutil.virtual_memory().available < self._stash_ram_reserve_bytes():
+            while psutil.virtual_memory().available - extra_need < self._stash_ram_reserve_bytes():
                 stashed = [(k, c) for k, c in self._components.items() if c.get("stashed")]
                 if not stashed:
                     return
@@ -1924,7 +1988,7 @@ class ModelManager:
         }
         return {"state": "loaded", "key": state_key, "role": role, "resident": resident}
 
-    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none", comp_devices: dict | None = None, comp_offloads: dict | None = None):
+    async def _get_or_load_modular_adapter(self, resolved, combo_key, pipeline_class, target, _emit, offload: str = "none", comp_devices: dict | None = None, comp_offloads: dict | None = None, stream_low_ram: bool = False):
         """图像引擎:建/复用 ModularImageBackend(class 名是历史,实际是标准 diffusers pipeline)。
 
         与 legacy 共用 `_image_adapters` combo 缓存 + 四态事件(coarse:加载前 loading、
@@ -2046,6 +2110,7 @@ class ModelManager:
                         unconditional_transformer_override=tu_ov,
                         comp_devices=comp_devices,
                         comp_offloads=comp_offloads,
+                        stream_low_ram=stream_low_ram,
                     )
 
                 # PR-D4 OOM 重试一次:加载 / _ensure_pipe 抛 CUDA OOM →
