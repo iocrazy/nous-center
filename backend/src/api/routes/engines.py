@@ -892,36 +892,28 @@ async def set_vram_budget(name: str, request: Request, body: dict = Body(...)):
 
 
 @router.patch("/{name}/gpu", dependencies=[Depends(require_admin)])
-async def set_gpu(name: str, gpu: int = 0):
-    """Change GPU assignment for an engine."""
-    import yaml
+async def set_gpu(name: str, request: Request, gpu: int = 0):
+    """Change GPU assignment for an engine.
 
-    configs_path = Path(__file__).resolve().parent.parent.parent.parent / "configs" / "models.yaml"
+    写 gitignore 的 runtime_overrides.json overlay(与 resident/vram_budget 一致;
+    spec 2026-06-16「数据加载统一」)—— 不再直写 git 跟踪的 models.yaml(旧行为会污染
+    git 树、且 registry 读 yaml/overlay 口径分裂导致 overlay gpu 对落卡不生效)。
+    overlay gpu 现由 registry 套用 → spec.gpu 驱动 vLLM 落卡。写后 reload registry 让
+    spec.gpu 立即刷新,随后 unload + load 即落新卡。
+    """
+    from src.config import load_model_configs, set_runtime_override
 
-    with open(configs_path) as f:
-        data = yaml.safe_load(f)
+    if name not in load_model_configs():
+        raise HTTPException(404, detail=f"Unknown engine: {name}")
 
-    # Support both old dict format and new list format
-    models = data.get("models", [])
-    if isinstance(models, list):
-        found = False
-        for entry in models:
-            if entry.get("id") == name:
-                entry["gpu"] = gpu
-                found = True
-                break
-        if not found:
-            raise HTTPException(404, detail=f"Unknown engine: {name}")
-    else:
-        if name not in models:
-            raise HTTPException(404, detail=f"Unknown engine: {name}")
-        models[name]["gpu"] = gpu
-
-    with open(configs_path, "w") as f:
-        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-
+    set_runtime_override(name, "gpu", gpu)
+    # reload registry → spec.gpu 从 overlay 刷新(否则停在旧值,unload+load 仍落旧卡)。
+    mgr = getattr(request.app.state, "model_manager", None)
+    if mgr is not None and getattr(mgr, "_registry", None) is not None:
+        mgr._registry.reload()
     invalidate("engines")
-    return {"name": name, "gpu": gpu}
+    return {"name": name, "gpu": gpu, "applied": False,
+            "hint": "需重新加载模型生效(unload + load)"}
 
 
 @router.get("/scheduler/status")
