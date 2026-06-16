@@ -83,6 +83,7 @@ import src.models.workflow  # noqa: F401 — register model
 import src.models.execution_task  # noqa: F401 — register model
 import src.models.context_cache  # noqa: F401 — register model
 import src.models.response_session  # noqa: F401 — register model
+import src.models.model_runtime_override  # noqa: F401 — register model(数据加载统一)
 import src.models.memory  # noqa: F401 — register model
 import src.models.api_gateway  # noqa: F401 — register model
 
@@ -112,6 +113,16 @@ def _reset_memoized_session_factory():
     _db._session_factory = None
     yield
     _db._session_factory = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_override_cache():
+    """runtime_override_store 进程级 _CACHE(数据加载统一 2026-06-16):API 测试调
+    set_override 会改全局缓存,测试间清掉防跨测试污染。"""
+    from src.services import runtime_override_store
+    runtime_override_store.reset_cache()
+    yield
+    runtime_override_store.reset_cache()
 
 
 def _mock_model_manager():

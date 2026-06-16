@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI):
         # 早先 dispose 在 success 之后,失败路径跳过它 → 每次重试泄漏一个连接池。
         engine = create_engine()
         try:
+            # 确保新表登记进 Base.metadata,create_all 才会建(无 alembic;数据加载统一 2026-06-16)。
+            import src.models.model_runtime_override  # noqa: F401, PLC0415
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
                 # 无 alembic,create_all 不给已存在表加列。新列用幂等 ALTER ADD COLUMN IF NOT EXISTS
@@ -160,6 +162,18 @@ async def lifespan(app: FastAPI):
     # try 外取 —— get_session_factory() 只返回工厂、不碰 DB,放 try 外才不会在 sync_metadata
     # 失败被吞后让下面 152 行的 `async with sf()` 撞 NameError(早先 sf 在 try 内)。
     sf = get_session_factory()
+
+    # 运行时模型覆盖(resident/gpu/vram_budget)从 DB hydrate 进进程缓存(数据加载统一 2026-06-16)。
+    # **必须在 model_manager/registry 创建前**(它们 _load 同步读缓存)+ 预加载前。
+    # 一次性迁移旧 runtime_overrides.json(表为空时)→ 不丢现有覆盖。失败非致命(回退空覆盖)。
+    try:
+        from src.config import _resolve_path, _RUNTIME_OVERRIDES_REL
+        from src.services import runtime_override_store
+        await runtime_override_store.migrate_json_if_empty(
+            sf, str(_resolve_path(_RUNTIME_OVERRIDES_REL)))
+        await runtime_override_store.hydrate(sf)
+    except Exception as e:  # noqa: BLE001 — 覆盖 hydrate 失败不阻断启动(回退 yaml 默认)
+        logger.warning("runtime override hydrate failed (non-fatal): %s", e)
 
     # Wave 1 MemoryProvider: init PGMemoryProvider + expose via app.state
     from src.services.memory.pg_provider import PGMemoryProvider

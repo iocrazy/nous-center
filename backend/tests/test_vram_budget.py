@@ -75,30 +75,35 @@ def test_recommend_floor_is_one():
 
 
 # ---------------------------------------------------------------------------
-# overlay 读写(set_runtime_override 接结构化 value)
+# 覆盖读写(数据加载统一 2026-06-16:DB typed 表 + 缓存,vram_budget 拆 mode/value 两列)
 # ---------------------------------------------------------------------------
 
-def test_overlay_accepts_structured_vram_budget(tmp_path, monkeypatch):
-    import src.config as cfgmod
+async def test_db_store_accepts_structured_vram_budget():
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    store = tmp_path / "runtime_overrides.json"
-    monkeypatch.setattr(cfgmod, "_resolve_path", lambda rel: store)
-    cfgmod.load_runtime_overrides.cache_clear() if hasattr(
-        cfgmod.load_runtime_overrides, "cache_clear") else None
+    from src.models.database import Base
+    from src.services import runtime_override_store as store
 
-    cfgmod.set_runtime_override("qwen3_embedding_4b", "vram_budget",
-                                {"mode": "absolute", "value": 11})
-    data = cfgmod.load_runtime_overrides()
-    assert data["qwen3_embedding_4b"]["vram_budget"] == {"mode": "absolute", "value": 11}
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        store.reset_cache()
+        async with sf() as s:
+            await store.set_override(s, "qwen3_embedding_4b", "vram_budget",
+                                     {"mode": "absolute", "value": 11})
+        data = store.get_overrides()
+        assert data["qwen3_embedding_4b"]["vram_budget"] == {"mode": "absolute", "value": 11}
+    finally:
+        store.reset_cache()
+        await engine.dispose()
 
 
-def test_overlay_rejects_unknown_key(tmp_path, monkeypatch):
-    import src.config as cfgmod
-
-    store = tmp_path / "runtime_overrides.json"
-    monkeypatch.setattr(cfgmod, "_resolve_path", lambda rel: store)
+async def test_db_store_rejects_unknown_key():
+    from src.services import runtime_override_store as store
     with pytest.raises(ValueError):
-        cfgmod.set_runtime_override("m", "bogus_key", 1)
+        await store.set_override(None, "m", "bogus_key", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -159,20 +164,14 @@ async def test_patch_vram_budget_rejects_bad_value(client):
 
 
 @pytest.mark.asyncio
-async def test_patch_then_get_roundtrip(client, tmp_path, monkeypatch):
-    import src.config as cfgmod
-
-    store = tmp_path / "runtime_overrides.json"
-    orig = cfgmod._resolve_path
-    monkeypatch.setattr(
-        cfgmod, "_resolve_path",
-        lambda rel: store if rel == cfgmod._RUNTIME_OVERRIDES_REL else orig(rel))
-
-    resp = await client.patch("/api/v1/engines/qwen3_embedding_4b/vram-budget",
-                              json={"mode": "percent", "value": 0.25})
+async def test_patch_then_get_roundtrip(db_client):
+    """PATCH 写 DB(model_runtime_overrides)+ write-through 缓存 → GET 经
+    load_runtime_overrides 缓存读回(数据加载统一 2026-06-16:db_client 提供 sqlite session)。"""
+    resp = await db_client.patch("/api/v1/engines/qwen3_embedding_4b/vram-budget",
+                                 json={"mode": "percent", "value": 0.25})
     assert resp.status_code == 200
     assert resp.json()["vram_budget"] == {"mode": "percent", "value": 0.25}
     assert "重新加载" in resp.json()["hint"]
 
-    resp2 = await client.get("/api/v1/engines/qwen3_embedding_4b/vram-budget")
+    resp2 = await db_client.get("/api/v1/engines/qwen3_embedding_4b/vram-budget")
     assert resp2.json()["current"] == {"mode": "percent", "value": 0.25}

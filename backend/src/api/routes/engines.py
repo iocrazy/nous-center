@@ -716,21 +716,23 @@ async def _install_in_background(name: str):
 
 
 @router.patch("/{name}/resident", dependencies=[Depends(require_admin)])
-async def set_resident(name: str, request: Request, resident: bool = True):
+async def set_resident(name: str, request: Request, resident: bool = True,
+                       session: AsyncSession = Depends(get_async_session)):
     """Toggle 常驻(随启动预加载 + 不被 TTL/LRU 自动卸)for an engine.
 
     两个修复:
-    1. **持久到 gitignore 的 runtime_overrides.json**(不碰 git 跟踪的 models.yaml)—— 否则 UI 设的
-       常驻是未提交本地改动,任何 git checkout/pull/reset 都冲掉(用户报告「标了常驻还是丢」)。
+    1. **持久到 DB 表 model_runtime_overrides**(数据加载统一 2026-06-16;不碰 git 跟踪的
+       models.yaml)—— 否则 UI 设的常驻写进 yaml 是未提交本地改动,git checkout/pull/reset 冲掉。
     2. **立即作用到已加载实例**(set_model_resident,no-op if 未加载)—— 否则当前加载着的模型标常驻后
        内存 spec.resident 没变,仍被 TTL 卸,常驻只下次加载才生效(用户报告「标常驻还是被卸」)。
     """
-    from src.config import load_model_configs, set_runtime_override
+    from src.config import load_model_configs
+    from src.services import runtime_override_store
 
     if name not in load_model_configs():
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
-    set_runtime_override(name, "resident", resident)
+    await runtime_override_store.set_override(session, name, "resident", resident)
 
     mgr = getattr(request.app.state, "model_manager", None)
     if mgr is not None:
@@ -854,10 +856,12 @@ async def get_vram_budget(name: str, request: Request):
 
 
 @router.patch("/{name}/vram-budget", dependencies=[Depends(require_admin)])
-async def set_vram_budget(name: str, request: Request, body: dict = Body(...)):
-    """写每模型显存预算 overlay(runtime_overrides.json)。body: {mode, value}。
-    mode=auto 清除 overlay 走 adapter 公式;percent(0–1)/absolute(GB)。需重载生效。"""
-    from src.config import load_model_configs, set_runtime_override
+async def set_vram_budget(name: str, request: Request, body: dict = Body(...),
+                          session: AsyncSession = Depends(get_async_session)):
+    """写每模型显存预算到 DB(model_runtime_overrides;数据加载统一 2026-06-16)。
+    body: {mode, value}。mode=auto 清除走 adapter 公式;percent(0–1)/absolute(GB)。需重载生效。"""
+    from src.config import load_model_configs
+    from src.services import runtime_override_store
 
     cfg = load_model_configs().get(name)
     if cfg is None:
@@ -868,7 +872,7 @@ async def set_vram_budget(name: str, request: Request, body: dict = Body(...)):
         raise HTTPException(400, detail="mode must be auto|percent|absolute")
 
     if mode == "auto":
-        set_runtime_override(name, "vram_budget", {"mode": "auto"})
+        await runtime_override_store.set_override(session, name, "vram_budget", {"mode": "auto"})
         invalidate("engines")
         return {"name": name, "vram_budget": {"mode": "auto"}, "applied": False,
                 "hint": "需重新加载模型生效(unload + load)"}
@@ -885,29 +889,30 @@ async def set_vram_budget(name: str, request: Request, body: dict = Body(...)):
                 400, detail=f"absolute {val}GB exceeds card total {card_total_gb:.1f}GB")
 
     budget = {"mode": mode, "value": float(val)}
-    set_runtime_override(name, "vram_budget", budget)
+    await runtime_override_store.set_override(session, name, "vram_budget", budget)
     invalidate("engines")
     return {"name": name, "vram_budget": budget, "applied": False,
             "hint": "需重新加载模型生效(unload + load)"}
 
 
 @router.patch("/{name}/gpu", dependencies=[Depends(require_admin)])
-async def set_gpu(name: str, request: Request, gpu: int = 0):
+async def set_gpu(name: str, request: Request, gpu: int = 0,
+                  session: AsyncSession = Depends(get_async_session)):
     """Change GPU assignment for an engine.
 
-    写 gitignore 的 runtime_overrides.json overlay(与 resident/vram_budget 一致;
-    spec 2026-06-16「数据加载统一」)—— 不再直写 git 跟踪的 models.yaml(旧行为会污染
-    git 树、且 registry 读 yaml/overlay 口径分裂导致 overlay gpu 对落卡不生效)。
-    overlay gpu 现由 registry 套用 → spec.gpu 驱动 vLLM 落卡。写后 reload registry 让
+    写 DB 表 model_runtime_overrides(与 resident/vram_budget 一致;数据加载统一 2026-06-16)
+    —— 不再写 git 跟踪的 models.yaml(旧行为污染 git 树、且 registry 读 yaml/overlay 口径分裂
+    导致落卡设置不生效)。registry 套用覆盖 → spec.gpu 驱动 vLLM 落卡。写后 reload registry 让
     spec.gpu 立即刷新,随后 unload + load 即落新卡。
     """
-    from src.config import load_model_configs, set_runtime_override
+    from src.config import load_model_configs
+    from src.services import runtime_override_store
 
     if name not in load_model_configs():
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
-    set_runtime_override(name, "gpu", gpu)
-    # reload registry → spec.gpu 从 overlay 刷新(否则停在旧值,unload+load 仍落旧卡)。
+    await runtime_override_store.set_override(session, name, "gpu", gpu)
+    # reload registry → spec.gpu 从覆盖刷新(否则停在旧值,unload+load 仍落旧卡)。
     mgr = getattr(request.app.state, "model_manager", None)
     if mgr is not None and getattr(mgr, "_registry", None) is not None:
         mgr._registry.reload()
