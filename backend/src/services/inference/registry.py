@@ -56,7 +56,15 @@ class ModelRegistry:
     def _load(self, config_path: str) -> None:
         with open(config_path) as f:
             data = yaml.safe_load(f)
+        # 运行时覆盖单一来源(spec 2026-06-16「数据加载统一」):registry 历史上直读 yaml,
+        # 绕过 runtime_overrides.json overlay → overlay 的 gpu/resident 对 vLLM 落卡不生效
+        # (落卡读 spec.gpu)。这里套用 overlay,使 overlay 成为运行时覆盖的唯一来源,
+        # 与 load_model_configs() 口径一致(都经 _OVERRIDABLE_KEYS 叠加)。
+        # 局部 import 避免 registry↔config 启动期循环(同 add_from_scan)。
+        from src.config import load_runtime_overrides  # noqa: PLC0415
+        overrides = load_runtime_overrides()
         for entry in data.get("models", []):
+            ov = overrides.get(entry["id"]) or {}
             spec = ModelSpec(
                 id=entry["id"],
                 model_type=entry["type"],
@@ -64,9 +72,9 @@ class ModelRegistry:
                 paths=_coerce_paths(entry),
                 vram_mb=entry.get("vram_mb", 0),
                 params=entry.get("params", {}),
-                resident=entry.get("resident", False),
+                resident=ov.get("resident", entry.get("resident", False)),
                 ttl_seconds=entry.get("ttl_seconds", 3600 if entry["type"] == "llm" else 300),
-                gpu=entry.get("gpu"),
+                gpu=ov.get("gpu", entry.get("gpu")),
                 preload_order=entry.get("preload_order"),
             )
             self._specs[spec.id] = spec
@@ -108,6 +116,9 @@ class ModelRegistry:
         paths = cfg.get("paths") or {}
         if not paths and cfg.get("local_path"):
             paths = {"main": cfg["local_path"]}
+        # scan_models() 不并 overlay → 同 _load 套用,保持运行时覆盖单一来源(2026-06-16 统一)。
+        from src.config import load_runtime_overrides  # noqa: PLC0415
+        ov = load_runtime_overrides().get(model_id) or {}
         spec = ModelSpec(
             id=model_id,
             model_type=cfg.get("type", "llm"),
@@ -115,9 +126,9 @@ class ModelRegistry:
             paths=paths,
             vram_mb=int(round(cfg.get("vram_gb", 0) * 1024)),
             params=cfg.get("params", {}),
-            resident=cfg.get("resident", False),
+            resident=ov.get("resident", cfg.get("resident", False)),
             ttl_seconds=cfg.get("ttl_seconds", 3600 if cfg.get("type") == "llm" else 300),
-            gpu=cfg.get("gpu"),
+            gpu=ov.get("gpu", cfg.get("gpu")),
             preload_order=cfg.get("preload_order"),
         )
         self._specs[spec.id] = spec
