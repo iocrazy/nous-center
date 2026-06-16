@@ -51,35 +51,64 @@ def test_load_settings_yaml_non_dict_returns_empty(tmp_path, monkeypatch):
     assert cfg._load_settings_yaml() == {"FOO": "bar"}
 
 
-def test_runtime_override_roundtrip(tmp_path, monkeypatch):
-    """set_runtime_override 写 → load_runtime_overrides 读回(gitignore 的 overlay)。"""
-    import src.config as cfg
-    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
-    assert cfg.load_runtime_overrides() == {}  # 文件不存在 → 空
-    cfg.set_runtime_override("m1", "resident", True)
-    cfg.set_runtime_override("m2", "gpu", 1)
-    assert cfg.load_runtime_overrides() == {"m1": {"resident": True}, "m2": {"gpu": 1}}
-    # 同 model 再写不同 key,合并不覆盖
-    cfg.set_runtime_override("m1", "gpu", 0)
-    assert cfg.load_runtime_overrides()["m1"] == {"resident": True, "gpu": 0}
+async def test_runtime_override_db_roundtrip():
+    """数据加载统一(2026-06-16):set_override 写 DB(typed 列)→ hydrate → get_overrides
+    读回同形状 dict。load_runtime_overrides 走该缓存。"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.models.database import Base
+    from src.services import runtime_override_store as store
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        store.reset_cache()
+        async with sf() as s:
+            await store.set_override(s, "m1", "resident", True)
+            await store.set_override(s, "m2", "gpu", 1)
+            await store.set_override(s, "m1", "gpu", 0)  # 同 model 不同列,合并不覆盖
+            await store.set_override(s, "m3", "vram_budget", {"mode": "absolute", "value": 22.0})
+        # write-through 缓存
+        assert store.get_overrides()["m1"] == {"resident": True, "gpu": 0}
+        assert store.get_overrides()["m2"] == {"gpu": 1}
+        assert store.get_overrides()["m3"] == {"vram_budget": {"mode": "absolute", "value": 22.0}}
+        # 重新 hydrate(模拟重启)→ 从 DB 还原一致
+        store.reset_cache()
+        assert store.get_overrides() == {}
+        await store.hydrate(sf)
+        assert store.get_overrides()["m1"] == {"resident": True, "gpu": 0}
+        assert store.get_overrides()["m3"]["vram_budget"]["value"] == 22.0
+    finally:
+        store.reset_cache()
+        await engine.dispose()
 
 
-def test_runtime_override_rejects_non_overridable_key(tmp_path, monkeypatch):
-    """只白名单 resident/gpu,别让随意键污染 overlay。"""
-    import src.config as cfg
-    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
+async def test_runtime_override_rejects_non_overridable_key():
+    """只白名单 resident/gpu/vram_budget,别让随意键污染覆盖(键检查在碰 DB 前)。"""
+    from src.services import runtime_override_store as store
     with pytest.raises(ValueError):
-        cfg.set_runtime_override("m1", "type", "evil")
+        await store.set_override(None, "m1", "type", "evil")  # 检查先于 session 使用
 
 
-def test_runtime_override_corrupt_file_is_soft(tmp_path, monkeypatch):
-    """坏 JSON 不该拖垮模型加载 → 降级空 dict。"""
-    import src.config as cfg
-    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
-    p = tmp_path / "configs"
-    p.mkdir()
-    (p / "runtime_overrides.json").write_text("{not json")
-    assert cfg.load_runtime_overrides() == {}
+async def test_runtime_override_migrate_corrupt_json_is_soft(tmp_path):
+    """一次性迁移读坏 JSON 不该拖垮启动 → 返回 0,不抛。"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.models.database import Base
+    from src.services import runtime_override_store as store
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+    bad = tmp_path / "runtime_overrides.json"
+    bad.write_text("{not json")
+    try:
+        assert await store.migrate_json_if_empty(sf, str(bad)) == 0
+    finally:
+        await engine.dispose()
 
 
 def test_runtime_override_overlays_model_configs(monkeypatch):

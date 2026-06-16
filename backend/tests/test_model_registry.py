@@ -39,60 +39,54 @@ def test_spec_params(registry_yaml):
     assert spec.params["vllm_base_url"] == "http://localhost:8100"
 
 
-# ── spec 2026-06-16「数据加载统一」:registry 套用 runtime_overrides overlay ──
+# ── spec 2026-06-16「数据加载统一」:registry 套用运行时覆盖(DB→缓存,registry 读缓存)──
+# 用 set_cache_for_test 直灌覆盖缓存(等价 DB hydrate 后的状态),免起 DB。
 
-def test_registry_applies_overlay_gpu_and_resident(tmp_path, monkeypatch):
-    """registry._load 套用 overlay 的 gpu/resident(overlay 优先于 yaml)——
-    使 overlay 成为运行时覆盖单一来源,overlay gpu 由此驱动 vLLM 落卡(修旧 gap)。"""
-    import src.config as cfg
-    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
-    config = {"models": [
-        {"id": "m1", "type": "llm",
-         "adapter": "src.services.inference.llm_vllm.VLLMAdapter",
-         "path": "/m/x", "vram_mb": 0, "gpu": 1, "resident": False},
-    ]}
+def _yaml(tmp_path, entry):
     ypath = tmp_path / "models.yaml"
-    ypath.write_text(yaml.dump(config))
-    cfg.set_runtime_override("m1", "gpu", 2)
-    cfg.set_runtime_override("m1", "resident", True)
-
-    reg = ModelRegistry(str(ypath))
-    spec = reg.get("m1")
-    assert spec.gpu == 2, "overlay gpu 应优先于 yaml"
-    assert spec.resident is True, "overlay resident 应优先于 yaml"
+    ypath.write_text(yaml.dump({"models": [entry]}))
+    return str(ypath)
 
 
-def test_registry_falls_back_to_yaml_without_overlay(tmp_path, monkeypatch):
-    """无 overlay → 用 yaml 值(零回归)。"""
-    import src.config as cfg
-    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
-    config = {"models": [
-        {"id": "m1", "type": "llm",
-         "adapter": "src.services.inference.llm_vllm.VLLMAdapter",
-         "path": "/m/x", "vram_mb": 0, "gpu": 1, "resident": True},
-    ]}
-    ypath = tmp_path / "models.yaml"
-    ypath.write_text(yaml.dump(config))
+def test_registry_applies_overlay_gpu_and_resident(tmp_path):
+    """registry._load 套用覆盖的 gpu/resident(覆盖优先于 yaml)——
+    使覆盖成为运行时设置单一来源,gpu 由此驱动 vLLM 落卡(修旧 gap)。"""
+    from src.services import runtime_override_store
+    ypath = _yaml(tmp_path, {
+        "id": "m1", "type": "llm", "adapter": "src.services.inference.llm_vllm.VLLMAdapter",
+        "path": "/m/x", "vram_mb": 0, "gpu": 1, "resident": False})
+    runtime_override_store.set_cache_for_test({"m1": {"gpu": 2, "resident": True}})
+    try:
+        spec = ModelRegistry(ypath).get("m1")
+        assert spec.gpu == 2, "覆盖 gpu 应优先于 yaml"
+        assert spec.resident is True, "覆盖 resident 应优先于 yaml"
+    finally:
+        runtime_override_store.reset_cache()
 
-    reg = ModelRegistry(str(ypath))
-    spec = reg.get("m1")
+
+def test_registry_falls_back_to_yaml_without_overlay(tmp_path):
+    """无覆盖 → 用 yaml 值(零回归)。"""
+    from src.services import runtime_override_store
+    runtime_override_store.reset_cache()
+    ypath = _yaml(tmp_path, {
+        "id": "m1", "type": "llm", "adapter": "src.services.inference.llm_vllm.VLLMAdapter",
+        "path": "/m/x", "vram_mb": 0, "gpu": 1, "resident": True})
+    spec = ModelRegistry(ypath).get("m1")
     assert spec.gpu == 1 and spec.resident is True
 
 
-def test_registry_reload_picks_up_overlay_change(tmp_path, monkeypatch):
-    """写 overlay 后 reload → spec.gpu 刷新(set_gpu 端点正是这条路径让落卡立即换卡)。"""
-    import src.config as cfg
-    monkeypatch.setattr(cfg, "_BACKEND_DIR", tmp_path)
-    config = {"models": [
-        {"id": "m1", "type": "llm",
-         "adapter": "src.services.inference.llm_vllm.VLLMAdapter",
-         "path": "/m/x", "vram_mb": 0},
-    ]}
-    ypath = tmp_path / "models.yaml"
-    ypath.write_text(yaml.dump(config))
-
-    reg = ModelRegistry(str(ypath))
-    assert reg.get("m1").gpu is None  # yaml 未设 + 无 overlay → auto
-    cfg.set_runtime_override("m1", "gpu", 2)
-    reg.reload()
-    assert reg.get("m1").gpu == 2, "reload 后应从 overlay 取到 gpu"
+def test_registry_reload_picks_up_overlay_change(tmp_path):
+    """覆盖变更后 reload → spec.gpu 刷新(set_gpu 端点正是这条路径让落卡立即换卡)。"""
+    from src.services import runtime_override_store
+    runtime_override_store.reset_cache()
+    ypath = _yaml(tmp_path, {
+        "id": "m1", "type": "llm", "adapter": "src.services.inference.llm_vllm.VLLMAdapter",
+        "path": "/m/x", "vram_mb": 0})
+    reg = ModelRegistry(ypath)
+    assert reg.get("m1").gpu is None  # yaml 未设 + 无覆盖 → auto
+    try:
+        runtime_override_store.set_cache_for_test({"m1": {"gpu": 2}})
+        reg.reload()
+        assert reg.get("m1").gpu == 2, "reload 后应从覆盖取到 gpu"
+    finally:
+        runtime_override_store.reset_cache()

@@ -1,4 +1,3 @@
-import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -103,40 +102,22 @@ def save_settings(updates: dict) -> None:
     get_settings.cache_clear()
 
 
-# 运行时/每机覆盖(resident 常驻、gpu 指派等)。存 gitignore 的 runtime_overrides.json,
-# **叠加在 models.yaml 之上**(overlay 优先)。原因:models.yaml 是 git 跟踪的,UI 设的常驻
-# 写进去就是未提交本地改动,任何 git checkout/pull/reset 都会冲掉(用户报告:标了常驻还是丢)。
-# 把运行时状态分离到不跟踪的 overlay,既即时持久又不被 git 动。形如 {"<model_id>": {"resident": true}}。
+# 运行时/每机覆盖(resident 常驻、gpu 指派、vram_budget 显存预算)。
+# 数据加载统一(2026-06-16,用户拍「拆数据表」):从 gitignore 的 runtime_overrides.json
+# 文件迁到 Postgres typed 表 model_runtime_overrides(与服务/key 同库),拆成正经列。
+# 读取仍同步(走 runtime_override_store 的进程内缓存,启动时从 DB hydrate);写在异步
+# API handler 里走 runtime_override_store.set_override。**叠加在 models.yaml 之上**(overlay 优先)。
+# 旧 JSON 路径仅留作一次性迁移源(migrate_json_if_empty)。
 _RUNTIME_OVERRIDES_REL = "configs/runtime_overrides.json"
-# vram_budget:每模型显存预算({"mode":"auto|percent|absolute","value":N}),overlay 可配
-# (spec 2026-06-13)。adapter 加载时解析成 vLLM --gpu-memory-utilization。
+# vram_budget:每模型显存预算({"mode":"auto|percent|absolute","value":N})。
 _OVERRIDABLE_KEYS = ("resident", "gpu", "vram_budget")
 
 
 def load_runtime_overrides() -> dict:
-    # Path(...) 包一层:_resolve_path 正常返回 Path,但测试会 monkeypatch 它返回 str
-    # (test_image_model_integration),str 没有 .exists() —— 包一层两种都安全。
-    p = Path(_resolve_path(_RUNTIME_OVERRIDES_REL))
-    if not p.exists():
-        return {}
-    try:
-        with open(p) as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001 — 坏文件不该拖垮模型加载
-        return {}
-
-
-def set_runtime_override(model_id: str, key: str, value) -> None:
-    """写一条运行时覆盖(如 resident),持久到 gitignore 的 overlay,不碰 git 跟踪的 models.yaml。"""
-    if key not in _OVERRIDABLE_KEYS:
-        raise ValueError(f"non-overridable key: {key}")
-    p = Path(_resolve_path(_RUNTIME_OVERRIDES_REL))
-    data = load_runtime_overrides()
-    data.setdefault(model_id, {})[key] = value
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """运行时覆盖快照(同步)。真相源 = DB(runtime_override_store 缓存,启动 hydrate)。
+    局部 import 断 config↔store↔database↔config 循环。未 hydrate(早期/无 DB 的测试)→ 空 dict。"""
+    from src.services import runtime_override_store  # noqa: PLC0415
+    return runtime_override_store.get_overrides()
 
 
 def load_model_configs(path: str = "configs/models.yaml") -> dict:
