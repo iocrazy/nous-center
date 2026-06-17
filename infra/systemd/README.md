@@ -55,6 +55,16 @@ sudo ./infra/systemd/install.sh uninstall
   `MemoryMax=96G` 时仍由 cgroup OOM 在本 cgroup 内处理,与此无关。
 - **`--protocol http2`** for cloudflared — 国内某些 ISP 屏蔽 UDP/7844 (QUIC)，
   http2 是已知能 work 的回落。
+- **`nous-healthprobe.timer`(每 2 分钟)** — 本地健康巡检(`infra/monitoring/
+  nous-healthprobe.sh`):探后端本机存活(`/healthz`)、后端自报健康(`/health` 的
+  database / load_failures)、**公网隧道存活**(`<public>/health` 非 530/000)。结果进
+  journal(`journalctl -u nous-healthprobe`)。硬故障(后端连不上 / DB 挂 / 隧道 down)
+  退出非 0 → unit 标 failed,将来接告警只需给探针 service 加 `OnFailure=<alert>.service`。
+  **为何要它**:systemd 的 `active` 会骗人 —— 2026-06-16 cloudflared 进程 `active` 但
+  edge 连接掉到 0、公网 530,只有真正打一发 HTTP 才看得出来。**不报裸 status==degraded**
+  (Lane-K llm runner supervisor 常驻 running:false → 恒 degraded,但 vLLM 独立 spawn、
+  LLM 服务正常 → 报它纯噪声)。`NOUS_PUBLIC_URL` / `NOUS_LOCAL_URL` / `NOUS_PROBE_TIMEOUT`
+  可覆盖。
 
 ## 日志
 
