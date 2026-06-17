@@ -71,6 +71,7 @@ async def lifespan(app: FastAPI):
     import src.models.api_gateway  # noqa: F401
     import src.models.admin_credentials  # noqa: F401
     import src.models.log_entry  # noqa: F401  # structured logs live in main DB now
+    import src.models.status_sample  # noqa: F401  # status 页 7 天 uptime 采样
 
     # Retry DB connect: docker postgres 容器可能 backend 启动时还在 healthcheck 阶段
     # (race condition seen 2026-05-07). Backoff: 2s, 4s, 8s, 16s, 32s, 60s = 122s 总等
@@ -550,6 +551,12 @@ async def lifespan(app: FastAPI):
             bg_tasks.append(asyncio.create_task(
                 vllm_health_watchdog(model_mgr, notify=_wd_notify)))
 
+        # 状态页采样器(status 页 v1,2026-06-17):每 60s 给各组件落一行状态,供
+        # status 页画 7 天 uptime 条。NOUS_DISABLE_STATUS_SAMPLER=1 可关。
+        if _os.getenv("NOUS_DISABLE_STATUS_SAMPLER") != "1":
+            from src.services.status_sampler import status_sampler_loop
+            bg_tasks.append(asyncio.create_task(status_sampler_loop(app.state)))
+
         async def log_cleanup_loop():
             while True:
                 await asyncio.sleep(3600)  # Every hour
@@ -832,6 +839,8 @@ def create_app() -> FastAPI:
     app.include_router(api_keys_routes.service_grants_router)
     app.include_router(anthropic_compat.router)
     app.include_router(observability.router)
+    from src.api.routes import status as status_routes
+    app.include_router(status_routes.router)
     app.include_router(logs.router)
     from src.api.routes import memory as memory_routes
     app.include_router(memory_routes.router)

@@ -86,6 +86,7 @@ import src.models.response_session  # noqa: F401 — register model
 import src.models.model_runtime_override  # noqa: F401 — register model(数据加载统一)
 import src.models.memory  # noqa: F401 — register model
 import src.models.api_gateway  # noqa: F401 — register model
+import src.models.status_sample  # noqa: F401 — register model(status 页采样)
 
 # Create the schema once on the shared temp-file test DB (the CI :memory: swap
 # above). All models are imported by now, so Base.metadata is complete. Runs at
