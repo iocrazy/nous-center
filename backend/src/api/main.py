@@ -534,6 +534,22 @@ async def lifespan(app: FastAPI):
         bg_tasks.append(asyncio.create_task(idle_checker()))
         bg_tasks.append(asyncio.create_task(memory_guard_loop(model_mgr, reserved_gb=4.0)))
 
+        # vLLM 健康看门狗(稳定性加固 2026-06-16):自愈「model_manager 记着 loaded 但
+        # vLLM 端口连不上」的陈旧/孤儿态(改 cap·重启周期 / host OOM 杀子进程后的
+        # ConnectError,2026-06-16 qwen35 真机踩到)。只对 ConnectError + 连续确认动手。
+        if _os.getenv("NOUS_DISABLE_VLLM_WATCHDOG") != "1":
+            from src.services.vllm_watchdog import vllm_health_watchdog
+
+            async def _wd_notify(mid: str, action: str) -> None:
+                from src.api.response_cache import invalidate as _invalidate
+                _invalidate("models", "engines")
+                from src.api.websocket import ws_manager as _ws
+                await _ws.broadcast_model_status(
+                    mid, "loaded" if action == "reloaded" else "unloaded")
+
+            bg_tasks.append(asyncio.create_task(
+                vllm_health_watchdog(model_mgr, notify=_wd_notify)))
+
         async def log_cleanup_loop():
             while True:
                 await asyncio.sleep(3600)  # Every hour
