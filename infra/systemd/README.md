@@ -65,6 +65,16 @@ sudo ./infra/systemd/install.sh uninstall
   (Lane-K llm runner supervisor 常驻 running:false → 恒 degraded,但 vLLM 独立 spawn、
   LLM 服务正常 → 报它纯噪声)。`NOUS_PUBLIC_URL` / `NOUS_LOCAL_URL` / `NOUS_PROBE_TIMEOUT`
   可覆盖。
+- **隧道自愈(探针内置)** — cloudflared 在烂网络上会进「半开僵尸」:进程 `active`、
+  edge 连接全死且**它自己不重连**(2026-06-17 卡死 2.5h,systemd 全程 active、journal 静默
+  2.5h、`tunnel info` 报 0 connection)。systemd `active` 检测不到,只有真打 HTTP 过 edge
+  才看得出。探针探到「**后端本机健康 但 公网持续 530/502/000**」连续 `NOUS_AUTOHEAL_THRESHOLD`
+  (默认 2,×2min)次 → `sudo systemctl restart nous-cloudflared` 自愈,reset streak(自带
+  ~4min 冷却防 restart 风暴)。**只在「后端活、唯独隧道死」时动手**——后端本身挂了重启隧道
+  没用,不碰。授权靠 `infra/security/nous-healthprobe.sudoers`(install.sh 装 `/etc/sudoers.d/
+  nous-healthprobe` 0440 + visudo 校验):只给 heygo 无密码 `systemctl restart nous-cloudflared`
+  这一条。`NOUS_TUNNEL_AUTOHEAL=0` 关自愈退回只巡检+日志。没装 sudoers 时探针记 `[HEAL-FAIL]`
+  不崩。
 
 ## 日志
 

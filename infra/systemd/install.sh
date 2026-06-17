@@ -17,6 +17,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET=/etc/systemd/system
+# 隧道自愈授权:让探针(heygo)能无密码 restart cloudflared。
+SUDOERS_SRC="$SCRIPT_DIR/../security/nous-healthprobe.sudoers"
+SUDOERS_DST=/etc/sudoers.d/nous-healthprobe
 # Long-running services + the probe timer all get enabled. The probe .service is
 # oneshot (no [Install]) — triggered only by the timer, never enabled directly.
 SERVICES=(nous-backend.service nous-cloudflared.service)
@@ -42,6 +45,14 @@ case "${1:-install}" in
     for tmr in "${TIMERS[@]}"; do
       systemctl enable --now "$tmr"
     done
+    # 隧道自愈 sudoers:装 0440 + visudo 校验(校验失败立即撤掉,绝不留坏 sudoers)。
+    echo ">> installing sudoers drop-in ($SUDOERS_DST)"
+    install -m 0440 "$SUDOERS_SRC" "$SUDOERS_DST"
+    if ! visudo -cf "$SUDOERS_DST" >/dev/null 2>&1; then
+      echo "ERROR: sudoers 校验失败,已撤掉 $SUDOERS_DST" >&2
+      rm -f "$SUDOERS_DST"
+      exit 1
+    fi
     echo
     systemctl --no-pager status "${SERVICES[@]}" "${TIMERS[@]}" | head -50
     echo
@@ -60,6 +71,7 @@ case "${1:-install}" in
       rm -f "$TARGET/$svc"
     done
     rm -f "$TARGET/nous-healthprobe.service"
+    rm -f "$SUDOERS_DST"
     systemctl daemon-reload
     echo "Done."
     ;;
