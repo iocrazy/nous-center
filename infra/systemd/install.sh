@@ -22,10 +22,10 @@ SUDOERS_SRC="$SCRIPT_DIR/../security/nous-healthprobe.sudoers"
 SUDOERS_DST=/etc/sudoers.d/nous-healthprobe
 # Long-running services + the probe timer all get enabled. The probe .service is
 # oneshot (no [Install]) — triggered only by the timer, never enabled directly.
-SERVICES=(nous-backend.service nous-cloudflared.service)
+SERVICES=(nous-backend.service nous-cloudflared.service nous-status.service)
 TIMERS=(nous-healthprobe.timer)
 # Every unit file copied into /etc/systemd/system (incl. the oneshot probe service).
-UNIT_FILES=(nous-backend.service nous-cloudflared.service nous-healthprobe.service nous-healthprobe.timer)
+UNIT_FILES=(nous-backend.service nous-cloudflared.service nous-status.service nous-healthprobe.service nous-healthprobe.timer)
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "ERROR: must run as root (use sudo)" >&2

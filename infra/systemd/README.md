@@ -75,6 +75,37 @@ sudo ./infra/systemd/install.sh uninstall
   nous-healthprobe` 0440 + visudo 校验):只给 heygo 无密码 `systemctl restart nous-cloudflared`
   这一条。`NOUS_TUNNEL_AUTOHEAL=0` 关自愈退回只巡检+日志。没装 sudoers 时探针记 `[HEAL-FAIL]`
   不崩。
+- **`nous-status`(独立公开状态监控)** — `infra/monitoring/status_service.py`,**纯 stdlib
+  / 独立进程 / 独立端口(127.0.0.1:8001)/ 独立 unit**,刻意不 `Requires`/`PartOf`
+  nous-backend —— **后端进程挂了它还活着、显示「后端 API:中断」**(对齐 status.claude.ai
+  是独立平台,不是系统模块)。用系统 `/usr/bin/python3` 跑(不碰 backend venv/torch)。自己
+  跑 `nvidia-smi` + 读 `/proc` 拿硬件(每卡显存/利用/温度、CPU%、内存、负载、uptime),
+  `urllib` 探 `<backend>/health` 拿组件在线/离线。公开无登录,只露硬件概况 + 组件在线/离线,
+  不露模型路径/密钥/内部错误。`/`(HTML 自动刷新 15s)、`/api.json`、`/healthz`。
+  与 SPA 内 admin 状态页(#547,`/status` 详细版)并存:一个对外独立监控、一个登录后详查。
+
+### 公网暴露 nous-status(cloudflared,需 cloudflared auth)
+
+走独立子域,避免和 admin SPA 的 `/status` 路径冲突。编辑 `~/.cloudflared/config.yml`,在
+catch-all(`http_status:404`)**之前**加一条 ingress:
+
+```yaml
+ingress:
+  - hostname: api.iocrazy.com
+    service: http://localhost:8000
+  - hostname: status.iocrazy.com      # 新增:独立监控
+    service: http://localhost:8001
+  - service: http_status:404
+```
+
+再建 DNS 路由 + 重启隧道:
+
+```bash
+cloudflared tunnel route dns nous-center status.iocrazy.com
+sudo systemctl restart nous-cloudflared
+```
+
+之后 `https://status.iocrazy.com` 公开可访问(无需登录)。
 
 ## 日志
 
