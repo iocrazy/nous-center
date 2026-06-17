@@ -1,0 +1,11 @@
+[Unit]
+Description=每 2 分钟跑一次 nous-center 健康巡检
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
