@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -36,12 +35,14 @@ def _entry(loaded=True, port=40000, mtype="llm"):
     )
 
 
-def _app_state(models=None, runners=("image", "tts")):
-    sups = []
-    for g in runners:
-        sup = MagicMock()
-        sup.health_snapshot.return_value = {"group_id": g, "running": True}
-        sups.append(sup)
+def _sup(group, running=True, n_loaded=1):
+    return SimpleNamespace(group_id=group, is_running=running,
+                           loaded_models=[{"id": f"m{i}"} for i in range(n_loaded)])
+
+
+def _app_state(models=None, runners=None):
+    # runners: list of supervisor namespaces; 默认 image+tts 各加载 1 个模型(operational)
+    sups = runners if runners is not None else [_sup("image"), _sup("tts")]
     return SimpleNamespace(
         model_manager=SimpleNamespace(_models=models or {}),
         runner_supervisors=sups,
@@ -55,6 +56,9 @@ def test_worst_ranking():
     assert ss.worst(["operational", "operational"]) == "operational"
     assert ss.worst(["operational", "degraded"]) == "degraded"
     assert ss.worst(["degraded", "down", "operational"]) == "down"
+    # idle 视同 operational —— 不把 overall 拉成异常。
+    assert ss.worst(["operational", "idle"]) == "operational"
+    assert ss.worst(["idle", "down"]) == "down"
 
 
 # ---------- compute_statuses ----------
@@ -79,13 +83,32 @@ async def test_compute_llm_down_when_vllm_unhealthy(session, monkeypatch):
     st = _app_state(models={"q": _entry(mtype="llm")})
     out = await ss.compute_statuses(st, session)
     assert out["llm"] == "down"
-    assert out["embedding"] == "operational"   # 无 embedding 实例 → operational
+    assert out["embedding"] == "idle"   # 无 embedding 实例 → idle(没装,不是 operational)
+
+
+@pytest.mark.asyncio
+async def test_compute_vllm_idle_when_no_instances(session, monkeypatch):
+    monkeypatch.setattr("src.services.gpu_monitor.get_gpu_stats", lambda: [1])
+    out = await ss.compute_statuses(_app_state(models={}), session)
+    assert out["llm"] == "idle" and out["embedding"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_compute_runner_idle_vs_serving_vs_down(session, monkeypatch):
+    monkeypatch.setattr("src.services.gpu_monitor.get_gpu_stats", lambda: [1])
+    st = _app_state(models={}, runners=[
+        _sup("image", running=True, n_loaded=2),   # 有模型 → operational
+        _sup("tts", running=True, n_loaded=0),      # 进程活但没装 → idle(用户反馈点)
+    ])
+    out = await ss.compute_statuses(st, session)
+    assert out["image"] == "operational"
+    assert out["tts"] == "idle"
 
 
 @pytest.mark.asyncio
 async def test_compute_runner_missing_is_down(session, monkeypatch):
     monkeypatch.setattr("src.services.gpu_monitor.get_gpu_stats", lambda: [1])
-    st = _app_state(models={}, runners=("image",))  # 缺 tts
+    st = _app_state(models={}, runners=[_sup("image", n_loaded=1)])  # 缺 tts
     out = await ss.compute_statuses(st, session)
     assert out["image"] == "operational"
     assert out["tts"] == "down"
@@ -107,6 +130,22 @@ async def test_sample_once_writes_all_components(session, monkeypatch):
     from sqlalchemy import select, func
     n = (await session.execute(select(func.count()).select_from(StatusSample))).scalar()
     assert n == len(ss.COMPONENT_KEYS)
+
+
+@pytest.mark.asyncio
+async def test_uptime_counts_idle_as_up(session):
+    """idle(在线没装模型)算可用 —— 否则没常驻模型的组件 uptime 永远 ~0% 误报。"""
+    now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+    session.add_all([
+        StatusSample(component="tts", status="idle", ts=now),
+        StatusSample(component="tts", status="idle", ts=now),
+        StatusSample(component="tts", status="operational", ts=now),
+        StatusSample(component="tts", status="down", ts=now),
+    ])
+    await session.commit()
+    hist = await ss.uptime_history(session, days=7)
+    # 3 up(2 idle + 1 op)/ 4 = 75%(若 idle 不算 up 会是 25%)
+    assert hist["tts"]["uptime_pct"] == pytest.approx(75.0, abs=0.01)
 
 
 @pytest.mark.asyncio

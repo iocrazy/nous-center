@@ -1,14 +1,16 @@
-import { CheckCircle2, AlertTriangle, XCircle, HeartPulse } from 'lucide-react'
+import { CheckCircle2, AlertTriangle, XCircle, HeartPulse, CircleDashed } from 'lucide-react'
 import { useStatus, type ComponentStatus, type DayStatus, type StatusComponent } from '../../api/status'
 
 /**
  * 状态页(对齐 status.claude.ai 风格,admin-gated)。
  * 顶部总体横幅 + 每组件一行(状态点 + 名称 + 7 天 uptime 条 + 7 天 uptime%)。
  * 数据来自 GET /api/v1/status,15s 自动刷新。
+ * idle = 基础设施在线但没加载模型(灰,不是绿"运行正常"也不是红"中断")。
  */
 
 const COLOR: Record<DayStatus, string> = {
   operational: '#22c55e', // green
+  idle: '#9ca3af',        // gray — 在线但空闲
   degraded: '#f59e0b',    // amber
   down: '#ef4444',        // red
   nodata: 'var(--border, #3a3a3a)',
@@ -16,12 +18,14 @@ const COLOR: Record<DayStatus, string> = {
 
 const LABEL: Record<ComponentStatus, string> = {
   operational: '运行正常',
+  idle: '空闲(未加载)',
   degraded: '部分降级',
   down: '服务中断',
 }
 
 function statusIcon(s: ComponentStatus, size = 18) {
   if (s === 'operational') return <CheckCircle2 size={size} style={{ color: COLOR.operational }} />
+  if (s === 'idle') return <CircleDashed size={size} style={{ color: COLOR.idle }} />
   if (s === 'degraded') return <AlertTriangle size={size} style={{ color: COLOR.degraded }} />
   return <XCircle size={size} style={{ color: COLOR.down }} />
 }
