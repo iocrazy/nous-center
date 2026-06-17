@@ -3,6 +3,10 @@ Description=cloudflared tunnel for api.iocrazy.com → localhost:8000
 After=network-online.target nous-backend.service
 Wants=network-online.target
 Requires=nous-backend.service
+# Requires 只单向传播「停」:重启 nous-backend 会把隧道一起停掉,但 backend 回来后
+# 隧道不会自动跟着起 → 每次发版 `restart nous-backend` 都会静默掐断公网(2026-06-16
+# 真机踩到的 530)。PartOf 让隧道**跟随**后端 restart/stop:重启后端 → 隧道也重启回来。
+PartOf=nous-backend.service
 
 [Service]
 Type=simple
