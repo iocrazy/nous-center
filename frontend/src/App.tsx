@@ -30,6 +30,7 @@ const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
   '/usage': 'usage',
   '/studio': 'studio',
   '/history': 'history',
+  '/status': 'status',
 }
 
 /** Syncs the current URL to the panel store's activeOverlay */
@@ -182,6 +183,7 @@ export default function App() {
           <Route path="/usage" element={<MainLayout />} />
           <Route path="/studio" element={<MainLayout />} />
           <Route path="/history" element={<MainLayout />} />
+          <Route path="/status" element={<MainLayout />} />
           <Route path="/services/:id" element={<MainLayout />} />
         </Routes>
       </AuthGate>

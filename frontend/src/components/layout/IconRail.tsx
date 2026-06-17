@@ -14,6 +14,7 @@ import {
   LogOut,
   Palette,
   Images,
+  HeartPulse,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { usePanelStore, type PanelId, type OverlayId } from '../../stores/panel'
@@ -44,6 +45,7 @@ const OVERLAY_ROUTES: Record<OverlayId, string> = {
   usage: '/usage',
   studio: '/studio',
   history: '/history',
+  status: '/status',
 }
 
 // Workflow goes through the overlay nav now (v3 m08 list); the in-canvas
@@ -63,6 +65,7 @@ const MID_NAVS: { id: OverlayId; icon: typeof Layers; label: string }[] = [
   { id: 'api-keys-list', icon: KeyRound, label: 'API Key' },
   { id: 'history', icon: Images, label: '历史' },
   { id: 'usage', icon: BarChart3, label: '用量' },
+  { id: 'status', icon: HeartPulse, label: '状态' },
   { id: 'logs', icon: ScrollText, label: '日志' },
 ]
 
