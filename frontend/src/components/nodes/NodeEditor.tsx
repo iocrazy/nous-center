@@ -45,6 +45,7 @@ import PresetDetailOverlay from '../overlays/PresetDetailOverlay'
 import AgentManagementOverlay from '../overlays/AgentManagementOverlay'
 import LogsOverlay from '../overlays/LogsOverlay'
 import HistoryOverlay from '../overlays/HistoryOverlay'
+import StatusOverlay from '../overlays/StatusOverlay'
 import NodePackagesOverlay from '../overlays/NodePackagesOverlay'
 import ServicesList from '../../pages/ServicesList'
 import ServiceDetailRoute from '../../pages/ServiceDetailRoute'
@@ -968,6 +969,7 @@ export default function NodeEditor() {
       {activeOverlay === 'service-detail' && <ServiceDetailRoute />}
       {activeOverlay === 'workflows-list' && <WorkflowsList />}
       {activeOverlay === 'usage' && <UsagePage />}
+      {activeOverlay === 'status' && <StatusOverlay />}
       {activeOverlay === 'studio' && <Studio />}
       {activeOverlay === 'history' && <HistoryOverlay />}
 
