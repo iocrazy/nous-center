@@ -25,7 +25,12 @@ logger = logging.getLogger(__name__)
 OPERATIONAL = "operational"
 DEGRADED = "degraded"
 DOWN = "down"
-_RANK = {OPERATIONAL: 0, DEGRADED: 1, DOWN: 2}
+IDLE = "idle"  # 基础设施在线但没加载模型(不是故障,只是没东西可服务)
+# worst 排序(算 overall 用):idle 视同 operational —— 某子系统没装模型不该把整体标成
+# 降级/异常。只有 degraded/down 才下拉 overall。idle 只是**单组件**的展示态。
+_RANK = {OPERATIONAL: 0, IDLE: 0, DEGRADED: 1, DOWN: 2}
+# uptime 口径:idle 算"在线/可用"(没装模型不是宕机),不拉低可用率。
+_UP = {OPERATIONAL, IDLE}
 
 # (key, 显示名)。顺序即页面展示顺序。
 COMPONENTS: list[tuple[str, str]] = [
@@ -68,10 +73,10 @@ def _vllm_targets_by_type(model_manager):
 
 
 async def _vllm_component_status(targets) -> str:
-    """一组 vLLM 实例(同类)的组件状态:无实例=operational(没东西可挂);全健康=
-    operational;任一连不上=down。"""
+    """一组 vLLM 实例(同类)的组件状态:无实例=**idle**(没装模型,不是故障也不是"运行正常");
+    全健康=operational;任一连不上=down。"""
     if not targets:
-        return OPERATIONAL
+        return IDLE
     from src.services.vllm_metrics import snapshot_all
     snaps = await snapshot_all(targets)
     if any(not s.get("healthy") for s in snaps):
@@ -115,19 +120,26 @@ async def compute_statuses(app_state, session: AsyncSession | None = None) -> di
         logger.warning("status: embedding check failed: %s", e)
         out["embedding"] = DOWN
 
-    # image / tts runner:对应 supervisor running。
-    runners = {}
+    # image / tts runner:三态 —— 进程死=down;进程活但没加载模型=**idle**(用户反馈:
+    # 没装 TTS 不该显示"运行正常");进程活+有已加载 adapter=operational。runner 上报的
+    # 已加载 adapter 在 supervisor.loaded_models(ping/pong 快照),主进程据此判 idle vs serving。
+    runners: dict[str, dict] = {}
     for sup in getattr(app_state, "runner_supervisors", []) or []:
         try:
-            snap = sup.health_snapshot()
-            runners[snap.get("group_id")] = bool(snap.get("running"))
+            runners[sup.group_id] = {
+                "running": bool(sup.is_running),
+                "n_loaded": len(getattr(sup, "loaded_models", []) or []),
+            }
         except Exception:  # noqa: BLE001
             pass
     for key in ("image", "tts"):
-        if key in runners:
-            out[key] = OPERATIONAL if runners[key] else DOWN
+        r = runners.get(key)
+        if r is None or not r["running"]:
+            out[key] = DOWN  # runner 进程不在/死了
+        elif r["n_loaded"] > 0:
+            out[key] = OPERATIONAL
         else:
-            out[key] = DOWN  # 应有的 runner 不在 → 异常
+            out[key] = IDLE  # 进程在、随时可加载,但当前没装模型
 
     # gpu:nvidia-smi 能列出卡。
     try:
@@ -181,7 +193,9 @@ async def uptime_history(session: AsyncSession, *, days: int = 7) -> dict[str, d
     """
     since = datetime.now(timezone.utc) - timedelta(days=days)
     day_col = func.date(StatusSample.ts)
-    ok_col = func.sum(case((StatusSample.status == OPERATIONAL, 1), else_=0))
+    # uptime = "可用"占比;idle(在线没装模型)算可用,不算宕机(否则没常驻模型的组件
+    # uptime 永远 ~0% 误报)。只有 down 拉低可用率。
+    ok_col = func.sum(case((StatusSample.status.in_(list(_UP)), 1), else_=0))
     rows = (await session.execute(
         select(StatusSample.component, day_col.label("d"),
                func.count().label("total"), ok_col.label("ok"))

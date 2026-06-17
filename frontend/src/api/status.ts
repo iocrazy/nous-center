@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
 
-export type ComponentStatus = 'operational' | 'degraded' | 'down'
+export type ComponentStatus = 'operational' | 'idle' | 'degraded' | 'down'
 export type DayStatus = ComponentStatus | 'nodata'
 
 export interface StatusDay {
