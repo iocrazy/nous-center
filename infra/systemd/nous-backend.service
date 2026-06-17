@@ -2,6 +2,10 @@
 Description=nous-center backend (FastAPI + uvicorn)
 After=network-online.target postgresql.service
 Wants=network-online.target
+# 稳定性加固(2026-06-16):关掉「重启限速给上限」—— 默认 5 次/10s 后 systemd 会
+# 彻底放弃重启,留下永久下线(启动期 OOM/瞬时崩溃环最易踩)。单管理员推理机宁可
+# 一直重试也不要静默死。RestartSec=15 拉慢重试不至于刷屏。
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -13,7 +17,11 @@ EnvironmentFile=/media/heygo/Program/projects-code/_playground/nous-center/backe
 Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/heygo/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/linuxbrew/.linuxbrew/bin/uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
-RestartSec=5
+RestartSec=15
+# host 级 OOM 时让内核优先杀别的(桌面/临时工具),保住推理后端 —— 这是本机的核心
+# 服务。注意:这只影响 host 全局 OOM 的「选谁杀」;后端自己撑爆 MemoryMax=96G 时仍由
+# cgroup OOM 在本 cgroup 内处理,与此无关。
+OOMScoreAdjust=-500
 # Log to journald — view with `journalctl -u nous-backend -f`
 StandardOutput=journal
 StandardError=journal

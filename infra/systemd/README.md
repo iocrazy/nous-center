@@ -35,8 +35,11 @@ sudo ./infra/systemd/install.sh uninstall
 
 - **没把 `vite dev` 服务化** — vite dev server 仅给本机开发用，生产路径走
   backend 直 serve `frontend/dist`（PR #32），不需要常驻。
-- **`nous-cloudflared` `Requires=nous-backend`** — backend 死了就把 tunnel 也
-  停掉，避免 cloudflare 把空 origin 挂在域名上扔 502 给用户。
+- **`nous-cloudflared` `Requires=nous-backend` + `PartOf=nous-backend`** — Requires
+  让 backend 死了就把 tunnel 也停掉（避免 cloudflare 把空 origin 挂域名上扔 502）。
+  但 Requires 只单向传播「停」：`restart nous-backend` 会停掉隧道，backend 回来后隧道
+  **不会**自动跟着起 → 每次发版都静默掐断公网（2026-06-16 踩到的 530）。`PartOf` 补上
+  这个：隧道**跟随** backend 的 restart/stop，重启后端隧道自动回来。
 - **`MemoryHigh=88G` + `MemoryMax=96G`** on backend — vLLM 之类有 OOM 史，给 host
   留余地。早期是 8G，但 V1' Lane A 之后 wikeeyang fp8mixed 的 dequant 中间态会冲到
   ~18G，8G 上限会让加载在没有 journal 输出的情况下被 SIGKILL。后来 64G —— 但
@@ -44,6 +47,12 @@ sudo ./infra/systemd/install.sh uninstall
   加载中途把整个后端 SIGKILL（2026-06-13 活机 e2e 坐实，连带 vLLM 被一起带走）。
   主机是 125G RAM，96G 能装下该峰值且仍留 ~29G 给 OS + cloudflared + vLLM host 侧。
   单文件 fp8 路(~18G)不受影响。再大的模型/并发多模型可继续上调，留 host ~25G 余地即可。
+- **`StartLimitIntervalSec=0` + `RestartSec=15`** on backend — systemd 默认「10s 内
+  重启 5 次就彻底放弃」，启动期 OOM/瞬时崩溃环最易触发,触发后服务永久下线、无人知晓。
+  单管理员推理机宁可一直重试也不要静默死 → 关掉重启上限,RestartSec=15 拉慢重试防刷屏。
+- **`OOMScoreAdjust=-500`** on backend — host 全局 OOM 时让内核优先杀别的(桌面/临时
+  工具),保住推理后端(本机核心服务)。注意只影响 host 级「选谁杀」;后端自己超
+  `MemoryMax=96G` 时仍由 cgroup OOM 在本 cgroup 内处理,与此无关。
 - **`--protocol http2`** for cloudflared — 国内某些 ISP 屏蔽 UDP/7844 (QUIC)，
   http2 是已知能 work 的回落。
 
