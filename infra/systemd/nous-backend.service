@@ -2,6 +2,11 @@
 Description=nous-center backend (FastAPI + uvicorn)
 After=network-online.target postgresql.service
 Wants=network-online.target
+# 数据库迁到原生 pg17(2026-06-18,脱离 Docker Desktop,spec native-pg-systemd-stack)。
+# postgresql.service 现在是真实存在的 unit(此前 pg 在 Docker Desktop 里、此 After 是
+# 空操作)。Requires:没数据库不该起后端 —— pg 挂了 systemd 会连后端一起停,避免后端
+# 在无库状态空转刷重连日志。
+Requires=postgresql.service
 # 稳定性加固(2026-06-16):关掉「重启限速给上限」—— 默认 5 次/10s 后 systemd 会
 # 彻底放弃重启,留下永久下线(启动期 OOM/瞬时崩溃环最易踩)。单管理员推理机宁可
 # 一直重试也不要静默死。RestartSec=15 拉慢重试不至于刷屏。
