@@ -21,13 +21,17 @@ providers:
     params:
       poll_seconds: 5         # 透传 dreamina --poll
 
-  # codex 随 PR-2 接入(本机 image_generation 当前 under-development 被 gate,真机出图待放开)。
-  # codex:
-  #   enabled: false
-  #   executable: ""
-  #   modalities: [image]
-  #   concurrency: 1
-  #   rate_per_min: 6
-  #   min_interval_s: 3
-  #   queue_capacity: 8
-  #   cache_ttl_s: 0
+  # codex:本机鉴权走 ~/.codex(ChatGPT 登录)。注意 image_generation 当前可能是
+  # under-development 被 gate —— provider 会按 `codex features list` 探测,不可用时 generate
+  # 明确报错(退回提示词在 message 里),不假装出图。真机出图待该 feature 放开。
+  codex:
+    enabled: true
+    executable: ""          # PATH 里的 codex
+    modalities: [image]
+    concurrency: 1
+    rate_per_min: 6
+    min_interval_s: 3
+    queue_capacity: 8
+    cache_ttl_s: 0
+    params:
+      reasoning_effort: ""  # 透传 codex -c model_reasoning_effort(留空 = 默认)
