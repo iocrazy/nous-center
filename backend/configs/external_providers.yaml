@@ -1,0 +1,33 @@
+# 外部 CLI 生成 provider 配置(spec 2026-06-18-external-cli-generation-providers)。
+#
+# 每个 provider 是一个账号登录态外部 CLI(即梦 dreamina / codex),经 subprocess 转发生成。
+# 护栏(concurrency/rate_per_min/min_interval_s/queue_capacity)把单账号在云侧的请求形态
+# 锁在「单人低频串行」——这是规避封号的核心,**勿轻易调高**。仅供 ZeroTier 内网自用,
+# 不对公网多租户暴露。
+#
+# executable: 留空走 PATH 查找(dreamina/codex);也可填绝对路径。
+# rate_per_min: 0 = 不限速(不建议)。
+
+providers:
+  dreamina:
+    enabled: true
+    executable: ""            # PATH 里的 dreamina
+    modalities: [image]       # 视频(seedance)留 follow-up
+    concurrency: 1            # 串行,绝不并发轰
+    rate_per_min: 4
+    min_interval_s: 5
+    queue_capacity: 8
+    cache_ttl_s: 0
+    params:
+      poll_seconds: 5         # 透传 dreamina --poll
+
+  # codex 随 PR-2 接入(本机 image_generation 当前 under-development 被 gate,真机出图待放开)。
+  # codex:
+  #   enabled: false
+  #   executable: ""
+  #   modalities: [image]
+  #   concurrency: 1
+  #   rate_per_min: 6
+  #   min_interval_s: 3
+  #   queue_capacity: 8
+  #   cache_ttl_s: 0
