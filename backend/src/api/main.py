@@ -833,6 +833,8 @@ def create_app() -> FastAPI:
     app.include_router(apps.router)
     app.include_router(services_routes.router)
     app.include_router(workflow_publish_routes.router)
+    from src.api.routes import external_providers as external_providers_routes
+    app.include_router(external_providers_routes.router)
     app.include_router(usage_routes.router)
     app.include_router(dashboard_routes.router)
     app.include_router(api_keys_routes.router)
