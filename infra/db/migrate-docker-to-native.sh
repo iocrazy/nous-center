@@ -67,11 +67,12 @@ cmd_precheck() {
     || die "目标 pg 不可达 $DST_HOST:$DST_PORT(原生 pg 没装/没起?见 infra/db/README.md)"
 }
 
-# 建 role + 库 —— 需 superuser,走本机 peer auth 的 postgres 账户。幂等。
+# 建 role + 库 —— 需 superuser。postgres 超级用户没设密码,只能走 **Unix socket 的 peer
+# 认证**(故不能加 -h,加了就走 TCP scram → 认证失败)。用 -p 选中目标 cluster 的 socket。幂等。
 cmd_init_target() {
   resolve_password
-  c_ylw "[init-target] 在原生 pg($DST_HOST:$DST_PORT)建 role=$ROLE + 库=$DB(幂等,需 sudo)"
-  sudo -u postgres psql -h "$DST_HOST" -p "$DST_PORT" -v ON_ERROR_STOP=1 <<-SQL
+  c_ylw "[init-target] 在原生 pg(socket, port=$DST_PORT)建 role=$ROLE + 库=$DB(幂等,需 sudo)"
+  sudo -u postgres psql -p "$DST_PORT" -v ON_ERROR_STOP=1 <<-SQL
     DO \$\$ BEGIN
       IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${ROLE}') THEN
         CREATE ROLE ${ROLE} LOGIN PASSWORD '${NOUS_DB_PASSWORD}';
