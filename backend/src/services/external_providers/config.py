@@ -19,6 +19,7 @@ from src.services.external_providers.base import (
     ExternalGenRequest,
     ExternalGenResult,
 )
+from src.services.external_providers.codex import CodexProvider
 from src.services.external_providers.dreamina import DreaminaProvider
 from src.services.external_providers.governor import ProviderGovernor
 
@@ -27,9 +28,10 @@ logger = logging.getLogger(__name__)
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_CONFIG = _BACKEND_ROOT / "configs" / "external_providers.yaml"
 
-# provider 名 → 实现类。新增 provider 在此登记(codex 随 PR-2 加)。
+# provider 名 → 实现类。新增 provider 在此登记。
 _PROVIDER_CLASSES: dict[str, type[ExternalCliProvider]] = {
     "dreamina": DreaminaProvider,
+    "codex": CodexProvider,
 }
 
 

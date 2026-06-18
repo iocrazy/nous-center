@@ -7,6 +7,7 @@ ExternalGenResult 契约,以便 governor 和节点对所有 provider 一视同�
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -104,9 +105,13 @@ class ExternalCliProvider(ABC):
         *,
         timeout: float = 120.0,
         cwd: str | None = None,
+        stdin_data: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> tuple[int, str, str]:
         """跑一次 CLI,返回 (returncode, stdout, stderr)。超时 kill 并返回 124。
 
+        stdin_data:喂给子进程 stdin 的文本(如 codex 的 prompt 走 `-`)。
+        env:额外环境变量(并入 os.environ,如 codex 的 workspace 目录)。
         失败抛 ProviderError(executable 找不到 / 超时)由调用方决定如何转译。
         """
         exe = self.resolve_executable()
@@ -116,18 +121,24 @@ class ExternalCliProvider(ABC):
                 status_code=400,
             )
         clean = [str(a) for a in args if str(a) != ""]
+        run_env = {**os.environ, **env} if env else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 exe,
                 *clean,
                 cwd=cwd or self._cwd,
+                stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=run_env,
             )
         except FileNotFoundError as exc:
             raise ProviderError(f"{self.name} CLI 未找到:{exe}", status_code=400) from exc
+        stdin_bytes = stdin_data.encode("utf-8") if stdin_data is not None else None
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(input=stdin_bytes), timeout=timeout
+            )
         except (TimeoutError, asyncio.TimeoutError) as exc:
             try:
                 proc.kill()
