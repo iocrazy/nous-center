@@ -72,48 +72,56 @@ def provider(monkeypatch):
     return p
 
 
-async def test_generate_text2image_collects_downloaded_file(provider, monkeypatch):
-    captured_args = {}
+def _two_step_fake(download_filename: str, *, submit_json='{"submit_id": "s-1"}'):
+    """真机契约:submit(text2image/image2image)只返 submit_id,不带 --download_dir;
+    query_result 才把媒体下载到 --download_dir。"""
+    captured = {"submit": None, "query": None}
 
-    async def fake_run(args, *, timeout=120, cwd=None):
-        captured_args["args"] = list(args)
-        # 模拟 CLI 把图片下载进 --download_dir
-        download_dir = next(
-            a.split("=", 1)[1] for a in args if str(a).startswith("--download_dir=")
-        )
+    async def fake_run(args, *, timeout=120, cwd=None, stdin_data=None, env=None):
         from pathlib import Path
 
-        out_file = Path(download_dir) / "result_0.png"
-        out_file.write_bytes(b"\x89PNG\r\n\x1a\n fake")
-        return (0, '{"submit_id": "s-1", "gen_status": "done"}', "")
+        first = str(args[0])
+        if first in ("text2image", "image2image"):
+            captured["submit"] = list(args)
+            assert not any(str(a).startswith("--download_dir") for a in args), "submit 不该带 download_dir"
+            return (0, submit_json, "")
+        if first == "query_result":
+            captured["query"] = list(args)
+            dl = next(a.split("=", 1)[1] for a in args if str(a).startswith("--download_dir="))
+            (Path(dl) / download_filename).write_bytes(b"\x89PNG fake")
+            return (0, '{"gen_status": "done"}', "")
+        return (0, "{}", "")
 
-    monkeypatch.setattr(provider, "_run", fake_run)
+    return fake_run, captured
+
+
+async def test_generate_text2image_two_step(provider, monkeypatch):
+    fake, captured = _two_step_fake("result_0.png")
+    monkeypatch.setattr(provider, "_run", fake)
     result = await provider.generate(ExternalGenRequest(prompt="一只猫", width=1920, height=1080))
     assert len(result.artifacts) == 1
-    assert result.artifacts[0].kind == "image"
     assert result.artifacts[0].local_path.endswith("result_0.png")
-    # 验证 args 形态:text2image + ratio 由尺寸推导
-    assert "text2image" in captured_args["args"]
-    assert "--ratio=16:9" in captured_args["args"]
+    # submit 形态:text2image + ratio 由尺寸推导,且无 download_dir
+    assert "text2image" in captured["submit"]
+    assert "--ratio=16:9" in captured["submit"]
+    # 下载走 query_result --submit_id=s-1
+    assert "query_result" in captured["query"]
+    assert "--submit_id=s-1" in captured["query"]
 
 
-async def test_generate_image2image_when_input_image(provider, monkeypatch):
-    async def fake_run(args, *, timeout=120, cwd=None):
-        from pathlib import Path
-
-        download_dir = next(a.split("=", 1)[1] for a in args if str(a).startswith("--download_dir="))
-        (Path(download_dir) / "edit.jpg").write_bytes(b"jpgdata")
-        return (0, '{"submit_id": "s-2"}', "")
-
-    monkeypatch.setattr(provider, "_run", fake_run)
+async def test_generate_image2image_passes_images(provider, monkeypatch):
+    fake, captured = _two_step_fake("edit.jpg", submit_json='{"submit_id": "s-2"}')
+    monkeypatch.setattr(provider, "_run", fake)
     result = await provider.generate(
         ExternalGenRequest(prompt="改成夜景", input_images=["/tmp/ref.png"])
     )
     assert result.artifacts[0].title == "edit.jpg"
+    assert "image2image" in captured["submit"]
+    assert "--images" in captured["submit"] and "/tmp/ref.png" in captured["submit"]
 
 
-async def test_generate_raises_on_failure(provider, monkeypatch):
-    async def fake_run(args, *, timeout=120, cwd=None):
+async def test_generate_raises_on_submit_failure(provider, monkeypatch):
+    async def fake_run(args, *, timeout=120, cwd=None, stdin_data=None, env=None):
         return (0, '{"gen_status": "failed", "fail_reason": "敏感词"}', "")
 
     monkeypatch.setattr(provider, "_run", fake_run)
@@ -122,8 +130,31 @@ async def test_generate_raises_on_failure(provider, monkeypatch):
     assert "敏感词" in exc.value.message
 
 
+async def test_generate_raises_when_no_submit_id(provider, monkeypatch):
+    async def fake_run(args, *, timeout=120, cwd=None, stdin_data=None, env=None):
+        return (0, '{"queue_info": {}}', "")  # 无 submit_id
+
+    monkeypatch.setattr(provider, "_run", fake_run)
+    with pytest.raises(ProviderError) as exc:
+        await provider.generate(ExternalGenRequest(prompt="x"))
+    assert "submit_id" in exc.value.message
+
+
+async def test_generate_pending_when_query_no_media(provider, monkeypatch):
+    async def fake_run(args, *, timeout=120, cwd=None, stdin_data=None, env=None):
+        first = str(args[0])
+        if first in ("text2image", "image2image"):
+            return (0, '{"submit_id": "s-9"}', "")
+        return (0, '{"gen_status": "pending"}', "")  # query_result 没下到媒体
+
+    monkeypatch.setattr(provider, "_run", fake_run)
+    with pytest.raises(ProviderError) as exc:
+        await provider.generate(ExternalGenRequest(prompt="x"))
+    assert "s-9" in exc.value.message
+
+
 async def test_generate_raises_on_nonzero_exit(provider, monkeypatch):
-    async def fake_run(args, *, timeout=120, cwd=None):
+    async def fake_run(args, *, timeout=120, cwd=None, stdin_data=None, env=None):
         return (1, "", "boom")
 
     monkeypatch.setattr(provider, "_run", fake_run)

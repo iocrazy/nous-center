@@ -241,18 +241,25 @@ class DreaminaProvider(ExternalCliProvider):
     # ---- 生成 ------------------------------------------------------------
 
     async def generate(self, req: ExternalGenRequest) -> ExternalGenResult:
+        """真机 CLI 契约(46b5b0e):text2image/image2image **不支持** --download_dir
+        (它内部 submit + --poll 轮询,返回含 submit_id 的 JSON);媒体下载靠
+        `query_result --submit_id --download_dir`。所以两步:先 submit,再 query_result 下载。
+        """
         started = time.monotonic()
         download_dir = Path(tempfile.mkdtemp(prefix="dreamina_"))
         timeout = req.timeout_s or (self.poll_seconds + 120)
+        ratio = ratio_from_size(req.width, req.height)
         if req.input_images:
             mode = "image2image"
-            args = [
-                "image2image",
-                f"--images={req.input_images[0]}",
+            args = ["image2image"]
+            for img in req.input_images[:10]:  # CLI 支持 1-10 张
+                if str(img).strip():
+                    args += ["--images", str(img)]
+            args += [
                 f"--prompt={req.prompt}",
+                f"--ratio={ratio}",
                 f"--resolution_type={image_resolution(req.model, req.width, req.height, mode)}",
                 f"--poll={self.poll_seconds}",
-                f"--download_dir={download_dir}",
                 f"--model_version={image_model_version(req.model, mode)}",
             ]
         else:
@@ -260,40 +267,40 @@ class DreaminaProvider(ExternalCliProvider):
             args = [
                 "text2image",
                 f"--prompt={req.prompt}",
-                f"--ratio={ratio_from_size(req.width, req.height)}",
+                f"--ratio={ratio}",
                 f"--resolution_type={image_resolution(req.model, req.width, req.height, mode)}",
                 f"--poll={self.poll_seconds}",
-                f"--download_dir={download_dir}",
                 f"--model_version={image_model_version(req.model, mode)}",
             ]
+        # 第一步:提交(无 download_dir)。
         code, out, err = await self._run(args, timeout=timeout)
         if code != 0:
             raise ProviderError(f"即梦 CLI 调用失败:{(err or out or f'exit={code}')[:800]}")
         raw = extract_json(f"{out}\n{err}".strip())
-        artifacts = self._collect_artifacts(raw, download_dir, started)
+        failure = failure_reason(raw)
+        if failure:
+            raise ProviderError(f"即梦生成失败:{failure}")
+        submit_id = submit_id_of(raw)
+        if not submit_id:
+            raise ProviderError(
+                f"即梦 CLI 未返回 submit_id:{json.dumps(raw, ensure_ascii=False)[:500]}",
+                status_code=502,
+            )
+        # 第二步:query_result 把媒体下载到本地 download_dir。
+        q_code, q_out, q_err = await self._run(
+            ["query_result", f"--submit_id={submit_id}", f"--download_dir={download_dir}"],
+            timeout=min(300, self.poll_seconds + 120),
+        )
+        q_raw = extract_json(f"{q_out}\n{q_err}".strip()) if q_code == 0 else {}
+        q_failure = failure_reason(q_raw)
+        if q_failure:
+            raise ProviderError(f"即梦生成失败:{q_failure}")
+        artifacts = self._collect_artifacts(q_raw, download_dir, started)
         if not artifacts:
-            # 提交成功但本轮没下到媒体:尝试 query_result 兜底一次。
-            submit_id = submit_id_of(raw)
-            failure = failure_reason(raw)
-            if failure:
-                raise ProviderError(f"即梦生成失败:{failure}")
-            if submit_id:
-                q_code, q_out, q_err = await self._run(
-                    [
-                        "query_result",
-                        f"--submit_id={submit_id}",
-                        f"--download_dir={download_dir}",
-                    ],
-                    timeout=min(300, self.poll_seconds + 60),
-                )
-                if q_code == 0:
-                    artifacts = self._collect_artifacts(
-                        extract_json(f"{q_out}\n{q_err}".strip()), download_dir, started
-                    )
-            if not artifacts:
-                raise ProviderError(
-                    f"即梦 CLI 未返回可用媒体结果(submit_id={submit_id or '?'})", status_code=502
-                )
+            raise ProviderError(
+                f"即梦任务仍在生成或未下载到媒体(submit_id={submit_id});可稍后重试。",
+                status_code=502,
+            )
         return ExternalGenResult(
             artifacts=artifacts,
             elapsed_ms=int((time.monotonic() - started) * 1000),
