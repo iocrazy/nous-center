@@ -1,0 +1,18 @@
+[Unit]
+# nous-center DB 每日备份(spec native-pg-systemd-stack PR-4)。oneshot,由
+# nous-dbbackup.timer 触发。pg_dump → 大盘(nvme2,与数据盘 nvme0 分离),滚动保留。
+Description=nous-center DB 备份(pg_dump → 大盘,滚动保留)
+After=postgresql.service
+Requires=postgresql.service
+# 备份目录在大盘(fstab nofail 挂载);确保挂载就绪后才跑,否则 mkdir/写入会失败。
+RequiresMountsFor=/media/heygo/Program
+
+[Service]
+Type=oneshot
+User=heygo
+Group=heygo
+Environment=NOUS_DB_BACKUP_DIR=/media/heygo/Program/db-backups
+Environment=NOUS_DB_BACKUP_KEEP_DAYS=14
+ExecStart=/media/heygo/Program/projects-code/_playground/nous-center/infra/db/backup.sh
+StandardOutput=journal
+StandardError=journal

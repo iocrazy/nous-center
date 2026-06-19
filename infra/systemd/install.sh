@@ -23,11 +23,12 @@ SUDOERS_DST=/etc/sudoers.d/nous-healthprobe
 # Long-running services + the probe timer all get enabled. The probe .service is
 # oneshot (no [Install]) — triggered only by the timer, never enabled directly.
 SERVICES=(nous-backend.service nous-cloudflared.service nous-status.service)
-TIMERS=(nous-healthprobe.timer)
+# Oneshot probe + dbbackup .service 不 enable(无 [Install])—— 只由各自 .timer 触发。
+TIMERS=(nous-healthprobe.timer nous-dbbackup.timer)
 # nous.target:全栈总闸,enable 后开机 + `nousctl up/down` 一键拉起整组(PR-2)。
 TARGETS=(nous.target)
-# Every unit file copied into /etc/systemd/system (incl. the oneshot probe service + target).
-UNIT_FILES=(nous-backend.service nous-cloudflared.service nous-status.service nous-healthprobe.service nous-healthprobe.timer nous.target)
+# Every unit file copied into /etc/systemd/system (incl. oneshot probe/dbbackup services + target).
+UNIT_FILES=(nous-backend.service nous-cloudflared.service nous-status.service nous-healthprobe.service nous-healthprobe.timer nous-dbbackup.service nous-dbbackup.timer nous.target)
 # nousctl 便捷 CLI 装到 PATH。
 NOUSCTL_DST=/usr/local/bin/nousctl
 
@@ -89,6 +90,7 @@ case "${1:-install}" in
       rm -f "$TARGET/$svc"
     done
     rm -f "$TARGET/nous-healthprobe.service"
+    rm -f "$TARGET/nous-dbbackup.service"
     rm -f "$NOUSCTL_DST"
     rm -f "$SUDOERS_DST"
     systemctl daemon-reload
