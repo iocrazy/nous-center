@@ -17,9 +17,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET=/etc/systemd/system
-# 隧道自愈授权:让探针(heygo)能无密码 restart cloudflared。
-SUDOERS_SRC="$SCRIPT_DIR/../security/nous-healthprobe.sudoers"
-SUDOERS_DST=/etc/sudoers.d/nous-healthprobe
+# sudoers drop-ins(各对应 ../security/<name>.sudoers → /etc/sudoers.d/<name>):
+#   nous-healthprobe = 隧道自愈免密 restart nous-cloudflared
+#   nous-deploy      = deploy.sh 免密 restart nous-backend(不存任何密码,只放行这一命令)
+SUDOERS=(nous-healthprobe nous-deploy)
 # Long-running services + the probe timer all get enabled. The probe .service is
 # oneshot (no [Install]) — triggered only by the timer, never enabled directly.
 SERVICES=(nous-backend.service nous-cloudflared.service nous-status.service)
@@ -58,14 +59,17 @@ case "${1:-install}" in
     # nousctl 便捷 CLI → /usr/local/bin(可执行)。
     echo ">> installing nousctl ($NOUSCTL_DST)"
     install -m 0755 "$SCRIPT_DIR/nousctl" "$NOUSCTL_DST"
-    # 隧道自愈 sudoers:装 0440 + visudo 校验(校验失败立即撤掉,绝不留坏 sudoers)。
-    echo ">> installing sudoers drop-in ($SUDOERS_DST)"
-    install -m 0440 "$SUDOERS_SRC" "$SUDOERS_DST"
-    if ! visudo -cf "$SUDOERS_DST" >/dev/null 2>&1; then
-      echo "ERROR: sudoers 校验失败,已撤掉 $SUDOERS_DST" >&2
-      rm -f "$SUDOERS_DST"
-      exit 1
-    fi
+    # sudoers drop-ins:装 0440 + visudo 校验(校验失败立即撤掉,绝不留坏 sudoers)。
+    for sd in "${SUDOERS[@]}"; do
+      src="$SCRIPT_DIR/../security/$sd.sudoers"; dst="/etc/sudoers.d/$sd"
+      echo ">> installing sudoers drop-in ($dst)"
+      install -m 0440 "$src" "$dst"
+      if ! visudo -cf "$dst" >/dev/null 2>&1; then
+        echo "ERROR: sudoers 校验失败,已撤掉 $dst" >&2
+        rm -f "$dst"
+        exit 1
+      fi
+    done
     echo
     systemctl --no-pager status "${SERVICES[@]}" "${TIMERS[@]}" | head -50
     echo
@@ -92,7 +96,7 @@ case "${1:-install}" in
     rm -f "$TARGET/nous-healthprobe.service"
     rm -f "$TARGET/nous-dbbackup.service"
     rm -f "$NOUSCTL_DST"
-    rm -f "$SUDOERS_DST"
+    for sd in "${SUDOERS[@]}"; do rm -f "/etc/sudoers.d/$sd"; done
     systemctl daemon-reload
     echo "Done."
     ;;
