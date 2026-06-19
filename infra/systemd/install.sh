@@ -24,8 +24,12 @@ SUDOERS_DST=/etc/sudoers.d/nous-healthprobe
 # oneshot (no [Install]) — triggered only by the timer, never enabled directly.
 SERVICES=(nous-backend.service nous-cloudflared.service nous-status.service)
 TIMERS=(nous-healthprobe.timer)
-# Every unit file copied into /etc/systemd/system (incl. the oneshot probe service).
-UNIT_FILES=(nous-backend.service nous-cloudflared.service nous-status.service nous-healthprobe.service nous-healthprobe.timer)
+# nous.target:全栈总闸,enable 后开机 + `nousctl up/down` 一键拉起整组(PR-2)。
+TARGETS=(nous.target)
+# Every unit file copied into /etc/systemd/system (incl. the oneshot probe service + target).
+UNIT_FILES=(nous-backend.service nous-cloudflared.service nous-status.service nous-healthprobe.service nous-healthprobe.timer nous.target)
+# nousctl 便捷 CLI 装到 PATH。
+NOUSCTL_DST=/usr/local/bin/nousctl
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "ERROR: must run as root (use sudo)" >&2
@@ -45,6 +49,14 @@ case "${1:-install}" in
     for tmr in "${TIMERS[@]}"; do
       systemctl enable --now "$tmr"
     done
+    # nous.target:enable(开机)。不 --now —— 各服务已 enable --now 起好,target 只是
+    # 分组闸,start 它仅确保组员在跑(已在跑则无操作)。
+    for tgt in "${TARGETS[@]}"; do
+      systemctl enable "$tgt"
+    done
+    # nousctl 便捷 CLI → /usr/local/bin(可执行)。
+    echo ">> installing nousctl ($NOUSCTL_DST)"
+    install -m 0755 "$SCRIPT_DIR/nousctl" "$NOUSCTL_DST"
     # 隧道自愈 sudoers:装 0440 + visudo 校验(校验失败立即撤掉,绝不留坏 sudoers)。
     echo ">> installing sudoers drop-in ($SUDOERS_DST)"
     install -m 0440 "$SUDOERS_SRC" "$SUDOERS_DST"
@@ -57,9 +69,15 @@ case "${1:-install}" in
     systemctl --no-pager status "${SERVICES[@]}" "${TIMERS[@]}" | head -50
     echo
     echo "Done. Services auto-restart on failure and survive reboots."
+    echo "全栈一键管控: nousctl up | down | restart | status | logs"
     echo "Health probe runs every 2 min: journalctl -u nous-healthprobe -f"
     ;;
   uninstall)
+    for tgt in "${TARGETS[@]}"; do
+      echo ">> removing $tgt"
+      systemctl disable "$tgt" 2>/dev/null || true
+      rm -f "$TARGET/$tgt"
+    done
     for tmr in "${TIMERS[@]}"; do
       echo ">> removing $tmr"
       systemctl disable --now "$tmr" 2>/dev/null || true
@@ -71,6 +89,7 @@ case "${1:-install}" in
       rm -f "$TARGET/$svc"
     done
     rm -f "$TARGET/nous-healthprobe.service"
+    rm -f "$NOUSCTL_DST"
     rm -f "$SUDOERS_DST"
     systemctl daemon-reload
     echo "Done."
