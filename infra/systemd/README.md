@@ -9,6 +9,18 @@
 sudo ./infra/systemd/install.sh
 ```
 
+## 发版 / 上线 — 一条命令
+
+```bash
+./infra/deploy.sh
+```
+
+拉 master → 前端 build → 重启后端 → 自检,每步 fail-loud。**别用 sudo 跑整个脚本**(git/npm
+用 root 会在仓库造 root 属主文件);脚本以你的身份跑,只有 `systemctl restart` 那步会自己提权
+(提示输密码)。关键防呆:build 后校验 `frontend/dist` 时间戳真被更新,否则中止不重启 ——
+杜绝「build 没成却以为上线了」(后端 serve 的是编译好的 `frontend/dist`,不是源码)。
+⚠️ 重启会卸掉所有已加载模型,vLLM ~30s 重载。
+
 ## 一键管控 — nousctl
 
 装机会同时把 `nousctl` 放到 `/usr/local/bin`,全栈一条命令(取代分别敲多条 systemctl):
