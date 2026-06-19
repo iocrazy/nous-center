@@ -800,9 +800,16 @@ def create_app() -> FastAPI:
         # 启动/加载提示:resident 模型预加载进度 —— 重启后 vLLM/image 在后台重载的窗口里,
         # 前端据此挂「系统启动中·模型加载 M/N」全局横幅(用户要的「启动提示」)。
         # 用 registry 所有 resident spec(含 llm/embedding/image)vs is_loaded,口径统一。
-        resident_specs = [s for s in mgr._registry.specs if getattr(s, "resident", False)] if mgr else []
-        r_total = len(resident_specs)
-        r_loaded = sum(1 for s in resident_specs if mgr.is_loaded(s.id)) if mgr else 0
+        # 防御:mgr 可能是没有 _registry 的替身(测试 mock)/ 取不到时降级成空,绝不让 /health 500。
+        r_total = r_loaded = 0
+        try:
+            reg = getattr(mgr, "_registry", None) if mgr else None
+            specs = getattr(reg, "specs", None) or []
+            resident_specs = [s for s in specs if getattr(s, "resident", False)]
+            r_total = len(resident_specs)
+            r_loaded = sum(1 for s in resident_specs if mgr.is_loaded(s.id))
+        except Exception:  # noqa: BLE001 — 启动提示是 best-effort,坏了不拖垮 /health
+            r_total = r_loaded = 0
         checks["startup"] = {
             "resident_total": r_total,
             "resident_loaded": r_loaded,
