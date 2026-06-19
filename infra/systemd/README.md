@@ -9,9 +9,25 @@
 sudo ./infra/systemd/install.sh
 ```
 
+## 一键管控 — nousctl
+
+装机会同时把 `nousctl` 放到 `/usr/local/bin`,全栈一条命令(取代分别敲多条 systemctl):
+
+```bash
+nousctl up        # 拉起全栈(DB→后端→隧道→状态)并打印启动自检 banner
+nousctl down      # 停应用栈(后端/隧道/状态);postgresql 保持运行
+nousctl restart   # 重启应用栈
+nousctl status    # 各 unit active? + 端口 + 公网隧道,一屏
+nousctl logs [u]  # journalctl -f(u 缺省 backend;可 cloudflared/status/postgresql)
+```
+
+启停内部用 `sudo`(会提示密码);`status`/`logs` 只读无需 sudo。
+底层是 `nous.target`(总闸,`Wants=` 四个 unit)。
+
 ## 验证
 
 ```bash
+nousctl status                        # 推荐:一屏看全栈
 systemctl status nous-backend nous-cloudflared
 journalctl -u nous-backend -f         # 实时日志
 ```

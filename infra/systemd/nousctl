@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# nousctl — nous-center 全栈一键管控(spec native-pg-systemd-stack PR-2)。
+# 装到 /usr/local/bin/nousctl(由 infra/systemd/install.sh 安装)。
+#
+#   nousctl up        拉起全栈(DB→后端→隧道→状态)并打印启动自检 banner
+#   nousctl down      停应用栈(后端→隧道随 PartOf;状态)。DB(postgresql)保持运行
+#   nousctl restart   重启应用栈(后端/状态)
+#   nousctl status    各 unit active? + 端口 + 公网隧道,一屏
+#   nousctl logs [u]  journalctl -f(u 缺省 backend;可 cloudflared/status/postgresql)
+#
+# 启停要 root → 内部用 sudo(会提示密码)。只读的 status/logs 不需要。
+set -euo pipefail
+
+# cloudflared 是 PartOf=nous-backend → 跟随后端启停,不单列。
+APP_UNITS=(nous-backend.service nous-status.service)
+
+c_dim() { printf '\033[2m%s\033[0m' "$*"; }
+c_grn() { printf '\033[32m%s\033[0m' "$*"; }
+c_red() { printf '\033[31m%s\033[0m' "$*"; }
+
+_print_banner() {
+  # 从 journal 拉最近一次 backend 启动的自检 banner(纯文本,journald 不带 ANSI)。
+  # 去掉 journal 行前缀(时间/host/uv[pid]:),取最后一段 banner。
+  journalctl -u nous-backend --no-pager -n 400 2>/dev/null \
+    | sed -E 's/^.* (uv|python3?)\[[0-9]+\]: //' \
+    | grep -A 12 'NOUS-CENTER' | tail -n 13 || true
+}
+
+cmd_up() {
+  sudo systemctl start nous.target
+  printf 'nous.target 已拉起,等待 backend 自检...\n'
+  for _ in $(seq 1 30); do
+    systemctl is-active --quiet nous-backend && break
+    sleep 1
+  done
+  echo
+  _print_banner
+}
+
+cmd_down() {
+  sudo systemctl stop "${APP_UNITS[@]}"
+  printf '应用栈已停(后端/隧道/状态)。%s\n' "$(c_dim 'postgresql 仍在运行 — 如需停库: sudo systemctl stop postgresql')"
+}
+
+cmd_restart() {
+  sudo systemctl restart "${APP_UNITS[@]}"
+  printf '应用栈已重启。\n'
+  for _ in $(seq 1 30); do systemctl is-active --quiet nous-backend && break; sleep 1; done
+  echo
+  _print_banner
+}
+
+cmd_status() {
+  printf 'nous-center 栈状态:\n'
+  for u in postgresql nous-backend nous-cloudflared nous-status; do
+    s="$(systemctl is-active "$u" 2>/dev/null || true)"
+    if [ "$s" = active ]; then mark="$(c_grn active)"; else mark="$(c_red "${s:-unknown}")"; fi
+    printf '  %-22s %s\n' "$u" "$mark"
+  done
+  printf '\n监听端口:\n'
+  ss -ltn 2>/dev/null | awk 'NR>1 {print $4}' | grep -E ':(8000|8001|5432)$' | sort -u | sed 's/^/  /' || true
+  printf '\n公网隧道:\n'
+  code="$(curl -s -m 6 -o /dev/null -w '%{http_code}' https://api.iocrazy.com/api/v1/engines 2>/dev/null || echo 000)"
+  if [ "$code" = 000 ]; then
+    printf '  api.iocrazy.com  %s\n' "$(c_red '不可达')"
+  else
+    printf '  api.iocrazy.com  HTTP %s %s\n' "$code" "$(c_dim '(401=鉴权门,服务正常)')"
+  fi
+}
+
+cmd_logs() {
+  u="${1:-backend}"
+  case "$u" in
+    backend|cloudflared|status|healthprobe) journalctl -u "nous-$u" -f ;;
+    postgresql|pg) journalctl -u postgresql@17-main -f ;;
+    *) echo "未知日志目标 '$u'(backend|cloudflared|status|postgresql)" >&2; exit 1 ;;
+  esac
+}
+
+case "${1:-status}" in
+  up)      cmd_up ;;
+  down)    cmd_down ;;
+  restart) cmd_restart ;;
+  status)  cmd_status ;;
+  logs)    shift; cmd_logs "$@" ;;
+  *) echo "用法: nousctl up|down|restart|status|logs [backend|cloudflared|status|postgresql]" >&2; exit 1 ;;
+esac
