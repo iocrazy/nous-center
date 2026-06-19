@@ -36,43 +36,6 @@ export interface ApiKeyCreated extends ApiKeyRow {
   secret: string
 }
 
-// ---------- 访问矩阵(对外出口控制台,spec 2026-06-19)----------
-
-export interface MatrixService {
-  id: string
-  name: string
-  category: string | null
-  source_type: string | null
-  backing: string | null   // model 名 或 wf:{workflow_id}
-  status: string | null
-  today_calls: number
-}
-export interface MatrixKey {
-  id: string
-  label: string
-  key_prefix: string
-  is_active: boolean
-  today_calls: number
-}
-export interface MatrixGrant {
-  id: string
-  key_id: string
-  service_id: string
-  status: 'active' | 'paused' | 'retired'
-}
-export interface AccessMatrix {
-  services: MatrixService[]
-  keys: MatrixKey[]
-  grants: MatrixGrant[]
-}
-
-export function useAccessMatrix() {
-  return useQuery<AccessMatrix>({
-    queryKey: ['access-matrix'],
-    queryFn: () => apiFetch('/api/v1/keys/matrix'),
-  })
-}
-
 export interface CreateKeyBody {
   label: string
   note?: string | null
@@ -163,7 +126,6 @@ export function usePatchApiKey() {
       }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
-      qc.invalidateQueries({ queryKey: ['access-matrix'] })
       qc.invalidateQueries({ queryKey: ['api-key', String(vars.keyId)] })
     },
   })
@@ -195,7 +157,6 @@ export function useAddGrant() {
       }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
-      qc.invalidateQueries({ queryKey: ['access-matrix'] })
       qc.invalidateQueries({ queryKey: ['api-key', String(vars.keyId)] })
       qc.invalidateQueries({ queryKey: ['service-grants', String(vars.serviceId)] })
     },
@@ -209,7 +170,6 @@ export function useRemoveGrant() {
       apiFetch(`/api/v1/grants/${grantId}`, { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
-      qc.invalidateQueries({ queryKey: ['access-matrix'] })
       // The detail page subscribes to ['api-key', id]; without invalidating
       // it the row stays "active" until the user reloads.
       qc.invalidateQueries({ queryKey: ['api-key'] })
@@ -228,7 +188,6 @@ export function useToggleGrant() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
-      qc.invalidateQueries({ queryKey: ['access-matrix'] })
       qc.invalidateQueries({ queryKey: ['api-key'] })
       qc.invalidateQueries({ queryKey: ['service-grants'] })
     },

@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Activity, KeyRound, Plus, Search, Grid3x3, List } from 'lucide-react'
+import { Activity, KeyRound, Plus, Search } from 'lucide-react'
 import { useApiKeys, type ApiKeyRow } from '../api/keys'
 import CreateApiKeyDialog from '../components/api-keys/CreateApiKeyDialog'
-import AccessMatrixView from '../components/api-keys/AccessMatrixView'
 
 type FilterTab = 'all' | 'active' | 'disabled' | 'unbound'
 
@@ -20,7 +19,6 @@ export default function ApiKeysList() {
   const [tab, setTab] = useState<FilterTab>('all')
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
-  const [view, setView] = useState<'matrix' | 'list'>('matrix')
 
   const counts = useMemo(() => {
     const out: Record<FilterTab, number> = { all: 0, active: 0, disabled: 0, unbound: 0 }
@@ -67,25 +65,6 @@ export default function ApiKeysList() {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {/* 视图切换:矩阵(服务×key 控制台)/ 列表(逐 key) */}
-            <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
-              {([['matrix', Grid3x3, '矩阵'], ['list', List, '列表']] as const).map(([v, Icon, lbl]) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setView(v)}
-                  title={lbl}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 4, padding: '7px 10px', fontSize: 12,
-                    background: view === v ? 'var(--accent-subtle, rgba(99,102,241,0.12))' : 'transparent',
-                    color: view === v ? 'var(--accent)' : 'var(--muted)',
-                    border: 'none', cursor: 'pointer',
-                  }}
-                >
-                  <Icon size={14} />{lbl}
-                </button>
-              ))}
-            </div>
             <div style={{ position: 'relative' }}>
               <Search
                 size={14}
@@ -134,12 +113,7 @@ export default function ApiKeysList() {
           </div>
         </div>
 
-        {/* matrix view:服务×key 访问矩阵控制台 */}
-        {view === 'matrix' && <AccessMatrixView search={search} />}
-
-        {/* tabs + 列表(仅列表视图)*/}
-        {view === 'list' && (
-        <>
+        {/* tabs */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 14 }}>
           {TAB_DEFS.map((t) => {
             const active = tab === t.id
@@ -184,8 +158,6 @@ export default function ApiKeysList() {
               <Row key={k.id} k={k} onOpen={() => navigate(`/api-keys/${k.id}`)} />
             ))}
           </div>
-        )}
-        </>
         )}
 
         <div
