@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 # All paths resolve relative to the backend/ directory (parent of src/)
@@ -13,18 +14,38 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     DATABASE_URL: str = "postgresql+asyncpg://mindcenter:mindcenter@localhost:5432/mindcenter"
 
-    NAS_MODELS_PATH: str = "/mnt/nas/models"
-    NAS_OUTPUTS_PATH: str = "/mnt/nas/outputs"
-    LOCAL_MODELS_PATH: str = "/media/heygo/Program/models/nous"
-    # Directories scanned by lora_scanner (comma-separated).
-    # Default includes ComfyUI loras dir so existing weights are reachable
-    # without copy / symlink. Image specs in models.yaml don't need to list
-    # individual LoRAs — registry injects them automatically into
-    # spec.params['lora_paths'].
-    LORA_PATHS: str = "/media/heygo/Program/models/comfyui/models/loras"
+    # 路径收口(spec 2026-06-19):.env 只给两个绝对根 —— 模型库 + 代码库。各子根
+    # 由 configs/model_roots.yaml 的相对结构派生(见 _derive_paths)。重格/搬盘只改这两行。
+    MODELS_ROOT: str = "/media/heygo/Program/models"
+    REPOS_ROOT: str = "/media/heygo/Program/projects-code/github-repos"
 
-    COSYVOICE_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/CosyVoice"
-    INDEXTTS_REPO_PATH: str = "/media/heygo/Program/projects-code/github-repos/index-tts"
+    # 以下 6 个**留空即从根派生**(_derive_paths 填);仍是真字段 —— 消费代码 settings.XXX
+    # 不变、测试可 setattr 注入、需要时也能在 .env/settings.yaml 显式覆盖单个(可选,非必需)。
+    LOCAL_MODELS_PATH: str = ""
+    NAS_MODELS_PATH: str = ""
+    NAS_OUTPUTS_PATH: str = ""
+    LORA_PATHS: str = ""  # lora_scanner 扫描目录(可逗号分隔多个)
+    COSYVOICE_REPO_PATH: str = ""
+    INDEXTTS_REPO_PATH: str = ""
+
+    @model_validator(mode="after")
+    def _derive_paths(self) -> "Settings":
+        """空值的子根从 MODELS_ROOT/REPOS_ROOT + model_roots.yaml 派生。已显式给的保留。"""
+        r = _model_roots()
+        m, repo = Path(self.MODELS_ROOT), Path(self.REPOS_ROOT)
+        if not self.LOCAL_MODELS_PATH:
+            self.LOCAL_MODELS_PATH = str(m / r["models"]["local"])
+        if not self.NAS_MODELS_PATH:
+            self.NAS_MODELS_PATH = self.LOCAL_MODELS_PATH  # NAS 已并进本地根
+        if not self.NAS_OUTPUTS_PATH:
+            self.NAS_OUTPUTS_PATH = str(m / r["models"]["outputs"])
+        if not self.LORA_PATHS:
+            self.LORA_PATHS = str(m / r["models"]["loras"])
+        if not self.COSYVOICE_REPO_PATH:
+            self.COSYVOICE_REPO_PATH = str(repo / r["repos"]["cosyvoice"])
+        if not self.INDEXTTS_REPO_PATH:
+            self.INDEXTTS_REPO_PATH = str(repo / r["repos"]["indextts"])
+        return self
 
     VLLM_BASE_URL: str = "http://localhost:8100"
     VL_MODEL: str = "Qwen2.5-VL-7B-Instruct"  # default model for /api/v1/understand
@@ -66,6 +87,34 @@ class Settings(BaseSettings):
 def _resolve_path(relative: str) -> Path:
     """Resolve a path relative to the backend/ directory."""
     return _BACKEND_DIR / relative
+
+
+# 路径收口(spec 2026-06-19):MODELS_ROOT/REPOS_ROOT 下的相对子根。
+# fail-soft —— 文件缺失/坏时退回内置默认(与 model_roots.yaml 同值),绝不让缺配置崩启动。
+MODEL_ROOTS_YAML_PATH = _BACKEND_DIR / "configs" / "model_roots.yaml"
+_MODEL_ROOTS_DEFAULT = {
+    "models": {"local": "nous", "loras": "comfyui/models/loras", "outputs": "nous/outputs"},
+    "repos": {"cosyvoice": "CosyVoice", "indextts": "index-tts"},
+}
+
+
+@lru_cache
+def _model_roots() -> dict:
+    if not MODEL_ROOTS_YAML_PATH.exists():
+        return _MODEL_ROOTS_DEFAULT
+    try:
+        with open(MODEL_ROOTS_YAML_PATH) as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            return _MODEL_ROOTS_DEFAULT
+        # 浅合并到默认 —— 缺某段/某键时仍有兜底,不抛 KeyError。
+        merged = {k: dict(v) for k, v in _MODEL_ROOTS_DEFAULT.items()}
+        for sect in ("models", "repos"):
+            if isinstance(data.get(sect), dict):
+                merged[sect].update(data[sect])
+        return merged
+    except Exception:
+        return _MODEL_ROOTS_DEFAULT
 
 
 @lru_cache

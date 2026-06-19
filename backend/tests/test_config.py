@@ -12,8 +12,37 @@ def test_settings_defaults():
         DATABASE_URL="postgresql+asyncpg://x:x@localhost/db",
     )
     assert settings.REDIS_URL == "redis://localhost:6379/0"
-    assert settings.NAS_OUTPUTS_PATH == "/mnt/nas/outputs"
     assert settings.VLLM_BASE_URL == "http://localhost:8100"
+
+
+def test_paths_derive_from_roots():
+    """路径收口(spec 2026-06-19):子根从 MODELS_ROOT/REPOS_ROOT + model_roots.yaml 派生。"""
+    s = Settings(
+        _env_file=None,
+        REDIS_URL="r",
+        DATABASE_URL="d",
+        MODELS_ROOT="/data/models",
+        REPOS_ROOT="/data/repos",
+    )
+    assert s.LOCAL_MODELS_PATH == "/data/models/nous"
+    assert s.NAS_MODELS_PATH == "/data/models/nous"  # NAS 并进本地根
+    assert s.NAS_OUTPUTS_PATH == "/data/models/nous/outputs"
+    assert s.LORA_PATHS == "/data/models/comfyui/models/loras"
+    assert s.COSYVOICE_REPO_PATH == "/data/repos/CosyVoice"
+    assert s.INDEXTTS_REPO_PATH == "/data/repos/index-tts"
+
+
+def test_explicit_path_override_wins():
+    """显式给的子根保留(可选覆盖),不被根派生覆盖。"""
+    s = Settings(
+        _env_file=None,
+        REDIS_URL="r",
+        DATABASE_URL="d",
+        MODELS_ROOT="/data/models",
+        LORA_PATHS="/custom/loras",
+    )
+    assert s.LORA_PATHS == "/custom/loras"
+    assert s.LOCAL_MODELS_PATH == "/data/models/nous"  # 其余仍派生
 
 
 def test_load_model_configs():

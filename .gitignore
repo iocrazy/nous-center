@@ -59,3 +59,7 @@ backend/data/*.db-wal
 # Per-run eval output (committed baselines live in baselines/)
 backend/tests/evals/compact/latest_report.json
 backend/configs/runtime_overrides.json
+
+# DB/config 迁移期的 .env 备份(含密码,绝不提交)
+.env.bak*
+backend/.env.bak*
