@@ -16,8 +16,9 @@ sudo ./infra/systemd/install.sh
 ```
 
 拉 master → 前端 build → 重启后端 → 自检,每步 fail-loud。**别用 sudo 跑整个脚本**(git/npm
-用 root 会在仓库造 root 属主文件);脚本以你的身份跑,只有 `systemctl restart` 那步会自己提权
-(提示输密码)。关键防呆:build 后校验 `frontend/dist` 时间戳真被更新,否则中止不重启 ——
+用 root 会在仓库造 root 属主文件);脚本以你的身份跑,重启那步用 `sudo systemctl restart
+nous-backend` —— 装过 `install.sh` 的机器**免密**(`nous-deploy.sudoers` 只放行这一命令,不存
+任何密码);没装则正常弹密码。关键防呆:build 后校验 `frontend/dist` 时间戳真被更新,否则中止不重启 ——
 杜绝「build 没成却以为上线了」(后端 serve 的是编译好的 `frontend/dist`,不是源码)。
 ⚠️ 重启会卸掉所有已加载模型,vLLM ~30s 重载。
 

@@ -1,0 +1,6 @@
+# nous-center deploy.sh 免密重启后端(2026-06-20)。
+# 让 infra/deploy.sh 的 `sudo systemctl restart nous-backend` 免密 —— **不存任何密码**,
+# 只放行这一个命令(最小权限,sudo 其它操作照样要密码)。cloudflared 经 nous-backend 的
+# PartOf 自动跟随重启,且其免密已在 nous-healthprobe.sudoers 给,这里不重复。
+# 由 install.sh 装到 /etc/sudoers.d/nous-deploy(0440)+ visudo 校验。
+heygo ALL=(root) NOPASSWD: /usr/bin/systemctl restart nous-backend
