@@ -1,0 +1,11 @@
+[Unit]
+Description=每日触发 nous-center DB 备份(pg_dump)
+
+[Timer]
+# 每天 03:30 跑;错过(关机)开机后补跑;加最多 5 分钟抖动避开整点 IO 峰。
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
