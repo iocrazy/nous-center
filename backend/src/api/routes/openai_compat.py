@@ -13,7 +13,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.deps_auth import verify_bearer_token_any
-from src.config import get_settings, load_model_configs
+from src.config import get_settings
 from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
 from src.models.service_instance import ServiceInstance
 from src.models.instance_api_key import InstanceApiKey
@@ -769,8 +769,7 @@ class ModelObject(BaseModel):
     object: str = "model"
     created: int = 1700000000
     owned_by: str = "nous-center"
-    type: str = "tts"
-    status: str = "unloaded"
+    type: str = "model"   # 服务类目:llm / embedding / image / app / tts / vl ...
 
 
 class ModelListResponse(BaseModel):
@@ -778,45 +777,63 @@ class ModelListResponse(BaseModel):
     data: list[ModelObject]
 
 
-@router.get("/v1/models", response_model=ModelListResponse)
-async def list_models(request: Request):
-    """List available models (OpenAI compatible)."""
-    from src.workers.tts_engines import registry
+async def _granted_services(session: AsyncSession, api_key: InstanceApiKey):
+    """该 key active-grant 的全部服务(ServiceInstance),按类目+名排序 —— 与
+    /v1/chat·/v1/embeddings·/v1/images 同款 M:N scope。"""
+    from sqlalchemy import select  # noqa: PLC0415
 
-    configs = load_model_configs()
-    model_mgr = getattr(request.app.state, "model_manager", None)
-    data = []
-    for key, cfg in configs.items():
-        model_type = cfg.get("type", "")
-        if model_type == "tts":
-            engine = registry._ENGINE_INSTANCES.get(key)
-            is_loaded = engine is not None and engine.is_loaded
-        elif model_type == "llm" and model_mgr:
-            is_loaded = model_mgr.is_loaded(key)
-        else:
-            continue
-        data.append(ModelObject(
-            id=key,
-            type=model_type,
-            status="loaded" if is_loaded else "unloaded",
-        ))
+    from src.models.api_gateway import ApiKeyGrant  # noqa: PLC0415
+
+    rows = await session.execute(
+        select(ServiceInstance)
+        .join(ApiKeyGrant, ApiKeyGrant.service_id == ServiceInstance.id)
+        .where(
+            ApiKeyGrant.api_key_id == api_key.id,
+            ApiKeyGrant.status == "active",
+        )
+        .order_by(ServiceInstance.category, ServiceInstance.name)
+    )
+    return rows.scalars().all()
+
+
+@router.get("/v1/models", response_model=ModelListResponse)
+async def list_models(
+    type: str | None = None,
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """List the services THIS key can call (OpenAI 兼容发现端点)。
+
+    返回该 key **active-grant 的全部服务**(LLM / embedding / 图像工作流 / app / TTS…),
+    `id` = **服务名**(与 /v1/chat·/v1/embeddings·/v1/images 的 `model` 字段完全一致),
+    `type` = 类目(客户端据此选端点)。即「发现到的 == 能调的」—— 对齐 Doubao 式
+    一链多服务自选。可选 `?type=llm` 过滤类目。
+    """
+    _instance, api_key = auth
+    if api_key is None:
+        raise NotFoundError("request requires an API key", code="model_not_found")
+    services = await _granted_services(session, api_key)
+    data = [
+        ModelObject(id=s.name, type=(s.category or "model"))
+        for s in services
+        if not type or (s.category or "model") == type
+    ]
     return ModelListResponse(data=data)
 
 
 @router.get("/v1/models/{model_id}")
-async def get_model(model_id: str):
-    """Get a single model's info (OpenAI compatible)."""
-    from src.workers.tts_engines import registry
-
-    configs = load_model_configs()
-    if model_id not in configs:
-        raise HTTPException(404, detail=f"Model '{model_id}' not found")
-
-    cfg = configs[model_id]
-    engine = registry._ENGINE_INSTANCES.get(model_id)
-    is_loaded = engine is not None and engine.is_loaded
-    return ModelObject(
-        id=model_id,
-        type=cfg.get("type", "tts"),
-        status="loaded" if is_loaded else "unloaded",
-    )
+async def get_model(
+    model_id: str,
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Get one service the key can call (OpenAI 兼容)。按服务名查,未授权 → 404。"""
+    _instance, api_key = auth
+    if api_key is None:
+        raise NotFoundError("request requires an API key", code="model_not_found")
+    svc = next((s for s in await _granted_services(session, api_key) if s.name == model_id), None)
+    if svc is None:
+        raise NotFoundError(
+            f"model '{model_id}' not found or no active grant on this key",
+            code="model_not_found")
+    return ModelObject(id=svc.name, type=svc.category or "model")
