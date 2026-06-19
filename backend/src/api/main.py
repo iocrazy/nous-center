@@ -644,6 +644,15 @@ async def lifespan(app: FastAPI):
         responses_routes._set_queue(asyncio.Queue(maxsize=1000))
         partial_worker = asyncio.create_task(responses_routes.partial_write_worker())
 
+    # 启动自检 banner(对齐 PAPERCLIP)—— 全 wiring 完后打一屏聚合状态到 stdout/journald。
+    # 测试态(catch-all 关)跳过避免噪声;全 best-effort,绝不阻断启动。
+    if os.environ.get("NOUS_DISABLE_FRONTEND_MOUNT") != "1":
+        try:
+            from src.api.startup_banner import log_startup_banner
+            await log_startup_banner(app)
+        except Exception:  # noqa: BLE001 — banner 失败不该影响启动
+            logger.warning("startup banner 调用失败(忽略)", exc_info=True)
+
     try:
         yield
     finally:
