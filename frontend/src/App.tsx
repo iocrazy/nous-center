@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import GlobalTopbar from './components/layout/GlobalTopbar'
+import StartupBanner from './components/layout/StartupBanner'
 import IconRail from './components/layout/IconRail'
 import WorkflowCanvasToolbar from './components/layout/WorkflowCanvasToolbar'
 import TaskDetailModal from './components/layout/TaskDetailModal'
@@ -110,6 +111,7 @@ function MainLayout({ workflowRoute }: { workflowRoute?: boolean }) {
       <RouteSync />
       {workflowRoute && <WorkflowRouteLoader />}
       <GlobalTopbar />
+      <StartupBanner />
       <div className="flex-1 flex overflow-hidden">
         <IconRail />
         <div className="flex-1 flex flex-col overflow-hidden relative">

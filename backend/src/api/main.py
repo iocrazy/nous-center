@@ -797,6 +797,18 @@ def create_app() -> FastAPI:
         if load_failures:
             checks["status"] = "degraded"
 
+        # 启动/加载提示:resident 模型预加载进度 —— 重启后 vLLM/image 在后台重载的窗口里,
+        # 前端据此挂「系统启动中·模型加载 M/N」全局横幅(用户要的「启动提示」)。
+        # 用 registry 所有 resident spec(含 llm/embedding/image)vs is_loaded,口径统一。
+        resident_specs = [s for s in mgr._registry.specs if getattr(s, "resident", False)] if mgr else []
+        r_total = len(resident_specs)
+        r_loaded = sum(1 for s in resident_specs if mgr.is_loaded(s.id)) if mgr else 0
+        checks["startup"] = {
+            "resident_total": r_total,
+            "resident_loaded": r_loaded,
+            "preloading": r_total > r_loaded,
+        }
+
         # Per-runner state (spec 4.2). runner_supervisors is populated by Lane K
         # lifespan wiring; until then it's unset and runners is []. LLMRunner
         # (主进程对象, app.state.llm_runner) 也并入此列表 —— 它有自己的
