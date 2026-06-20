@@ -133,6 +133,8 @@ export function usePublishWorkflow() {
 
 export interface PatchServiceBody {
   status?: ServiceStatus
+  // 改名(= 改 model 路由键)。⚠️ 用旧 model 名调用的客户端会失效;格式 ^[a-z][a-z0-9-]{1,62}$。
+  name?: string
   // 服务页「应用编辑」tab 就地改对外暴露 schema(逐 widget 表单配置)。
   // 省略 = 不动该字段;传 [] = 清空。
   exposed_inputs?: ExposedParam[]

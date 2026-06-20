@@ -8,6 +8,7 @@ import {
   KeyRound,
   LayoutGrid,
   Pause,
+  Pencil,
   Play,
   Plus,
   SlidersHorizontal,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react'
 import {
   endpointFor,
+  NAME_RE,
   useDeleteService,
   usePatchService,
   useService,
@@ -145,8 +147,48 @@ function Header({ svc }: { svc: ServiceDetailT }) {
   const patch = usePatchService()
   const del = useDeleteService()
 
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(svc.name)
+  const [err, setErr] = useState<string | null>(null)
+
   const setStatus = (s: ServiceStatus) =>
     patch.mutate({ serviceId: svc.id, status: s })
+
+  const startEdit = () => {
+    setDraft(svc.name)
+    setErr(null)
+    setEditing(true)
+  }
+
+  const saveRename = async () => {
+    const next = draft.trim()
+    if (next === svc.name) {
+      setEditing(false)
+      return
+    }
+    if (!NAME_RE.test(next)) {
+      setErr('格式:小写字母开头,仅小写字母/数字/连字符,长度 2-63')
+      return
+    }
+    const ok = await confirmDialog({
+      message:
+        `把服务名 "${svc.name}" 改为 "${next}"?\n\n` +
+        `⚠️ 这是对外调用的路由键(model / 端点路径)。改名后,仍用旧名 ` +
+        `"${svc.name}" 调用的客户端会收到 404,需同步更新调用方代码。\n` +
+        `(已授权的 API Key 不受影响 — grant 按服务 ID 绑定。)`,
+      danger: true,
+      confirmText: '改名',
+    })
+    if (!ok) return
+    patch.mutate(
+      { serviceId: svc.id, name: next },
+      {
+        onSuccess: () => setEditing(false),
+        onError: (e) =>
+          setErr(e instanceof Error ? e.message : '改名失败(名称可能已被占用)'),
+      },
+    )
+  }
 
   return (
     <div
@@ -160,10 +202,61 @@ function Header({ svc }: { svc: ServiceDetailT }) {
     >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <h1 style={{ fontSize: 22, color: 'var(--text)' }}>{svc.name}</h1>
+          {editing ? (
+            <>
+              <input
+                autoFocus
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value)
+                  setErr(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveRename()
+                  if (e.key === 'Escape') setEditing(false)
+                }}
+                style={{
+                  fontSize: 20,
+                  fontFamily: 'var(--mono, monospace)',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '4px 8px',
+                  minWidth: 220,
+                }}
+              />
+              <SmallBtn onClick={saveRename} icon={Pencil}>
+                保存
+              </SmallBtn>
+              <SmallBtn onClick={() => setEditing(false)}>取消</SmallBtn>
+            </>
+          ) : (
+            <>
+              <h1 style={{ fontSize: 22, color: 'var(--text)' }}>{svc.name}</h1>
+              <button
+                onClick={startEdit}
+                title="改名(对外路由键)"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--muted)',
+                  cursor: 'pointer',
+                  padding: 2,
+                }}
+              >
+                <Pencil size={15} />
+              </button>
+            </>
+          )}
           <StatusBadge status={svc.status} />
           <SourceBadge svc={svc} />
         </div>
+        {err && (
+          <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginTop: 6 }}>{err}</div>
+        )}
         <div
           style={{
             display: 'flex',
@@ -1346,7 +1439,7 @@ function SmallBtn({
   danger,
 }: {
   onClick: () => void
-  icon: typeof Pause
+  icon?: typeof Pause
   children: React.ReactNode
   danger?: boolean
 }) {
@@ -1368,7 +1461,7 @@ function SmallBtn({
         cursor: 'pointer',
       }}
     >
-      <Icon size={12} />
+      {Icon && <Icon size={12} />}
       {children}
     </button>
   )
