@@ -31,6 +31,7 @@ const TAB_DEFS: { id: FilterTab; label: string }[] = [
   { id: 'all', label: '全部' },
   { id: 'llm', label: 'LLM' },
   { id: 'tts', label: 'TTS' },
+  { id: 'asr', label: 'ASR' },
   { id: 'vl', label: 'VL' },
   // 图像服务的 category 后端存为 'image'(image_output sink 检测)。少了这个 tab,
   // image 服务会落进 buildCounts 的 image 桶却无任何子 tab 可筛 → 只在「全部」出现、
@@ -578,6 +579,7 @@ const CATEGORY_TAG_STYLES: Record<string, React.CSSProperties> = {
   tts: { background: 'rgba(168,85,247,0.15)', color: 'var(--purple, #a855f7)' },
   vl: { background: 'rgba(59,130,246,0.15)', color: 'var(--info, #3b82f6)' },
   image: { background: 'rgba(236,72,153,0.15)', color: 'var(--pink, #ec4899)' },
+  asr: { background: 'rgba(14,165,233,0.15)', color: 'var(--sky, #0ea5e9)' },  // 语音识别(2026-06-20)
   app: { background: 'var(--bg)', color: 'var(--muted)' },
 }
 
@@ -737,7 +739,7 @@ function effectiveCategory(svc: Pick<ServiceRow, 'category' | 'type'>): ServiceC
 }
 
 function buildCounts(rows: ServiceRow[]): Record<ServiceCategory, number> {
-  const out: Record<ServiceCategory, number> = { llm: 0, tts: 0, vl: 0, app: 0, image: 0 }
+  const out: Record<ServiceCategory, number> = { llm: 0, tts: 0, vl: 0, app: 0, image: 0, asr: 0 }
   for (const r of rows) out[effectiveCategory(r)] += 1
   return out
 }

@@ -220,6 +220,9 @@ export function endpointsFor(
   if (category === 'tts') {
     return { audio: { label: 'OpenAI 兼容 · Speech', url: `${baseUrl}/v1/audio/speech`, hint } }
   }
+  if (category === 'asr') {
+    return { transcriptions: { label: 'OpenAI 兼容 · Transcriptions', url: `${baseUrl}/v1/audio/transcriptions`, hint } }
+  }
   return {
     openai: {
       label: 'OpenAI 兼容',

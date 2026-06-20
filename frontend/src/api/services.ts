@@ -4,7 +4,7 @@ import { apiFetch } from './client'
 // ---------- shared types ----------
 
 export type ServiceStatus = 'active' | 'paused' | 'deprecated' | 'retired'
-export type ServiceCategory = 'llm' | 'tts' | 'vl' | 'app' | 'image'
+export type ServiceCategory = 'llm' | 'tts' | 'vl' | 'app' | 'image' | 'asr'
 
 export interface ExposedParam {
   key?: string
@@ -181,9 +181,10 @@ export function paramSlot(p: ExposedParam): string | undefined {
 }
 
 export function endpointFor(svc: Pick<ServiceRow, 'name' | 'category'>): string {
-  return svc.category === 'llm'
-    ? `POST /v1/chat/completions · model=${svc.name}`
-    : `POST /v1/apps/${svc.name}/run`
+  if (svc.category === 'llm') return `POST /v1/chat/completions · model=${svc.name}`
+  // ASR(语音识别,2026-06-20):multipart 转写端点。
+  if (svc.category === 'asr') return `POST /v1/audio/transcriptions · model=${svc.name}`
+  return `POST /v1/apps/${svc.name}/run`
 }
 
 export const NAME_RE = /^[a-z][a-z0-9-]{1,62}$/
