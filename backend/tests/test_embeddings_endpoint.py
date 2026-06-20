@@ -7,14 +7,14 @@ from __future__ import annotations
 
 import pathlib
 
-import yaml
+from src.config import collect_model_entries
 
 _ROOT = pathlib.Path(__file__).parent.parent
 
 
 def test_models_yaml_registers_embedding_models():
-    cfg = yaml.safe_load((_ROOT / "configs/models.yaml").read_text())
-    by_id = {m["id"]: m for m in cfg["models"]}
+    # 模型定义已迁到 configs/models.d/<id>.yaml(2026-06-20);走 collect_model_entries 单一来源。
+    by_id = {m["id"]: m for m in collect_model_entries(_ROOT / "configs/models.yaml")}
     for mid, subdir in (("qwen3_embedding_4b", "Qwen3-Embedding-4B"),
                         ("qwen3_embedding_8b", "Qwen3-Embedding-8B")):
         m = by_id.get(mid)

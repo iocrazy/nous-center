@@ -188,6 +188,7 @@ def collect_model_entries(yaml_path: Path) -> list[dict]:
     自身的 `models:` list。按 id 去重(models.d 优先)。load_model_configs 与 ModelRegistry
     两个读取器都走这个,避免口径分叉(spec 2026-06-20)。
     """
+    yaml_path = Path(yaml_path)  # _resolve_path 可能返回 str(测试 monkeypatch);统一成 Path
     entries: list[dict] = []
     seen: set[str] = set()
 

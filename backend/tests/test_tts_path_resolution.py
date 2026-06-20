@@ -40,11 +40,13 @@ def test_tts_base_resolves_model_path_against_local_models(tmp_path, monkeypatch
 
 def test_models_yaml_tts_paths_not_stale_tts_dir():
     """models.yaml 的 main 不得再指旧 tts/ 目录(盘上真实目录是 speech/)。"""
-    import yaml
+    from src.config import collect_model_entries
 
-    cfg = yaml.safe_load(
-        (pathlib.Path(__file__).parent.parent / "configs/models.yaml").read_text())
-    for m in cfg["models"]:
+    # 模型定义已迁到 configs/models.d/<id>.yaml(2026-06-20);走 collect_model_entries 单一来源。
+    root = pathlib.Path(__file__).parent.parent
+    entries = collect_model_entries(root / "configs/models.yaml")
+    assert entries, "collect_model_entries 没读到任何模型(models.d 空?)"
+    for m in entries:
         main = (m.get("paths") or {}).get("main", "")
         assert not str(main).startswith("tts/"), \
             f"{m.get('id')} 仍指旧 tts/ 目录(盘上是 speech/)"
