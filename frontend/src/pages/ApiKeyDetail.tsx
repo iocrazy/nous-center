@@ -49,8 +49,18 @@ export default function ApiKeyDetail() {
   const [copied, setCopied] = useState<string | null>(null)
   const [expandedSnippet, setExpandedSnippet] = useState<string | null>(null)
 
-  const sampleService = useMemo(() => {
-    return key?.grants.find((g) => g.status === 'active') ?? key?.grants[0]
+  // 一把 key 可跨模态(综合 key = llm + embedding + ...)。调用方式按授权到的**每个去重
+  // 类目各列一组端点**,否则只取首个 grant 会把综合 key 误显成只有 /v1/chat/completions。
+  const sampleServices = useMemo(() => {
+    const grants = key?.grants ?? []
+    const active = grants.filter((g) => g.status === 'active')
+    const pool = active.length ? active : grants
+    const byCat = new Map<string, GrantSummary>()
+    for (const g of pool) {
+      const cat = g.service_category ?? 'llm'
+      if (!byCat.has(cat)) byCat.set(cat, g)
+    }
+    return [...byCat.values()]
   }, [key])
 
   // 示例调用地址:UI 与 API 同源(生产 = api.iocrazy.com,dev = localhost:8000)→ 用
@@ -62,9 +72,12 @@ export default function ApiKeyDetail() {
   }, [apiBaseUrl])
 
   const endpoints = useMemo(() => {
-    return endpointsFor(
-      sampleService?.service_name ?? '<service>', exampleBase, sampleService?.service_category)
-  }, [sampleService, exampleBase])
+    if (!sampleServices.length) return endpointsFor('<service>', exampleBase, undefined)
+    return sampleServices.reduce(
+      (acc, g) => Object.assign(acc, endpointsFor(g.service_name, exampleBase, g.service_category)),
+      {} as ReturnType<typeof endpointsFor>,
+    )
+  }, [sampleServices, exampleBase])
 
   const handleCopy = async (text: string, tag: string) => {
     await navigator.clipboard.writeText(text)
@@ -107,10 +120,14 @@ export default function ApiKeyDetail() {
   const secretDisplay = visibleSecret ?? `${key.key_prefix}${'•'.repeat(20)}`
 
   const sampleSecret = visibleSecret ?? key.secret_plaintext ?? '<your-api-key>'
-  const sampleModel = sampleService?.service_name ?? '<service>'
 
-  const snippets = buildSnippets(
-    exampleBase, sampleModel, sampleSecret, sampleService?.service_category)
+  const snippets = sampleServices.length
+    ? sampleServices.reduce(
+        (acc, g) =>
+          Object.assign(acc, buildSnippets(exampleBase, g.service_name, sampleSecret, g.service_category)),
+        {} as Record<string, string>,
+      )
+    : buildSnippets(exampleBase, '<service>', sampleSecret, undefined)
 
   return (
     <div
@@ -248,6 +265,34 @@ export default function ApiKeyDetail() {
 
         {/* endpoints */}
         <Section title="调用方式">
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 12,
+              fontSize: 12,
+              color: 'var(--muted)',
+            }}
+          >
+            <span>Base URL</span>
+            <code
+              style={{
+                fontFamily: 'var(--mono, monospace)',
+                color: 'var(--text)',
+                background: 'var(--bg-accent)',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                padding: '2px 6px',
+              }}
+            >
+              {exampleBase}/v1
+            </code>
+            <IconBtn title="复制 Base URL" onClick={() => handleCopy(`${exampleBase}/v1`, 'baseurl')}>
+              {copied === 'baseurl' ? <Check size={12} /> : <Copy size={12} />}
+            </IconBtn>
+            <span>同一个 key 按授权的模态走不同子路径 ↓</span>
+          </div>
           <div
             style={{
               display: 'grid',
