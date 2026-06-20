@@ -1,8 +1,32 @@
 # ASR 模态接入 — Qwen3-ASR-1.7B 走 vLLM(镜像 embedding 整合)
 
 - Date: 2026-06-20
-- Status: 设计
-- Trigger: 用户要给 nous-center 加语音识别(ASR)。对比 MiMo-V2.5-ASR(8B,中文方言强,但只有
+- Status: 设计 + **PR-0 spike ✅ 已真机验通**(2026-06-20)
+- Trigger: 用户要给 nous-center 加语音识别(ASR)。
+
+## PR-0 Spike 结果(2026-06-20,真机验通)
+
+`vllm serve Qwen3-ASR-1.7B`(钉死的 0.22)→ `POST /v1/audio/transcriptions` 真音频转写成功:
+中文样本 `assets/voices/default_zh_female.wav` → `{"text":"希望你以后能够做得比我还好哟。"}`。
+
+**核心假设全部成立**:vLLM 0.22 原生认 `Qwen3ASRForConditionalGeneration`、`/v1/audio/
+transcriptions` OpenAI 兼容端点可用、中文转写正确。**无需 bump vllm**。
+
+**关键集成约束(PR-1 必须照做,踩了一圈才通)**:
+1. **`VLLM_USE_FLASHINFER_SAMPLER=0` 必设** —— 本机 CUDA 编译链对 flashinfer JIT 是坏的
+   (`/usr/local/cuda` 缺 `curand.h`;混 venv `nvidia/cu13/include` 又版本冲突
+   `__cudaLaunch not declared`)。生成式模型在 3090(sm_86)走 flashinfer 采样会 JIT 编译→崩;
+   关掉用原生 PyTorch 采样即过。生产 LLM 没事是因为 Blackwell 用预编译 flashinfer、不触发该编译。
+2. **`ninja` 要在 PATH**(在 `.venv/bin`;生产 systemd PATH 已含 linuxbrew,但 runner 起 vLLM 时要确保)。
+3. **音频要 PyAV 可解码格式**:vLLM `multimodal/media/audio.py:load_audio` 用 PyAV;测试那个
+   **IEEE-Float 24kHz WAV 被拒**("Invalid or unsupported audio file"),`ffmpeg -ar 16000 -ac 1
+   -c:a pcm_s16le` 转标准 PCM 后即过。→ 端点要么 ffmpeg 归一化输入,要么文档声明支持格式。
+4. 模型在 `LOCAL_MODELS_PATH/speech/Qwen3-ASR-1.7B`(当前 nvme2/NTFS;`weight_utils` 警告
+   NTFS 不能 auto-prefetch,不影响功能)。
+5. profiling 显存:`--max-num-seqs` + `--limit-mm-per-prompt '{"audio":N}'` 压低音频项数避 OOM;
+   `--enforce-eager` 起得快(跳 torch.compile/cudagraph)。
+
+对比 MiMo-V2.5-ASR(8B,中文方言强,但只有
   transformers 路径)与 Qwen3-ASR(vLLM day-0,52 语种,轻量)后,用户拍 **Qwen3-ASR-1.7B**。
   目标:像 embedding/LLM 那样做成**直接引擎 + OpenAI 式端点**,不走画布工作流。
 
