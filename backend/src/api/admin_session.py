@@ -19,7 +19,14 @@ COOKIE_NAME = "nous_admin_session"
 
 
 def is_login_required() -> bool:
-    return bool(get_settings().ADMIN_PASSWORD)
+    """Gate /api/* when ANY admin credential is configured.
+
+    Either the browser password (cookie login) or a CLI ADMIN_TOKEN arms the
+    gate — a token-only headless deployment must still be protected, and the
+    route guard + middleware must agree on when auth is on. Both empty = dev mode.
+    """
+    s = get_settings()
+    return bool(s.ADMIN_PASSWORD or s.ADMIN_TOKEN)
 
 
 def _secret() -> bytes:
@@ -53,13 +60,31 @@ def verify_token(token: str | None) -> bool:
     return hmac.compare_digest(sig, expected)
 
 
+def admin_token_matches(authorization: str | None) -> bool:
+    """CLI/curl path: ``Authorization: Bearer <ADMIN_TOKEN>``.
+
+    Only valid when an ADMIN_TOKEN is configured (constant-time compare). This is
+    the second accepted credential alongside the browser session cookie, so the
+    documented CLI bearer actually clears the ``/api/*`` gate instead of being
+    blocked by the cookie middleware before its route ever runs.
+    """
+    token = get_settings().ADMIN_TOKEN
+    if not token or not authorization or not authorization.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(authorization[7:], token)
+
+
 def request_is_authed(request: Request) -> bool:
     if not is_login_required():
         return True
-    return verify_token(request.cookies.get(COOKIE_NAME))
+    if verify_token(request.cookies.get(COOKIE_NAME)):
+        return True
+    return admin_token_matches(request.headers.get("Authorization"))
 
 
 def websocket_is_authed(websocket: WebSocket) -> bool:
     if not is_login_required():
         return True
-    return verify_token(websocket.cookies.get(COOKIE_NAME))
+    if verify_token(websocket.cookies.get(COOKIE_NAME)):
+        return True
+    return admin_token_matches(websocket.headers.get("Authorization"))

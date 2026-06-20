@@ -1,19 +1,23 @@
-"""Admin token authentication for management API routes."""
+"""Admin authentication dependency for management API routes."""
 
 from fastapi import HTTPException, Request
 
-from src.config import get_settings
+from src.api.admin_session import request_is_authed
 
 
 async def require_admin(request: Request):
-    """Require admin token for management routes. Skip if ADMIN_TOKEN is empty (dev mode)."""
-    settings = get_settings()
-    if not settings.ADMIN_TOKEN:
-        return  # No auth in dev mode
+    """Require an authenticated admin for management routes.
 
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(401, "Missing authorization")
-    token = auth[7:]
-    if token != settings.ADMIN_TOKEN:
-        raise HTTPException(403, "Invalid admin token")
+    Delegates to the SAME predicate the global ``AdminSessionGateMiddleware``
+    uses (``request_is_authed`` = valid admin session cookie OR
+    ``Authorization: Bearer <ADMIN_TOKEN>``), so there is one source of truth and
+    no divergence between the route guard and the middleware.
+
+    Passes in dev mode (no ADMIN_PASSWORD configured → ``is_login_required`` is
+    False). Previously this keyed its bypass off ADMIN_TOKEN alone, which made it
+    a silent no-op in production (ADMIN_TOKEN empty but ADMIN_PASSWORD set) — the
+    guard enforced nothing and only the middleware was actually protecting these
+    routes.
+    """
+    if not request_is_authed(request):
+        raise HTTPException(401, "admin login required")
