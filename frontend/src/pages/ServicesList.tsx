@@ -578,6 +578,7 @@ const CATEGORY_TAG_STYLES: Record<string, React.CSSProperties> = {
   tts: { background: 'rgba(168,85,247,0.15)', color: 'var(--purple, #a855f7)' },
   vl: { background: 'rgba(59,130,246,0.15)', color: 'var(--info, #3b82f6)' },
   image: { background: 'rgba(236,72,153,0.15)', color: 'var(--pink, #ec4899)' },
+  asr: { background: 'rgba(14,165,233,0.15)', color: 'var(--sky, #0ea5e9)' },  // 语音识别(2026-06-20)
   app: { background: 'var(--bg)', color: 'var(--muted)' },
 }
 

@@ -492,7 +492,7 @@ export default function ApiKeyDetail() {
 
 const CAT_COLOR: Record<string, string> = {
   llm: '#3b82f6', embedding: '#22c55e', image: '#a855f7',
-  app: '#f59e0b', vl: '#06b6d4', tts: '#ec4899',
+  app: '#f59e0b', vl: '#06b6d4', tts: '#ec4899', asr: '#0ea5e9',
 }
 
 /** 「+ 授权服务」:从已发布服务里挑(排除已授权的)给这把 key 加授权。
@@ -847,6 +847,15 @@ function buildSnippets(
     "input": "你好，世界",
     "voice": "default"
   }' --output speech.wav`,
+    }
+  }
+  if (category === 'asr') {
+    // ASR 是 multipart 上传(file + model),不是 JSON;键须与 endpointsFor 的 transcriptions 同。
+    return {
+      transcriptions: `curl ${baseUrl}/v1/audio/transcriptions \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -F "file=@audio.wav" \\
+  -F "model=${model}"`,
     }
   }
   return {
