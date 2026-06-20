@@ -31,6 +31,7 @@ const TAB_DEFS: { id: FilterTab; label: string }[] = [
   { id: 'all', label: '全部' },
   { id: 'llm', label: 'LLM' },
   { id: 'tts', label: 'TTS' },
+  { id: 'asr', label: 'ASR' },
   { id: 'vl', label: 'VL' },
   // 图像服务的 category 后端存为 'image'(image_output sink 检测)。少了这个 tab,
   // image 服务会落进 buildCounts 的 image 桶却无任何子 tab 可筛 → 只在「全部」出现、
@@ -738,7 +739,7 @@ function effectiveCategory(svc: Pick<ServiceRow, 'category' | 'type'>): ServiceC
 }
 
 function buildCounts(rows: ServiceRow[]): Record<ServiceCategory, number> {
-  const out: Record<ServiceCategory, number> = { llm: 0, tts: 0, vl: 0, app: 0, image: 0 }
+  const out: Record<ServiceCategory, number> = { llm: 0, tts: 0, vl: 0, app: 0, image: 0, asr: 0 }
   for (const r of rows) out[effectiveCategory(r)] += 1
   return out
 }
