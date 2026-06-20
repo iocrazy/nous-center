@@ -10,12 +10,15 @@ import {
   EyeOff,
   Pause,
   Play,
+  Plus,
   RotateCw,
+  Search,
   Trash2,
   Unlink,
 } from 'lucide-react'
 import {
   endpointsFor,
+  useAddGrant,
   useApiKey,
   useDeleteApiKey,
   usePatchApiKey,
@@ -25,6 +28,7 @@ import {
   type ApiKeyCreated,
   type GrantSummary,
 } from '../api/keys'
+import { useServices, type ServiceRow } from '../api/services'
 import { useSettingsStore } from '../stores/settings'
 
 export default function ApiKeyDetail() {
@@ -361,6 +365,10 @@ export default function ApiKeyDetail() {
 
         {/* grants */}
         <Section title={`授权服务 (${key.grants.length})`}>
+          <AddGrantPicker
+            keyId={key.id}
+            grantedIds={new Set(key.grants.map((g) => g.service_id))}
+          />
           {key.grants.length === 0 ? (
             <div
               style={{
@@ -374,7 +382,7 @@ export default function ApiKeyDetail() {
             >
               这把 key 还没授权任何服务。
               <br />
-              到服务详情页 → "Key 授权" tab 把它加进去。
+              点上方「+ 授权服务」从已发布服务里添加。
             </div>
           ) : (
             <div
@@ -436,6 +444,88 @@ export default function ApiKeyDetail() {
 }
 
 // ---------- subviews ----------
+
+const CAT_COLOR: Record<string, string> = {
+  llm: '#3b82f6', embedding: '#22c55e', image: '#a855f7',
+  app: '#f59e0b', vl: '#06b6d4', tts: '#ec4899',
+}
+
+/** 「+ 授权服务」:从已发布服务里挑(排除已授权的)给这把 key 加授权。
+ *  复用 useAddGrant(POST /keys/{id}/grants);加完 invalidate → 详情刷新、该服务移出可选。 */
+function AddGrantPicker({ keyId, grantedIds }: { keyId: string; grantedIds: Set<string> }) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const { data: services } = useServices()
+  const addGrant = useAddGrant()
+
+  const available = (services ?? []).filter(
+    (s) => !grantedIds.has(s.id) &&
+      (!q.trim() || s.name.toLowerCase().includes(q.toLowerCase()) ||
+        (s.category ?? '').toLowerCase().includes(q.toLowerCase())),
+  )
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px', fontSize: 12,
+          background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer',
+        }}
+      >
+        <Plus size={14} /> 授权服务
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+          <div style={{ position: 'relative', padding: 8, borderBottom: '1px solid var(--border)' }}>
+            <Search size={13} style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="搜索已发布服务…"
+              style={{
+                width: '100%', boxSizing: 'border-box', background: 'var(--bg-accent)', color: 'var(--text)',
+                border: '1px solid var(--border)', borderRadius: 4, padding: '6px 8px 6px 26px', fontSize: 12,
+              }}
+            />
+          </div>
+          <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+            {available.length === 0 ? (
+              <div style={{ padding: 16, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+                没有可加的服务(都授权过了,或没匹配)。
+              </div>
+            ) : (
+              available.map((s: ServiceRow) => (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderTop: '1px solid var(--border)' }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: CAT_COLOR[s.category ?? ''] ?? 'var(--muted)', flex: 'none' }} />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500 }}>{s.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                      {s.category ?? '—'} · {s.source_type === 'workflow' ? (s.workflow_name ?? '工作流') : (s.source_name ?? s.source_type)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={addGrant.isPending}
+                    onClick={() => addGrant.mutate({ keyId, serviceId: s.id })}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 3, padding: '5px 10px', fontSize: 12,
+                      background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)',
+                      borderRadius: 4, cursor: addGrant.isPending ? 'wait' : 'pointer', flex: 'none',
+                    }}
+                  >
+                    <Plus size={12} /> 授权
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
