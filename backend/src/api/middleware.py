@@ -133,6 +133,19 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 # the login page itself.
 _ADMIN_GATE_PREFIXES = ("/api/",)
 
+# External (API-key authed) endpoints that unavoidably live under /api/ because
+# an external protocol fixes their path. Ollama clients hardcode /api/chat etc.,
+# so we can't move them under /v1/. They authenticate in-route via
+# verify_bearer_token_any (the user's API key), NOT the admin cookie — they must
+# bypass the admin gate or every external Ollama client gets 401 before its
+# route ever runs. Keep in sync with ollama_compat.py's route decorators.
+_ADMIN_GATE_EXEMPT_PATHS = frozenset({
+    "/api/chat",
+    "/api/generate",
+    "/api/tags",
+    "/api/show",
+})
+
 
 class AdminSessionGateMiddleware(BaseHTTPMiddleware):
     """Block /api/* requests without a valid admin session cookie.
@@ -143,7 +156,7 @@ class AdminSessionGateMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path.startswith(_ADMIN_GATE_PREFIXES):
+        if path.startswith(_ADMIN_GATE_PREFIXES) and path not in _ADMIN_GATE_EXEMPT_PATHS:
             from src.api.admin_session import request_is_authed
             if not request_is_authed(request):
                 from starlette.responses import JSONResponse
