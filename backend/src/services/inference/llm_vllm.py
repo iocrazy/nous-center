@@ -98,6 +98,7 @@ class VLLMAdapter(InferenceAdapter):
             timeout=120, limits=httpx.Limits(max_connections=10), trust_env=False
         )
         self._managed = True  # True = we control the subprocess
+        self.is_audio = False  # 设于 load():ASR/音频模型(走 /v1/audio/transcriptions)
         # round3 #1:vLLM 运行期持续往 stdout 打日志,Popen 的 PIPE(~64KB)填满后
         # 子进程 write 阻塞 = 推理服务冻结。后台 daemon 线程持续抽干进有界 deque。
         self._stdout_tail: deque[str] = deque(maxlen=200)
@@ -213,6 +214,13 @@ class VLLMAdapter(InferenceAdapter):
             for a in archs
         ) or model_config.get("vision_config") is not None
 
+        # 12b. Detect audio/ASR models(音频进、文本出,如 Qwen3-ASR)。它们也是多模态,但
+        # 输入是 audio 不是 image → 命令里要 --limit-mm-per-prompt {"audio":N} 而非 image。
+        # arch 含 ASR/Audio/Whisper 或 config 有 audio_config/audio_encoder 即判定。
+        is_audio = any(
+            "ASR" in a or "Audio" in a or "Whisper" in a for a in archs
+        ) or model_config.get("audio_config") is not None or model_config.get("audio_encoder_config") is not None
+
         return {
             "port": port,
             "tp": tp,
@@ -225,6 +233,7 @@ class VLLMAdapter(InferenceAdapter):
             "model_size_gb": round(model_size_gb, 2),
             "gpu_total_gb": round(gpu_total_gb, 2),
             "is_multimodal": is_multimodal,
+            "is_audio": is_audio,
         }
 
     async def load(self, device: str | None = None) -> None:
@@ -302,7 +311,15 @@ class VLLMAdapter(InferenceAdapter):
             # blocks instead of re-prefilling. Memory cost is tiny metadata;
             # benefit is large when callers send the same prefix often.
             cmd += ["--enable-prefix-caching"]
-        if auto.get("is_multimodal"):
+        if auto.get("is_audio"):
+            # ASR/音频模型(Qwen3-ASR 等):暴露 /v1/audio/transcriptions。每条 prompt 限 1 个
+            # 音频项,压低 encoder profiling 显存峰值(PR-0 spike:不限会在小卡 profiling OOM)。
+            # --enforce-eager:跳 torch.compile/cudagraph,起得稳(spike 验证的配置)。
+            cmd += ["--limit-mm-per-prompt", '{"audio":1}', "--enforce-eager"]
+            self.is_multimodal = True
+            self.is_audio = True
+            logger.info('Detected audio/ASR model — enabling --limit-mm-per-prompt {"audio":1} + --enforce-eager')
+        elif auto.get("is_multimodal"):
             # vLLM >=0.6 parses this value with json.loads — must be JSON, not key=val.
             # Allow up to 4 images per prompt by default.
             cmd += ["--limit-mm-per-prompt", '{"image":4}']

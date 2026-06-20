@@ -88,6 +88,22 @@ models:
     vllm_runner: pooling
     max_model_len: 8192
     gpu_memory_utilization: 0.3   # 8B 权重 15.3G,同上口径(96G 卡≈29G)
+# ASR 语音识别(2026-06-20 接入,spec asr-qwen3-integration;PR-0 spike 真转写验通)。
+# 走 VLLMAdapter:vLLM 0.22 原生认 Qwen3ASRForConditionalGeneration,暴露
+# /v1/audio/transcriptions。adapter 自动检测 ASR arch → 加 --limit-mm {"audio":1}
+# + --enforce-eager,并已 setdefault VLLM_USE_FLASHINFER_SAMPLER=0(本机 flashinfer
+# JIT 编译链坏,生成式模型必关,见 spike)。音频要标准 PCM(PR-2 端点 ffmpeg 归一化)。
+- adapter: src.services.inference.llm_vllm.VLLMAdapter
+  id: qwen3_asr
+  paths:
+    main: speech/Qwen3-ASR-1.7B
+  type: asr
+  vram_mb: 7000
+  ttl_seconds: 3600
+  params:
+    max_model_len: 8192
+    max_num_seqs: 2
+    gpu_memory_utilization: 0.3   # 1.7B 权重 3.9G + 音频 encoder profiling 峰值;可经网页每模型显存预算调
 - adapter: src.services.inference.llm_vllm.VLLMAdapter
   id: qwen3_6_35b_a3b_fp8
   paths:
