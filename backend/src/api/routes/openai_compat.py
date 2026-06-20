@@ -8,7 +8,7 @@ import time
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -559,6 +559,116 @@ async def embeddings(
     # 响应里的 model 回填服务名(对外契约:caller 看到自己请求的 model 名,不暴露本地路径)
     data["model"] = requested_model or engine_name
     return data
+
+
+# --- /v1/audio/transcriptions ---
+
+
+async def _ffmpeg_to_wav16k(raw: bytes) -> bytes:
+    """任意音频 → 16kHz/单声道/PCM-s16le WAV。
+
+    PR-0 spike 发现:vLLM 的 ASR 端点用 PyAV 解码,非常规格式(如 IEEE-Float WAV)
+    会被拒("Invalid or unsupported audio file")。统一 ffmpeg 归一化成标准 PCM 再转发,
+    既兼容各种上传格式(mp3/m4a/float-wav…)又确保 vLLM 稳解码。stdin→stdout,失败抛 400。
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await proc.communicate(input=raw)
+    if proc.returncode != 0 or not out:
+        msg = err.decode("utf-8", "ignore")[:200] if err else "empty output"
+        raise InvalidRequestError(f"音频解码失败(ffmpeg): {msg}")
+    return out
+
+
+@router.post("/v1/audio/transcriptions")
+async def audio_transcriptions(
+    request: Request,
+    file: UploadFile = File(...),
+    model: str | None = Form(None),
+    language: str | None = Form(None),
+    response_format: str | None = Form(None),
+    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """OpenAI 兼容语音转写(ASR,2026-06-20 接入;spec asr-qwen3-integration)。
+
+    multipart:`file`(音频)+ `model`(服务名)。解析链同 /v1/embeddings:model → 服务
+    (M:N grant / legacy 1:1)→ source_type=model → vLLM ASR 子进程(Qwen3-ASR,
+    models.yaml type:asr)→ 透传 `/v1/audio/transcriptions`。上传音频先 ffmpeg 归一化
+    (PR-0 spike:vLLM PyAV 拒非常规格式)。usage 按 vLLM 返回的 audio 秒数计量。
+    """
+    instance, api_key = auth
+    requested_model = model or None
+
+    if instance is None:
+        try:
+            instance = await resolve_target_service(
+                session, api_key=api_key, requested_model=requested_model,
+            )
+        except ModelNotFound as e:
+            raise NotFoundError(str(e), code="model_not_found")
+        if instance.status != "active":
+            raise HTTPException(403, detail="Instance is inactive")
+        from src.api.deps_auth import enforce_instance_rate_limit
+        await enforce_instance_rate_limit(instance)
+
+    if instance.source_type != "model":
+        raise HTTPException(
+            400,
+            detail=f"transcriptions 只支持 model-backed 服务(got source_type={instance.source_type})",
+        )
+
+    engine_name = instance.source_name or str(instance.source_id)
+    model_mgr = getattr(request.app.state, "model_manager", None)
+    try:
+        base_url = get_vllm_base_url(model_mgr, engine_name)
+    except VLLMNotLoaded as e:
+        raise HTTPException(503, detail=str(e)) from e
+    except VLLMNoEndpoint as e:
+        raise HTTPException(500, detail=str(e)) from e
+
+    raw = await file.read()
+    if not raw:
+        raise InvalidRequestError("空音频文件")
+    wav = await _ffmpeg_to_wav16k(raw)
+
+    start_ms = time.monotonic()
+    async with httpx.AsyncClient(timeout=300, proxy=None) as client:
+        files = {"file": ("audio.wav", wav, "audio/wav")}
+        form: dict[str, str] = {"model": ""}  # vLLM 用自己的 served 模型(同 chat/embeddings)
+        if language:
+            form["language"] = language
+        if response_format:
+            form["response_format"] = response_format
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/v1/audio/transcriptions", files=files, data=form,
+        )
+
+    duration_ms = int((time.monotonic() - start_ms) * 1000)
+    if resp.status_code != 200:
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+
+    out = resp.json()
+    usage = out.get("usage", {}) or {}
+    audio_seconds = int(usage.get("seconds", 0)) if isinstance(usage, dict) else 0
+    from src.services.usage_service import record_llm_usage
+    await record_llm_usage(
+        model=engine_name,
+        prompt_tokens=0,
+        completion_tokens=0,
+        duration_ms=duration_ms,
+        instance_id=instance.id,
+        api_key_id=api_key.id,
+        agent_id=None,
+    )
+    # 计量:按音频秒数扣(ASR 无 token 概念);至少 1,避免 0 长度不计费。
+    await _post_consume_quota(api_key.id, instance.id, max(1, audio_seconds))
+    return out
 
 
 # --- /v1/images/generations ---
