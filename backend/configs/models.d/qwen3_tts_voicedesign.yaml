@@ -1,0 +1,9 @@
+# qwen3_tts_voicedesign — TTS
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.workers.tts_engines.qwen3_tts.Qwen3TTSVoiceDesignEngine
+id: qwen3_tts_voicedesign
+paths:
+  main: speech/qwen3-tts-1.7b-voicedesign
+resident: false
+type: tts
+vram_mb: 4000

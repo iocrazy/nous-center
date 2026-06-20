@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
@@ -54,16 +53,16 @@ class ModelRegistry:
         return len(new_ids)
 
     def _load(self, config_path: str) -> None:
-        with open(config_path) as f:
-            data = yaml.safe_load(f)
+        # 模型定义走 collect_model_entries(models.d/*.yaml + models.yaml,单一来源;
+        # spec 2026-06-20 一模型一文件)—— 与 load_model_configs 同一入口,口径不分叉。
         # 运行时覆盖单一来源(spec 2026-06-16「数据加载统一」):registry 历史上直读 yaml,
         # 绕过 runtime_overrides.json overlay → overlay 的 gpu/resident 对 vLLM 落卡不生效
-        # (落卡读 spec.gpu)。这里套用 overlay,使 overlay 成为运行时覆盖的唯一来源,
-        # 与 load_model_configs() 口径一致(都经 _OVERRIDABLE_KEYS 叠加)。
+        # (落卡读 spec.gpu)。这里套用 overlay,使 overlay 成为运行时覆盖的唯一来源。
         # 局部 import 避免 registry↔config 启动期循环(同 add_from_scan)。
-        from src.config import load_runtime_overrides  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+        from src.config import collect_model_entries, load_runtime_overrides  # noqa: PLC0415
         overrides = load_runtime_overrides()
-        for entry in data.get("models", []):
+        for entry in collect_model_entries(_Path(config_path)):
             ov = overrides.get(entry["id"]) or {}
             spec = ModelSpec(
                 id=entry["id"],

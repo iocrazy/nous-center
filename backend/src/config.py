@@ -1,9 +1,12 @@
+import logging
 from functools import lru_cache
 from pathlib import Path
 
 import yaml
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 # All paths resolve relative to the backend/ directory (parent of src/)
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -169,16 +172,63 @@ def load_runtime_overrides() -> dict:
     return runtime_override_store.get_overrides()
 
 
+def _entries_from_doc(doc: object) -> list[dict]:
+    """一个 models.d 文件:既支持顶层即单个模型 dict,也支持 {models:[...]} 容错。"""
+    if not isinstance(doc, dict):
+        return []
+    if isinstance(doc.get("models"), list):
+        return [e for e in doc["models"] if isinstance(e, dict)]
+    if doc.get("id"):
+        return [doc]
+    return []
+
+
+def collect_model_entries(yaml_path: Path) -> list[dict]:
+    """模型静态定义的**单一来源**:合并 `<dir>/models.d/*.yaml`(一模型一文件)+ yaml_path
+    自身的 `models:` list。按 id 去重(models.d 优先)。load_model_configs 与 ModelRegistry
+    两个读取器都走这个,避免口径分叉(spec 2026-06-20)。
+    """
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(e: dict) -> None:
+        mid = e.get("id")
+        if mid and mid not in seen:
+            entries.append(e)
+            seen.add(mid)
+
+    models_d = yaml_path.parent / "models.d"
+    if models_d.is_dir():
+        for f in sorted(models_d.glob("*.yaml")):
+            try:
+                doc = yaml.safe_load(f.read_text())
+            except Exception:  # noqa: BLE001 — 单个坏文件不阻断其余
+                logger.warning("models.d 文件解析失败,跳过: %s", f.name)
+                continue
+            for e in _entries_from_doc(doc):
+                _add(e)
+
+    if yaml_path.exists():
+        try:
+            data = yaml.safe_load(yaml_path.read_text()) or {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        legacy = data.get("models") if isinstance(data, dict) else None
+        if isinstance(legacy, list):
+            for e in legacy:
+                if isinstance(e, dict):
+                    _add(e)
+    return entries
+
+
 def load_model_configs(path: str = "configs/models.yaml") -> dict:
     """Load model configs and return dict keyed by model id/name.
 
-    Supports both old dict-based format and new list-based format.
+    模型定义走 collect_model_entries(models.d/*.yaml + models.yaml,单一来源)。
     运行时覆盖(resident/gpu)叠加在最后,见 load_runtime_overrides。
     """
     resolved = _resolve_path(path)
-    with open(resolved) as f:
-        data = yaml.safe_load(f)
-    models = data["models"]
+    models = collect_model_entries(resolved)
 
     # New list-based format: convert to dict keyed by id
     if isinstance(models, list):

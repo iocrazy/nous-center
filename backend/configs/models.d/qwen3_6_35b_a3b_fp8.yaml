@@ -1,0 +1,9 @@
+# qwen3_6_35b_a3b_fp8 — LLM
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: qwen3_6_35b_a3b_fp8
+paths:
+  main: llm/Qwen3.6-35B-A3B-FP8
+resident: false
+type: llm
+vram_mb: 35756
