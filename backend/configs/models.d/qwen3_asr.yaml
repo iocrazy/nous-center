@@ -1,0 +1,13 @@
+# qwen3_asr — ASR(语音识别)
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: qwen3_asr
+paths:
+  main: speech/Qwen3-ASR-1.7B
+type: asr
+vram_mb: 7000
+ttl_seconds: 3600
+params:
+  max_model_len: 8192
+  max_num_seqs: 2
+  gpu_memory_utilization: 0.3

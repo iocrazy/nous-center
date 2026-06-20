@@ -16,10 +16,10 @@ def test_create_instance_derives_category_from_engine_type():
 
 def test_engine_types_cover_embedding():
     """注册表里 embedding 引擎 type 必须是 'embedding'(前端 endpointsFor 据此给 /v1/embeddings)。"""
-    import yaml
+    from src.config import collect_model_entries
 
-    cfg = yaml.safe_load(
-        (pathlib.Path(__file__).parent.parent / "configs/models.yaml").read_text())
-    by_id = {m["id"]: m for m in cfg["models"]}
+    # 模型定义已迁到 configs/models.d/<id>.yaml(2026-06-20);走 collect_model_entries 单一来源。
+    root = pathlib.Path(__file__).parent.parent
+    by_id = {m["id"]: m for m in collect_model_entries(root / "configs/models.yaml")}
     assert by_id["qwen3_embedding_4b"]["type"] == "embedding"
     assert by_id["qwen3_embedding_8b"]["type"] == "embedding"

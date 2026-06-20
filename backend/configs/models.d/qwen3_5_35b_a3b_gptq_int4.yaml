@@ -1,0 +1,9 @@
+# qwen3_5_35b_a3b_gptq_int4 — LLM
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: qwen3_5_35b_a3b_gptq_int4
+paths:
+  main: llm/Qwen3.5-35B-A3B-GPTQ-Int4
+resident: false
+type: llm
+vram_mb: 23325

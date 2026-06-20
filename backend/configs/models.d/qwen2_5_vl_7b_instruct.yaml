@@ -1,0 +1,9 @@
+# qwen2_5_vl_7b_instruct — LLM
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: qwen2_5_vl_7b_instruct
+paths:
+  main: llm/Qwen2.5-VL-7B-Instruct
+resident: false
+type: llm
+vram_mb: 14000

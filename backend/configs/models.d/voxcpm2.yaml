@@ -1,0 +1,9 @@
+# voxcpm2 — TTS
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.workers.tts_engines.voxcpm2.VoxCPM2Engine
+id: voxcpm2
+paths:
+  main: speech/VoxCPM2
+resident: false
+type: tts
+vram_mb: 8000

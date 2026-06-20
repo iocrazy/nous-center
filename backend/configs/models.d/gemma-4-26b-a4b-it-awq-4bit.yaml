@@ -1,0 +1,8 @@
+# gemma-4-26b-a4b-it-awq-4bit — LLM
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: gemma-4-26b-a4b-it-awq-4bit
+paths:
+  main: llm/gemma-4-26B-A4B-it-AWQ-4bit
+type: llm
+vram_mb: 16421

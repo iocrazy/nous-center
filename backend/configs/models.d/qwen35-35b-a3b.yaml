@@ -1,0 +1,8 @@
+# qwen35-35b-a3b — LLM
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: qwen35-35b-a3b
+paths:
+  main: llm/Qwen3.5-35B-A3B
+type: llm
+vram_mb: 68595

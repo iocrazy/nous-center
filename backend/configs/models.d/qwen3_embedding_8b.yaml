@@ -1,0 +1,13 @@
+# qwen3_embedding_8b — Embedding
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: qwen3_embedding_8b
+paths:
+  main: text/embedding/Qwen3-Embedding-8B
+type: embedding
+vram_mb: 17500
+ttl_seconds: 3600
+params:
+  vllm_runner: pooling
+  max_model_len: 8192
+  gpu_memory_utilization: 0.3
