@@ -19,6 +19,9 @@ async def test_health_has_load_failures_and_runners_keys():
     assert "runners" in body
     assert isinstance(body["load_failures"], dict)
     assert isinstance(body["runners"], list)
+    # 启动提示块(c):resident 加载进度;mgr 替身无 _registry → 降级 0/0 不崩(回归守卫)。
+    assert "startup" in body
+    assert set(body["startup"]) >= {"resident_total", "resident_loaded", "preloading"}
 
 
 @pytest.mark.asyncio
