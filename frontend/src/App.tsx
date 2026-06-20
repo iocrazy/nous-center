@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import GlobalTopbar from './components/layout/GlobalTopbar'
 import StartupBanner from './components/layout/StartupBanner'
@@ -39,7 +39,10 @@ function RouteSync() {
   const location = useLocation()
   const setOverlay = usePanelStore((s) => s.setOverlay)
 
-  useEffect(() => {
+  // useLayoutEffect(非 useEffect):路由→overlay 的映射必须在浏览器**绘制前**完成,
+  // 否则首帧 activeOverlay 还是上个值(默认 null)→ 露出底下工作流画布一闪,过后才显示
+  // overlay(api-keys/services 等)。layout effect 同步在 paint 前 setState+重渲染,消除闪烁。
+  useLayoutEffect(() => {
     // `/workflows/:id` is the canvas editor (no overlay); `/workflows`
     // (no id) is the v3 m08 list page.
     if (location.pathname === '/workflows') {
