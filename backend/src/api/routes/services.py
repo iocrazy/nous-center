@@ -106,6 +106,9 @@ class ServiceDetailOut(ServiceOut):
 
 class ServicePatch(BaseModel):
     status: Literal["active", "paused", "deprecated", "retired"] | None = None
+    # 改名(= 改 model 路由键)。⚠️ 用旧 model 名调用的客户端会失效(404),UI 给提示。
+    # 格式同发布(^[a-z][a-z0-9-]{1,62}$),唯一;grant/用量靠 service_id 不受影响。
+    name: str | None = None
     # 服务页「应用编辑」tab 改暴露字段(逐 widget 表单配置)就地落库。映射改了
     # 不动 snapshot 本体,故不 bump snapshot_hash/version(见 spec 2026-06-09 R3:
     # 改 active 服务的对外 schema 有契约风险,UI 给提示,单管理员 infra 允许)。
@@ -349,6 +352,19 @@ async def patch_service(
         raise HTTPException(404, detail="service not found")
     if body.status is not None:
         svc.status = body.status
+    if body.name is not None and body.name != svc.name:
+        # 校验格式 + 唯一(预检;commit 处再兜 IntegrityError 防并发 TOCTOU)。
+        try:
+            _validate_name(body.name)
+        except ValueError as e:
+            raise HTTPException(422, detail=str(e))
+        taken = await session.scalar(
+            select(ServiceInstance.id).where(
+                ServiceInstance.name == body.name, ServiceInstance.id != service_id),
+        )
+        if taken is not None:
+            raise HTTPException(409, detail=f"service name '{body.name}' already exists")
+        svc.name = body.name
     if edits_exposed:
         _validate_exposed_against_snapshot(
             dict(svc.workflow_snapshot or {}),
@@ -359,7 +375,11 @@ async def patch_service(
             svc.exposed_inputs = [p.model_dump(exclude_none=True) for p in body.exposed_inputs]
         if body.exposed_outputs is not None:
             svc.exposed_outputs = [p.model_dump(exclude_none=True) for p in body.exposed_outputs]
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:  # 改名并发撞唯一约束(TOCTOU 兜底)
+        await session.rollback()
+        raise HTTPException(409, detail=f"service name '{body.name}' already exists")
     await session.refresh(svc)
     invalidate("services")
     return svc

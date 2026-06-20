@@ -155,3 +155,35 @@ async def test_quick_provision_links_workflow_back(db_session):
         )
     ).scalar_one()
     assert refetched.auto_generated is True
+
+
+@pytest.mark.asyncio
+async def test_patch_rename_service(db_client):
+    """改名(PATCH name):成功改 → GET 列表显新名;旧名消失。grant 靠 id 不受影响(此处只验名)。"""
+    r = await db_client.post("/api/v1/services/quick-provision", json=_quick("old-name"))
+    assert r.status_code == 201
+    sid = int(r.json()["id"])
+
+    r2 = await db_client.patch(f"/api/v1/services/{sid}", json={"name": "new-name"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["name"] == "new-name"
+
+    names = [s["name"] for s in (await db_client.get("/api/v1/services")).json()]
+    assert "new-name" in names and "old-name" not in names
+
+
+@pytest.mark.asyncio
+async def test_patch_rename_invalid_format_422(db_client):
+    r = await db_client.post("/api/v1/services/quick-provision", json=_quick("svc-fmt"))
+    sid = int(r.json()["id"])
+    bad = await db_client.patch(f"/api/v1/services/{sid}", json={"name": "Bad Name!"})
+    assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_rename_duplicate_409(db_client):
+    a = await db_client.post("/api/v1/services/quick-provision", json=_quick("svc-a"))
+    await db_client.post("/api/v1/services/quick-provision", json=_quick("svc-b"))
+    sid_a = int(a.json()["id"])
+    dup = await db_client.patch(f"/api/v1/services/{sid_a}", json={"name": "svc-b"})
+    assert dup.status_code == 409
