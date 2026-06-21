@@ -4,21 +4,32 @@ import asyncio
 import io
 import json
 import logging
+import os
+import tempfile
 import time
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_auth import verify_bearer_token_any
 from src.config import get_settings
 from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
-from src.models.service_instance import ServiceInstance
-from src.models.instance_api_key import InstanceApiKey
 from src.models.database import get_async_session
-
+from src.models.instance_api_key import InstanceApiKey
+from src.models.service_instance import ServiceInstance
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
@@ -28,10 +39,11 @@ from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.prompt_composer import (
     AgentLoadFailed,
     AgentNotFound,
+)
+from src.services.prompt_composer import (
     compose as compose_agent_prompt,
 )
 from src.services.skill_tools import skill_tool_schema
-from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +278,8 @@ async def chat_completions(
         from src.models.database import get_session_factory as _csf
         from src.services.context_cache_service import (
             increment_hit_and_extend as _ihe,
+        )
+        from src.services.context_cache_service import (
             resolve_for_request,
         )
 
@@ -567,22 +581,47 @@ async def embeddings(
 async def _ffmpeg_to_wav16k(raw: bytes) -> bytes:
     """任意音频 → 16kHz/单声道/PCM-s16le WAV。
 
-    PR-0 spike 发现:vLLM 的 ASR 端点用 PyAV 解码,非常规格式(如 IEEE-Float WAV)
-    会被拒("Invalid or unsupported audio file")。统一 ffmpeg 归一化成标准 PCM 再转发,
-    既兼容各种上传格式(mp3/m4a/float-wav…)又确保 vLLM 稳解码。stdin→stdout,失败抛 400。
+    vLLM 的 ASR 端点先用 soundfile、回退 PyAV 解码上传音频;非常规格式(IEEE-Float
+    WAV 等)易被拒。统一 ffmpeg 归一化成标准 PCM 再转发,兼容各种上传格式且确保稳解码。
+
+    **输入/输出都用可 seek 的临时文件**(2026-06-21 真机踩,两类坑):
+    - 输入若从不可 seek 的 pipe:0 读,moov-atom 在末尾的 m4a/mp4 等需 seek 的容器
+      读不到音轨 → 输出空音频 → vLLM 处理器报 `audio=[array([], dtype=float32)]`。
+    - 输出若写不可 seek 的 pipe:1,WAV 头的 RIFF/data size 回填不了(写 0xFFFFFFFF 占位)。
+    临时文件可 seek,两者都解决。
+
+    空音频(无有效音轨/无声/损坏)→ 直接报清晰 400,**不**把空数组转发给 vLLM
+    (否则用户只看到晦涩的 Qwen3ASRProcessor empty-array 报错)。
     """
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate(input=raw)
-    if proc.returncode != 0 or not out:
-        msg = err.decode("utf-8", "ignore")[:200] if err else "empty output"
-        raise InvalidRequestError(f"音频解码失败(ffmpeg): {msg}")
-    return out
+    with tempfile.NamedTemporaryFile(suffix=".in", delete=False) as in_tf:
+        in_tf.write(raw)
+        in_path = in_tf.name
+    out_path = in_path + ".wav"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", in_path, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", out_path,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate()
+        if proc.returncode != 0:
+            msg = err.decode("utf-8", "ignore")[:200] if err else "unknown"
+            raise InvalidRequestError(f"音频解码失败(ffmpeg): {msg}")
+        with open(out_path, "rb") as f:
+            out = f.read()
+        # WAV header(含 ffmpeg 的 LIST/INFO chunk)~80-120 字节;有任何可用音频都是 KB 级。
+        # < 1KB 视为空(header-only)→ ffmpeg 读到了文件但解出 0 采样。
+        if len(out) < 1024:
+            raise InvalidRequestError("音频无有效音轨或为空(可能不是有效音频文件、无声、或格式损坏)")
+        return out
+    finally:
+        for p in (in_path, out_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 async def _auth_transcriptions(
