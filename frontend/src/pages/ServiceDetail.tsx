@@ -490,6 +490,20 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
   // 表单可填,改成传音频文件(2026-06-21:用户反馈 ASR 服务没法在 Playground 测)。
   const isAsr = svc.category === 'asr'
   const [audioFile, setAudioFile] = useState<File | null>(null)
+  const [dragging, setDragging] = useState(false)
+
+  // 拖拽/选择共用:只收音频文件(部分音频 type 为空,放行靠扩展名兜底)。
+  const acceptAudio = (f: File | null | undefined) => {
+    if (!f) return
+    const okType = f.type.startsWith('audio/')
+    const okExt = /\.(wav|mp3|m4a|flac|ogg|opus|aac|webm|mp4)$/i.test(f.name)
+    if (!okType && !okExt) {
+      setError(`不是音频文件:${f.name}`)
+      return
+    }
+    setError(null)
+    setAudioFile(f)
+  }
 
   const submit = async (values: Record<string, unknown>) => {
     setRunning(true)
@@ -553,21 +567,33 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
         {isAsr ? (
           <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <label
+              onDragOver={(e) => { e.preventDefault(); if (!dragging) setDragging(true) }}
+              onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
+              onDrop={(e) => {
+                e.preventDefault()
+                setDragging(false)
+                acceptAudio(e.dataTransfer.files?.[0])
+              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px',
-                borderRadius: 6, border: '1px dashed var(--border)', background: 'var(--bg)',
+                borderRadius: 6,
+                border: `1px dashed ${dragging ? 'var(--accent)' : 'var(--border)'}`,
+                background: dragging ? 'var(--accent-subtle, rgba(99,102,241,0.1))' : 'var(--bg)',
                 color: 'var(--muted)', fontSize: 13, cursor: 'pointer',
+                transition: 'border-color 120ms, background 120ms',
               }}
             >
               <input
                 type="file"
                 accept="audio/*"
-                onChange={(e) => setAudioFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => acceptAudio(e.target.files?.[0])}
                 style={{ display: 'none' }}
               />
-              {audioFile
-                ? <span style={{ color: 'var(--text)' }}>{audioFile.name} · {(audioFile.size / 1024).toFixed(0)} KB</span>
-                : <span>选择音频文件(wav / mp3 / m4a…)转写为文本</span>}
+              {dragging
+                ? <span style={{ color: 'var(--accent)' }}>松开以上传音频</span>
+                : audioFile
+                  ? <span style={{ color: 'var(--text)' }}>{audioFile.name} · {(audioFile.size / 1024).toFixed(0)} KB</span>
+                  : <span>拖拽音频到此,或点击选择(wav / mp3 / m4a…)转写为文本</span>}
             </label>
             <button
               type="button"
