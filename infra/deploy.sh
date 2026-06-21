@@ -60,9 +60,11 @@ ok "dist 已更新($(date -d @"$dist_mtime" '+%H:%M:%S'))"
 cd "$REPO"
 
 # ---------- 3. 重启后端(sudo;cloudflared 经 PartOf 跟随)----------
+# --no-block:阻塞式 systemctl restart 客户端在本机会傻等 job-done 不返回(实测挂 48min,
+# 但 unit ~3s 就重启完、active)。入队即返回,下面第 4 步 poll /healthz 等真就绪。
 step "重启 nous-backend(卸全模型,vLLM ~30s 重载)"
-sudo systemctl restart nous-backend || die "systemctl restart 失败。"
-ok "已发出重启"
+sudo systemctl --no-block restart nous-backend || die "systemctl restart 入队失败。"
+ok "已发出重启(--no-block,下面等 /healthz)"
 
 # ---------- 4. 自检:等本机 /healthz 200 ----------
 step "自检"

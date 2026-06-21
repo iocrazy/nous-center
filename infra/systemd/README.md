@@ -47,12 +47,20 @@ journalctl -u nous-backend -f         # 实时日志
 
 ## 修改后重启
 
-改了 `backend/.env` 或 service 文件 → 重新加载 + 重启：
+改了 `backend/.env` 或 service 文件 → 重新加载 + 重启。**推荐 `nousctl restart`**(内部用
+`--no-block`,不挂终端 + 起完打 banner);或手动:
 
 ```bash
-sudo systemctl daemon-reload          # 仅在改了 .service 文件后才需要
-sudo systemctl restart nous-backend
+sudo systemctl daemon-reload                       # 仅在改了 .service 文件后才需要
+nousctl restart                                    # 推荐:不挂终端 + 显示自检 banner
+# 或手动(注意加 --no-block,否则阻塞客户端在本机会傻等 job-done 不返回):
+sudo systemctl --no-block restart nous-backend
+systemctl is-active nous-backend                   # 确认起来了
 ```
+
+> ⚠️ **别用裸 `sudo systemctl restart nous-backend`**:实测它的阻塞客户端收不到 job-done
+> 信号、傻等不返回(挂了 48min,但后端 ~3s 就重启完、active)。`--no-block` 入队即返回,
+> 重启照常发生。`nousctl restart` 已封装好。
 
 ## 卸载
 
