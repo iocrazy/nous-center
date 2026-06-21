@@ -38,17 +38,24 @@
 
 ### Arc B — 时间戳(加 ForcedAligner + qwen-asr,spike 先行)
 
-**PR-0 spike(真机,先做)**:独立 venv 装 `qwen-asr`,跑官方两步(ASR 出文本 → ForcedAligner
-对齐),用本机中文样本验证:① 时间戳正确(词/字 start/end 单调、覆盖音频);② 量显存(0.6B
-对齐器 + 1.7B ASR 同时在卡)/延迟;③ 比较集成方式。**spike 通过再定 PR 拆分。**
+**PR-0 spike ✅ 已完成(2026-06-21 真机)**,独立 venv 装 `qwen-asr`,GPU0 空闲 3090 实测:
 
-集成架构决策(spike 输出):
-- **方案①**:backend 内直接用 `qwen-asr` 的 `Qwen3ASRModel(forced_aligner=...)` 编排,
-  ASR + 对齐一把抓。换掉 ASR 的 vLLM adapter 路径(至少 timestamps 模式)。
-- **方案②**:保留 vLLM 出文本(LID/context/低延迟),**仅时间戳**时调一个独立挂载的
-  ForcedAligner(transformers)做后处理 `align(audio, asr_text, lang)`。与现有 vLLM adapter 并存。
-- 倾向**方案②**(改动隔离、保住 vLLM 流式/低延迟的纯文本主路;时间戳是可选增强),但以 spike
-  实测(显存/延迟/正确性/复杂度)为准。
+| 测法 | 加载 | 显存 | 推理 | 时间戳 |
+|---|---|---|---|---|
+| 方案① 全套(ASR 1.7B + 对齐器 0.6B 一把抓) | 2.1s | 5.5GB | 8.5s | 14 字级,正确 |
+| **方案② 独立对齐器**(喂现成文本 align) | 0.9s | **1.72GB** | **0.85s** | 14 字级,正确(`希`[0.320→0.480]…末端3.04s 对齐) |
+
+**决策:采方案②。** 独立 `Qwen3ForcedAligner.from_pretrained()` 只 1.72GB / 0.85s,喂
+(音频, vLLM 已出文本, 语言)→ 字/词级时间戳。复用现有 vLLM ASR 出文本,**不加第二份 ASR、
+不动快文本主路**,时间戳纯增量后处理。
+
+集成方式(方案②):
+- 注册 `qwen3_forced_aligner`(0.6B)为新模型/引擎类目(对齐器,非 vLLM)。
+- backend 需能调 `qwen-asr` 的 `Qwen3ForcedAligner`:在 prod venv 装 `qwen-asr`(spike 用独立
+  venv 装通;需验证与现有 vllm/transformers 版本不冲突 —— B-1 先验)。冲突则退化为独立 aligner
+  子进程/runner(自带 venv,IPC 喂 audio+text 拿 timestamps)。
+- 转写端点加 `timestamps=true`:后端先 vLLM 出文本(含 LID),再对齐器 align → 返回
+  `{text, language, words:[{text,start,end}]}`。对齐器按需加载、可驱逐(小,1.7GB)。
 
 时间戳走 chat/转写端点都接不了 → 时间戳模式必然是 nous 自己的一条 API 形态(例如转写端点加
 `timestamps=true` → 后端触发 ASR + 对齐两步,返回 `{text, language, words:[{text,start,end}]}`)。
