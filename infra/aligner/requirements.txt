@@ -1,0 +1,4 @@
+# nous-aligner 微服务依赖(独立 venv,与 backend 隔离)。
+# qwen-asr 钉死 transformers==4.57.6,故必须自带 venv —— 不能进 backend(那边 transformers 5.6-dev)。
+# 时间戳只用 ForcedAligner,不需要 [vllm] extra(那个还会钉 vllm==0.14 冲突)。
+qwen-asr==0.0.6

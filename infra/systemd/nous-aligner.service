@@ -1,0 +1,28 @@
+[Unit]
+Description=nous-center ForcedAligner 时间戳微服务(独立 venv,2026-06-21)
+# 不 Requires/PartOf nous-backend —— 独立进程/venv(qwen-asr 钉 transformers 4.57,与 backend
+# 的 5.6-dev 冲突,故隔离)。backend 仅在 timestamps=true 时 HTTP 调它;它挂了纯文本主路不受影响。
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=heygo
+Group=heygo
+WorkingDirectory=/media/heygo/Program/projects-code/_playground/nous-prod/infra/aligner
+# 独立 venv(setup.sh 建);不碰 backend venv。
+ExecStart=/media/heygo/Program/projects-code/_playground/nous-prod/infra/aligner/.venv/bin/python /media/heygo/Program/projects-code/_playground/nous-prod/infra/aligner/aligner_service.py
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+Environment=NOUS_ALIGNER_DEVICE=cuda:0
+Environment=NOUS_ALIGNER_PORT=8002
+Environment=MODELS_ROOT=/media/heygo/Program/models
+Restart=on-failure
+RestartSec=10
+# 对齐器小(~1.7GB),给宽松内存上限防意外。
+MemoryMax=8G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
