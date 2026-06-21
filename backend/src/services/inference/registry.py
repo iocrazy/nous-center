@@ -92,8 +92,9 @@ class ModelRegistry:
     def add_from_scan(self, model_id: str) -> ModelSpec | None:
         """Synthesize a ModelSpec from the on-disk scanner output.
 
-        Used as a load-time fallback when `model_id` wasn't in models.yaml
-        at startup. Auto-detected LLM/VL entries fill `adapter` (always
+        Used as a load-time fallback when `model_id` wasn't in the model
+        configs (`configs/models.d/*.yaml` + legacy models.yaml) at startup.
+        Auto-detected LLM/VL entries fill `adapter` (always
         VLLMAdapter); image/video do not — those return None here so the
         caller raises ValueError instead of silently registering an
         unloadable spec.
