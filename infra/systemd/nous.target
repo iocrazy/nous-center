@@ -4,7 +4,7 @@
 # 各服务自身已 enable(WantedBy=multi-user.target,开机自启);本 target 主要给
 # `nousctl up/down` 做一键分组 + 单条手动启停。短命令见 /usr/local/bin/nousctl。
 Description=nous-center 全栈(DB + 后端 + 隧道 + 状态)
-Wants=postgresql.service nous-backend.service nous-cloudflared.service nous-status.service
+Wants=postgresql.service nous-backend.service nous-cloudflared.service nous-status.service nous-aligner.service
 After=postgresql.service nous-backend.service
 
 [Install]
