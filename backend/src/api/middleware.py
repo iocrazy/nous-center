@@ -35,6 +35,24 @@ def derive_audit_action(method: str, path: str) -> str:
     return f"{method.lower()}_{last}"
 
 
+def _audit_detail(body: bytes, content_type: str) -> str:
+    """审计 detail = 请求 body 文本。两条护栏:
+
+    1. multipart / 二进制上传(音频转写、图片编辑等)的 body 是二进制,记进 detail 既
+       无意义又含 NUL → 只记占位符「<类型 body, N bytes>」。
+    2. 文本 body 仍可能含 NUL(0x00):decode(errors="replace") **不**替换合法的 0x00
+       (它解码成 U+0000),但 PostgreSQL text 列存不下 NUL → flush 报
+       `invalid byte sequence for encoding "UTF8": 0x00`、该审计行丢失(2026-06-21 真机踩:
+       音频转写请求每次刷日志失败)。显式剔除 NUL。
+    """
+    if not body:
+        return ""
+    ct = content_type.split(";")[0].strip().lower()
+    if ct.startswith("multipart/") or ct in ("application/octet-stream",) or ct.startswith(("audio/", "image/", "video/")):
+        return f"<{ct or 'binary'} body, {len(body)} bytes>"
+    return body.decode("utf-8", errors="replace").replace("\x00", "")[:2000]
+
+
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start = time.monotonic()
@@ -95,7 +113,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 try:
                     from src.services.log_store import enqueue
                     action = derive_audit_action(request.method, path)
-                    detail = body.decode("utf-8", errors="replace")[:2000] if body else ""
+                    detail = _audit_detail(body, request.headers.get("content-type", ""))
                     enqueue("audit", {
                         "action": action,
                         "path": path,
