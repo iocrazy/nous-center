@@ -74,6 +74,13 @@ inference = [
     # 动机:栈更新统一到 cu13(fp8 加速已证伪解耦,见 7b2758d)。
     "vllm>=0.22.0",
     "modelscope>=1.34.0",
+    # ASR(Qwen3-ASR)音频解码 = vllm[audio]。vLLM 的转写端点 multimodal/media/audio.py
+    # 先试 soundfile、回退 PyAV(av)解码上传音频;缺这些 vLLM 对**任何**音频都抛
+    # "Invalid or unsupported audio file"(2026-06-21 真机踩:#583 重建 prod venv 只 `uv sync
+    # --extra inference`,没带音频库 → ASR 服务全 400)。librosa 供重采样。
+    "soundfile>=0.12",
+    "av>=13",
+    "librosa>=0.10",
 ]
 
 # Image generation extras: diffusers + accelerate + peft for Flux.2 family.
