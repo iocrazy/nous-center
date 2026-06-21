@@ -491,6 +491,8 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
   const isAsr = svc.category === 'asr'
   const [audioFile, setAudioFile] = useState<File | null>(null)
   const [dragging, setDragging] = useState(false)
+  // context = 领域/热词偏置(人名/术语),注入 system 槽提升专有名词识别(spec asr-context-lid)。
+  const [asrContext, setAsrContext] = useState('')
 
   // 拖拽/选择共用:只收音频文件(部分音频 type 为空,放行靠扩展名兜底)。
   const acceptAudio = (f: File | null | undefined) => {
@@ -520,6 +522,7 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
         const fd = new FormData()
         fd.append('file', audioFile)
         fd.append('model', svc.name)
+        if (asrContext.trim()) fd.append('context', asrContext.trim())
         const resp = await fetch('/v1/audio/transcriptions', {
           method: 'POST', body: fd, credentials: 'same-origin',
         })
@@ -595,6 +598,22 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
                   ? <span style={{ color: 'var(--text)' }}>{audioFile.name} · {(audioFile.size / 1024).toFixed(0)} KB</span>
                   : <span>拖拽音频到此,或点击选择(wav / mp3 / m4a…)转写为文本</span>}
             </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 11, color: 'var(--muted)' }}>
+                领域提示 / 热词(可选 · 提升人名、品牌、术语识别)
+              </label>
+              <textarea
+                value={asrContext}
+                onChange={(e) => setAsrContext(e.target.value)}
+                placeholder="例:本段是 nous-center 产品介绍,含人名 heygo、术语 vLLM、推理 infra…"
+                rows={2}
+                style={{
+                  resize: 'vertical', padding: '8px 10px', borderRadius: 6,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text)', fontSize: 12, fontFamily: 'inherit', lineHeight: 1.5,
+                }}
+              />
+            </div>
             <button
               type="button"
               disabled={running || !audioFile}
@@ -643,8 +662,18 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
               error ? (
                 <div style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</div>
               ) : result && typeof result.text === 'string' ? (
-                <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                  {result.text as string}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {typeof result.language === 'string' && result.language && (
+                    <span style={{
+                      alignSelf: 'flex-start', fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                      background: 'rgba(14,165,233,0.15)', color: 'rgb(14,165,233)',
+                    }}>
+                      检测语种 · {result.language as string}
+                    </span>
+                  )}
+                  <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                    {result.text as string}
+                  </div>
                 </div>
               ) : null
             ) : (
