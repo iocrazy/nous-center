@@ -59,3 +59,31 @@ def get_vllm_base_url(model_manager: Any, engine_name: str) -> str:
             f"模型 '{engine_name}' 已加载但没有 HTTP 推理端点（base_url 为空）"
         )
     return base_url
+
+
+async def ensure_vllm_base_url(model_manager: Any, engine_name: str) -> str:
+    """`get_vllm_base_url` 的**按需懒加载**版:engine 未加载 → `await load_model`
+    (复用 model_manager 现有 `_lock_for(model_id)` 防并发首调 + 显存守卫/驱逐)再解析。
+
+    让已发布服务「发现即能调」——客户端首次调用冷模型不再吃 503「请先手动加载」,
+    而是自动加载后服务(首调有加载延迟:小模型几秒、大模型几十秒)。加载失败
+    (未知模型 / OOM 装不下)冒泡成 VLLMNotLoaded → 调用方仍映射 503,不比原来差。
+
+    spec §4.5 D6/D8 的 base-URL 查找统一走这里(auto-load 变体)。
+    """
+    if model_manager is None:
+        raise VLLMNotLoaded("model_manager 不可用（app.state 未初始化）")
+
+    adapter = model_manager.get_adapter(engine_name)
+    if adapter is None or not getattr(adapter, "is_loaded", False):
+        try:
+            # load_model 内 _lock_for(model_id) 串行化并发首调:第一个真加载,
+            # 其余等锁后命中 is_loaded 直接返回,不会重复 spawn。
+            await model_manager.load_model(engine_name)
+        except Exception as e:  # noqa: BLE001 — 任何加载失败都收敛成「未加载」语义
+            raise VLLMNotLoaded(
+                f"模型 '{engine_name}' 自动加载失败：{e}"
+            ) from e
+
+    # 复用同步解析做最终校验(is_loaded 仍 False / base_url 空 → 各自抛对应异常)。
+    return get_vllm_base_url(model_manager, engine_name)
