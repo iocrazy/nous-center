@@ -27,9 +27,12 @@ _print_banner() {
 }
 
 cmd_up() {
-  sudo systemctl start nous.target
+  # --no-block:别等 job 完成 —— systemctl restart/start 的阻塞客户端在本机会傻等
+  # job-done 信号不返回(实测挂 48min,但 unit 早已 active、无 pending job)。--no-block
+  # 把 job 入队即返回,我们自己 poll is-active 判就绪,既不挂终端又能等到真起来。
+  sudo systemctl --no-block start nous.target
   printf 'nous.target 已拉起,等待 backend 自检...\n'
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 60); do
     systemctl is-active --quiet nous-backend && break
     sleep 1
   done
@@ -38,14 +41,18 @@ cmd_up() {
 }
 
 cmd_down() {
-  sudo systemctl stop "${APP_UNITS[@]}"
-  printf '应用栈已停(后端/隧道/状态)。%s\n' "$(c_dim 'postgresql 仍在运行 — 如需停库: sudo systemctl stop postgresql')"
+  sudo systemctl --no-block stop "${APP_UNITS[@]}"
+  printf '应用栈停止已触发(后端/隧道/状态)。%s\n' "$(c_dim 'postgresql 仍在运行 — 如需停库: sudo systemctl stop postgresql')"
 }
 
 cmd_restart() {
-  sudo systemctl restart "${APP_UNITS[@]}"
-  printf '应用栈已重启。\n'
-  for _ in $(seq 1 30); do systemctl is-active --quiet nous-backend && break; sleep 1; done
+  # --no-block:同 cmd_up —— 阻塞 restart 客户端会挂(unit 实际 ~3s 就重启完);入队即返回,
+  # 自己 poll。注意:--no-block 下「停旧→起新」很快但非同步完成,poll is-active 到的可能是
+  # 旧实例没死透那一瞬 → 先 sleep 2 给停止留窗口,再 poll。
+  sudo systemctl --no-block restart "${APP_UNITS[@]}"
+  printf '应用栈重启已触发,等待 backend 自检...\n'
+  sleep 2
+  for _ in $(seq 1 60); do systemctl is-active --quiet nous-backend && break; sleep 1; done
   echo
   _print_banner
 }
