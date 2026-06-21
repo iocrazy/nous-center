@@ -48,10 +48,18 @@ git worktree add --detach "$ROOT/nous-prod" origin/master
 # 2. 标记 + 单一来源 .env
 touch "$ROOT/nous-prod/.nous-production"
 ln -s "$ROOT/nous-center/backend/.env" "$ROOT/nous-prod/backend/.env"
-# 3. 前端依赖 + 首次 build
+# 3. 后端 venv(**必带 --extra inference**,否则缺 vllm/torch → 常驻模型 0/N)
+cd "$ROOT/nous-prod/backend" && uv sync --extra inference
+# 4. 前端依赖 + 首次 build
 cd "$ROOT/nous-prod/frontend" && npm ci && npm run build
-# 4. 安装重指后的 unit + 重启
+# 5. 安装重指后的 unit + 重启
 cd "$ROOT/nous-prod" && sudo ./infra/systemd/install.sh
 sudo systemctl daemon-reload
 sudo systemctl restart nous-backend nous-status nous-healthprobe
 ```
+
+> ⚠️ **第 3 步的 `--extra inference` 不能省**。裸 `uv sync` 只装 API server 包,缺
+> vllm/torch/safetensors/transformers → backend 能起、API 能跑,但常驻模型 spawn vLLM
+> 时 `ModuleNotFoundError: No module named 'vllm'` → 全失败、UI 卡「模型加载 0/N」
+> (2026-06-21 真机踩)。`deploy.sh` 现在每次发版也会 `uv sync --extra inference` 兜底,
+> 但搭建时仍应一次到位。

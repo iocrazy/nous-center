@@ -43,6 +43,19 @@ git fetch origin master -q || die "git fetch 失败。"
 git reset --hard origin/master || die "git reset --hard origin/master 失败。"
 ok "已同步到 $(git rev-parse --short HEAD)"
 
+# ---------- 1b. 后端 venv 同步(必带 --extra inference)----------
+# 2026-06-21 真机踩:专用生产检出 nous-prod 的 .venv 若用裸 `uv sync` 建,只装 API server
+# 包(fastapi/sqlalchemy),**缺 vllm/torch/safetensors/transformers** → backend 能起、API 能跑,
+# 但常驻模型 spawn vLLM 时 `ModuleNotFoundError: No module named 'vllm'` → 全失败、UI 卡
+# 「系统启动中 · 模型加载 0/N」。每次发版都同步 venv:既让 venv 跟代码一致(拉到的新依赖),
+# 又确保 inference extra 一直在。uv 在 venv 已最新时几乎瞬返(只对账 lock),发版常态零成本。
+step "后端 venv 同步(--extra inference)"
+cd "$REPO/backend"
+uv sync --extra inference || die "uv sync --extra inference 失败 —— venv 没对齐,中止(否则常驻模型会 0/N)。"
+uv run python -c 'import vllm' 2>/dev/null || die "venv 同步后仍 import vllm 失败 —— inference extra 没装上,中止(否则常驻模型 spawn vLLM 会崩)。"
+ok "venv 已同步且 vllm 可导入"
+cd "$REPO"
+
 # ---------- 2. 前端 build(fail-loud + dist 时间戳校验)----------
 step "前端 build"
 build_start=$(date +%s)
