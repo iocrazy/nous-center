@@ -139,6 +139,10 @@ class RunnerSupervisor:
             "group_id": self.group_id,
             "gpus": list(self.gpus),
             "running": self.is_running,
+            # supervisor 子进程是 eager-spawn 的,该在跑 → not running 即不健康(crashed /
+            # mid-restart)。与 LLMRunner(IDLE 待命也算健康)的 healthy 语义区分,/health
+            # 统一读 healthy 判 degraded。
+            "healthy": self.is_running,
             "restart_count": self.restart_count,
             "pid": self.pid,
             "current_task": current,
