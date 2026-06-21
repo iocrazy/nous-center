@@ -7,15 +7,44 @@ interface Props {
 }
 
 export default function ServicePlayground({ svc }: Props) {
+  // ASR(语音识别)= 音频进文本出,走 multipart /v1/audio/transcriptions,与 LLM 的
+  // JSON chat 流式完全不同 → 单独分支(2026-06-21:用户反馈 ASR 没法在 playground 测)。
+  const isAsr = svc.category === 'asr'
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [input, setInput] = useState('你好，简单介绍一下自己。')
+  const [file, setFile] = useState<File | null>(null)  // ASR 音频文件
   const [output, setOutput] = useState('')
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => () => abortRef.current?.abort(), [])
+
+  // ASR:multipart 上传音频 → 转写文本(非流式,一次返回)。
+  const runAsr = async (controller: AbortController) => {
+    if (!file) {
+      setError('请先选择音频文件')
+      setRunning(false)
+      return
+    }
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('model', svc.instance_name)
+    // 不设 Content-Type —— 浏览器自动带 multipart boundary。
+    const resp = await fetch('/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: fd,
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '')
+      throw new Error(`HTTP ${resp.status}: ${t.slice(0, 200)}`)
+    }
+    const data = await resp.json()
+    setOutput(typeof data?.text === 'string' ? data.text : JSON.stringify(data, null, 2))
+  }
 
   const handleToggle = async () => {
     if (running) {
@@ -27,6 +56,10 @@ export default function ServicePlayground({ svc }: Props) {
       setError('请先填写 API Key')
       return
     }
+    if (isAsr && !file) {
+      setError('请先选择音频文件')
+      return
+    }
     setError(null)
     setOutput('')
     setRunning(true)
@@ -35,6 +68,10 @@ export default function ServicePlayground({ svc }: Props) {
     abortRef.current = controller
 
     try {
+      if (isAsr) {
+        await runAsr(controller)
+        return
+      }
       const resp = await fetch('/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -122,23 +159,48 @@ export default function ServicePlayground({ svc }: Props) {
         </div>
       </div>
 
-      <textarea
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        rows={3}
-        placeholder="输入 prompt..."
-        style={{
-          width: '100%',
-          padding: 10,
-          borderRadius: 4,
-          border: '1px solid var(--border)',
-          background: 'var(--bg)',
-          color: 'var(--fg)',
-          fontSize: 13,
-          fontFamily: 'inherit',
-          resize: 'vertical',
-        }}
-      />
+      {isAsr ? (
+        <label
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: 10, borderRadius: 4,
+            border: '1px dashed var(--border)', background: 'var(--bg)',
+            color: 'var(--muted)', fontSize: 13, cursor: 'pointer',
+          }}
+        >
+          <input
+            type="file"
+            accept="audio/*"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            style={{ display: 'none' }}
+          />
+          {file ? (
+            <span style={{ color: 'var(--fg)' }}>
+              {file.name} · {(file.size / 1024).toFixed(0)} KB
+            </span>
+          ) : (
+            <span>选择音频文件(wav/mp3/m4a…)转写为文本</span>
+          )}
+        </label>
+      ) : (
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          rows={3}
+          placeholder="输入 prompt..."
+          style={{
+            width: '100%',
+            padding: 10,
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+            background: 'var(--bg)',
+            color: 'var(--fg)',
+            fontSize: 13,
+            fontFamily: 'inherit',
+            resize: 'vertical',
+          }}
+        />
+      )}
 
       <div className="flex items-center gap-2">
         <button
