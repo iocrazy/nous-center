@@ -1,12 +1,15 @@
 """OpenAI-compatible endpoints: chat/completions, audio/speech, models."""
 
 import asyncio
+import base64
 import io
 import json
 import logging
 import os
+import re
 import tempfile
 import time
+import wave
 from typing import Literal
 
 import httpx
@@ -640,6 +643,54 @@ async def _auth_transcriptions(
     raise HTTPException(401, detail="Missing API key or admin session")
 
 
+# Qwen3-ASR 的 chat 路径原始输出稳定为 `language {LANG}<asr_text>{TEXT}`(真机多次验证)。
+_ASR_OUT_RE = re.compile(r"^\s*language\s+(.+?)\s*<asr_text>(.*)$", re.DOTALL)
+
+
+def _wav16k_seconds(wav: bytes) -> int:
+    """16k/mono/s16le WAV 的时长秒(metering 用;chat 路径不回 audio 秒数,自算)。"""
+    try:
+        with wave.open(io.BytesIO(wav), "rb") as w:
+            fr = w.getframerate() or 16000
+            return max(1, round(w.getnframes() / fr))
+    except Exception:
+        # 退化:s16le mono 16k → 每秒 32000 字节(减去 ~100 字节头开销可忽略)
+        return max(1, round(len(wav) / 32000))
+
+
+async def _asr_chat_transcribe(
+    client: httpx.AsyncClient, base_url: str, wav: bytes, context: str | None,
+) -> tuple[str, str | None]:
+    """走 vLLM chat/completions 跑 Qwen3-ASR:audio_url(base64)+ 可选 system(context 偏置)。
+    返回 (text, language)。context = 领域/热词提示(注入 system 槽,提升专有名词识别)。
+
+    选 chat 而非转写端点:转写端点只回纯文本、拿不到语种;chat 原生输出 `language X<asr_text>Y`,
+    一次拿到**语种 + 文本**,且 system 槽 = Qwen3-ASR 的 context 偏置入口。
+    """
+    b64 = base64.b64encode(wav).decode("ascii")
+    messages: list[dict] = []
+    if context:
+        messages.append({"role": "system", "content": context})
+    messages.append({
+        "role": "user",
+        "content": [{"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{b64}"}}],
+    })
+    resp = await client.post(
+        f"{base_url.rstrip('/')}/v1/chat/completions",
+        json={"model": "", "messages": messages, "max_tokens": 2048, "temperature": 0.0},
+    )
+    if resp.status_code != 200:
+        raise InvalidRequestError(
+            f"ASR chat 调用失败 HTTP {resp.status_code}: {resp.text[:200]}"
+        )
+    content = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    m = _ASR_OUT_RE.match(content)
+    if m:
+        return m.group(2).strip(), m.group(1).strip()
+    # 无 `<asr_text>` 标记(格式异常/未来变更)→ 整体当文本,language 未知,不崩。
+    return content.strip(), None
+
+
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     request: Request,
@@ -647,16 +698,21 @@ async def audio_transcriptions(
     model: str | None = Form(None),
     language: str | None = Form(None),
     response_format: str | None = Form(None),
+    context: str | None = Form(None),
     auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_transcriptions),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """OpenAI 兼容语音转写(ASR,2026-06-20 接入;spec asr-qwen3-integration)。
+    """OpenAI 兼容语音转写(ASR,2026-06-20 接入;spec asr-qwen3-integration / asr-context-lid)。
 
-    multipart:`file`(音频)+ `model`(服务名)。解析链同 /v1/embeddings:model → 服务
-    (M:N grant)→ source_type=model → vLLM ASR 子进程(Qwen3-ASR,models.yaml type:asr)
-    → 透传 `/v1/audio/transcriptions`。上传音频先 ffmpeg 归一化(PR-0 spike:vLLM PyAV 拒
-    非常规格式)。usage 按 vLLM 返回的 audio 秒数计量。Bearer 走 grant+quota;admin cookie
-    (in-app Playground)按 model 名直查服务、跳 grant/quota。
+    multipart:`file`(音频)+ `model`(服务名)+ 可选 `context`(领域/热词偏置)。解析链同
+    /v1/embeddings:model → 服务(M:N grant)→ source_type=model → vLLM ASR 子进程
+    (Qwen3-ASR)。上传音频先 ffmpeg 归一化。
+
+    2026-06-21 起走 **chat/completions** 而非转写端点:一次拿到**语种(LID)+ 文本**,且
+    `context` 注入 system 槽做偏置(转写端点拿不到语种、也没 context 入口)。返回
+    `{text, language, usage:{type:"duration",seconds}}`(text 仍首字段,纯文本客户端不受影响)。
+    秒数自算(chat 不回音频秒数)。`language`/`response_format` 为 OpenAI 兼容保留位
+    (chat 路径自动判语种)。Bearer 走 grant+quota;admin cookie(Playground)直查服务、跳配额。
     """
     instance, api_key = auth
     requested_model = model or None
@@ -706,23 +762,12 @@ async def audio_transcriptions(
 
     start_ms = time.monotonic()
     async with httpx.AsyncClient(timeout=300, proxy=None) as client:
-        files = {"file": ("audio.wav", wav, "audio/wav")}
-        form: dict[str, str] = {"model": ""}  # vLLM 用自己的 served 模型(同 chat/embeddings)
-        if language:
-            form["language"] = language
-        if response_format:
-            form["response_format"] = response_format
-        resp = await client.post(
-            f"{base_url.rstrip('/')}/v1/audio/transcriptions", files=files, data=form,
-        )
+        # chat 路径:一次拿到 语种(LID) + 文本,且支持 context 偏置(见 _asr_chat_transcribe)。
+        text, detected_language = await _asr_chat_transcribe(client, base_url, wav, context)
 
     duration_ms = int((time.monotonic() - start_ms) * 1000)
-    if resp.status_code != 200:
-        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
-
-    out = resp.json()
-    usage = out.get("usage", {}) or {}
-    audio_seconds = int(usage.get("seconds", 0)) if isinstance(usage, dict) else 0
+    # chat 不回音频秒数 → 自算(归一化 wav 16k/mono/s16le)。
+    audio_seconds = _wav16k_seconds(wav)
     from src.services.usage_service import record_llm_usage
     await record_llm_usage(
         model=engine_name,
@@ -736,7 +781,12 @@ async def audio_transcriptions(
     # 计量:按音频秒数扣(ASR 无 token 概念);至少 1。admin(Playground)跳过 grant/quota。
     if api_key is not None:
         await _post_consume_quota(api_key.id, instance.id, max(1, audio_seconds))
-    return out
+    # OpenAI 兼容:text 仍是首要字段(纯文本客户端不受影响);language 是增量字段。
+    return {
+        "text": text,
+        "language": detected_language,
+        "usage": {"type": "duration", "seconds": audio_seconds},
+    }
 
 
 # --- /v1/images/generations ---
