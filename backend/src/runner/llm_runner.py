@@ -177,6 +177,10 @@ class LLMRunner:
             "group_id": "llm",
             "gpus": list(self.llm_gpus),
             "running": self.state == LLMRunnerState.RUNNING,
+            # IDLE(尚未 spawn)是健康待命态 —— vLLM 由 model_mgr 懒加载/常驻预载,不经
+            # LLMRunner 自己 spawn,所以本架构里 running 恒 False 但并非故障。只有 FAILED
+            # 才算不健康。/health 用 healthy 而非 running 判 degraded(否则永久误报)。
+            "healthy": self.state != LLMRunnerState.FAILED,
             "restart_count": 0,
             "pid": getattr(self.adapter, "pid", None) if self.adapter is not None else None,
             "current_task": None,

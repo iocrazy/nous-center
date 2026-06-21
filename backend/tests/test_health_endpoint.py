@@ -85,3 +85,64 @@ async def test_health_reports_runner_snapshot():
     }]
     # runner 不 running → status degraded
     assert body["status"] == "degraded"
+
+
+class _FakeSession:
+    """让 /health 的 `SELECT 1` 库检查通过,隔离出 runner-healthy 逻辑(否则测试环境
+    无 DB → database=error → degraded 盖过被测项)。"""
+    async def execute(self, *a, **k):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _patch_db_ok(monkeypatch):
+    monkeypatch.setattr(
+        "src.models.database.get_session_factory", lambda: (lambda: _FakeSession())
+    )
+
+
+async def _health_status_with_llm_runner(monkeypatch, snapshot: dict) -> dict:
+    from httpx import ASGITransport, AsyncClient
+
+    _patch_db_ok(monkeypatch)
+
+    class _LLMRunner:
+        def health_snapshot(self):
+            return snapshot
+
+    app = create_app()
+    app.state.llm_runner = _LLMRunner()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/health")
+    assert resp.status_code == 200
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_health_idle_llm_runner_not_degraded(monkeypatch):
+    """LLMRunner 稳定停在 IDLE(running=False 但 healthy=True)—— vLLM 由 model_mgr
+    懒加载/常驻预载,不经 LLMRunner 自 spawn。/health 不该因此误报 degraded。
+    回归:旧逻辑用 `not running` → 永久 degraded → 公开状态页误显黄灯。"""
+    body = await _health_status_with_llm_runner(monkeypatch, {
+        "group_id": "llm", "gpus": [1], "running": False,
+        "healthy": True, "restart_count": 0, "pid": None, "current_task": None,
+    })
+    assert body["runners"][0]["healthy"] is True
+    assert body["runners"][0]["running"] is False
+    assert body["status"] != "degraded"
+
+
+@pytest.mark.asyncio
+async def test_health_failed_llm_runner_degraded(monkeypatch):
+    """LLMRunner FAILED(healthy=False)→ degraded(真故障要报出来)。"""
+    body = await _health_status_with_llm_runner(monkeypatch, {
+        "group_id": "llm", "gpus": [1], "running": False,
+        "healthy": False, "restart_count": 1, "pid": None, "current_task": None,
+    })
+    assert body["status"] == "degraded"

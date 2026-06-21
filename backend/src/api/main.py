@@ -820,14 +820,20 @@ def create_app() -> FastAPI:
         # lifespan wiring; until then it's unset and runners is []. LLMRunner
         # (主进程对象, app.state.llm_runner) 也并入此列表 —— 它有自己的
         # health_snapshot()，让前端 TaskPanel 用同一个 runners 列表渲染所有泳道。
-        # 一个 runner 不 running（crashed / mid-restart）→ degraded.
+        #
+        # degraded 判定按各 runner 自报的 `healthy`,**不是** `running`:LLMRunner 在本
+        # 架构稳定停在 IDLE(从不自己 spawn vLLM —— vLLM 由 model_mgr 懒加载/常驻预载
+        # 路径起),IDLE 是健康待命态,`running` 恒 False。旧逻辑 `not running` 把它误判成
+        # degraded → /health 永久 degraded(公开状态页跟着误报黄灯)。各 runner 自己定义
+        # healthy(supervisor: 子进程在跑;LLMRunner: 非 FAILED)。缺 healthy 字段的旧/替身
+        # 快照回退到 running,保持兼容。
         supervisors = getattr(app.state, "runner_supervisors", [])
         runners = [s.health_snapshot() for s in supervisors]
         _llm = getattr(app.state, "llm_runner", None)
         if _llm is not None:
             runners.append(_llm.health_snapshot())
         checks["runners"] = runners
-        if any(not r.get("running", False) for r in runners):
+        if any(not r.get("healthy", r.get("running", False)) for r in runners):
             checks["status"] = "degraded"
 
         return checks
