@@ -172,6 +172,26 @@ def _trivial_workflow_for(category: str, engine: str, params: dict[str, Any]) ->
 # ---------- Routes ----------
 
 
+def _service_model_refs(svc: ServiceInstance) -> list[ServiceModelRef]:
+    """服务依赖的模型 ref —— 前端按此 overlay 实时加载态(useServiceModelStatus)。
+
+    - 工作流服务:从 workflow_snapshot 抽各节点引用的模型/组件。
+    - model 服务(asr/embedding/llm 等直接绑模型,无 snapshot):补一条指向 backing
+      引擎的 engine ref(engine_key=source_name),否则服务窗口的「模型」面板恒空、
+      看不出模型是否加载(2026-06-21 用户反馈:服务窗口要能显示里面的模型是否加载)。
+    """
+    if svc.source_type == "model" and svc.source_name:
+        return [
+            ServiceModelRef(
+                kind="engine",
+                role=svc.category,
+                label=svc.source_name,
+                engine_key=svc.source_name,
+            )
+        ]
+    return [ServiceModelRef(**m) for m in extract_service_models(svc.workflow_snapshot)]
+
+
 @router.get(
     "/services",
     dependencies=[Depends(require_admin)],
@@ -204,7 +224,7 @@ async def list_services(
     for svc, wf_name in rows:
         item = ServiceOut.model_validate(svc)
         item.workflow_name = wf_name
-        item.models = [ServiceModelRef(**m) for m in extract_service_models(svc.workflow_snapshot)]
+        item.models = _service_model_refs(svc)
         out.append(item)
     return out
 
@@ -234,7 +254,7 @@ async def get_service(
     svc, wf_name = row
     out = ServiceDetailOut.model_validate(svc)
     out.workflow_name = wf_name
-    out.models = [ServiceModelRef(**m) for m in extract_service_models(svc.workflow_snapshot)]
+    out.models = _service_model_refs(svc)
     return out
 
 
