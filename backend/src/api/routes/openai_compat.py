@@ -691,6 +691,31 @@ async def _asr_chat_transcribe(
     return content.strip(), None
 
 
+async def _asr_align_timestamps(
+    client: httpx.AsyncClient, wav: bytes, text: str, language: str | None,
+) -> list[dict] | None:
+    """调独立的 nous-aligner 微服务做强制对齐 → 词/字级时间戳(spec Arc B,方案②)。
+
+    对齐器是独立进程/venv(qwen-asr 钉 transformers 4.57,与 backend 冲突,故隔离)。
+    它没开/挂了/出错 → 返回 None(降级:纯文本主路不受影响,不让时间戳拖垮转写)。
+    """
+    base = os.environ.get("NOUS_ALIGNER_URL", "http://127.0.0.1:8002")
+    try:
+        b64 = base64.b64encode(wav).decode("ascii")
+        resp = await client.post(
+            f"{base.rstrip('/')}/align",
+            json={"audio_b64": b64, "text": text, "language": language},
+            timeout=120,
+        )
+        if resp.status_code != 200:
+            logger.warning("aligner %s: HTTP %s %s", base, resp.status_code, resp.text[:200])
+            return None
+        return resp.json().get("words")
+    except Exception as e:  # noqa: BLE001 — 对齐器不可用不该让转写失败
+        logger.warning("aligner unreachable (%s): %s", base, e)
+        return None
+
+
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     request: Request,
@@ -699,6 +724,7 @@ async def audio_transcriptions(
     language: str | None = Form(None),
     response_format: str | None = Form(None),
     context: str | None = Form(None),
+    timestamps: bool = Form(False),
     auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_transcriptions),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -761,9 +787,13 @@ async def audio_transcriptions(
     wav = await _ffmpeg_to_wav16k(raw)
 
     start_ms = time.monotonic()
+    words: list[dict] | None = None
     async with httpx.AsyncClient(timeout=300, proxy=None) as client:
         # chat 路径:一次拿到 语种(LID) + 文本,且支持 context 偏置(见 _asr_chat_transcribe)。
         text, detected_language = await _asr_chat_transcribe(client, base_url, wav, context)
+        # 时间戳(可选):调独立对齐器微服务,失败降级为 None(spec Arc B)。
+        if timestamps and text:
+            words = await _asr_align_timestamps(client, wav, text, detected_language)
 
     duration_ms = int((time.monotonic() - start_ms) * 1000)
     # chat 不回音频秒数 → 自算(归一化 wav 16k/mono/s16le)。
@@ -781,12 +811,16 @@ async def audio_transcriptions(
     # 计量:按音频秒数扣(ASR 无 token 概念);至少 1。admin(Playground)跳过 grant/quota。
     if api_key is not None:
         await _post_consume_quota(api_key.id, instance.id, max(1, audio_seconds))
-    # OpenAI 兼容:text 仍是首要字段(纯文本客户端不受影响);language 是增量字段。
-    return {
+    # OpenAI 兼容:text 仍是首要字段(纯文本客户端不受影响);language/words 是增量字段。
+    out: dict = {
         "text": text,
         "language": detected_language,
         "usage": {"type": "duration", "seconds": audio_seconds},
     }
+    if timestamps:
+        # words=None 表示请求了时间戳但对齐器不可用(降级);前端可据此提示。
+        out["words"] = words
+    return out
 
 
 # --- /v1/images/generations ---
