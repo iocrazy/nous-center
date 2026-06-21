@@ -13,6 +13,6 @@ User=heygo
 Group=heygo
 Environment=NOUS_DB_BACKUP_DIR=/media/heygo/Program/db-backups
 Environment=NOUS_DB_BACKUP_KEEP_DAYS=14
-ExecStart=/media/heygo/Program/projects-code/_playground/nous-center/infra/db/backup.sh
+ExecStart=/media/heygo/Program/projects-code/_playground/nous-prod/infra/db/backup.sh
 StandardOutput=journal
 StandardError=journal

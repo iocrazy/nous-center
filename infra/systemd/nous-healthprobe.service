@@ -8,6 +8,6 @@ After=network-online.target
 Type=oneshot
 User=heygo
 Group=heygo
-ExecStart=/media/heygo/Program/projects-code/_playground/nous-center/infra/monitoring/nous-healthprobe.sh
+ExecStart=/media/heygo/Program/projects-code/_playground/nous-prod/infra/monitoring/nous-healthprobe.sh
 StandardOutput=journal
 StandardError=journal

@@ -11,7 +11,7 @@ Type=simple
 User=heygo
 Group=heygo
 # 系统 python3 即可(纯 stdlib,不碰 backend venv/torch)—— 真正解耦。
-ExecStart=/usr/bin/python3 /media/heygo/Program/projects-code/_playground/nous-center/infra/monitoring/status_service.py
+ExecStart=/usr/bin/python3 /media/heygo/Program/projects-code/_playground/nous-prod/infra/monitoring/status_service.py
 Environment=NOUS_STATUS_HOST=127.0.0.1
 Environment=NOUS_STATUS_PORT=8001
 Environment=NOUS_STATUS_BACKEND=http://127.0.0.1:8000
