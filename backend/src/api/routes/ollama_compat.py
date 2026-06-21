@@ -33,7 +33,7 @@ from src.models.service_instance import ServiceInstance
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
-    get_vllm_base_url,
+    ensure_vllm_base_url,
 )
 from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.ollama_adapter import (
@@ -79,7 +79,7 @@ async def _resolve_model_instance(
     return resolved
 
 
-def _get_adapter(request: Request, instance: ServiceInstance):
+async def _get_adapter(request: Request, instance: ServiceInstance):
     """Resolve the loaded vLLM adapter or raise a clean 503."""
     if instance.source_type != "model":
         raise HTTPException(
@@ -91,7 +91,7 @@ def _get_adapter(request: Request, instance: ServiceInstance):
     # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = get_vllm_base_url(model_mgr, engine_name)
+        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
         raise HTTPException(503, detail=str(e)) from e
     except VLLMNoEndpoint as e:
@@ -168,7 +168,7 @@ async def ollama_chat(
     instance = await _resolve_model_instance(
         session, instance_preauth, api_key, requested_model,
     )
-    adapter, engine_name, base_url = _get_adapter(request, instance)
+    adapter, engine_name, base_url = await _get_adapter(request, instance)
 
     openai_body = ollama_chat_to_openai(body)
     # vLLM rejects the client-facing model name; its internal path is "".
@@ -244,7 +244,7 @@ async def ollama_generate(
     instance = await _resolve_model_instance(
         session, instance_preauth, api_key, requested_model,
     )
-    adapter, engine_name, base_url = _get_adapter(request, instance)
+    adapter, engine_name, base_url = await _get_adapter(request, instance)
 
     openai_body = ollama_generate_to_openai(body)
     openai_body["model"] = ""

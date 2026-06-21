@@ -45,7 +45,7 @@ from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
-    get_vllm_base_url,
+    ensure_vllm_base_url,
 )
 from src.services.prompt_composer import (
     AgentLoadFailed,
@@ -366,7 +366,7 @@ async def create_response(
     # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = get_vllm_base_url(model_mgr, engine_name)
+        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
         raise APIError(str(e), code="model_not_loaded") from e
     except VLLMNoEndpoint as e:

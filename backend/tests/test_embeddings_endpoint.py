@@ -38,6 +38,6 @@ def test_embeddings_route_registered():
     assert '@router.post("/v1/embeddings")' in src
     blk = src[src.find('@router.post("/v1/embeddings")'):src.find("# --- /v1/images/generations ---")]
     assert "resolve_target_service" in blk, "缺 M:N 服务解析"
-    assert "get_vllm_base_url" in blk, "缺 vLLM base_url 查找"
+    assert "ensure_vllm_base_url" in blk, "缺 vLLM base_url 查找(按需懒加载变体)"
     assert "record_llm_usage" in blk, "缺 usage 记账"
     assert 'body["model"] = ""' in blk, "必须置空 model 让 vLLM 用自己的(同 chat)"

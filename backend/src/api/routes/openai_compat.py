@@ -22,7 +22,7 @@ from src.models.database import get_async_session
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
-    get_vllm_base_url,
+    ensure_vllm_base_url,
 )
 from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.prompt_composer import (
@@ -208,7 +208,7 @@ async def chat_completions(
     # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = get_vllm_base_url(model_mgr, engine_name)
+        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
         raise HTTPException(503, detail=str(e)) from e
     except VLLMNoEndpoint as e:
@@ -525,7 +525,7 @@ async def embeddings(
     engine_name = instance.source_name or str(instance.source_id)
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = get_vllm_base_url(model_mgr, engine_name)
+        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
         raise HTTPException(503, detail=str(e)) from e
     except VLLMNoEndpoint as e:
@@ -654,7 +654,7 @@ async def audio_transcriptions(
     engine_name = instance.source_name or str(instance.source_id)
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = get_vllm_base_url(model_mgr, engine_name)
+        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
         raise HTTPException(503, detail=str(e)) from e
     except VLLMNoEndpoint as e:
