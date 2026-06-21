@@ -31,6 +31,22 @@ import {
 import { useServices, type ServiceRow } from '../api/services'
 import { useSettingsStore } from '../stores/settings'
 
+// 人话模态标签(按 service_category)——用于「用 OpenAI SDK」那块按模态列服务名。
+const MODALITY_LABEL: Record<string, string> = {
+  llm: '对话 (chat)',
+  embedding: '向量 (embedding)',
+  image: '图像 (image)',
+  tts: '语音合成 (tts)',
+  asr: '语音转写 (asr)',
+  vl: '多模态 (vision)',
+  understand: '多模态 (vision)',
+  app: '应用 (app)',
+}
+
+// OpenAI 兼容(/v1/*,用 OpenAI SDK 直连)是主用法;Ollama/Anthropic 只是额外的
+// 协议格式 → 折叠成「其它兼容格式」次要区,避免把「一个地址」摊成一堆卡片。
+const ALT_PROTOS = new Set(['ollama', 'anthropic'])
+
 export default function ApiKeyDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -45,6 +61,7 @@ export default function ApiKeyDetail() {
   const [showSecret, setShowSecret] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [showAltProtos, setShowAltProtos] = useState(false)
   const [resetResult, setResetResult] = useState<ApiKeyCreated | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const [expandedSnippet, setExpandedSnippet] = useState<string | null>(null)
@@ -61,6 +78,19 @@ export default function ApiKeyDetail() {
       if (!byCat.has(cat)) byCat.set(cat, g)
     }
     return [...byCat.values()]
+  }, [key])
+
+  // 按模态分组**所有**授权服务名(不是去重取一个)——「用 OpenAI SDK」那块要把每个
+  // 模态下能填进 model 字段的服务名都列出来,免得用户以为只能调示例那一个。
+  const modelsByModality = useMemo(() => {
+    const grants = (key?.grants ?? []).filter((g) => g.status === 'active')
+    const m = new Map<string, string[]>()
+    for (const g of grants) {
+      const cat = g.service_category ?? 'llm'
+      if (!m.has(cat)) m.set(cat, [])
+      m.get(cat)!.push(g.service_name)
+    }
+    return [...m.entries()]
   }, [key])
 
   // 示例调用地址:UI 与 API 同源(生产 = api.iocrazy.com,dev = localhost:8000)→ 用
@@ -128,6 +158,96 @@ export default function ApiKeyDetail() {
         {} as Record<string, string>,
       )
     : buildSnippets(exampleBase, '<service>', sampleSecret, undefined)
+
+  const renderEndpointCard = (proto: string) => {
+    const ep = endpoints[proto]
+    if (!ep) return null
+    return (
+      <div
+        key={proto}
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: 12,
+          background: 'var(--bg-accent)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 6,
+          }}
+        >
+          <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500 }}>{ep.label}</span>
+          <IconBtn title="复制 endpoint" onClick={() => handleCopy(ep.url, `ep-${proto}`)}>
+            {copied === `ep-${proto}` ? <Check size={12} /> : <Copy size={12} />}
+          </IconBtn>
+        </div>
+        <div
+          style={{
+            fontFamily: 'var(--mono, monospace)',
+            fontSize: 11,
+            color: 'var(--muted)',
+            wordBreak: 'break-all',
+          }}
+        >
+          {ep.url}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{ep.hint}</div>
+        <button
+          type="button"
+          onClick={() => setExpandedSnippet((p) => (p === proto ? null : proto))}
+          style={{
+            marginTop: 8,
+            padding: '4px 8px',
+            background: 'transparent',
+            color: 'var(--muted)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            fontSize: 11,
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
+          {expandedSnippet === proto ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          cURL
+        </button>
+        {expandedSnippet === proto && (
+          <pre
+            onClick={() => handleCopy(snippets[proto], `snip-${proto}`)}
+            style={{
+              marginTop: 8,
+              padding: 10,
+              background: 'var(--bg)',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              fontFamily: 'var(--mono, monospace)',
+              fontSize: 10,
+              color: 'var(--text)',
+              whiteSpace: 'pre-wrap',
+              cursor: 'pointer',
+              margin: '8px 0 0',
+              lineHeight: 1.5,
+            }}
+          >
+            {snippets[proto]}
+            {copied === `snip-${proto}` && (
+              <span style={{ display: 'block', marginTop: 6, color: '#4ade80', fontSize: 9 }}>
+                已复制
+              </span>
+            )}
+          </pre>
+        )}
+      </div>
+    )
+  }
+
+  const primaryProtos = Object.keys(endpoints).filter((p) => !ALT_PROTOS.has(p))
+  const altProtos = Object.keys(endpoints).filter((p) => ALT_PROTOS.has(p))
 
   return (
     <div
@@ -265,34 +385,64 @@ export default function ApiKeyDetail() {
 
         {/* endpoints */}
         <Section title="调用方式">
+          {/* 主用法:一个 Base URL + 一个 key,model 字段切模型(对齐 Doubao/DeepSeek)。 */}
           <div
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              padding: 14,
+              background: 'var(--bg-accent)',
               marginBottom: 12,
-              fontSize: 12,
-              color: 'var(--muted)',
             }}
           >
-            <span>Base URL</span>
-            <code
-              style={{
-                fontFamily: 'var(--mono, monospace)',
-                color: 'var(--text)',
-                background: 'var(--bg-accent)',
-                border: '1px solid var(--border)',
-                borderRadius: 4,
-                padding: '2px 6px',
-              }}
-            >
-              {exampleBase}/v1
-            </code>
-            <IconBtn title="复制 Base URL" onClick={() => handleCopy(`${exampleBase}/v1`, 'baseurl')}>
-              {copied === 'baseurl' ? <Check size={12} /> : <Copy size={12} />}
-            </IconBtn>
-            <span>同一个 key 按授权的模态走不同子路径 ↓</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Base URL</span>
+              <code
+                style={{
+                  fontFamily: 'var(--mono, monospace)',
+                  fontSize: 13,
+                  color: 'var(--text)',
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 4,
+                  padding: '3px 8px',
+                }}
+              >
+                {exampleBase}/v1
+              </code>
+              <IconBtn title="复制 Base URL" onClick={() => handleCopy(`${exampleBase}/v1`, 'baseurl')}>
+                {copied === 'baseurl' ? <Check size={12} /> : <Copy size={12} />}
+              </IconBtn>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+              用 OpenAI 兼容 SDK:<code style={{ fontFamily: 'var(--mono, monospace)' }}>base_url</code>{' '}
+              填上面、<code style={{ fontFamily: 'var(--mono, monospace)' }}>api_key</code> 填本 key,
+              <code style={{ fontFamily: 'var(--mono, monospace)' }}>model</code> 字段填下面的服务名即可切换。
+              子路径(/chat/completions、/embeddings…)由 SDK 自动拼接。
+            </div>
+            {modelsByModality.length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {modelsByModality.map(([cat, names]) => (
+                  <div key={cat} style={{ fontSize: 11, display: 'flex', gap: 8 }}>
+                    <span style={{ color: 'var(--muted)', minWidth: 96 }}>
+                      {MODALITY_LABEL[cat] ?? cat}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: 'var(--mono, monospace)',
+                        color: 'var(--text)',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {names.join('  /  ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
+
+          {/* 主端点卡(OpenAI 兼容 /v1/*:chat / embeddings / images …)。 */}
           <div
             style={{
               display: 'grid',
@@ -300,112 +450,45 @@ export default function ApiKeyDetail() {
               gap: 10,
             }}
           >
-            {Object.keys(endpoints).map((proto) => {
-              const ep = endpoints[proto]
-              return (
+            {primaryProtos.map(renderEndpointCard)}
+          </div>
+
+          {/* 次要:Ollama / Anthropic 协议格式,默认折叠。 */}
+          {altProtos.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                onClick={() => setShowAltProtos((v) => !v)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '6px 10px',
+                  background: 'transparent',
+                  color: 'var(--muted)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                {showAltProtos ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                其它兼容格式(Ollama / Anthropic)
+              </button>
+              {showAltProtos && (
                 <div
-                  key={proto}
                   style={{
-                    border: '1px solid var(--border)',
-                    borderRadius: 6,
-                    padding: 12,
-                    background: 'var(--bg-accent)',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                    gap: 10,
+                    marginTop: 10,
                   }}
                 >
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      marginBottom: 6,
-                    }}
-                  >
-                    <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500 }}>
-                      {ep.label}
-                    </span>
-                    <IconBtn
-                      title="复制 endpoint"
-                      onClick={() => handleCopy(ep.url, `ep-${proto}`)}
-                    >
-                      {copied === `ep-${proto}` ? <Check size={12} /> : <Copy size={12} />}
-                    </IconBtn>
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--mono, monospace)',
-                      fontSize: 11,
-                      color: 'var(--muted)',
-                      wordBreak: 'break-all',
-                    }}
-                  >
-                    {ep.url}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-                    {ep.hint}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedSnippet((p) => (p === proto ? null : proto))
-                    }
-                    style={{
-                      marginTop: 8,
-                      padding: '4px 8px',
-                      background: 'transparent',
-                      color: 'var(--muted)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 4,
-                      fontSize: 11,
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 4,
-                    }}
-                  >
-                    {expandedSnippet === proto ? (
-                      <ChevronUp size={11} />
-                    ) : (
-                      <ChevronDown size={11} />
-                    )}
-                    cURL
-                  </button>
-                  {expandedSnippet === proto && (
-                    <pre
-                      onClick={() => handleCopy(snippets[proto], `snip-${proto}`)}
-                      style={{
-                        marginTop: 8,
-                        padding: 10,
-                        background: 'var(--bg)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 4,
-                        fontFamily: 'var(--mono, monospace)',
-                        fontSize: 10,
-                        color: 'var(--text)',
-                        whiteSpace: 'pre-wrap',
-                        cursor: 'pointer',
-                        margin: '8px 0 0',
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      {snippets[proto]}
-                      {copied === `snip-${proto}` && (
-                        <span
-                          style={{
-                            display: 'block',
-                            marginTop: 6,
-                            color: '#4ade80',
-                            fontSize: 9,
-                          }}
-                        >
-                          已复制
-                        </span>
-                      )}
-                    </pre>
-                  )}
+                  {altProtos.map(renderEndpointCard)}
                 </div>
-              )
-            })}
-          </div>
+              )}
+            </div>
+          )}
         </Section>
 
         {/* grants */}
