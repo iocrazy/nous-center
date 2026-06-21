@@ -32,12 +32,16 @@ die()  { printf '\033[1;31m❌ %s\033[0m\n' "$*" >&2; exit 1; }
 
 cd "$REPO"
 
-# ---------- 1. 拉 master ----------
-step "拉取 master"
-git rev-parse --abbrev-ref HEAD | grep -qx master || die "不在 master 分支(当前 $(git rev-parse --abbrev-ref HEAD));发版只从 master。"
-git fetch origin master -q
-git pull --ff-only origin master || die "git pull 失败(本地有未提交改动?--ff-only 拒绝非快进)。"
-ok "master 已是 $(git rev-parse --short HEAD)"
+# ---------- 1. 同步 master(只在专用生产检出)----------
+# 生产与 dev 检出分离(2026-06-21):systemd 指向专用 nous-prod 检出,dev session 各用
+# 自己的 worktree,谁都不碰生产。生产检出 detached、只读、deploy 专用 → fetch + reset
+# --hard 同步到 origin/master(gitignore 的 .env/dist/node_modules 不受影响)。
+# .nous-production 标记防呆:dev 检出误跑 deploy.sh 会被 reset --hard 卷走未提交改动 → 直接拒绝。
+step "同步到 origin/master"
+[[ -f "$REPO/.nous-production" ]] || die "不在专用生产检出(缺 .nous-production 标记)。生产部署只在 nous-prod 跑;dev 改动走 PR→CI→master 后,在 nous-prod 里 ./infra/deploy.sh。"
+git fetch origin master -q || die "git fetch 失败。"
+git reset --hard origin/master || die "git reset --hard origin/master 失败。"
+ok "已同步到 $(git rev-parse --short HEAD)"
 
 # ---------- 2. 前端 build(fail-loud + dist 时间戳校验)----------
 step "前端 build"
