@@ -50,12 +50,16 @@
 不动快文本主路**,时间戳纯增量后处理。
 
 集成方式(方案②):
-- 注册 `qwen3_forced_aligner`(0.6B)为新模型/引擎类目(对齐器,非 vLLM)。
-- backend 需能调 `qwen-asr` 的 `Qwen3ForcedAligner`:在 prod venv 装 `qwen-asr`(spike 用独立
-  venv 装通;需验证与现有 vllm/transformers 版本不冲突 —— B-1 先验)。冲突则退化为独立 aligner
-  子进程/runner(自带 venv,IPC 喂 audio+text 拿 timestamps)。
-- 转写端点加 `timestamps=true`:后端先 vLLM 出文本(含 LID),再对齐器 align → 返回
-  `{text, language, words:[{text,start,end}]}`。对齐器按需加载、可驱逐(小,1.7GB)。
+- **B-1 兼容性已验(2026-06-21)**:`qwen-asr` **钉死 `transformers==4.57.6`**(+ vllm extra 钉
+  0.14、装来 torch 2.12),而 prod 是 `transformers 5.6.0.dev0` / vllm 0.22 / torch 2.11
+  (vllm 0.22 + 图像 diffusers 都依赖新 transformers)。**装进 prod venv 会降级 transformers
+  砸坏 vllm/图像** → **不能在 backend 进程内调对齐器**。
+- **定:独立对齐器微服务**(自带 venv = qwen-asr + transformers 4.57,与 backend 隔离),
+  对齐 nous-status 的「独立进程/独立端口/独立 unit」范式。常驻持模型(1.7GB),
+  暴露 `POST /align {audio_b64, text, language} → {words:[{text,start,end}]}`。
+- 转写端点加 `timestamps=true`:后端先 vLLM 出文本(含 LID),再 HTTP 调对齐器微服务 →
+  返回 `{text, language, words:[{text,start,end}]}`。微服务挂了/未开 → 时间戳缺省、
+  不影响纯文本主路(降级)。
 
 时间戳走 chat/转写端点都接不了 → 时间戳模式必然是 nous 自己的一条 API 形态(例如转写端点加
 `timestamps=true` → 后端触发 ASR + 对齐两步,返回 `{text, language, words:[{text,start,end}]}`)。
