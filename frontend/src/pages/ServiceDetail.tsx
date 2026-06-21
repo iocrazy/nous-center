@@ -486,6 +486,10 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const [status, setStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle')
+  // ASR(语音识别):音频进文本出,走 multipart /v1/audio/transcriptions —— 没有 exposed_inputs
+  // 表单可填,改成传音频文件(2026-06-21:用户反馈 ASR 服务没法在 Playground 测)。
+  const isAsr = svc.category === 'asr'
+  const [audioFile, setAudioFile] = useState<File | null>(null)
 
   const submit = async (values: Record<string, unknown>) => {
     setRunning(true)
@@ -495,15 +499,32 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
     setStatus('running')
     const start = performance.now()
     try {
-      const url =
-        svc.category === 'llm'
-          ? '/v1/chat/completions'
-          : `/v1/apps/${encodeURIComponent(svc.name)}/run`
-      const body = svc.category === 'llm' ? buildLlmBody(svc, values) : values
-      const data = await apiFetch<Record<string, unknown>>(url, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
+      let data: Record<string, unknown>
+      if (isAsr) {
+        if (!audioFile) throw new Error('请先选择音频文件')
+        // multipart 不能走 apiFetch(它强制 JSON Content-Type);raw fetch + same-origin cookie。
+        const fd = new FormData()
+        fd.append('file', audioFile)
+        fd.append('model', svc.name)
+        const resp = await fetch('/v1/audio/transcriptions', {
+          method: 'POST', body: fd, credentials: 'same-origin',
+        })
+        if (!resp.ok) {
+          const t = await resp.text().catch(() => '')
+          throw new Error(`HTTP ${resp.status}: ${t.slice(0, 200)}`)
+        }
+        data = await resp.json()
+      } else {
+        const url =
+          svc.category === 'llm'
+            ? '/v1/chat/completions'
+            : `/v1/apps/${encodeURIComponent(svc.name)}/run`
+        const body = svc.category === 'llm' ? buildLlmBody(svc, values) : values
+        data = await apiFetch<Record<string, unknown>>(url, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        })
+      }
       setResult(data)
       setStatus('completed')
       setLatencyMs(Math.round(performance.now() - start))
@@ -528,13 +549,48 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
         display: 'flex',
         flexDirection: 'column',
       }}>
-        <SectionHeader title="入参" />
-        <SchemaDrivenForm
-          inputs={svc.exposed_inputs}
-          initialValues={initialInputs}
-          submitting={running}
-          onSubmit={submit}
-        />
+        <SectionHeader title={isAsr ? '音频输入' : '入参'} />
+        {isAsr ? (
+          <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <label
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px',
+                borderRadius: 6, border: '1px dashed var(--border)', background: 'var(--bg)',
+                color: 'var(--muted)', fontSize: 13, cursor: 'pointer',
+              }}
+            >
+              <input
+                type="file"
+                accept="audio/*"
+                onChange={(e) => setAudioFile(e.target.files?.[0] ?? null)}
+                style={{ display: 'none' }}
+              />
+              {audioFile
+                ? <span style={{ color: 'var(--text)' }}>{audioFile.name} · {(audioFile.size / 1024).toFixed(0)} KB</span>
+                : <span>选择音频文件(wav / mp3 / m4a…)转写为文本</span>}
+            </label>
+            <button
+              type="button"
+              disabled={running || !audioFile}
+              onClick={() => submit({})}
+              style={{
+                alignSelf: 'flex-start', padding: '7px 16px', borderRadius: 6,
+                background: running || !audioFile ? 'var(--muted)' : 'var(--accent)',
+                color: '#fff', border: 'none', fontSize: 13, fontWeight: 500,
+                cursor: running || !audioFile ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {running ? '转写中…' : '▶ 运行'}
+            </button>
+          </div>
+        ) : (
+          <SchemaDrivenForm
+            inputs={svc.exposed_inputs}
+            initialValues={initialInputs}
+            submitting={running}
+            onSubmit={submit}
+          />
+        )}
       </section>
 
       {/* Stage 2: Output (takes focus when there's content) */}
@@ -557,11 +613,21 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
                 运行中…
               </div>
             )}
-            <SchemaDrivenOutput
-              outputs={svc.exposed_outputs}
-              result={result}
-              error={error}
-            />
+            {isAsr ? (
+              error ? (
+                <div style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</div>
+              ) : result && typeof result.text === 'string' ? (
+                <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                  {result.text as string}
+                </div>
+              ) : null
+            ) : (
+              <SchemaDrivenOutput
+                outputs={svc.exposed_outputs}
+                result={result}
+                error={error}
+              />
+            )}
           </div>
           {/* Stage 3: Status footer */}
           {status !== 'idle' && (

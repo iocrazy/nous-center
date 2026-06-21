@@ -8,7 +8,7 @@ import time
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -585,6 +585,22 @@ async def _ffmpeg_to_wav16k(raw: bytes) -> bytes:
     return out
 
 
+async def _auth_transcriptions(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_async_session),
+) -> tuple[ServiceInstance | None, InstanceApiKey | None]:
+    """转写端点 auth:Bearer 优先(走 key+grant+quota,外部调用);否则 admin session
+    旁路(给 in-app Playground 用 —— 同 /v1/apps 的 _auth_apps_run,否则 cookie 调
+    会被 verify_bearer_token_any 的必填 Authorization 卡 400)。(None,None)=admin。"""
+    if authorization:
+        return await verify_bearer_token_any(authorization, session)
+    from src.api.admin_session import request_is_authed
+    if request_is_authed(request):
+        return None, None
+    raise HTTPException(401, detail="Missing API key or admin session")
+
+
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     request: Request,
@@ -592,20 +608,32 @@ async def audio_transcriptions(
     model: str | None = Form(None),
     language: str | None = Form(None),
     response_format: str | None = Form(None),
-    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_transcriptions),
     session: AsyncSession = Depends(get_async_session),
 ):
     """OpenAI 兼容语音转写(ASR,2026-06-20 接入;spec asr-qwen3-integration)。
 
     multipart:`file`(音频)+ `model`(服务名)。解析链同 /v1/embeddings:model → 服务
-    (M:N grant / legacy 1:1)→ source_type=model → vLLM ASR 子进程(Qwen3-ASR,
-    models.yaml type:asr)→ 透传 `/v1/audio/transcriptions`。上传音频先 ffmpeg 归一化
-    (PR-0 spike:vLLM PyAV 拒非常规格式)。usage 按 vLLM 返回的 audio 秒数计量。
+    (M:N grant)→ source_type=model → vLLM ASR 子进程(Qwen3-ASR,models.yaml type:asr)
+    → 透传 `/v1/audio/transcriptions`。上传音频先 ffmpeg 归一化(PR-0 spike:vLLM PyAV 拒
+    非常规格式)。usage 按 vLLM 返回的 audio 秒数计量。Bearer 走 grant+quota;admin cookie
+    (in-app Playground)按 model 名直查服务、跳 grant/quota。
     """
     instance, api_key = auth
     requested_model = model or None
+    admin_run = api_key is None  # admin session 旁路(Playground)
 
-    if instance is None:
+    if admin_run:
+        # admin:按服务名直查(单管理员隐式授权,跳 grant/quota),同 /v1/apps execute_service。
+        from sqlalchemy import select
+        instance = (
+            await session.execute(
+                select(ServiceInstance).where(ServiceInstance.name == requested_model)
+            )
+        ).scalar_one_or_none()
+        if instance is None:
+            raise NotFoundError(f"service '{requested_model}' not found", code="service_not_found")
+    else:
         try:
             instance = await resolve_target_service(
                 session, api_key=api_key, requested_model=requested_model,
@@ -663,11 +691,12 @@ async def audio_transcriptions(
         completion_tokens=0,
         duration_ms=duration_ms,
         instance_id=instance.id,
-        api_key_id=api_key.id,
+        api_key_id=api_key.id if api_key else None,
         agent_id=None,
     )
-    # 计量:按音频秒数扣(ASR 无 token 概念);至少 1,避免 0 长度不计费。
-    await _post_consume_quota(api_key.id, instance.id, max(1, audio_seconds))
+    # 计量:按音频秒数扣(ASR 无 token 概念);至少 1。admin(Playground)跳过 grant/quota。
+    if api_key is not None:
+        await _post_consume_quota(api_key.id, instance.id, max(1, audio_seconds))
     return out
 
 
