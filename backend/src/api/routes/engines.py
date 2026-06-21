@@ -213,7 +213,12 @@ async def scan_models_endpoint():
 
 @router.post("/reload", dependencies=[Depends(require_admin)])
 async def reload_registry(request: Request):
-    """Hot-reload models.yaml without restarting. Picks up new model configs."""
+    """热加载模型定义,不重启即认新模型。
+
+    重读单一来源 collect_model_entries(`configs/models.d/*.yaml` 一模型一文件
+    + 兼容 `models.yaml` 的 legacy `models:` list)→ 丢个新 `<id>.yaml` 进 models.d
+    后调本接口即可插拔上线,无需重启后端。
+    """
     mgr = _get_model_manager(request)
     if mgr is None:
         raise HTTPException(503, "ModelManager not initialized")
