@@ -4,7 +4,7 @@ import { apiFetch } from './client'
 // ---------- shared types ----------
 
 export type ServiceStatus = 'active' | 'paused' | 'deprecated' | 'retired'
-export type ServiceCategory = 'llm' | 'tts' | 'vl' | 'app' | 'image' | 'asr'
+export type ServiceCategory = 'llm' | 'tts' | 'vl' | 'app' | 'image' | 'asr' | 'embedding'
 
 export interface ExposedParam {
   key?: string
@@ -181,10 +181,18 @@ export function paramSlot(p: ExposedParam): string | undefined {
 }
 
 export function endpointFor(svc: Pick<ServiceRow, 'name' | 'category'>): string {
-  if (svc.category === 'llm') return `POST /v1/chat/completions · model=${svc.name}`
-  // ASR(语音识别,2026-06-20):multipart 转写端点。
-  if (svc.category === 'asr') return `POST /v1/audio/transcriptions · model=${svc.name}`
-  return `POST /v1/apps/${svc.name}/run`
+  // model-backed 服务按 category 给对应 OpenAI 兼容端点(2026-06-21:此前非 llm 全误落
+  // /v1/apps/.../run —— embedding/tts/image/asr 服务卡显示的端点都是错的)。与 keys.ts
+  // 的 endpointsFor 口径一致。workflow/app 类无 category 走 /v1/apps/.../run。
+  const m = `model=${svc.name}`
+  switch (svc.category) {
+    case 'llm': return `POST /v1/chat/completions · ${m}`
+    case 'embedding': return `POST /v1/embeddings · ${m}`
+    case 'tts': return `POST /v1/audio/speech · ${m}`
+    case 'asr': return `POST /v1/audio/transcriptions · ${m}`
+    case 'image': return `POST /v1/images/generations · ${m}`
+    default: return `POST /v1/apps/${svc.name}/run`
+  }
 }
 
 export const NAME_RE = /^[a-z][a-z0-9-]{1,62}$/
