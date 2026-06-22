@@ -21,7 +21,10 @@ EnvironmentFile=/media/heygo/Program/projects-code/_playground/nous-prod/backend
 # uv lives in $HOME/.local/bin; systemd doesn't read .profile, point at it
 Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/heygo/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/linuxbrew/.linuxbrew/bin/uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
-Restart=on-failure
+# always(2026-06-22):连「干净退出(exit 0)」也拉回 —— 核心推理后端不该因任何原因
+# 静默下线(on-failure 漏掉 exit 0 / 被 SIGTERM 正常退出的情形)。配 StartLimitIntervalSec=0
+# 永不放弃重试。重启/停服由 systemctl 主动发起时不受影响(那是 stop 不是 Restart 触发)。
+Restart=always
 RestartSec=15
 # host 级 OOM 时让内核优先杀别的(桌面/临时工具),保住推理后端 —— 这是本机的核心
 # 服务。注意:这只影响 host 全局 OOM 的「选谁杀」;后端自己撑爆 MemoryMax=96G 时仍由

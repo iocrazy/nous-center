@@ -12,6 +12,12 @@ PartOf=nous-backend.service
 Type=simple
 User=heygo
 Group=heygo
+# 就绪门:After=nous-backend 只保证「backend 进程 exec 之后」起,但 backend 是
+# Type=simple —— exec 那刻就算 active,而 app 还在启动(uvicorn 还没 listen / vLLM 重载
+# 30s+)。隧道抢先连到没应答的 origin → 重启后公网 530/502 ~1 分钟(每次 deploy 都踩)。
+# 这里等 backend /healthz 200 再起隧道,消掉那个窗口。最多等 ~120s;真没起来也照样起
+# 隧道(exit 0)—— 宁可隧道在、靠 healthprobe 自愈,也别因 backend 慢而完全没隧道。
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do /usr/bin/curl -sf -m 3 http://127.0.0.1:8000/healthz >/dev/null 2>&1 && { echo "backend 就绪,起隧道"; exit 0; }; sleep 2; done; echo "backend /healthz 120s 未就绪,仍起隧道(healthprobe 兜)"; exit 0'
 # http2 fallback because QUIC (UDP/7844) is unreliable on this network
 ExecStart=/usr/local/bin/cloudflared tunnel --protocol http2 run nous-center
 Restart=on-failure
