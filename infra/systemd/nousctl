@@ -66,6 +66,14 @@ cmd_status() {
   done
   printf '\n监听端口:\n'
   ss -ltn 2>/dev/null | awk 'NR>1 {print $4}' | grep -E ':(8000|8001|5432)$' | sort -u | sed 's/^/  /' || true
+  printf '\nZeroTier 内网访问:\n'
+  # 后端 bind 0.0.0.0 → ZeroTier 网卡(10.0.0.10)同样可达。探一下 /healthz 确认内网入口活着。
+  zt_code="$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://10.0.0.10:8000/healthz 2>/dev/null || echo 000)"
+  if [ "$zt_code" = 200 ]; then
+    printf '  http://10.0.0.10:8000  %s\n' "$(c_grn 'HTTP 200')"
+  else
+    printf '  http://10.0.0.10:8000  %s %s\n' "$(c_red "HTTP ${zt_code}")" "$(c_dim '(ZeroTier 未连/未分配 10.0.0.10?)')"
+  fi
   printf '\n公网隧道:\n'
   code="$(curl -s -m 6 -o /dev/null -w '%{http_code}' https://api.iocrazy.com/api/v1/engines 2>/dev/null || echo 000)"
   if [ "$code" = 000 ]; then
