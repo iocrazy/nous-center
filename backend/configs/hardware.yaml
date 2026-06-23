@@ -1,16 +1,19 @@
 # hardware.yaml — 实际生效的 GPU 拓扑（代码加载此文件，唯一真相源）
 #
-# 当前 = Pro 6000 + 2x3090 三卡布局（无 NVLink bridge）。
+# 当前 = Pro 6000 + 2x3090 三卡布局（两张 3090 之间有 NVLink bridge）。
 # 索引 = PCI_BUS_ID（与 nvidia-smi 一致；backend/.env 强制
 # CUDA_DEVICE_ORDER=PCI_BUS_ID，否则 torch 默认 FASTEST_FIRST 会把 Pro 6000
 # 排到 cuda:0，与本 yaml + nvidia-smi 错位，导致 ModelManager
 # get_best_gpu(nvidia-smi index) 喂给 torch 当 cuda:N 装错卡）:
-#   GPU 0: RTX 3090         24 GB  → image (cpu_offload，3090 单卡 24GB 紧)
-#   GPU 1: RTX Pro 6000 Blackwell  96 GB  → llm (35B FP16 装得下)
-#   GPU 2: RTX 3090         24 GB  → tts
+#   GPU 0: RTX 3090 (01:00)  24 GB  → 显示卡（驱动 Xorg/GNOME）——禁止放任何计算！
+#                                     在显示卡上加载模型会撑爆 595 开源驱动的 NVKMS
+#                                     显存分配（NvKmsKapiMemory，GPU 0x100=bus01）→ 桌面掉登录。
+#   GPU 1: RTX Pro 6000 Blackwell  96 GB  → llm（专用，不放 image）
+#   GPU 2: RTX 3090 (9A:00)  24 GB  → tts + image（共用这张 24GB 3090）
 #
-# 三个 group 真独立，V1.5 "不同 group 并发" 前提成立。
-# 若未来装上 NVLink bridge，可改 llm group 用 [0,2] tp + nvlink:true。
+# image 原本钉在 GPU 0，一出图就崩桌面，已移到 GPU 2（与 tts 共用，2026-06-22）。
+# 两张 3090（GPU 0 / GPU 2）之间有 NVLink，但 GPU 0 是显示卡，不能用于 llm tp；
+# 若要 NVLink tp，需先把显示器接到别的卡、腾空 GPU 0 再用 [0,2] + nvlink:true。
 #
 # 字段语义：
 #   id      group 唯一标识，runner / scheduler 用它寻址
@@ -28,7 +31,7 @@ groups:
     vram_gb: 96
 
   - id: image
-    gpus: [0]              # 3090，enable_model_cpu_offload 模式
+    gpus: [2]              # 移到 GPU2 3090（原为 GPU0 显示卡，跑图会崩桌面）；与 tts 共用 24GB
     nvlink: false
     role: image
     vram_gb: 24
