@@ -5,8 +5,9 @@ from src.config import load_hardware_config
 def test_load_default_hardware_yaml():
     """configs/hardware.yaml 解析出 groups 列表。
 
-    实际部署:Pro 6000 96GB (llm, gpu=1) + 两张 3090 (image gpu=0, tts gpu=2)，
-    三个独立 group,无 NVLink。
+    实际部署:Pro 6000 96GB (llm, gpu=1) + 两张 3090。GPU0 是显示卡(跑图会撑爆
+    595 驱动 NVKMS 显存分配崩桌面),image 已从 GPU0 移到 GPU2,与 tts 共用那张
+    3090;三个 group,无 NVLink tp(GPU0 占作显示)。
     """
     cfg = load_hardware_config()
     assert "groups" in cfg
@@ -17,9 +18,9 @@ def test_load_default_hardware_yaml():
     assert llm["gpus"] == [1]
     assert llm["nvlink"] is False
     assert llm["vram_gb"] == 96
-    # image + tts 各占一张 3090
+    # image 与 tts 共用 GPU2 那张 3090(GPU0 留作显示卡,禁止放计算)
     image = next(g for g in groups if g["role"] == "image")
-    assert image["gpus"] == [0]
+    assert image["gpus"] == [2]
     tts = next(g for g in groups if g["role"] == "tts")
     assert tts["gpus"] == [2]
 
