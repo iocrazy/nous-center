@@ -40,6 +40,11 @@ origin/master` → 前端 build(dist 时间戳校验)→ `sudo systemctl restart
 
 ## 一次性搭建(已执行,留档以备重建 / Phase2 迁盘)
 
+> 💡 **现在有一键编排器**:`infra/bootstrap.sh` 已把下面的手抄序列(连同原生 PG、
+> admin secret、aligner venv)统成一条命令。整机格式化重建走
+> **[FRESH_FORMAT_SOP.md](FRESH_FORMAT_SOP.md)**。下面的手动步骤留作底层参考 /
+> bootstrap 不可用时的回退。先跑 `./infra/bootstrap.sh --check` 看缺什么。
+
 ```bash
 ROOT=/media/heygo/Program/projects-code/_playground
 # 1. 建专用生产检出(worktree,detached 在 origin/master)
