@@ -4,21 +4,37 @@
 核心工具是 **`infra/bootstrap.sh`** 编排器(设计见
 `docs/superpowers/specs/2026-06-23-fresh-format-bootstrap-design.md`)。
 
+## ⚠️ 关键前提:全量 bootstrap 要在 **nous-prod 检出**里跑
+
+systemd unit(`infra/systemd/*.service`)把检出路径**写死成 `…/nous-prod`**
+(`WorkingDirectory`/`ExecStart`)。所以不管你在哪跑 bootstrap,systemd 永远 serve
+`nous-prod`。**provision 的检出必须 == 被 serve 的检出**,否则装出的服务起不来
+(services 段现在会校验:`nous-prod` 无 venv 直接拒装并提示)。
+
+> 结论:把生产检出 clone/worktree 成 `…/nous-prod`,**在它里面**跑全量 bootstrap。
+> dev 检出(`nous-center`)是可选的、事后再加(`git worktree`)。
+
 ## TL;DR
 
 ```bash
+ROOT=/media/heygo/Program/projects-code/_playground
+
 # 0. 装系统级前提(bootstrap 不代装,见下「OS 层」)
-# 1. clone 仓库
-git clone git@github.com:iocrazy/nous-center.git
-cd nous-center
+# 1. clone 成生产检出 nous-prod(systemd 指向它)
+git clone git@github.com:iocrazy/nous-center.git "$ROOT/nous-prod"
+cd "$ROOT/nous-prod"
+touch .nous-production            # deploy.sh 凭它放行
 
 # 2. 体检:一屏看清缺什么(只读,零改动)
 ./infra/bootstrap.sh --check
 
-# 3. 全量一键(需 root;幂等,已就位即跳过)
+# 3. 全量一键(需 root;幂等,已就位即跳过)—— 在 nous-prod 里跑
 sudo ./infra/bootstrap.sh
 #    若 .env 是新建的 → 脚本会停下让你填 DATABASE_URL 密码等,填完重跑
 #    若要从备份恢复 DB:sudo ./infra/bootstrap.sh --restore /path/to/nous_center.dump
+
+# 4.(可选)事后加 dev 检出,各用各的 worktree,不抢生产
+git -C "$ROOT/nous-prod" worktree add "$ROOT/nous-center" master
 ```
 
 跑完 `--check` 应全 OK,公网 `https://api.iocrazy.com/healthz` 返回 200。
