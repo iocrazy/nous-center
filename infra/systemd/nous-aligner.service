@@ -14,6 +14,12 @@ WorkingDirectory=/media/heygo/Program/projects-code/_playground/nous-prod/infra/
 # 独立 venv(setup.sh 建);不碰 backend venv。
 ExecStart=/media/heygo/Program/projects-code/_playground/nous-prod/infra/aligner/.venv/bin/python /media/heygo/Program/projects-code/_playground/nous-prod/infra/aligner/aligner_service.py
 Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+# UUID 钉到 3090,**别落 Pro 6000**:Pro 6000 Blackwell GSP 固件有负载触发崩溃 bug
+# (开机被压一把模型就 fullchip-reset 僵死、拖黑整机,见 infra/gpu/README.md)。裸 cuda:0
+# 在 PCI_BUS_ID 排序下 = 最低总线,槽位一变就可能正好是 Pro 6000 → 不可靠。UUID 绑定不随
+# 槽位/index 变,永远是这张 3090。进程内只可见这张卡,故 NOUS_ALIGNER_DEVICE=cuda:0 即指它。
+# 单机 infra,硬编码 UUID(同本仓库已硬编码的绝对路径);换卡需同步改这里。
+Environment=CUDA_VISIBLE_DEVICES=GPU-78dcdbeb-03d3-819e-a9c2-cd945d3816d3
 Environment=NOUS_ALIGNER_DEVICE=cuda:0
 Environment=NOUS_ALIGNER_PORT=8002
 Environment=MODELS_ROOT=/media/heygo/Program/models
