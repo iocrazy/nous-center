@@ -54,6 +54,23 @@ warn()   { printf '  %s!%s %s\n' "$C_WARN" "$C_RST" "$1"; N_WARN=$((N_WARN+1)); 
 section(){ printf '\n%s━━ %s%s\n' "$C_DIM" "$1" "$C_RST"; }
 
 have()   { command -v "$1" >/dev/null 2>&1; }
+log()    { printf '%s==>%s %s\n' "$C_MAN" "$C_RST" "$1"; }
+die()    { printf '%sERROR:%s %s\n' "$C_MISS" "$C_RST" "$1" >&2; exit 1; }
+
+# 变更类阶段守卫:需 root(apt / systemd / sudoers / pg 超管)。
+require_root() { [[ ${EUID} -eq 0 ]] || die "阶段 '$1' 需 root:sudo $0 --stage $1"; }
+
+# 真实用户(sudo 场景取 SUDO_USER,否则当前)。venv / npm / git 必须以它跑,
+# 不能落 root 所有权。
+REAL_USER="${SUDO_USER:-$(id -un)}"
+as_user() {
+  # 以 REAL_USER 跑一条命令(带登录环境,确保 uv/npm/node 在 PATH)。
+  if [[ ${EUID} -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    sudo -u "$SUDO_USER" -H bash -lc "$1"
+  else
+    bash -lc "$1"
+  fi
+}
 
 # DATABASE_URL(postgresql+asyncpg://user:pw@host:port/db)→ 解析出 host/port/db/user。
 # 不打印密码。
@@ -242,10 +259,120 @@ run_check() {
   (( N_MISS > 0 )) && return 1 || return 0
 }
 
-# 变更类阶段:PR-2/PR-3 实现。现在调到就明确报「未实现」,不静默假成功。
+# ═══ 变更类阶段(PR-2:db / deps / build)═══════════════════════════════════
+# 每段先判定目标态,已就位即跳过 → 幂等 + 断点续跑。
+
+# PGDG 源(Ubuntu 24.04 自带 pg16,要 17 需加 apt.postgresql.org)。
+install_pgdg_repo() {
+  [[ -f /etc/apt/sources.list.d/pgdg.list ]] && return 0
+  log "加 PGDG apt 源(apt.postgresql.org)"
+  . /etc/os-release
+  install -d /usr/share/postgresql-common/pgdg
+  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc || die "下载 PGDG key 失败"
+  echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+    > /etc/apt/sources.list.d/pgdg.list
+}
+
+# 建 role + 库(与 DATABASE_URL 完全一致;幂等)。pw 是 base64 url-safe 无引号。
+ensure_role_and_db() {
+  local user pass db
+  user="$(_db_field user)"; pass="$(_db_field pass)"; db="$(_db_field db)"
+  [[ -n "$user" && -n "$db" ]] || die "DATABASE_URL 解析不出 user/db,无法建库"
+  if sudo -u postgres psql -tAc "select 1 from pg_roles where rolname='$user'" 2>/dev/null | grep -q 1; then
+    ok "role $user 已存在"
+  else
+    sudo -u postgres psql -qc "CREATE ROLE \"$user\" LOGIN PASSWORD '$pass'" || die "建 role 失败"
+    ok "建 role $user"
+  fi
+  if sudo -u postgres psql -tAc "select 1 from pg_database where datname='$db'" 2>/dev/null | grep -q 1; then
+    ok "库 $db 已存在"
+  else
+    sudo -u postgres createdb -O "$user" "$db" || die "建库失败"
+    ok "建库 $db(owner=$user)"
+  fi
+}
+
+do_db() {
+  require_root db
+  section "db — 原生 pg17 + role/库"
+  [[ -f "$ENV_FILE" ]] || die "无 $ENV_FILE,先跑 secrets 阶段(PR-3)或手动建 .env 填 DATABASE_URL"
+  if systemctl is-active --quiet postgresql 2>/dev/null; then
+    ok "postgresql 已运行 — 跳过安装"
+  else
+    have apt-get || die "非 apt 系发行版,db 阶段不支持(手动装 pg17)"
+    apt-cache show postgresql-17 >/dev/null 2>&1 || install_pgdg_repo
+    log "apt 装 postgresql-17 + client"
+    apt-get update -y && apt-get install -y postgresql-17 postgresql-client-17 || die "apt 装 pg 失败"
+    systemctl enable --now postgresql
+    ok "postgresql 已装并启用"
+  fi
+  ensure_role_and_db
+  if [[ -n "${RESTORE_DUMP:-}" ]]; then
+    [[ -f "$RESTORE_DUMP" ]] || die "--restore 文件不存在: $RESTORE_DUMP"
+    local host port db; host="$(_db_field host)"; port="$(_db_field port)"; db="$(_db_field db)"
+    log "从 $RESTORE_DUMP 恢复到 $db(pg_restore)"
+    PGPASSWORD="$(_db_field pass)" pg_restore -h "$host" -p "$port" -U "$(_db_field user)" \
+      -d "$db" --no-owner --clean --if-exists "$RESTORE_DUMP" || warn "pg_restore 有非致命报错(看上面)"
+    ok "恢复完成"
+  else
+    log "未传 --restore → 建空库,backend 首启 create_all 自建 schema(与现状一致)"
+  fi
+}
+
+do_deps() {
+  section "deps — 后端 venv(inference)+ aligner venv"
+  [[ ${EUID} -eq 0 && -z "${SUDO_USER:-}" ]] && die "deps 不要以纯 root 跑(venv 会落 root 所有);用普通用户或 sudo(带 SUDO_USER)"
+  local bpy="$BACKEND/.venv/bin/python"
+  if [[ -x "$bpy" ]] && "$bpy" -c 'import vllm' 2>/dev/null; then
+    ok "后端 venv 已含 vllm — 跳过"
+  else
+    log "后端 uv sync --extra inference(~分钟级,装 vllm/torch)"
+    as_user "cd '$BACKEND' && uv sync --extra inference" || die "uv sync 失败"
+    ok "后端依赖就位"
+  fi
+  local apy="$SCRIPT_DIR/aligner/.venv/bin/python"
+  if [[ -x "$apy" ]] && "$apy" -c 'import qwen_asr' 2>/dev/null; then
+    ok "aligner venv 已就位 — 跳过"
+  else
+    log "建 aligner venv(infra/aligner/setup.sh)"
+    as_user "'$SCRIPT_DIR/aligner/setup.sh'" || die "aligner setup 失败"
+    ok "aligner venv 就位"
+  fi
+}
+
+# dist 是否比最新源文件新(借 deploy 的时间戳思路,避免无谓重 build)。
+_dist_fresh() {
+  local dist="$FRONTEND/dist/index.html"
+  [[ -f "$dist" ]] || return 1
+  local newest
+  newest="$(find "$FRONTEND/src" "$FRONTEND/index.html" "$FRONTEND/package.json" \
+            -type f -newer "$dist" -print -quit 2>/dev/null)"
+  [[ -z "$newest" ]]
+}
+
+do_build() {
+  section "build — 前端依赖 + dist"
+  [[ ${EUID} -eq 0 && -z "${SUDO_USER:-}" ]] && die "build 不要以纯 root 跑;用普通用户或 sudo"
+  if [[ -d "$FRONTEND/node_modules" ]]; then
+    ok "node_modules 已装 — 跳过 npm ci"
+  else
+    log "npm ci"
+    as_user "cd '$FRONTEND' && npm ci" || die "npm ci 失败"
+  fi
+  if _dist_fresh; then
+    ok "dist 比源新 — 跳过 build"
+  else
+    log "npm run build"
+    as_user "cd '$FRONTEND' && npm run build" || die "前端 build 失败"
+    ok "dist 已构建"
+  fi
+}
+
+# PR-3 待实现的阶段。
 not_impl() {
-  echo "阶段 '$1' 的自动执行尚未实现(PR-1 只提供 --check)。" >&2
-  echo "请先用 ./infra/bootstrap.sh --check 看缺什么,按指引手动补;自动化见 PR-2/PR-3。" >&2
+  echo "阶段 '$1' 的自动执行尚未实现(见 PR-3:secrets/checkout/services)。" >&2
+  echo "请用 ./infra/bootstrap.sh --check 看缺什么,按指引手动补。" >&2
   exit 2
 }
 
@@ -253,20 +380,40 @@ usage() {
   sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
+# ── 参数解析(支持 --restore <dump> 给 db 阶段)─────────────────────────
+RESTORE_DUMP=""
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --restore) RESTORE_DUMP="${2:-}"; shift 2 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]:-}"
+
+run_stage() {
+  case "$1" in
+    preflight) check_preflight; summary ;;
+    db)     do_db ;;
+    deps)   do_deps ;;
+    build)  do_build ;;
+    secrets|checkout|services) not_impl "$1" ;;
+    *) echo "未知阶段: ${1:-<空>}(preflight|db|secrets|deps|build|checkout|services)" >&2; exit 2 ;;
+  esac
+}
+
 # ── 入口 ────────────────────────────────────────────────────────────────
 case "${1:-}" in
   --check|check) run_check ;;
-  --stage)
-    case "${2:-}" in
-      preflight) check_preflight; summary ;;
-      db|secrets|deps|build|checkout|services) not_impl "${2}" ;;
-      *) echo "未知阶段: ${2:-<空>}(preflight|db|secrets|deps|build|checkout|services)" >&2; exit 2 ;;
-    esac ;;
+  --stage) run_stage "${2:-}" ;;
   -h|--help|help) usage ;;
-  "") # 默认:先体检,再提示变更类阶段尚未自动化
+  "") # 默认全量:可自动化的 db/deps/build 先跑(已就位即跳过),secrets/checkout/
+      # services 待 PR-3,先体检报缺。
+      log "bootstrap 全量(db/deps/build 自动;secrets/checkout/services 见 PR-3)"
+      do_db; do_deps; do_build
+      printf '\n'
       run_check; rc=$?
-      printf '\n%s提示%s:变更类阶段(db/deps/build/secrets/checkout/services)的自动执行将在 PR-2/PR-3 落地。\n' "$C_WARN" "$C_RST"
-      printf '现在请按上面「待办」手动补齐,或用现有脚本(install.sh / setup.sh / gen-admin-secrets.sh)。\n'
+      printf '\n%s提示%s:secrets / checkout / services 的自动收口在 PR-3;现按上面「待办」补齐或用现有脚本。\n' "$C_WARN" "$C_RST"
       exit $rc ;;
   *) echo "未知参数: $1" >&2; usage; exit 2 ;;
 esac
