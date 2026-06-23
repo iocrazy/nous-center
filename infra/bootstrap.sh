@@ -21,8 +21,8 @@
 #   sudo ./infra/bootstrap.sh             # 全量(变更类阶段在 PR-2/3 落地)
 #   sudo ./infra/bootstrap.sh --stage db  # 只跑某阶段
 #
-# ⚠️ 本文件是 PR-1:`--check` 已完整可用;变更类阶段(db/deps/build/secrets/
-#    checkout/services)还是桩,实现见后续 PR-2/PR-3。
+# 全量 run 需 root(db/services 要 apt/systemd);deps/build 以真实用户跑(venv 不落 root)。
+# 机器特定 secret(cloudflared 凭证 / DATABASE_URL 密码)不伪造,缺则报缺指源。
 
 set -uo pipefail
 
@@ -63,6 +63,8 @@ require_root() { [[ ${EUID} -eq 0 ]] || die "阶段 '$1' 需 root:sudo $0 --stag
 # 真实用户(sudo 场景取 SUDO_USER,否则当前)。venv / npm / git 必须以它跑,
 # 不能落 root 所有权。
 REAL_USER="${SUDO_USER:-$(id -un)}"
+# 真实用户家目录(sudo 下 $HOME=/root,但 cloudflared 凭证在用户家目录)。
+USER_HOME="$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6)"; USER_HOME="${USER_HOME:-$HOME}"
 as_user() {
   # 以 REAL_USER 跑一条命令(带登录环境,确保 uv/npm/node 在 PATH)。
   if [[ ${EUID} -eq 0 && -n "${SUDO_USER:-}" ]]; then
@@ -171,7 +173,7 @@ check_secrets() {
   fi
 
   # cloudflared 凭证:机器特定 secret,无法 commit/伪造,只能检测 + 指源
-  local cfdir="$HOME/.cloudflared"
+  local cfdir="$USER_HOME/.cloudflared"
   if [[ -f "$cfdir/cert.pem" ]] && ls "$cfdir"/*.json >/dev/null 2>&1; then
     ok "cloudflared 凭证在位($cfdir: cert.pem + tunnel json)"
   else
@@ -369,11 +371,85 @@ do_build() {
   fi
 }
 
-# PR-3 待实现的阶段。
-not_impl() {
-  echo "阶段 '$1' 的自动执行尚未实现(见 PR-3:secrets/checkout/services)。" >&2
-  echo "请用 ./infra/bootstrap.sh --check 看缺什么,按指引手动补。" >&2
-  exit 2
+# ═══ 变更类阶段(PR-3:secrets / checkout / services)══════════════════════
+
+ENV_FRESH=0   # do_secrets 新建 .env(含占位)时置 1 → 全量 run 在 db 前停下让人填
+
+do_secrets() {
+  section "secrets — admin 凭证 + cloudflared 凭证"
+  # .env:缺则从 .env.example 起一份(机器特定值需人工填)
+  if [[ ! -f "$ENV_FILE" ]]; then
+    [[ -f "$BACKEND/.env.example" ]] || die "无 $ENV_FILE 且无 .env.example,无法生成"
+    log "从 .env.example 起 backend/.env"
+    as_user "cp '$BACKEND/.env.example' '$ENV_FILE'"
+    ENV_FRESH=1
+    manual ".env 由模板生成,需人工填机器特定值" "编辑 $ENV_FILE:DATABASE_URL 密码 / MODELS_ROOT 等,再重跑"
+  else
+    ok ".env 已存在"
+  fi
+  # admin secret:缺哪个补哪个(gen-admin-secrets 生成;只追加缺的,绝不覆盖已有)
+  local need=()
+  grep -qE '^ADMIN_PASSWORD=.+'        "$ENV_FILE" || need+=(ADMIN_PASSWORD)
+  grep -qE '^ADMIN_SESSION_SECRET=.+'  "$ENV_FILE" || need+=(ADMIN_SESSION_SECRET)
+  if (( ${#need[@]} )); then
+    log "生成并追加缺失 admin secret: ${need[*]}"
+    local gen; gen="$(as_user "'$SCRIPT_DIR/security/gen-admin-secrets.sh'")" || die "gen-admin-secrets 失败"
+    local k; for k in "${need[@]}"; do
+      printf '%s\n' "$gen" | grep -E "^$k=" >> "$ENV_FILE"
+    done
+    ok "已追加 admin secret: ${need[*]}"
+  else
+    ok "admin secret 已齐"
+  fi
+  # cloudflared:机器特定,无法伪造 → 缺则报「需人工」指源(非致命)
+  if [[ -f "$USER_HOME/.cloudflared/cert.pem" ]] && ls "$USER_HOME"/.cloudflared/*.json >/dev/null 2>&1; then
+    ok "cloudflared 凭证在位"
+  else
+    manual "缺 cloudflared 凭证($USER_HOME/.cloudflared)" "从备份盘复制 ~/.cloudflared/,或 cloudflared tunnel login"
+  fi
+}
+
+# 专用生产检出:从当前(dev)检出派生 worktree。注意 venv/dist 是 per-checkout 的
+# gitignore 物,prod 检出建好后须在其内部再跑一遍 deps/build(即在 prod 内重跑
+# bootstrap)。本阶段只负责「建出 + 标记 + .env 单一来源」。
+do_checkout() {
+  section "checkout — 专用生产检出(systemd 指它)"
+  if [[ -e "$PROD_CHECKOUT/.git" ]]; then
+    ok "prod 检出已存在 — 跳过"
+  else
+    log "建 prod 检出:git worktree add --detach $PROD_CHECKOUT origin/master"
+    as_user "cd '$REPO_ROOT' && git fetch origin -q && git worktree add --detach '$PROD_CHECKOUT' origin/master" \
+      || die "建 worktree 失败"
+    ok "prod 检出建好($PROD_CHECKOUT)"
+    warn "prod 检出的 venv/dist 需在其内部 provision:cd $PROD_CHECKOUT && sudo ./infra/bootstrap.sh"
+  fi
+  [[ -f "$PROD_CHECKOUT/.nous-production" ]] || { as_user "touch '$PROD_CHECKOUT/.nous-production'"; ok "打 .nous-production 标记"; }
+  if [[ ! -e "$PROD_CHECKOUT/backend/.env" ]]; then
+    as_user "ln -s '$ENV_FILE' '$PROD_CHECKOUT/backend/.env'"; ok "prod backend/.env symlink → 单一来源"
+  else
+    ok "prod backend/.env 已在位"
+  fi
+}
+
+do_services() {
+  require_root services
+  section "services — systemd 单元 + 启停 + 自检"
+  [[ -x "$SCRIPT_DIR/systemd/install.sh" ]] || die "缺 $SCRIPT_DIR/systemd/install.sh"
+  log "调 install.sh(装单元 + nousctl + sudoers + enable --now)"
+  "$SCRIPT_DIR/systemd/install.sh" install >/dev/null || die "install.sh 失败"
+  ok "systemd 单元已装并启用"
+  # 自检:本机 healthz(backend + vLLM 起来要几秒,重试)
+  local i hit=0
+  for i in 1 2 3 4 5 6; do
+    if curl -fsS --noproxy '*' -m 5 http://127.0.0.1:8000/healthz >/dev/null 2>&1; then hit=1; break; fi
+    sleep 3
+  done
+  (( hit )) && ok "本机 /healthz 200" || warn "本机 /healthz 暂不通(backend 还在起?journalctl -u nous-backend -f)"
+  if curl -fsS --noproxy '*' -m 8 https://api.iocrazy.com/healthz >/dev/null 2>&1; then
+    ok "公网隧道 /healthz 200"
+  else
+    warn "公网隧道暂不通(起来需几秒,或 cloudflared 凭证缺)"
+  fi
 }
 
 usage() {
@@ -394,11 +470,13 @@ set -- "${ARGS[@]:-}"
 run_stage() {
   case "$1" in
     preflight) check_preflight; summary ;;
-    db)     do_db ;;
-    deps)   do_deps ;;
-    build)  do_build ;;
-    secrets|checkout|services) not_impl "$1" ;;
-    *) echo "未知阶段: ${1:-<空>}(preflight|db|secrets|deps|build|checkout|services)" >&2; exit 2 ;;
+    secrets)  do_secrets ;;
+    db)       do_db ;;
+    deps)     do_deps ;;
+    build)    do_build ;;
+    checkout) do_checkout ;;
+    services) do_services ;;
+    *) echo "未知阶段: ${1:-<空>}(preflight|secrets|db|deps|build|checkout|services)" >&2; exit 2 ;;
   esac
 }
 
@@ -407,13 +485,19 @@ case "${1:-}" in
   --check|check) run_check ;;
   --stage) run_stage "${2:-}" ;;
   -h|--help|help) usage ;;
-  "") # 默认全量:可自动化的 db/deps/build 先跑(已就位即跳过),secrets/checkout/
-      # services 待 PR-3,先体检报缺。
-      log "bootstrap 全量(db/deps/build 自动;secrets/checkout/services 见 PR-3)"
-      do_db; do_deps; do_build
+  "") # 默认全量:secrets → db → deps → build → checkout → services → 体检。
+      # 每段幂等(已就位即跳过)。需 root(db/services)。
+      require_root "(全量)"
+      log "bootstrap 全量:secrets → db → deps → build → checkout → services"
+      do_secrets
+      if (( ENV_FRESH )); then
+        printf '\n%s停%s:.env 刚由模板生成,DATABASE_URL 等机器特定值需先人工填,再重跑 bootstrap。\n' "$C_WARN" "$C_RST"
+        printf '编辑 %s 后:sudo %s\n' "$ENV_FILE" "$0"
+        exit 3
+      fi
+      do_db; do_deps; do_build; do_checkout; do_services
       printf '\n'
       run_check; rc=$?
-      printf '\n%s提示%s:secrets / checkout / services 的自动收口在 PR-3;现按上面「待办」补齐或用现有脚本。\n' "$C_WARN" "$C_RST"
       exit $rc ;;
   *) echo "未知参数: $1" >&2; usage; exit 2 ;;
 esac
