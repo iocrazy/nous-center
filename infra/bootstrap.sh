@@ -13,13 +13,18 @@
 #   secrets    .env admin secret + cloudflared 凭证(缺则报缺指源,不伪造)
 #   deps       后端 uv sync --extra inference + aligner venv
 #   build      前端 npm ci + npm run build
-#   checkout   (可选)专用 prod 检出 + .nous-production 标记
-#   services   调 install.sh + nousctl up + 自检 banner
+#   checkout   (可选)派生 sibling 检出 + .nous-production 标记
+#   services   调 install.sh(装单元+nousctl+sudoers+enable)+ healthz 自检
 #
 # 用法:
 #   ./infra/bootstrap.sh --check          # 只读体检:每项 OK/缺 + 恢复指引(零改动)
-#   sudo ./infra/bootstrap.sh             # 全量(变更类阶段在 PR-2/3 落地)
+#   sudo ./infra/bootstrap.sh             # 全量一键
 #   sudo ./infra/bootstrap.sh --stage db  # 只跑某阶段
+#   sudo ./infra/bootstrap.sh --restore <dump>   # db 段从备份恢复
+#
+# ⚠️ systemd unit 把检出路径写死成 nous-prod(WorkingDirectory)→ 实际 serve 的永远是
+#    nous-prod。所以**全量 bootstrap 要在 nous-prod 检出内跑**(provision 的就是被 serve
+#    的检出);在别的检出跑会 provision 错对象,services 段会因 nous-prod 无 venv 而拒装。
 #
 # 全量 run 需 root(db/services 要 apt/systemd);deps/build 以真实用户跑(venv 不落 root)。
 # 机器特定 secret(cloudflared 凭证 / DATABASE_URL 密码)不伪造,缺则报缺指源。
@@ -435,6 +440,14 @@ do_services() {
   require_root services
   section "services — systemd 单元 + 启停 + 自检"
   [[ -x "$SCRIPT_DIR/systemd/install.sh" ]] || die "缺 $SCRIPT_DIR/systemd/install.sh"
+  # systemd unit 把检出路径写死(WorkingDirectory)→ 实际 serve 的检出未必是当前检出。
+  # 装服务前确认那个检出已 provision(有 venv),否则会装出起不来的服务。
+  local served_repo
+  served_repo="$(grep -m1 '^WorkingDirectory=' "$SCRIPT_DIR/systemd/nous-backend.service" 2>/dev/null | cut -d= -f2)"
+  served_repo="${served_repo%/backend}"
+  if [[ -n "$served_repo" && ! -x "$served_repo/backend/.venv/bin/python" ]]; then
+    die "systemd 指向的检出未 provision($served_repo 无 backend/.venv)。请在该检出内跑:cd $served_repo && sudo ./infra/bootstrap.sh"
+  fi
   log "调 install.sh(装单元 + nousctl + sudoers + enable --now)"
   "$SCRIPT_DIR/systemd/install.sh" install >/dev/null || die "install.sh 失败"
   ok "systemd 单元已装并启用"
@@ -453,7 +466,7 @@ do_services() {
 }
 
 usage() {
-  sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ── 参数解析(支持 --restore <dump> 给 db 阶段)─────────────────────────
