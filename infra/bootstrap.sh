@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# bootstrap.sh — 裸机格式化后把 nous-center 从空系统带到全栈在跑的编排器。
+#
+# 设计:docs/superpowers/specs/2026-06-23-fresh-format-bootstrap-design.md
+#
+# 它**不取代** infra/systemd/install.sh,而是在它之前补齐前置依赖(原生 PG /
+# Python·Node 依赖 / admin secret / cloudflared 凭证 / aligner venv / prod 检出),
+# 最后调它。复用现有脚本,自己只做编排 + 体检。
+#
+# 阶段(每段幂等,已就位即跳过):
+#   preflight  OS/盘/驱动/CLI 体检(只读)
+#   db         原生 pg17 + role/库 + (可选)从备份 restore
+#   secrets    .env admin secret + cloudflared 凭证(缺则报缺指源,不伪造)
+#   deps       后端 uv sync --extra inference + aligner venv
+#   build      前端 npm ci + npm run build
+#   checkout   (可选)专用 prod 检出 + .nous-production 标记
+#   services   调 install.sh + nousctl up + 自检 banner
+#
+# 用法:
+#   ./infra/bootstrap.sh --check          # 只读体检:每项 OK/缺 + 恢复指引(零改动)
+#   sudo ./infra/bootstrap.sh             # 全量(变更类阶段在 PR-2/3 落地)
+#   sudo ./infra/bootstrap.sh --stage db  # 只跑某阶段
+#
+# ⚠️ 本文件是 PR-1:`--check` 已完整可用;变更类阶段(db/deps/build/secrets/
+#    checkout/services)还是桩,实现见后续 PR-2/PR-3。
+
+set -uo pipefail
+
+# ── 路径锚点(脚本所在 = <repo>/infra/bootstrap.sh)─────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BACKEND="$REPO_ROOT/backend"
+FRONTEND="$REPO_ROOT/frontend"
+ENV_FILE="$BACKEND/.env"
+PROD_CHECKOUT="$(cd "$REPO_ROOT/.." && pwd)/nous-prod"
+
+# ── 颜色 / 计数 ─────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  C_OK=$'\033[1;32m'; C_MISS=$'\033[1;31m'; C_WARN=$'\033[1;33m'
+  C_MAN=$'\033[1;36m'; C_DIM=$'\033[2m'; C_RST=$'\033[0m'
+else
+  C_OK=""; C_MISS=""; C_WARN=""; C_MAN=""; C_DIM=""; C_RST=""
+fi
+
+N_OK=0; N_MISS=0; N_MANUAL=0; N_WARN=0
+declare -a TODO=()
+
+ok()     { printf '  %s✓%s %s\n' "$C_OK" "$C_RST" "$1"; N_OK=$((N_OK+1)); }
+miss()   { printf '  %s✗%s %s\n' "$C_MISS" "$C_RST" "$1"; N_MISS=$((N_MISS+1));
+           [[ -n "${2:-}" ]] && { printf '      %s↳ %s%s\n' "$C_DIM" "$2" "$C_RST"; TODO+=("$1 — $2"); } || TODO+=("$1"); }
+manual() { printf '  %s⚙%s %s\n' "$C_MAN" "$C_RST" "$1"; N_MANUAL=$((N_MANUAL+1));
+           [[ -n "${2:-}" ]] && { printf '      %s↳ %s%s\n' "$C_DIM" "$2" "$C_RST"; TODO+=("[人工] $1 — $2"); } || TODO+=("[人工] $1"); }
+warn()   { printf '  %s!%s %s\n' "$C_WARN" "$C_RST" "$1"; N_WARN=$((N_WARN+1)); }
+section(){ printf '\n%s━━ %s%s\n' "$C_DIM" "$1" "$C_RST"; }
+
+have()   { command -v "$1" >/dev/null 2>&1; }
+
+# DATABASE_URL(postgresql+asyncpg://user:pw@host:port/db)→ 解析出 host/port/db/user。
+# 不打印密码。
+_db_field() {
+  local url; url="$(grep -E '^DATABASE_URL=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
+  [[ -z "$url" ]] && return 1
+  # 去掉 scheme + 凭证,剩 host:port/db
+  local rest="${url#*@}"
+  case "$1" in
+    host) echo "${rest%%:*}";;
+    port) rest="${rest#*:}"; echo "${rest%%/*}";;
+    db)   echo "${rest##*/}";;
+    user) local cred="${url#*://}"; cred="${cred%%@*}"; echo "${cred%%:*}";;
+    pass) local cred="${url#*://}"; cred="${cred%%@*}"; echo "${cred#*:}";;
+  esac
+}
+
+# ── preflight:OS / 盘 / 驱动 / CLI(纯只读)───────────────────────────────
+check_preflight() {
+  section "preflight — OS / 磁盘 / GPU 驱动 / CLI 工具"
+
+  if have systemctl; then ok "systemd 在位"; else miss "无 systemd" "本栈靠 systemd 托管,需要 systemd 系统"; fi
+
+  # 磁盘:系统盘(pg 数据落这)+ 大盘(模型/备份)
+  local sys_avail prog_avail
+  sys_avail="$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')"
+  [[ -n "$sys_avail" ]] && { if (( sys_avail >= 50 )); then ok "系统盘 / 余 ${sys_avail}G"; else warn "系统盘 / 仅余 ${sys_avail}G(pg 数据落此,建议 >50G)"; fi; }
+  if [[ -d /media/heygo/Program ]]; then
+    prog_avail="$(df -BG --output=avail /media/heygo/Program 2>/dev/null | tail -1 | tr -dc '0-9')"
+    ok "大盘 /media/heygo/Program 已挂(余 ${prog_avail:-?}G,放模型/备份)"
+  else
+    miss "大盘 /media/heygo/Program 未挂" "模型权重 + DB 备份落此盘,挂载后重跑"
+  fi
+
+  # GPU 驱动
+  if have nvidia-smi; then
+    local n; n="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)"
+    if (( n > 0 )); then ok "NVIDIA 驱动在位($n 张卡)"; else warn "nvidia-smi 在但查不到卡(驱动/GSP 状态?)"; fi
+  else
+    miss "无 nvidia-smi" "装 NVIDIA 驱动(OS 层,bootstrap 不代装)"
+  fi
+
+  # 必需 CLI
+  local cli; for cli in git curl openssl uv node npm; do
+    if have "$cli"; then ok "CLI: $cli"; else miss "缺 CLI: $cli" "先装 $cli"; fi
+  done
+  # pg 客户端 / cloudflared 在各自阶段细查,这里只提示
+  have psql        || warn "psql 未在 PATH(db 阶段需要 postgresql-client-17)"
+  have cloudflared || warn "cloudflared 未在 PATH(隧道需要)"
+}
+
+# ── db:原生 pg + 库可连 ─────────────────────────────────────────────────
+check_db() {
+  section "db — 原生 PostgreSQL + 库连通"
+
+  if systemctl is-active --quiet postgresql 2>/dev/null; then
+    ok "postgresql.service active(原生 systemd 托管)"
+  elif have pg_lsclusters && pg_lsclusters 2>/dev/null | grep -q online; then
+    warn "原生 pg cluster 在线但 postgresql.service 未 active(sudo systemctl enable --now postgresql)"
+  else
+    miss "未装/未起原生 postgresql" "apt 装 postgresql-17(见 native-pg spec);bootstrap PR-2 将自动化"
+  fi
+
+  [[ -f "$ENV_FILE" ]] || { miss "无 $ENV_FILE → 无法取 DATABASE_URL" "见 secrets 阶段"; return; }
+  local host port db user
+  host="$(_db_field host)"; port="$(_db_field port)"; db="$(_db_field db)"; user="$(_db_field user)"
+  if [[ -z "$host" ]]; then miss "DATABASE_URL 解析失败" "检查 $ENV_FILE 的 DATABASE_URL"; return; fi
+
+  if have pg_isready && pg_isready -h "$host" -p "$port" -q 2>/dev/null; then
+    ok "pg 可达 $host:$port"
+    # 库 + 表存在?用解析出的密码(PGPASSWORD,不回显)连;失败不致命。
+    if have psql; then
+      local ntab pw
+      pw="$(_db_field pass)"
+      ntab="$(PGCONNECT_TIMEOUT=4 PGPASSWORD="$pw" psql -h "$host" -p "$port" -U "$user" -d "$db" -tAc \
+              "select count(*) from information_schema.tables where table_schema='public'" 2>/dev/null | tr -dc '0-9')"
+      if [[ -n "$ntab" ]] && (( ntab > 0 )); then ok "库 $db 可连(public 下 $ntab 张表)";
+      elif [[ -n "$ntab" ]]; then warn "库 $db 可连但空表(backend 首启会 create_all 自建)";
+      else warn "库 $db 连接失败(密码/权限?此处 psql 仅尽力探测,backend 用 asyncpg)"; fi
+    fi
+  else
+    miss "pg 不可达 $host:$port" "确认 pg 起着 + 监听该端口"
+  fi
+}
+
+# ── secrets:admin secret + cloudflared 凭证(不伪造)────────────────────
+check_secrets() {
+  section "secrets — admin 凭证 + cloudflared 隧道凭证"
+
+  if [[ -f "$ENV_FILE" ]]; then
+    ok "$ENV_FILE 存在"
+    local k; for k in ADMIN_PASSWORD ADMIN_SESSION_SECRET DATABASE_URL; do
+      if grep -qE "^$k=.+" "$ENV_FILE"; then ok ".env: $k 已设"; else miss ".env 缺 $k" "./infra/security/gen-admin-secrets.sh 生成后填入"; fi
+    done
+    grep -qE '^ADMIN_TOKEN=.+' "$ENV_FILE" || warn ".env 无 ADMIN_TOKEN(CLI bearer,可选;浏览器登录用 ADMIN_PASSWORD)"
+  else
+    miss "无 $ENV_FILE" "cp 一份或 ./infra/security/gen-admin-secrets.sh >> backend/.env(填 DATABASE_URL 等)"
+  fi
+
+  # cloudflared 凭证:机器特定 secret,无法 commit/伪造,只能检测 + 指源
+  local cfdir="$HOME/.cloudflared"
+  if [[ -f "$cfdir/cert.pem" ]] && ls "$cfdir"/*.json >/dev/null 2>&1; then
+    ok "cloudflared 凭证在位($cfdir: cert.pem + tunnel json)"
+  else
+    manual "缺 cloudflared 隧道凭证($cfdir)" "从备份盘复制 ~/.cloudflared/,或 cloudflared tunnel login 重新授权"
+  fi
+}
+
+# ── deps:后端 venv(含 vllm)+ aligner venv ───────────────────────────────
+check_deps() {
+  section "deps — 后端 venv(inference)+ aligner venv"
+
+  local bpy="$BACKEND/.venv/bin/python"
+  if [[ -x "$bpy" ]]; then
+    if "$bpy" -c 'import vllm' 2>/dev/null; then ok "后端 venv 有 vllm(--extra inference 已装)";
+    else miss "后端 venv 缺 vllm" "cd backend && uv sync --extra inference(漏 --extra 会常驻 0/N)"; fi
+  else
+    miss "无后端 venv($BACKEND/.venv)" "cd backend && uv sync --extra inference"
+  fi
+
+  # aligner venv 按检出走;systemd nous-aligner 实际指向 prod 检出那份 → 优先认 prod。
+  local apy="$SCRIPT_DIR/aligner/.venv/bin/python" where="本检出"
+  if [[ ! -x "$apy" && -x "$PROD_CHECKOUT/infra/aligner/.venv/bin/python" ]]; then
+    apy="$PROD_CHECKOUT/infra/aligner/.venv/bin/python"; where="prod 检出"
+  fi
+  if [[ -x "$apy" ]]; then
+    if "$apy" -c 'import qwen_asr' 2>/dev/null; then ok "aligner venv 有 qwen_asr($where)"; else miss "aligner venv 缺 qwen_asr($where)" "./infra/aligner/setup.sh"; fi
+  else
+    miss "无 aligner venv(本检出/prod 检出均无)" "在目标检出跑 ./infra/aligner/setup.sh"
+  fi
+}
+
+# ── build:前端依赖 + dist ───────────────────────────────────────────────
+check_build() {
+  section "build — 前端依赖 + dist 产物"
+  [[ -d "$FRONTEND/node_modules" ]] && ok "前端 node_modules 已装" || miss "前端无 node_modules" "cd frontend && npm ci"
+  if [[ -f "$FRONTEND/dist/index.html" ]]; then ok "前端 dist 已构建(backend serve 它)"; else miss "前端无 dist" "cd frontend && npm run build"; fi
+}
+
+# ── checkout:专用 prod 检出 ────────────────────────────────────────────
+check_checkout() {
+  section "checkout — 专用生产检出(systemd 指它)"
+  if [[ -d "$PROD_CHECKOUT/.git" || -f "$PROD_CHECKOUT/.git" ]]; then
+    ok "prod 检出存在($PROD_CHECKOUT)"
+    [[ -f "$PROD_CHECKOUT/.nous-production" ]] && ok ".nous-production 标记在位(deploy 凭它放行)" || miss "prod 检出缺 .nous-production 标记" "touch $PROD_CHECKOUT/.nous-production"
+    [[ -L "$PROD_CHECKOUT/backend/.env" ]] && ok "prod .env symlink → 单一来源" || warn "prod backend/.env 非 symlink(应 ln -s 到 nous-center/backend/.env)"
+  else
+    manual "无专用 prod 检出($PROD_CHECKOUT)" "见 infra/PROD_CHECKOUT.md 一次性搭建序列"
+  fi
+}
+
+# ── services:systemd 单元 + 健康 ──────────────────────────────────────
+check_services() {
+  section "services — systemd 单元 + 健康"
+  local svc; for svc in nous-backend nous-cloudflared nous-status nous-aligner; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then ok "$svc active"; else miss "$svc 未运行" "sudo ./infra/systemd/install.sh && sudo systemctl start $svc"; fi
+  done
+  local tmr; for tmr in nous-healthprobe.timer nous-dbbackup.timer; do
+    systemctl is-active --quiet "$tmr" 2>/dev/null && ok "$tmr active" || warn "$tmr 未启用"
+  done
+  have nousctl && ok "nousctl 在 PATH" || warn "nousctl 未装(install.sh 会装到 /usr/local/bin)"
+  if have curl; then
+    curl -fsS --noproxy '*' -m 5 http://127.0.0.1:8000/healthz >/dev/null 2>&1 && ok "本机 /healthz 200" || warn "本机 /healthz 不通(backend 未起?)"
+  fi
+}
+
+# ── 汇总 ────────────────────────────────────────────────────────────────
+summary() {
+  printf '\n%s━━ 汇总 %s\n' "$C_DIM" "$C_RST"
+  printf '  %s%d OK%s   %s%d 缺%s   %s%d 需人工%s   %s%d 警告%s\n' \
+    "$C_OK" "$N_OK" "$C_RST" "$C_MISS" "$N_MISS" "$C_RST" \
+    "$C_MAN" "$N_MANUAL" "$C_RST" "$C_WARN" "$N_WARN" "$C_RST"
+  if (( N_MISS > 0 || N_MANUAL > 0 )); then
+    printf '\n  待办:\n'
+    local t; for t in "${TODO[@]}"; do printf '   • %s\n' "$t"; done
+  else
+    printf '\n  %s全部就位 — 全栈应可一键起。%s\n' "$C_OK" "$C_RST"
+  fi
+}
+
+run_check() {
+  printf '%snous-center bootstrap --check%s  (只读体检,零改动)\n' "$C_MAN" "$C_RST"
+  printf '%srepo: %s%s\n' "$C_DIM" "$REPO_ROOT" "$C_RST"
+  check_preflight; check_db; check_secrets; check_deps; check_build; check_checkout; check_services
+  summary
+  (( N_MISS > 0 )) && return 1 || return 0
+}
+
+# 变更类阶段:PR-2/PR-3 实现。现在调到就明确报「未实现」,不静默假成功。
+not_impl() {
+  echo "阶段 '$1' 的自动执行尚未实现(PR-1 只提供 --check)。" >&2
+  echo "请先用 ./infra/bootstrap.sh --check 看缺什么,按指引手动补;自动化见 PR-2/PR-3。" >&2
+  exit 2
+}
+
+usage() {
+  sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# ── 入口 ────────────────────────────────────────────────────────────────
+case "${1:-}" in
+  --check|check) run_check ;;
+  --stage)
+    case "${2:-}" in
+      preflight) check_preflight; summary ;;
+      db|secrets|deps|build|checkout|services) not_impl "${2}" ;;
+      *) echo "未知阶段: ${2:-<空>}(preflight|db|secrets|deps|build|checkout|services)" >&2; exit 2 ;;
+    esac ;;
+  -h|--help|help) usage ;;
+  "") # 默认:先体检,再提示变更类阶段尚未自动化
+      run_check; rc=$?
+      printf '\n%s提示%s:变更类阶段(db/deps/build/secrets/checkout/services)的自动执行将在 PR-2/PR-3 落地。\n' "$C_WARN" "$C_RST"
+      printf '现在请按上面「待办」手动补齐,或用现有脚本(install.sh / setup.sh / gen-admin-secrets.sh)。\n'
+      exit $rc ;;
+  *) echo "未知参数: $1" >&2; usage; exit 2 ;;
+esac
