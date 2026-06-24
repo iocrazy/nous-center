@@ -2,19 +2,19 @@
 # ============================================================================
 # nous_center DB 每日自动备份(spec native-pg-systemd-stack PR-4)
 #
-# pg_dump 自定义格式 → 备份目录(大盘 nvme2,与数据盘 nvme0 分离),滚动保留 N 天。
+# pg_dump 自定义格式 → 备份目录(默认 NAS,异机,本地不留副本),滚动保留 N 天。
 # **落盘后校验** dump 可 `pg_restore --list` 读 → 才原子改名(半截/坏 dump 不冒充好备份)。
 # 由 nous-dbbackup.timer 每日触发;也可手动跑做即时备份。
 #
 # env(均有默认):
-#   NOUS_DB_BACKUP_DIR        备份目录          默认 /media/heygo/Program/db-backups
+#   NOUS_DB_BACKUP_DIR        备份目录          默认 /mnt/heytime/backup/nous-db-dumps(NAS)
 #   NOUS_DB_BACKUP_KEEP_DAYS  保留天数          默认 14
 #   PGHOST/PGPORT/DB/ROLE     连接              默认 127.0.0.1/5432/nous_center/nous_heygo
 #   NOUS_DB_PASSWORD          密码;未给则从 backend/.env 的 DATABASE_URL 抠
 # ============================================================================
 set -euo pipefail
 
-BACKUP_DIR="${NOUS_DB_BACKUP_DIR:-/media/heygo/Program/db-backups}"
+BACKUP_DIR="${NOUS_DB_BACKUP_DIR:-/mnt/heytime/backup/nous-db-dumps}"
 KEEP_DAYS="${NOUS_DB_BACKUP_KEEP_DAYS:-14}"
 DB="${DB:-nous_center}"; ROLE="${ROLE:-nous_heygo}"
 PGHOST="${PGHOST:-127.0.0.1}"; PGPORT="${PGPORT:-5432}"
