@@ -12,7 +12,9 @@
 set -euo pipefail
 
 # cloudflared 是 PartOf=nous-backend → 跟随后端启停,不单列。
-APP_UNITS=(nous-backend.service nous-status.service)
+# aligner 故意不 PartOf backend(独立 venv/进程),所以不会跟随后端停 → 必须显式列出,
+# 否则 `up`(经 nous.target 的 Wants=)能拉起它、`down` 却停不掉(up/down 不对称)。
+APP_UNITS=(nous-backend.service nous-status.service nous-aligner.service)
 
 c_dim() { printf '\033[2m%s\033[0m' "$*"; }
 c_grn() { printf '\033[32m%s\033[0m' "$*"; }
