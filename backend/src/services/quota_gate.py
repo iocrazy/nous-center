@@ -17,7 +17,9 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.api_gateway import ApiKeyGrant
+from sqlalchemy import func
+
+from src.models.api_gateway import ApiKeyGrant, ResourcePack
 from src.services.alert_rule import AlertEvent, check_and_fire
 from src.services.resource_pack import ConsumeResult, QuotaExhausted, consume, peek_remaining
 
@@ -40,7 +42,9 @@ async def preflight_check(
     并发/突发可无限超额刷 GPU(每个请求都先跑完才发现超额)。这里在昂贵推理前先挡一道。
 
     - 无 grant(legacy 1:1 key)→ 放行,与 post-consume 计费侧一致(那边 NoActiveGrant 静默跳过)。
-    - 有 grant 但 peek_remaining <= 0 → QuotaExhausted。
+    - 有 grant 但**没有任何 ResourcePack** → 放行:这是"已授权但未配额度"= 无限量,不是耗尽
+      (consume 对无 pack 的 grant 本就 no-op/放行语义)。
+    - 有 grant 且有 pack 但可用余量 <= 0 → QuotaExhausted。
     注意 peek + 真正 consume 非原子,并发窗口仍存在,但已把"已耗尽 key 无限跑"收敛为
     "至多再跑 ~并发数 个请求";consume() 的原子 CAS 仍是最终真值。
     """
@@ -53,6 +57,11 @@ async def preflight_check(
     )
     if grant_id is None:
         return  # legacy / 无 grant —— 不拦(计费侧也跳过)
+    pack_count = await session.scalar(
+        select(func.count(ResourcePack.id)).where(ResourcePack.grant_id == grant_id)
+    )
+    if not pack_count:
+        return  # 有 grant 但未配任何额度包 = 无限量,放行
     remaining = await peek_remaining(session, grant_id=grant_id)
     if remaining <= 0:
         raise QuotaExhausted(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -35,6 +36,12 @@ class GPUAllocator:
             from src.services.gpu_monitor import poll_gpu_stats
             poll_fn = poll_gpu_stats
         self._poll = poll_fn
+        # 在途预留(round-review C1):get_best_gpu 选卡后到权重真正占满显存有几十秒~分钟,
+        # 这期间 nvidia-smi 反映不出第一个 load 的占用 → 两个并发 load 会双双落到同一张"最空"
+        # 卡 → 第二个 OOM。选卡时原子登记 required_mb 到 _pending[gpu],候选评估时从 free_mb 扣掉;
+        # load 完成/失败后 release_reservation 释放。gpu_index → 预留 mb 之和。
+        self._pending: dict[int, int] = {}
+        self._pending_lock = threading.Lock()
         # runner 子进程的 group 卡(gpus=[N])。get_best_gpu 优先在这些卡里选 ——
         # 否则 image runner「分配 gpu0」却把模型装到全局最空的 gpu1(撞常驻 LLM 那张卡),
         # 破坏 per-group 隔离。None = 不约束(主进程 allocator / 测试)。
@@ -131,36 +138,60 @@ class GPUAllocator:
     # on this surface; do not break it)
     # ------------------------------------------------------------------
 
-    def get_best_gpu(self, required_vram_mb: float) -> int:
+    def get_best_gpu(self, required_vram_mb: float, *, reserve: bool = True) -> int:
         """装得下的卡里选最空的。preferred_gpus(runner group 卡)优先 —— 先在 group
         内找装得下的;group 内都装不下才 fallback 到全局(spill 出 group,打 warning),
-        既守 per-group 隔离又不让大模型因卡太小而无处可装。"""
-        stats = self._poll()
-        if not stats:
-            return -1
+        既守 per-group 隔离又不让大模型因卡太小而无处可装。
 
-        def _pick(pool: list[dict]) -> int:
-            cands = [(s["index"], s["free_mb"]) for s in pool if s["free_mb"] >= required_vram_mb]
-            if not cands:
+        reserve=True(默认):选中的卡上原子登记 required_vram_mb 到 _pending,并从后续候选
+        评估里扣掉(防并发 load 撞卡,C1)。调用方 load 完成/失败后必须
+        release_reservation(gpu, required_vram_mb)。reserve=False 用于纯查询探测(不占坑)。
+        """
+        with self._pending_lock:
+            stats = self._poll()
+            if not stats:
                 return -1
-            cands.sort(key=lambda x: x[1], reverse=True)
-            return cands[0][0]
 
-        if self._preferred_gpus is not None:
-            in_group = [s for s in stats if s["index"] in self._preferred_gpus]
-            pick = _pick(in_group)
-            if pick >= 0:
-                return pick
-            # group 内装不下 → spill 到全局(明确告警,这是隔离被打破的信号)。
-            pick = _pick(stats)
-            if pick >= 0:
-                logger.warning(
-                    "get_best_gpu: group %s 内无卡可装 %.0fMB,spill 到 gpu %d(隔离被打破)",
-                    self._preferred_gpus, required_vram_mb, pick,
-                )
+            def _effective_free(s: dict) -> int:
+                # 真实 free 再扣掉在途预留 → 并发 load 看到的是"扣除彼此占坑后"的余量。
+                return int(s["free_mb"]) - self._pending.get(s["index"], 0)
+
+            def _pick(pool: list[dict]) -> int:
+                cands = [(s["index"], _effective_free(s)) for s in pool if _effective_free(s) >= required_vram_mb]
+                if not cands:
+                    return -1
+                cands.sort(key=lambda x: x[1], reverse=True)
+                return cands[0][0]
+
+            pick = -1
+            if self._preferred_gpus is not None:
+                in_group = [s for s in stats if s["index"] in self._preferred_gpus]
+                pick = _pick(in_group)
+                if pick < 0:
+                    # group 内装不下 → spill 到全局(明确告警,这是隔离被打破的信号)。
+                    pick = _pick(stats)
+                    if pick >= 0:
+                        logger.warning(
+                            "get_best_gpu: group %s 内无卡可装 %.0fMB,spill 到 gpu %d(隔离被打破)",
+                            self._preferred_gpus, required_vram_mb, pick,
+                        )
+            else:
+                pick = _pick(stats)
+
+            if pick >= 0 and reserve:
+                self._pending[pick] = self._pending.get(pick, 0) + int(required_vram_mb)
             return pick
 
-        return _pick(stats)
+    def release_reservation(self, gpu_index: int, required_vram_mb: float) -> None:
+        """释放 get_best_gpu(reserve=True) 登记的在途预留(load 完成或失败后调用)。"""
+        if gpu_index < 0:
+            return
+        with self._pending_lock:
+            remaining = self._pending.get(gpu_index, 0) - int(required_vram_mb)
+            if remaining > 0:
+                self._pending[gpu_index] = remaining
+            else:
+                self._pending.pop(gpu_index, None)
 
     def get_free_mb(self, gpu_index: int) -> int:
         stats = self._poll()

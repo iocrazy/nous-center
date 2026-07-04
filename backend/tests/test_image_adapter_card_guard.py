@@ -141,14 +141,14 @@ def test_evictable_mb_on_card(mm):
 
 def test_resolve_auto_card_prefers_raw_free(mm, monkeypatch):
     """auto 选卡:有真空闲就直接用 allocator 的挑选(零回归)。"""
-    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda need: 2)
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda need, *, reserve=True: 2)
     assert mm._resolve_auto_card(40000) == 2
 
 
 def test_resolve_auto_card_falls_back_to_evictable(mm, monkeypatch):
     """没卡有真空闲,但某卡腾掉空闲 adapter 后装得下 → 选那张卡(主动找能腾的卡注入)。"""
     from types import SimpleNamespace
-    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda need: -1)  # 无真空闲
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda need, *, reserve=True: -1)  # 无真空闲
     mm._models = {
         "a": SimpleNamespace(gpu_index=0, spec=SimpleNamespace(resident=False, vram_mb=0)),
         "b": SimpleNamespace(gpu_index=2, spec=SimpleNamespace(resident=False, vram_mb=0)),
@@ -160,7 +160,7 @@ def test_resolve_auto_card_falls_back_to_evictable(mm, monkeypatch):
 
 def test_resolve_auto_card_cpu_when_nothing_fits(mm, monkeypatch):
     """真空闲没有、可驱逐也腾不够 → -1(调用方退 CPU)。"""
-    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda need: -1)
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda need, *, reserve=True: -1)
     mm._models = {}
     assert mm._resolve_auto_card(40000) == -1
 

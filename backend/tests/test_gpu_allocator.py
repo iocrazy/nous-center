@@ -137,3 +137,33 @@ def test_empty_config_no_gpus_returns_empty(monkeypatch):
     assert alloc.runner_count() == 0
     assert alloc.group_for_role("llm") is None
     assert alloc.llm_group_gpus() == []
+
+
+def test_reservation_blocks_second_concurrent_pick():
+    """C1:两个并发 load 各要 6000MB。第一个占坑后,gpu1 有效余量降到 14000,gpu0 只有
+    8000 → 第二个仍能落 gpu1(还够);但若第一个要 15000,占坑后 gpu1 只剩 5000<6000,
+    第二个必须换卡或 -1,不能再撞 gpu1。"""
+    alloc = GPUAllocator(poll_fn=_fake_stats)
+    first = alloc.get_best_gpu(required_vram_mb=15000)  # 落 gpu1(20000 free),占坑 15000
+    assert first == 1
+    # gpu1 有效余量 = 20000-15000 = 5000;gpu0 = 8000。第二个要 6000 → 只有 gpu0 够。
+    second = alloc.get_best_gpu(required_vram_mb=6000)
+    assert second == 0
+
+
+def test_release_frees_reservation():
+    alloc = GPUAllocator(poll_fn=_fake_stats)
+    got = alloc.get_best_gpu(required_vram_mb=15000)  # gpu1,占坑
+    assert got == 1
+    # 未释放前 gpu1 有效余量 5000,装不下 6000 → 落 gpu0
+    assert alloc.get_best_gpu(required_vram_mb=6000, reserve=False) == 0
+    alloc.release_reservation(1, 15000)
+    # 释放后 gpu1 恢复 20000 free → 6000 重新落 gpu1(最空)
+    assert alloc.get_best_gpu(required_vram_mb=6000, reserve=False) == 1
+
+
+def test_reserve_false_does_not_occupy():
+    alloc = GPUAllocator(poll_fn=_fake_stats)
+    alloc.get_best_gpu(required_vram_mb=15000, reserve=False)  # 探测,不占坑
+    # 没占坑 → gpu1 仍是 20000 free,下次仍落 gpu1
+    assert alloc.get_best_gpu(required_vram_mb=15000, reserve=False) == 1

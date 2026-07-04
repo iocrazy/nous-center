@@ -88,6 +88,15 @@ async def test_preflight_rejects_exhausted_grant(db_session):
 
 
 @pytest.mark.asyncio
+async def test_preflight_allows_grant_without_packs(db_session):
+    # 有 active grant 但没配任何 ResourcePack = 未限量 → 放行(不能误判为耗尽)。
+    inst, key, _, pack = await _make_kit(db_session)
+    await db_session.delete(pack)
+    await db_session.commit()
+    await preflight_check(db_session, api_key_id=key.id, service_id=inst.id)
+
+
+@pytest.mark.asyncio
 async def test_preflight_allows_key_without_grant(db_session):
     # 无 grant 的 legacy key → 放行(计费侧也跳过,不能因没 grant 就拦推理)。
     inst, key, grant, _ = await _make_kit(db_session)
