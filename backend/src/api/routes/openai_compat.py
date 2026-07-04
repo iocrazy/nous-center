@@ -102,6 +102,16 @@ def _supports_thinking(engine_name: str) -> bool:
     return any(p in n for p in _THINKING_MODEL_PATTERNS)
 
 
+async def _preflight_quota(session, api_key_id: int, service_id: int) -> None:
+    """推理前拦已耗尽配额的 key(返回 402);无 grant 的 legacy key 放行。安全 P2。"""
+    from src.services.quota_gate import preflight_check
+    from src.services.resource_pack import QuotaExhausted
+    try:
+        await preflight_check(session, api_key_id=api_key_id, service_id=service_id)
+    except QuotaExhausted as e:
+        raise HTTPException(402, detail=f"quota exhausted: {e}")
+
+
 async def _post_consume_quota(api_key_id: int, service_id: int, units: int) -> None:
     """Charge `units` against the (api_key, service) grant post-inference.
 
@@ -194,6 +204,7 @@ async def chat_completions(
         # 解析出目标 instance 后必须补占坑,否则 M:N key 完全绕过 RPM/TPM。
         from src.api.deps_auth import enforce_instance_rate_limit
         await enforce_instance_rate_limit(instance)
+        await _preflight_quota(session, api_key.id, instance.id)
         # v3: dispatch needs the snapshot if the service is workflow-backed.
         # Force-load deferred columns now so handlers below see real data
         # (covered by test_services_dispatch.py SQL counter assertion).
@@ -535,6 +546,7 @@ async def embeddings(
             raise HTTPException(403, detail="Instance is inactive")
         from src.api.deps_auth import enforce_instance_rate_limit
         await enforce_instance_rate_limit(instance)
+        await _preflight_quota(session, api_key.id, instance.id)
 
     if instance.source_type != "model":
         raise HTTPException(
@@ -768,6 +780,7 @@ async def audio_transcriptions(
             raise HTTPException(403, detail="Instance is inactive")
         from src.api.deps_auth import enforce_instance_rate_limit
         await enforce_instance_rate_limit(instance)
+        await _preflight_quota(session, api_key.id, instance.id)
 
     if instance.source_type != "model":
         raise HTTPException(

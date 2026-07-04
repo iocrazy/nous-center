@@ -138,6 +138,15 @@ async def run_published_workflow(
         raise HTTPException(403, detail=f"Service '{svc.name}' is paused")
     # `deprecated` still serves (per v3 lifecycle spec).
 
+    # 推理前拦已耗尽配额的 key(安全 P2)—— 否则工作流会先跑完 GPU 重活才在下面 best-effort
+    # 结算时发现超额并静默吞掉。admin path(api_key None)无 key 可扣,跳过。
+    if api_key is not None:
+        from src.services.quota_gate import preflight_check
+        try:
+            await preflight_check(session, api_key_id=api_key.id, service_id=svc.id)
+        except QuotaExhausted:
+            raise HTTPException(402, detail=f"quota exhausted for service '{svc.name}'")
+
     snapshot = dict(svc.workflow_snapshot or {})
     nodes = _normalize_nodes(snapshot)
     edges = snapshot.get("edges", [])

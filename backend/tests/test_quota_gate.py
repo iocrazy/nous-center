@@ -23,6 +23,7 @@ from src.models.service_instance import ServiceInstance
 from src.services.quota_gate import (
     NoActiveGrant,
     consume_for_request,
+    preflight_check,
 )
 from src.services.resource_pack import QuotaExhausted
 
@@ -67,6 +68,32 @@ async def test_happy_path_consumes_and_returns(db_session):
     )
     assert result.remaining_units == 900
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_passes_when_quota_available(db_session):
+    inst, key, _, _ = await _make_kit(db_session, pack_total=1000)
+    # 有余量 → 不抛。
+    await preflight_check(db_session, api_key_id=key.id, service_id=inst.id)
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_exhausted_grant(db_session):
+    # pack 全部用光,pre-flight 必须在推理前抛 QuotaExhausted(安全 P2)。
+    inst, key, _, pack = await _make_kit(db_session, pack_total=100)
+    pack.used_units = 100
+    await db_session.commit()
+    with pytest.raises(QuotaExhausted):
+        await preflight_check(db_session, api_key_id=key.id, service_id=inst.id)
+
+
+@pytest.mark.asyncio
+async def test_preflight_allows_key_without_grant(db_session):
+    # 无 grant 的 legacy key → 放行(计费侧也跳过,不能因没 grant 就拦推理)。
+    inst, key, grant, _ = await _make_kit(db_session)
+    await db_session.delete(grant)
+    await db_session.commit()
+    await preflight_check(db_session, api_key_id=key.id, service_id=inst.id)
 
 
 @pytest.mark.asyncio
