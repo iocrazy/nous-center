@@ -102,7 +102,10 @@ async def check_and_evict(model_manager, reserved_gb: float = DEFAULT_RESERVED_G
     model_manager: services.model_manager.ModelManager 实例（evict_lru 内部已处理
     resident / referenced 跳过 + last_used 排序 + force unload）。
     """
-    stats = poll_gpu_stats()
+    # poll_gpu_stats 是同步 subprocess(nvidia-smi, timeout=5) + threading.Lock;直接在
+    # 事件循环上跑会阻塞所有并发请求(含流式推理)最长 5s。丢到线程池,锁语义不变(本就是
+    # threading.Lock)。round-review C6/性能 P1-2。
+    stats = await asyncio.to_thread(poll_gpu_stats)
     for gpu in stats:
         free_gb = gpu["free_mb"] / 1024
         if free_gb < reserved_gb:

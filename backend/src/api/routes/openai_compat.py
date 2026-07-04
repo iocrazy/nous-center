@@ -304,7 +304,10 @@ async def chat_completions(
                     await _ihe(s2, cid, ttl, owner_key_id=kid)
             except Exception:
                 logger.exception("hit_count update failed for %s", cid)
-        asyncio.create_task(_bump())
+        # 持强引用直到完成,否则 fire-and-forget task 可能被 GC 中途回收(同 _settle,round3 #1)。
+        _bt = asyncio.create_task(_bump())
+        _settle_tasks.add(_bt)
+        _bt.add_done_callback(_settle_tasks.discard)
 
     # OpenAI SDK extra_body.thinking → vLLM chat_template_kwargs.enable_thinking
     # Whitelist-driven; silent ignore for unsupported models (Step 2 spec).
