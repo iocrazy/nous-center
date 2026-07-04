@@ -35,6 +35,18 @@ def derive_audit_action(method: str, path: str) -> str:
     return f"{method.lower()}_{last}"
 
 
+# 审计 body 上限:超过则不缓冲进内存,只记长度占位(perf P1-3 —— 原先无论方法/大小都
+# 把整个 body 读进 RAM,大文件上传/GET 也不例外)。64KB 足够覆盖任何管理 JSON。
+_MAX_AUDIT_BODY_BYTES = 64 * 1024
+
+# 敏感端点:body 里可能带明文 key / 口令 / 2FA 秘密 → 审计只记占位,不落 body(security P3)。
+_SENSITIVE_AUDIT_MARKERS = ("/keys", "/settings", "/totp", "/passkey", "/credentials", "/login")
+
+
+def _is_sensitive_audit_path(path: str) -> bool:
+    return any(m in path for m in _SENSITIVE_AUDIT_MARKERS)
+
+
 def _audit_detail(body: bytes, content_type: str) -> str:
     """审计 detail = 请求 body 文本。两条护栏:
 
@@ -99,21 +111,41 @@ class AuditMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         if is_admin_request and not path.startswith("/api/v1/logs/"):
-            # Read body for detail (cache it for downstream)
-            body = b""
+            # 只有会被审计的变更方法才需要 body;且只在 body 小、非二进制、非敏感端点时才
+            # 缓冲进内存(perf P1-3 + security P3)。其余情况记占位、绝不 await request.body()。
+            will_audit = request.method in ("POST", "PUT", "PATCH", "DELETE")
+            content_type = request.headers.get("content-type", "")
             try:
-                body = await request.body()
-            except Exception:
-                pass
+                content_length = int(request.headers.get("content-length") or 0)
+            except ValueError:
+                content_length = 0
+
+            body = b""
+            placeholder: str | None = None
+            if will_audit:
+                ct = content_type.split(";")[0].strip().lower()
+                if _is_sensitive_audit_path(path):
+                    placeholder = "<redacted: sensitive endpoint>"
+                elif (
+                    ct.startswith(("multipart/", "audio/", "image/", "video/"))
+                    or ct == "application/octet-stream"
+                    or content_length > _MAX_AUDIT_BODY_BYTES
+                ):
+                    placeholder = f"<{ct or 'binary'} body, {content_length} bytes>"
+                else:
+                    try:
+                        body = await request.body()
+                    except Exception:
+                        pass
 
             response = await call_next(request)
 
             # Only log mutating operations that succeeded
-            if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 500:
+            if will_audit and response.status_code < 500:
                 try:
                     from src.services.log_store import enqueue
                     action = derive_audit_action(request.method, path)
-                    detail = _audit_detail(body, request.headers.get("content-type", ""))
+                    detail = placeholder if placeholder is not None else _audit_detail(body, content_type)
                     enqueue("audit", {
                         "action": action,
                         "path": path,

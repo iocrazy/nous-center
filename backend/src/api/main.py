@@ -73,6 +73,16 @@ async def lifespan(app: FastAPI):
     import src.models.log_entry  # noqa: F401  # structured logs live in main DB now
     import src.models.status_sample  # noqa: F401  # status 页 7 天 uptime 采样
 
+    # 安全 review P2:生产(admin gate 开)禁止用可猜测的默认 DB 口令 mindcenter:mindcenter。
+    # 只在 ADMIN_PASSWORD 非空时拦(tests/dev 把它设空 → 不受影响,且各自 override DATABASE_URL)。
+    from src.config import get_settings as _get_settings
+    _s = _get_settings()
+    if _s.ADMIN_PASSWORD and "mindcenter:mindcenter@" in _s.DATABASE_URL:
+        raise RuntimeError(
+            "拒绝以默认弱口令 DB(mindcenter:mindcenter)启动生产实例。"
+            "请在 backend/.env 设置强口令的 DATABASE_URL。"
+        )
+
     # Retry DB connect: docker postgres 容器可能 backend 启动时还在 healthcheck 阶段
     # (race condition seen 2026-05-07). Backoff: 2s, 4s, 8s, 16s, 32s, 60s = 122s 总等
     # 超时再死。SQLite URL 永远 1 次成功,这个循环退化为零成本。

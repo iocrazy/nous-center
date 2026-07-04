@@ -11,9 +11,11 @@ API Key 提为一等公民的设计：
   DELETE /api/v1/keys/{id}
   POST   /api/v1/keys/{id}/reset      重置 secret（返回新明文）
 
-明文 key 的存储：参考阿里百炼模式 — 创建/重置时同时写 key_hash 和
-secret_plaintext。bcrypt 验证仍走 key_hash（不变），UI 用 plaintext
-让管理员随时复看而无需"创建一次错过即丢"。
+明文 key 的存储：参考阿里百炼模式 — 创建/重置时同时写 key_hash 和可复看的
+secret。bcrypt 验证仍走 key_hash（不变），UI 用复看值让管理员随时查看而无需
+"创建一次错过即丢"。**安全 review P1**：复看值不再裸存明文，而是用
+`ADMIN_SESSION_SECRET` 派生密钥加密后落库（`src/utils/secret_crypto.py`），
+读取时解密；DB 泄露但 .env 未泄露则密文无用。历史裸明文行平滑兼容（见 secret_crypto）。
 
 授权 grant 的增删走老的 /api/v1/keys/{id}/grants（api_gateway.py），
 本模块只在创建时支持一次性多 grant。
@@ -36,6 +38,7 @@ from src.models.api_gateway import ApiKeyGrant
 from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
+from src.utils.secret_crypto import decrypt_secret, encrypt_secret
 
 router = APIRouter(
     prefix="/api/v1/keys",
@@ -149,7 +152,7 @@ def _to_out(
 ) -> KeyOut:
     return KeyOut(
         id=key.id, label=key.label, note=key.note,
-        key_prefix=key.key_prefix, secret_plaintext=key.secret_plaintext,
+        key_prefix=key.key_prefix, secret_plaintext=decrypt_secret(key.secret_plaintext),
         is_active=key.is_active, usage_calls=key.usage_calls,
         usage_chars=key.usage_chars, last_used_at=key.last_used_at,
         created_at=key.created_at, expires_at=key.expires_at,
@@ -173,7 +176,7 @@ async def create_key(
         label=body.label,
         key_hash=key_hash,
         key_prefix=prefix,
-        secret_plaintext=full,
+        secret_plaintext=encrypt_secret(full),
         note=body.note,
         expires_at=body.expires_at,
     )
@@ -324,7 +327,7 @@ async def reset_key(
     full, key_hash, prefix = _gen_secret(key.label)
     key.key_hash = key_hash
     key.key_prefix = prefix
-    key.secret_plaintext = full
+    key.secret_plaintext = encrypt_secret(full)
     # reset 视为"重新启用"：把 last_used_at 留着方便审计。
     await session.commit()
     await session.refresh(key)

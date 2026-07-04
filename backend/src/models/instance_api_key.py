@@ -27,7 +27,10 @@ class InstanceApiKey(Base):
     key_prefix = Column(String(20), nullable=False, index=True)
     # m10: always-visible mode (Aliyun Bailian style). Stored alongside
     # key_hash so existing bcrypt verification still works for keys with no
-    # plaintext (legacy or rotated). UI gates "view" on its presence.
+    # stored secret (legacy or rotated). UI gates "view" on its presence.
+    # 安全 review P1:此列不再裸存明文,而是 ADMIN_SESSION_SECRET 派生密钥的加密值
+    # (`enc:v1:<fernet-token>`,见 src/utils/secret_crypto.py);历史裸明文行兼容读取。
+    # 列名保留 secret_plaintext 是为免 schema 迁移(单管理员 create_all,无 alembic)。
     secret_plaintext = Column(String(200), nullable=True)
     note = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
