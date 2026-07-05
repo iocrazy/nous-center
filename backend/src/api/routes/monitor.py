@@ -218,8 +218,11 @@ def _top_processes(limit: int = 20) -> list[dict]:
 @router.get("/stats")
 async def get_system_stats(request: Request):
     """Return real-time system resource usage."""
-    # GPU stats via nvidia-smi
-    gpus = _gpu_stats_nvidia_smi() or []
+    import asyncio
+
+    # GPU stats via nvidia-smi — 同步 subprocess(nvidia-smi, timeout=5),前端每 2s 轮询;
+    # 直接在事件循环上跑会周期性阻塞所有并发请求(含流式推理)。丢线程池。性能 P1-1。
+    gpus = await asyncio.to_thread(_gpu_stats_nvidia_smi) or []
 
     # Get PID map for managed/orphan detection.
     #
@@ -242,9 +245,9 @@ async def get_system_stats(request: Request):
             # group_id 形如 "image" / "tts" / "llm-tp" — 当 model_name 展示给 UI。
             pid_map[sup_pid] = f"runner:{getattr(sup, 'group_id', 'unknown')}"
 
-    # Attach per-GPU process info
+    # Attach per-GPU process info (又是两次 nvidia-smi subprocess + psutil 遍历 → 线程池)
     if gpus:
-        gpu_procs = _gpu_processes(pid_map)
+        gpu_procs = await asyncio.to_thread(_gpu_processes, pid_map)
         for gpu in gpus:
             gpu["processes"] = gpu_procs.get(gpu["index"], [])
 

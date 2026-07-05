@@ -103,7 +103,7 @@ async def test_stick_cleared_on_unload(stubbed, monkeypatch):
     已卸载/可能已满的卡 + 跳 VRAM 守卫 → 反复 OOM。清后再跑可按 get_best_gpu 重新解析。"""
     mm, builds, _ = stubbed
     cards = iter([1, 2])
-    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda v: next(cards))
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda v, *, reserve=True: next(cards))
 
     await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")
     assert builds[0]["device"] == "cuda:1"
@@ -151,7 +151,7 @@ async def test_evict_lru_skips_in_use(stubbed):
 @pytest.mark.asyncio
 async def test_auto_device_resolved(stubbed, monkeypatch):
     mm, builds, _ = stubbed
-    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram: 2)
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram, *, reserve=True: 2)
     await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")
     assert builds[0]["device"] == "cuda:2"  # auto → cuda:2
 
@@ -163,7 +163,7 @@ async def test_auto_device_flip_reuses_adapter(stubbed, monkeypatch):
     稳定 → cache hit、不重建。builds==1。"""
     mm, builds, _ = stubbed
     cards = iter([1, 2])  # get_best_gpu:第一次 1,第二次本想给 2(被粘性覆盖回 1)
-    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram: next(cards))
+    monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda vram, *, reserve=True: next(cards))
 
     a1 = await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")
     a2 = await mm.get_or_load_image_adapter(_comps(unet_dev="auto"), "Flux2KleinPipeline")

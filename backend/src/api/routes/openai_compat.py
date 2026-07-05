@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import time
+import uuid
 import wave
 from typing import Literal
 
@@ -100,6 +101,16 @@ _THINKING_MODEL_PATTERNS = (
 def _supports_thinking(engine_name: str) -> bool:
     n = (engine_name or "").lower()
     return any(p in n for p in _THINKING_MODEL_PATTERNS)
+
+
+async def _preflight_quota(session, api_key_id: int, service_id: int) -> None:
+    """推理前拦已耗尽配额的 key(返回 402);无 grant 的 legacy key 放行。安全 P2。"""
+    from src.services.quota_gate import preflight_check
+    from src.services.resource_pack import QuotaExhausted
+    try:
+        await preflight_check(session, api_key_id=api_key_id, service_id=service_id)
+    except QuotaExhausted as e:
+        raise HTTPException(402, detail=f"quota exhausted: {e}")
 
 
 async def _post_consume_quota(api_key_id: int, service_id: int, units: int) -> None:
@@ -194,6 +205,7 @@ async def chat_completions(
         # 解析出目标 instance 后必须补占坑,否则 M:N key 完全绕过 RPM/TPM。
         from src.api.deps_auth import enforce_instance_rate_limit
         await enforce_instance_rate_limit(instance)
+        await _preflight_quota(session, api_key.id, instance.id)
         # v3: dispatch needs the snapshot if the service is workflow-backed.
         # Force-load deferred columns now so handlers below see real data
         # (covered by test_services_dispatch.py SQL counter assertion).
@@ -304,7 +316,10 @@ async def chat_completions(
                     await _ihe(s2, cid, ttl, owner_key_id=kid)
             except Exception:
                 logger.exception("hit_count update failed for %s", cid)
-        asyncio.create_task(_bump())
+        # 持强引用直到完成,否则 fire-and-forget task 可能被 GC 中途回收(同 _settle,round3 #1)。
+        _bt = asyncio.create_task(_bump())
+        _settle_tasks.add(_bt)
+        _bt.add_done_callback(_settle_tasks.discard)
 
     # OpenAI SDK extra_body.thinking → vLLM chat_template_kwargs.enable_thinking
     # Whitelist-driven; silent ignore for unsupported models (Step 2 spec).
@@ -317,6 +332,14 @@ async def chat_completions(
 
     is_stream = body.get("stream", False)
     start_ms = time.monotonic()
+
+    # C3:代理请求期间对 engine 加引用,防 memory_guard(每 5s 查 free<4GB,而 vLLM 常态
+    # 吃到 ~90%)或 idle-TTL 在**流式输出中途**把这个正在服务的 vLLM 进程 evict 掉 →
+    # 客户端连接被硬断。ref 在下面 streaming/non-streaming 两条路径的 finally 里释放。
+    # 放在选路后、真正发请求前 —— 之前的 inject/clamp 是纯 dict 操作,不会 raise 泄漏。
+    proxy_ref = f"proxy-{uuid.uuid4().hex}"
+    if model_mgr is not None:
+        model_mgr.add_reference(engine_name, proxy_ref)
 
     if is_stream:
         # Streaming: inject include_usage, proxy SSE chunks
@@ -352,6 +375,9 @@ async def chat_completions(
                                     pass
                         yield "\n"
             finally:
+                # C3:流结束/中途断连都释放 engine 引用,让它重新可被 evict。
+                if model_mgr is not None:
+                    model_mgr.remove_reference(engine_name, proxy_ref)
                 # round2 #7:记账/扣配额放 finally —— 否则客户端中途断连(generator 被取消)
                 # 时,流后的结算代码不执行 = 已生成的 token 不记账、不扣配额(漏收入)。用
                 # create_task 把结算跟 generator 取消解耦(record/consume 各自开 session);只在
@@ -391,33 +417,38 @@ async def chat_completions(
 
     else:
         # Non-streaming: proxy request, extract usage
-        async with httpx.AsyncClient(timeout=300, proxy=None) as client:
-            resp = await client.post(f"{base_url.rstrip('/')}/v1/chat/completions", json=body)
+        try:
+            async with httpx.AsyncClient(timeout=300, proxy=None) as client:
+                resp = await client.post(f"{base_url.rstrip('/')}/v1/chat/completions", json=body)
 
-        duration = int((time.monotonic() - start_ms) * 1000)
+            duration = int((time.monotonic() - start_ms) * 1000)
 
-        if resp.status_code != 200:
-            return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+            if resp.status_code != 200:
+                return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
 
-        data = resp.json()
-        usage = data.get("usage", {})
+            data = resp.json()
+            usage = data.get("usage", {})
 
-        # Record usage
-        from src.services.usage_service import record_llm_usage
-        await record_llm_usage(
-            model=engine_name,
-            prompt_tokens=usage.get("prompt_tokens", 0),
-            completion_tokens=usage.get("completion_tokens", 0),
-            duration_ms=duration,
-            instance_id=instance.id,
-            api_key_id=api_key.id,
-            agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
-        )
-        await _post_consume_quota(
-            api_key.id, instance.id, usage.get("total_tokens", 0),
-        )
+            # Record usage
+            from src.services.usage_service import record_llm_usage
+            await record_llm_usage(
+                model=engine_name,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                duration_ms=duration,
+                instance_id=instance.id,
+                api_key_id=api_key.id,
+                agent_id=agent_id if settings.NOUS_ENABLE_AGENT_INJECTION else None,
+            )
+            await _post_consume_quota(
+                api_key.id, instance.id, usage.get("total_tokens", 0),
+            )
 
-        return Response(content=resp.content, media_type="application/json")
+            return Response(content=resp.content, media_type="application/json")
+        finally:
+            # C3:非流式请求结束(含异常)释放 engine 引用。
+            if model_mgr is not None:
+                model_mgr.remove_reference(engine_name, proxy_ref)
 
 
 # --- /v1/audio/speech ---
@@ -532,6 +563,7 @@ async def embeddings(
             raise HTTPException(403, detail="Instance is inactive")
         from src.api.deps_auth import enforce_instance_rate_limit
         await enforce_instance_rate_limit(instance)
+        await _preflight_quota(session, api_key.id, instance.id)
 
     if instance.source_type != "model":
         raise HTTPException(
@@ -765,6 +797,7 @@ async def audio_transcriptions(
             raise HTTPException(403, detail="Instance is inactive")
         from src.api.deps_auth import enforce_instance_rate_limit
         await enforce_instance_rate_limit(instance)
+        await _preflight_quota(session, api_key.id, instance.id)
 
     if instance.source_type != "model":
         raise HTTPException(

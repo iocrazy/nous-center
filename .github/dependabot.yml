@@ -1,0 +1,28 @@
+# 依赖安全扫描 / 版本更新(review C1:CI 原先无 dependabot / CodeQL / pip-audit)。
+# 每周开 PR 更新有漏洞或过期的依赖。这是开公网隧道的推理服务,依赖漏洞可见性值得补。
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # 只对生产依赖分组开 PR;inference extra(vllm/torch pin)手动管理,避免自动 bump 破坏
+    # 钉死的 diffusers commit。
+    groups:
+      backend-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      frontend-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

@@ -513,12 +513,30 @@ async def my_services(
         .join(ServiceInstance, ServiceInstance.id == ApiKeyGrant.service_id)
         .where(ApiKeyGrant.api_key_id == api_key.id)
     )
-    for grant, inst in (await session.execute(grants_stmt)).all():
-        packs = (await session.execute(
-            select(ResourcePack).where(ResourcePack.grant_id == grant.id)
-        )).scalars().all()
-        total = sum(p.total_units for p in packs)
-        used = sum(p.used_units for p in packs)
+    grant_rows = (await session.execute(grants_stmt)).all()
+
+    # 一条聚合查询拿全部 grant 的 pack 汇总,替代原来循环里每 grant 一次查询(N+1,性能 P2-1)。
+    # 照 services_catalog 的 pack_sums 模式:GROUP BY grant_id + coalesce(sum)。
+    grant_ids = [g.id for g, _ in grant_rows]
+    pack_sums: dict = {}
+    if grant_ids:
+        from sqlalchemy import func
+        pack_sums_stmt = (
+            select(
+                ResourcePack.grant_id,
+                func.coalesce(func.sum(ResourcePack.total_units), 0).label("total_units"),
+                func.coalesce(func.sum(ResourcePack.used_units), 0).label("used_units"),
+            )
+            .where(ResourcePack.grant_id.in_(grant_ids))
+            .group_by(ResourcePack.grant_id)
+        )
+        pack_sums = {
+            row.grant_id: (row.total_units or 0, row.used_units or 0)
+            for row in (await session.execute(pack_sums_stmt)).all()
+        }
+
+    for grant, inst in grant_rows:
+        total, used = pack_sums.get(grant.id, (0, 0))
         rows.append(MyServiceOut(
             instance_id=inst.id, instance_name=inst.name,
             category=inst.category, meter_dim=inst.meter_dim,

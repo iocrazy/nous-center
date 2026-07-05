@@ -129,6 +129,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-forked>=1.6",
+    "pytest-cov>=6.0",
     "httpx>=0.28",
     "ruff>=0.9",
     "aiosqlite>=0.22.1",
@@ -155,7 +156,6 @@ extend-exclude = ["src/services/inference/seedvr2_vendor", "src/services/inferen
 # circular-import avoidance, or post-`create_app` exception handler wiring.
 "src/api/main.py" = ["E402"]
 "src/api/routes/workflows.py" = ["E402"]
-"src/services/log_db.py" = ["E402"]
 "src/workers/tts_engines/voxcpm2.py" = ["E402"]
 # Tests commonly append fixtures/imports as suites grow (TDD flow), so allow
 # module-level imports after other statements. `conftest.py` additionally needs

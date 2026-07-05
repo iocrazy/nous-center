@@ -1,4 +1,4 @@
-import { useCallback, useRef, useMemo, useEffect, useState } from 'react'
+import { useCallback, useRef, useMemo, useEffect, useState, lazy, Suspense } from 'react'
 import { Copy, Ban, Trash2, Group, Ungroup, Pencil, Download } from 'lucide-react'
 import {
   ReactFlow,
@@ -38,22 +38,25 @@ import NodePropertyPanel from '../panels/NodePropertyPanel'
 import WorkflowsPanel from '../panels/WorkflowsPanel'
 import PresetsPanel from '../panels/PresetsPanel'
 import { useSelectionStore } from '../../stores/selection'
-import DashboardOverlay from '../overlays/DashboardOverlay'
-import ModelsOverlay from '../overlays/ModelsOverlay'
-import SettingsOverlay from '../overlays/SettingsOverlay'
-import PresetDetailOverlay from '../overlays/PresetDetailOverlay'
-import AgentManagementOverlay from '../overlays/AgentManagementOverlay'
-import LogsOverlay from '../overlays/LogsOverlay'
-import HistoryOverlay from '../overlays/HistoryOverlay'
-import StatusOverlay from '../overlays/StatusOverlay'
-import NodePackagesOverlay from '../overlays/NodePackagesOverlay'
-import ServicesList from '../../pages/ServicesList'
-import ServiceDetailRoute from '../../pages/ServiceDetailRoute'
-import WorkflowsList from '../../pages/WorkflowsList'
-import Studio from '../../pages/Studio'
-import UsagePage from '../../pages/UsagePage'
-import ApiKeysList from '../../pages/ApiKeysList'
-import ApiKeyDetail from '../../pages/ApiKeyDetail'
+// 页面级 overlay 全部懒加载(review 前端 P1):这些只在 activeOverlay 命中时条件渲染,
+// 却曾被静态 import 拖进首屏 —— 连带 recharts/d3(Usage/Dashboard/Status)一并进首屏包。
+// 改 React.lazy 后按需 fetch,首屏只留画布核心(xyflow 保留静态,它是画布本体)。
+const DashboardOverlay = lazy(() => import('../overlays/DashboardOverlay'))
+const ModelsOverlay = lazy(() => import('../overlays/ModelsOverlay'))
+const SettingsOverlay = lazy(() => import('../overlays/SettingsOverlay'))
+const PresetDetailOverlay = lazy(() => import('../overlays/PresetDetailOverlay'))
+const AgentManagementOverlay = lazy(() => import('../overlays/AgentManagementOverlay'))
+const LogsOverlay = lazy(() => import('../overlays/LogsOverlay'))
+const HistoryOverlay = lazy(() => import('../overlays/HistoryOverlay'))
+const StatusOverlay = lazy(() => import('../overlays/StatusOverlay'))
+const NodePackagesOverlay = lazy(() => import('../overlays/NodePackagesOverlay'))
+const ServicesList = lazy(() => import('../../pages/ServicesList'))
+const ServiceDetailRoute = lazy(() => import('../../pages/ServiceDetailRoute'))
+const WorkflowsList = lazy(() => import('../../pages/WorkflowsList'))
+const Studio = lazy(() => import('../../pages/Studio'))
+const UsagePage = lazy(() => import('../../pages/UsagePage'))
+const ApiKeysList = lazy(() => import('../../pages/ApiKeysList'))
+const ApiKeyDetail = lazy(() => import('../../pages/ApiKeyDetail'))
 function getPortType(nodeType: string, handleId: string | null | undefined): PortType | null {
   const def = NODE_DEFS[nodeType as NodeType]
   if (!def || !handleId) return null
@@ -954,24 +957,27 @@ export default function NodeEditor() {
       {/* m09: 节点属性面板（画布模式常驻右侧；overlay 视图下隐藏） */}
       {showPropertyPanel && <NodePropertyPanel />}
 
-      {/* Page overlays */}
-      {activeOverlay === 'dashboard' && <DashboardOverlay />}
-      {activeOverlay === 'models' && <ModelsOverlay />}
-      {activeOverlay === 'settings' && <SettingsOverlay />}
-      {activeOverlay === 'preset-detail' && <PresetDetailOverlay />}
-      {activeOverlay === 'api-keys-list' && <ApiKeysList />}
-      {activeOverlay === 'api-key-detail' && <ApiKeyDetail />}
-      {activeOverlay === 'agents' && <AgentManagementOverlay />}
-      {activeOverlay === 'logs' && <LogsOverlay />}
-      {activeOverlay === 'node-packages' && <NodePackagesOverlay />}
-      {activeOverlay === 'services' && <ServicesList />}
-      {activeOverlay === 'apps' && <ServicesList />}
-      {activeOverlay === 'service-detail' && <ServiceDetailRoute />}
-      {activeOverlay === 'workflows-list' && <WorkflowsList />}
-      {activeOverlay === 'usage' && <UsagePage />}
-      {activeOverlay === 'status' && <StatusOverlay />}
-      {activeOverlay === 'studio' && <Studio />}
-      {activeOverlay === 'history' && <HistoryOverlay />}
+      {/* Page overlays —— 懒加载,首次打开时按需 fetch chunk。Suspense fallback 覆盖
+          该 chunk 下载的短暂空档(overlay 本就全屏,null fallback 即可,不闪 loading 框)。 */}
+      <Suspense fallback={null}>
+        {activeOverlay === 'dashboard' && <DashboardOverlay />}
+        {activeOverlay === 'models' && <ModelsOverlay />}
+        {activeOverlay === 'settings' && <SettingsOverlay />}
+        {activeOverlay === 'preset-detail' && <PresetDetailOverlay />}
+        {activeOverlay === 'api-keys-list' && <ApiKeysList />}
+        {activeOverlay === 'api-key-detail' && <ApiKeyDetail />}
+        {activeOverlay === 'agents' && <AgentManagementOverlay />}
+        {activeOverlay === 'logs' && <LogsOverlay />}
+        {activeOverlay === 'node-packages' && <NodePackagesOverlay />}
+        {activeOverlay === 'services' && <ServicesList />}
+        {activeOverlay === 'apps' && <ServicesList />}
+        {activeOverlay === 'service-detail' && <ServiceDetailRoute />}
+        {activeOverlay === 'workflows-list' && <WorkflowsList />}
+        {activeOverlay === 'usage' && <UsagePage />}
+        {activeOverlay === 'status' && <StatusOverlay />}
+        {activeOverlay === 'studio' && <Studio />}
+        {activeOverlay === 'history' && <HistoryOverlay />}
+      </Suspense>
 
       {/* PR-3g(2026-05-28 任务面板重置收尾):删 QueueProgressOverlay 老画布右上浮窗
           (PR-170 时代方案)。任务进度统一由 GlobalTopbar 任务下拉 + Active/History

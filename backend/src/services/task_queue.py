@@ -45,6 +45,9 @@ class TaskQueue:
         self._tasks: dict[str, _TaskEntry] = {}
         self._queue: asyncio.PriorityQueue[_TaskEntry] = asyncio.PriorityQueue()
         self._worker_task: asyncio.Task | None = None
+        # 持 in-flight run task 的强引用,否则 asyncio 只保弱引用、可能中途 GC 掉正在跑的
+        # 任务(round-review C7)。完成即自动移除。
+        self._running: set[asyncio.Task] = set()
         self._ensure_worker()
 
     def _ensure_worker(self) -> None:
@@ -62,7 +65,9 @@ class TaskQueue:
             if entry._cancelled:
                 self._queue.task_done()
                 continue
-            asyncio.create_task(self._run_task(entry))
+            run_task = asyncio.create_task(self._run_task(entry))
+            self._running.add(run_task)
+            run_task.add_done_callback(self._running.discard)
             self._queue.task_done()
 
     async def _run_task(self, entry: _TaskEntry) -> None:

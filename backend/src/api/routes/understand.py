@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import httpx
@@ -5,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from src.config import get_settings
 from src.models.schemas import ImageUnderstandRequest
+from src.utils.url_security import UnsafeURLError, validate_external_image_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/understand")
@@ -45,6 +47,11 @@ async def call_vllm(image_url: str, question: str, model: str) -> dict:
 async def understand_image(req: ImageUnderstandRequest):
     settings = get_settings()
     model = req.model or settings.VL_MODEL
+    # SSRF 防护:image_url 会被 vLLM 服务端 fetch;校验解析(getaddrinfo 阻塞→to_thread)。
+    try:
+        await asyncio.to_thread(validate_external_image_url, req.image_url)
+    except UnsafeURLError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     try:
         return await call_vllm(req.image_url, req.question, model)
     except HTTPException:

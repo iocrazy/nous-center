@@ -100,10 +100,16 @@ class GroupScheduler:
         executor: ExecutorCallable,
         *,
         capacity: int = QUEUE_CAPACITY,
+        max_concurrent: int = 1,
     ) -> None:
         self.group_id = group_id
         self._executor = executor
         self._capacity = capacity
+        # round-review C8:并发上限。原先 dispatcher 弹出即 create_task,队列瞬间被清空成
+        # inflight → enqueue 的 QUEUE_CAPACITY 背压几乎永不触发、优先级只决定"递交 runner 的
+        # 顺序"而无法插队(真串行只靠 runner 单消费者隐式兜底)。加信号量让容量/优先级在
+        # scheduler 层真实生效。默认 1 = 与 runner 单消费者一致,行为不变但语义显式。
+        self._sem = asyncio.Semaphore(max_concurrent)
         self._queue: asyncio.PriorityQueue[QueuedTask] = asyncio.PriorityQueue()
         self.cancel_events: dict[int, asyncio.Event] = {}
         self.cancel_flags: dict[int, CancelFlag] = {}
@@ -191,8 +197,13 @@ class GroupScheduler:
     # ---- dispatcher ------------------------------------------------------
 
     async def _dispatch_loop(self) -> None:
-        """弹出 PriorityQueue 最小者，为每个 task 起一个 _run_one task。"""
+        """弹出 PriorityQueue 最小者，为每个 task 起一个 _run_one task。
+
+        先抢执行槽(信号量)再弹队列:满载时 task 留在 PriorityQueue 里,后到的高优 task
+        能在下一个空槽时插队;背压(qsize vs capacity)也真实反映积压(C8)。
+        """
         while not self._stopping:
+            await self._sem.acquire()  # 等一个执行槽;满载时高优 task 得以在队列里插队
             qt = await self._queue.get()
             try:
                 # plan 注 2：cancel 还在排队的 task 不从 PriorityQueue 物理删除，
@@ -203,6 +214,7 @@ class GroupScheduler:
                         qt.task_id, "cancelled",
                         self._cancel_reason.get(qt.task_id, "cancelled"),
                     )
+                    self._sem.release()  # 没起 _run_one → 归还槽
                     continue
                 self._status[qt.task_id] = "running"
                 t = asyncio.create_task(self._run_one(qt))
@@ -231,6 +243,10 @@ class GroupScheduler:
                 "group %s task %d failed: %s", self.group_id, task_id, e
             )
             self._finalize(task_id, "failed", str(e))
+        finally:
+            # C8:归还执行槽,让 dispatcher 弹下一个(含 CancelledError 路径 —— finally 在
+            # re-raise 前跑)。
+            self._sem.release()
 
     def _finalize(self, task_id: int, status: str, reason: str | None) -> None:
         """落终态 + 清理 inflight / cancel 字典，防泄漏。"""

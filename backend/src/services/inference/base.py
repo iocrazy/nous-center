@@ -322,4 +322,7 @@ class InferenceAdapter(ABC):
 
 # Re-export for caller convenience — components are most commonly used by
 # DiffusersImageBackend (image_diffusers.py) and ModelManager.
+# NB: 这构成 base↔component_spec 顶层 import 环(A2),但 spec §5.1 明确要求 ComponentSpec
+# 可从 base 导入、且有测试(test_component_spec_re_exported_from_base)固化此契约;当前靠包
+# __init__ 强制先执行 base 得以工作。保留契约,不为 P3 破坏它。
 from src.services.inference.component_spec import ComponentSpec  # noqa: E402,F401

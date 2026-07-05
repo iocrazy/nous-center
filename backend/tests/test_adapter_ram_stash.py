@@ -80,9 +80,9 @@ async def test_stash_model_marks_and_calls_adapter(mm):
 async def test_stash_model_guards(mm):
     """in_use / resident / 被引用 / 已 stashed(二次=真销毁)/ 引擎不支持 → False。"""
     e, a = _entry(mm, mid="m1")
-    mm._in_use.add("m1")
+    mm._in_use["m1"] = 1  # C5:_in_use 现为引用计数 dict(原 set)
     assert await mm.stash_model("m1") is False
-    mm._in_use.discard("m1")
+    mm._in_use.pop("m1", None)
 
     e2, _ = _entry(mm, mid="m2", resident=True)
     assert await mm.stash_model("m2") is False

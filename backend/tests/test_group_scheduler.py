@@ -222,3 +222,33 @@ async def test_inflight_cleared_after_completion():
     await sched.stop()
     assert 1 not in sched.inflight_tasks
     assert 1 not in sched.cancel_events
+
+
+async def test_concurrency_bound_and_priority_insertion():
+    """C8:max_concurrent=1 时,dispatcher 不把队列清空成 inflight。第一个 task 运行期间
+    后到的高优 task 应在下一个空槽插到低优前面(证明优先级在 scheduler 层真实生效,而非
+    弹出即全 inflight)。"""
+    run_order = []
+    gate = asyncio.Event()
+
+    async def fake_executor(task_id, spec, cancel_event, cancel_flag):
+        run_order.append(task_id)
+        if task_id == 1:
+            await gate.wait()  # 第一个 task 卡住,占住唯一执行槽
+        return {}
+
+    sched = GroupScheduler(group_id="image", executor=fake_executor, max_concurrent=1)
+    await sched.start()
+    # task 1(batch)先跑并卡住;此时再灌 task 2(batch)和 task 3(interactive)。
+    await sched.enqueue(task_id=1, priority=PRIORITY_BATCH, queued_at=_T0, workflow_spec={})
+    await asyncio.sleep(0.02)  # 让 task 1 进入 executor 并卡住
+    await sched.enqueue(task_id=2, priority=PRIORITY_BATCH, queued_at=_T0, workflow_spec={})
+    await sched.enqueue(task_id=3, priority=PRIORITY_INTERACTIVE, queued_at=_T0, workflow_spec={})
+    await asyncio.sleep(0.02)
+    # 只有 task 1 在跑(槽被占),2/3 都还在队列 —— 未被清空成 inflight。
+    assert run_order == [1]
+    gate.set()  # 放行 task 1
+    await sched.join()
+    await sched.stop()
+    # task 1 之后,interactive(3)应在 batch(2)之前跑 —— 优先级插队生效。
+    assert run_order == [1, 3, 2]

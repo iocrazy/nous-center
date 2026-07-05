@@ -38,17 +38,27 @@ jobs:
         # `--tb=short -rfE` ensures failure summary prints even if pytest exits
         # with non-zero; `--maxfail=50` prevents one broken file from hiding
         # the rest of the report.
+        #
+        # review T2:test_workers / test_ws_tts 实测不需要 GPU(celery 注册断言 / TestClient
+        # WS),已从 ignore 移出纳入门禁。剩下 3 个真需要 live vLLM,保留 ignore。
+        # review T3:加 --cov 只报告覆盖率(暂不设阈值门槛),让盲区可见。
         run: |
           uv run pytest -rfE --tb=short --maxfail=50 -p no:cacheprovider \
+            --cov=src --cov-report=term-missing:skip-covered \
             --ignore=tests/test_integration_smoke.py \
             --ignore=tests/test_tts_engine_adapter.py \
-            --ignore=tests/test_vllm_adapter.py \
-            --ignore=tests/test_workers.py \
-            --ignore=tests/test_ws_tts.py
+            --ignore=tests/test_vllm_adapter.py
         env:
           DATABASE_URL: "sqlite+aiosqlite:///:memory:"
           REDIS_URL: "redis://localhost:6379/0"
           CUDA_VISIBLE_DEVICES: ""
+
+      - name: Type check (pyright, non-blocking)
+        # review C1:CI 原先无任何 Python 类型检查。pyright 当下对 src 会报存量类型问题
+        # (如 Response.body 的 bytes|memoryview),一次性清完超出本 PR 范围 → 先以
+        # continue-on-error 接入,让类型错误在 CI 日志里可见、可逐步收敛,不阻断门禁。
+        continue-on-error: true
+        run: uvx pyright src/api src/services src/utils
 
   frontend:
     name: Frontend · lint + test + build

@@ -159,7 +159,10 @@ class ModelManager:
         # 正在 infer 的 model_id —— node-executor 在 adapter.infer 期间标记。unload/evict
         # 绝不卸载在用的(即使 force):denoise 在 to_thread 工作线程跑,卸载 = 释放正在用的
         # CUDA 权重 → 工作线程撞已释放显存 → segfault。
-        self._in_use: set[str] = set()
+        # model_id → 并发 infer 计数(round-review C5:原为 set,同一 adapter 两个并发
+        # infer 时第一个结束就 discard 清标记、第二个还在 to_thread 跑 → evict/unload 放行 →
+        # segfault)。改引用计数:减到 0 才移除 key。`mid in self._in_use` 语义不变(== 计数>0)。
+        self._in_use: dict[str, int] = {}
         # Per-model load failures (set by background preload tasks or prior
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
@@ -537,6 +540,7 @@ class ModelManager:
 
             # Determine device and GPU indices
             detect_after_load = False
+            reserved_gpu, reserved_mb = -1, 0  # C1 在途预留,load 后在 finally 释放
             if spec.gpu is not None:
                 # Use configured GPU(s)
                 if isinstance(spec.gpu, list):
@@ -547,6 +551,9 @@ class ModelManager:
                     gpu_index = spec.gpu
             elif spec.vram_mb > 0:
                 gpu_index = self._allocator.get_best_gpu(spec.vram_mb)
+                # C1:选中卡上已原子登记 spec.vram_mb 的在途预留,必须在 load 完成/失败后释放。
+                if gpu_index >= 0:
+                    reserved_gpu, reserved_mb = gpu_index, spec.vram_mb
                 gpu_indices = [gpu_index] if gpu_index >= 0 else []
                 # Image adapters use diffusers `enable_model_cpu_offload` —
                 # weights live in CPU RAM and only the active block enters
@@ -584,7 +591,12 @@ class ModelManager:
             else:
                 adapter = self._instantiate_adapter(spec)
 
-            await adapter.load(device)
+            try:
+                await adapter.load(device)
+            finally:
+                # 权重已落卡(或 load 失败)→ 释放在途预留;nvidia-smi 之后能反映真实占用。
+                if reserved_gpu >= 0:
+                    self._allocator.release_reservation(reserved_gpu, reserved_mb)
 
             if detect_after_load:
                 gpu_indices = self._detect_vllm_gpus_for_adapter(adapter) or [0]
@@ -610,16 +622,21 @@ class ModelManager:
         return None
 
     def mark_adapter_in_use(self, adapter: InferenceAdapter) -> None:
-        """node-executor 在 adapter.infer 前调:标记其 model_id 正在用,unload/evict 跳过。"""
+        """node-executor 在 adapter.infer 前调:标记其 model_id 正在用,unload/evict 跳过。
+        引用计数 +1(支持同一 adapter 并发 infer)。"""
         mid = self._model_id_for_adapter(adapter)
         if mid is not None:
-            self._in_use.add(mid)
+            self._in_use[mid] = self._in_use.get(mid, 0) + 1
 
     def release_adapter(self, adapter: InferenceAdapter) -> None:
-        """infer 收尾(成功/异常)调:清正在用标记。"""
+        """infer 收尾(成功/异常)调:引用计数 -1,减到 0 才清标记。"""
         mid = self._model_id_for_adapter(adapter)
         if mid is not None:
-            self._in_use.discard(mid)
+            n = self._in_use.get(mid, 0) - 1
+            if n <= 0:
+                self._in_use.pop(mid, None)
+            else:
+                self._in_use[mid] = n
 
     async def unload_model(self, model_id: str, force: bool = False) -> None:
         """Unload *model_id*.
@@ -652,7 +669,10 @@ class ModelManager:
                     )
                     return
 
-            entry.adapter.unload()
+            # unload 同步杀 vLLM 子进程(SIGTERM→wait(10s)→SIGKILL→wait(5s),最长 ~15s)。
+            # 直接在事件循环上跑会冻结所有 API/SSE/WS。in-use 硬守卫上面已在锁内查过 →
+            # to_thread 安全(不会卸载正在 infer 的 adapter)。round-review C2。
+            await asyncio.to_thread(entry.adapter.unload)
             del self._models[model_id]
             # 组件 L1 refcount 释放(spec §2):此 combo 引用的组件 refs 减;refs 空 + 非 resident
             # 才真出池。共享组件被别的 combo 用着则保留(不误伤,否则卸了在用的 → segfault)。
@@ -1080,7 +1100,9 @@ class ModelManager:
         """**只增强 auto**(spec 2026-06-07):先按「真空闲」挑(allocator,守组隔离);没卡有
         真空闲装得下,再按「真空闲 + 可驱逐空间」挑(守卫会先腾后载);都不行返回 -1(退 CPU)。
         显式选卡不走这(尊重用户选的卡)。"""
-        idx = self._allocator.get_best_gpu(need_mb)
+        # reserve=False:这是放置探测(可能对多个组件反复调),不做在途占坑,否则会泄漏预留。
+        # 图像路径经 runner 单消费者串行,无并发撞卡问题(C1 的占坑只用于主进程 load_model)。
+        idx = self._allocator.get_best_gpu(need_mb, reserve=False)
         if idx >= 0:
             return idx
         # 没卡有真空闲装得下 → 看哪张卡「腾掉空闲 adapter 后」装得下,挑 free+evictable 最大的。
@@ -1664,7 +1686,8 @@ class ModelManager:
         # DiT config 显式给 device 则尊重(对齐 ComfyUI 用户选卡);否则用 device 参数 / auto 解析。
         target = dcfg.get("device") or device
         if target in ("auto", "cuda"):
-            best = self._allocator.get_best_gpu(SeedVR2UpscaleBackend.estimated_vram_mb)
+            # reserve=False:放置探测(seedvr2 走 runner 串行路径),不占坑,避免泄漏预留。
+            best = self._allocator.get_best_gpu(SeedVR2UpscaleBackend.estimated_vram_mb, reserve=False)
             target = f"cuda:{best}" if best is not None and best >= 0 else "cuda:0"
 
         dit_base = splitext(basename(str(dit)))[0] or "main"

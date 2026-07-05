@@ -1,12 +1,27 @@
 """Auto-scan models directory to detect model type and config."""
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 from src.config import get_settings, load_model_configs
 
 logger = logging.getLogger(__name__)
+
+# 进程内 TTL 缓存,和 lora_scanner 对齐。scan_models 会 iterdir 走盘 + 每候选目录
+# open()+json.load + _estimate_vram rglob;/api/v1/engines 与 /api/v1/models 两个独立
+# @cached prefix 各 miss 各扫一遍(每 30s 最多 2 次全扫)。这层模块级缓存让实际走盘频率
+# 与响应缓存解耦。/scan 端点或重启会 invalidate。性能 P1-4。
+_SCAN_CACHE: dict = {"data": None, "ts": 0.0, "base": None}
+_SCAN_TTL_SECONDS = 30
+
+
+def invalidate_scan_cache() -> None:
+    """清模型扫描缓存 —— /scan 端点或模型目录变更后调用,强制下次重扫。"""
+    _SCAN_CACHE["data"] = None
+    _SCAN_CACHE["ts"] = 0.0
+    _SCAN_CACHE["base"] = None
 
 
 # V1' P0 reorganized image/ into ComfyUI-style subdirs. `diffusers/` holds
@@ -50,7 +65,7 @@ def _iter_candidate_model_dirs(type_dir: Path):
 
 
 def scan_models() -> dict[str, dict[str, Any]]:
-    """Scan LOCAL_MODELS_PATH and merge with models.yaml configs.
+    """Scan LOCAL_MODELS_PATH and merge with models.yaml configs (TTL-cached).
 
     Auto-detects:
     - LLM: has config.json with "model_type" field
@@ -59,6 +74,25 @@ def scan_models() -> dict[str, dict[str, Any]]:
 
     Returns merged dict: models.yaml configs + auto-detected models.
     """
+    # cache 按 models 根路径归属:路径变了(测试 tmp_path、搬盘)直接算 miss,避免返回
+    # 上一路径的陈旧结果。
+    base = str(get_settings().LOCAL_MODELS_PATH)
+    now = time.time()
+    cached = _SCAN_CACHE["data"]
+    if (
+        cached is not None
+        and _SCAN_CACHE["base"] == base
+        and now - _SCAN_CACHE["ts"] < _SCAN_TTL_SECONDS
+    ):
+        return dict(cached)
+    result = _scan_models_uncached()
+    _SCAN_CACHE["data"] = result
+    _SCAN_CACHE["ts"] = now
+    _SCAN_CACHE["base"] = base
+    return dict(result)
+
+
+def _scan_models_uncached() -> dict[str, dict[str, Any]]:
     settings = get_settings()
     base = Path(settings.LOCAL_MODELS_PATH)
     yaml_configs = load_model_configs()
@@ -173,10 +207,13 @@ def _detect_model(model_dir: Path, local_path: str) -> dict[str, Any] | None:
 
 def _estimate_vram(model_dir: Path) -> float:
     """Estimate VRAM from model file sizes (safetensors/bin/pt)."""
-    total = 0
-    for ext in ("*.safetensors", "*.bin", "*.pt", "*.onnx"):
-        for f in model_dir.rglob(ext):
-            total += f.stat().st_size
+    # 单次 rglob 按后缀过滤,替代原来 4 次独立递归遍历(性能 P1-4)。
+    exts = {".safetensors", ".bin", ".pt", ".onnx"}
+    total = sum(
+        f.stat().st_size
+        for f in model_dir.rglob("*")
+        if f.suffix in exts and f.is_file()
+    )
 
     gb = round(total / (1024**3), 1)
     # VRAM ~ 1.2x model file size (overhead for activations)

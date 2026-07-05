@@ -82,6 +82,14 @@ def _lock_for(prefix: str) -> asyncio.Lock:
     return lock
 
 
+def _sweep_expired(prefix: str, now: float) -> None:
+    """清掉该 prefix 下已过期的条目。原先过期条目只在同 key 被重写时覆盖,不同 query 组合
+    各占一条只增不减(性能 P2-3)。在 MISS 持锁写入时顺手扫一遍,成本 O(该 prefix 条数)。"""
+    stale = [k for k, e in _store.items() if k[0] == prefix and e.expires_at <= now]
+    for k in stale:
+        _store.pop(k, None)
+
+
 def _build_key(request: Request) -> str:
     # Deterministic ordering so ?a=1&b=2 and ?b=2&a=1 collapse to one key.
     items = sorted(request.query_params.multi_items())
@@ -159,6 +167,7 @@ def cached(prefix: str, ttl: int):
                     return _build_response(entry.body, entry.etag)
 
                 metrics.bump(prefix, "misses")
+                _sweep_expired(prefix, now)
                 try:
                     result = await handler(*args, **kwargs)
                 except HTTPException:

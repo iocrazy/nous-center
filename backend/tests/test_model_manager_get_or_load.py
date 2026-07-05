@@ -49,8 +49,11 @@ class _StubRegistry(ModelRegistry):
 
 
 class _StubAllocator:
-    def get_best_gpu(self, vram_mb):
+    def get_best_gpu(self, vram_mb, *, reserve=True):
         return 0
+
+    def release_reservation(self, gpu_index, vram_mb):
+        pass
 
 
 def _spec(model_id, *, resident=False):
@@ -119,8 +122,11 @@ async def test_oom_evicts_auto_selected_card_not_global_lru():
     """round3 #2:自动分配(spec.gpu=None)OOM 时,驱逐 load_model 实际落的那张卡,
     而不是退成 evict_lru(None) 驱全局 LRU(可能驱了另一张没满的卡)。"""
     class _AllocTo2:
-        def get_best_gpu(self, vram_mb):
+        def get_best_gpu(self, vram_mb, *, reserve=True):
             return 2  # 自动分配落 cuda:2
+
+        def release_reservation(self, gpu_index, vram_mb):
+            pass
 
     reg = _StubRegistry([
         ModelSpec(id="v0", model_type="image",

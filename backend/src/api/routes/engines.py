@@ -18,6 +18,17 @@ from src.services.model_metadata_service import (
 )
 from src.api.websocket import ws_manager
 
+# 持后台 fire-and-forget task 的强引用,防止 asyncio 中途 GC 掉(round4 #8/#9 修过同类)。
+# add_done_callback(discard) 完成即自动移除。
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_bg(coro) -> asyncio.Task:
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
 logger = logging.getLogger(__name__)
 
@@ -193,6 +204,10 @@ async def scan_models_endpoint():
     被 list_all_engines 在 `local_path not in local_dirs` 过滤。本接口把两个
     数字一起返回,前端可以拼出「识别 N · 本地可用 K · 未下载 (N-K)」消除误导。
     """
+    # 显式 /scan 意图就是"现在重扫" → 先清 TTL 缓存,强制走盘一次(否则最长 30s 内看不到
+    # 新模型)。
+    from src.services.model_scanner import invalidate_scan_cache
+    invalidate_scan_cache()
     configs = scan_models()
     local_dirs = scan_local_models()
     # configs 已包含 local_path;在 local_dirs 中即「磁盘上真有目录的模型」。
@@ -346,7 +361,7 @@ async def load_engine(name: str, request: Request):
     # Start background loading
     _loading_states[name] = {"status": "loading", "detail": "Starting..."}
     invalidate("engines")
-    asyncio.create_task(_load_in_background(name, model_mgr))
+    _spawn_bg(_load_in_background(name, model_mgr))
 
     return EngineLoadResponse(name=name, status="loading")
 
@@ -684,7 +699,7 @@ async def install_engine_deps(name: str):
         return {"name": name, "status": "installing"}
     _install_states[name] = {"status": "installing", "detail": "Starting..."}
     invalidate("engines")
-    asyncio.create_task(_install_in_background(name))
+    _spawn_bg(_install_in_background(name))
     return {"name": name, "status": "installing"}
 
 

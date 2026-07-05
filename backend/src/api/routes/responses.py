@@ -206,9 +206,10 @@ def normalize_input(input_field: Any) -> list[dict]:
 async def _resolve_file_id_image(file_id: str, owner_key_id: int) -> dict:
     """Load a Files API row, read bytes, return image_url data URL content part.
     PR-5b:文件按 API key 切作用域,owner_key_id = 调用方 key.id(不是 instance)。"""
+    import asyncio
     import base64
     from pathlib import Path
-    from src.models.database import create_session_factory as _csf
+    from src.models.database import get_session_factory as _csf
     from src.models.file import File as FileRow
 
     async with _csf()() as fs:
@@ -222,7 +223,7 @@ async def _resolve_file_id_image(file_id: str, owner_key_id: int) -> dict:
                 f"file '{file_id}' is not an image (mime={row.mime_type})",
                 code="file_not_image",
             )
-        data = Path(row.storage_path).read_bytes()
+        data = await asyncio.to_thread(Path(row.storage_path).read_bytes)
     b64 = base64.b64encode(data).decode()
     return {
         "type": "image_url",
@@ -601,7 +602,7 @@ async def create_response(
             if not first_byte:
                 return
             stream_finish = final_finish or "stop"
-            from src.models.database import create_session_factory as _csf
+            from src.models.database import get_session_factory as _csf
             from src.services.usage_service import record_llm_usage
             async with _csf()() as wsess:
                 real_sess = (await wsess.execute(
@@ -683,7 +684,7 @@ async def create_response(
                     "persist_partial skipped (completed already persisted)"
                 )
                 return
-            from src.models.database import create_session_factory as _csf
+            from src.models.database import get_session_factory as _csf
             from src.services.usage_service import record_llm_usage
             async with _csf()() as wsess:
                 real_sess = (await wsess.execute(
