@@ -129,6 +129,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-forked>=1.6",
+    "pytest-cov>=6.0",
     "httpx>=0.28",
     "ruff>=0.9",
     "aiosqlite>=0.22.1",
