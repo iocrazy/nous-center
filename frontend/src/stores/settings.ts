@@ -15,9 +15,9 @@ export interface SettingsState {
 }
 
 const DEFAULTS = {
-  localModelsPath: '/media/heygo/Program/models',
-  cosyvoiceRepoPath: '/media/heygo/Program/projects-code/github-repos/CosyVoice',
-  indexttsRepoPath: '/media/heygo/Program/projects-code/github-repos/index-tts',
+  localModelsPath: '/media/heygo/program/models',
+  cosyvoiceRepoPath: '/media/heygo/program/projects-code/github-repos/CosyVoice',
+  indexttsRepoPath: '/media/heygo/program/projects-code/github-repos/index-tts',
   gpuImage: 0,
   gpuTts: 1,
   redisUrl: 'redis://localhost:6379/0',

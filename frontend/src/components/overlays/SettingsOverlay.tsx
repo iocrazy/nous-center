@@ -258,7 +258,7 @@ function EngineDefaultsPanel() {
           key: 'localModelsPath',
           serverKey: 'local_models_path',
           label: '本地模型目录',
-          placeholder: '/media/heygo/Program/models',
+          placeholder: '/media/heygo/program/models',
         },
         {
           key: 'cosyvoiceRepoPath',

@@ -26,7 +26,7 @@ pub struct ModelsResponse {
 pub async fn list_models(Query(q): Query<ModelQuery>) -> Json<ModelsResponse> {
     let base = q
         .path
-        .unwrap_or_else(|| "/media/heygo/Program/models".to_string());
+        .unwrap_or_else(|| "/media/heygo/program/models".to_string());
 
     let base_path = Path::new(&base);
     if !base_path.exists() {

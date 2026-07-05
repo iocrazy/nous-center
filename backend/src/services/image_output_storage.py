@@ -41,7 +41,7 @@ def _outputs_root() -> Path:
 
     1. **`$NOUS_IMAGE_OUTPUTS`** — 显式 override(per-process,测试 / 临时切目录用)
     2. **`Settings.NAS_OUTPUTS_PATH/images`** — 项目级 .env 配置(跟 `NAS_MODELS_PATH`
-       一对,默认 `/mnt/nas/outputs/images`;本机部署常改 `/media/heygo/Program/.../outputs`)
+       一对,默认 `/mnt/nas/outputs/images`;本机部署常改 `/media/heygo/program/.../outputs`)
     3. **`~/.gstack/outputs/images`** — 最终 fallback(零配置 dev 环境也能跑)
 
     设计:`.env` 改一处 `NAS_OUTPUTS_PATH`,整个项目所有产物(image/tts 音频/video/
