@@ -19,8 +19,8 @@ class Settings(BaseSettings):
 
     # 路径收口(spec 2026-06-19):.env 只给两个绝对根 —— 模型库 + 代码库。各子根
     # 由 configs/model_roots.yaml 的相对结构派生(见 _derive_paths)。重格/搬盘只改这两行。
-    MODELS_ROOT: str = "/media/heygo/Program/models"
-    REPOS_ROOT: str = "/media/heygo/Program/projects-code/github-repos"
+    MODELS_ROOT: str = "/media/heygo/program/models"
+    REPOS_ROOT: str = "/media/heygo/program/projects-code/github-repos"
 
     # 以下 6 个**留空即从根派生**(_derive_paths 填);仍是真字段 —— 消费代码 settings.XXX
     # 不变、测试可 setattr 注入、需要时也能在 .env/settings.yaml 显式覆盖单个(可选,非必需)。

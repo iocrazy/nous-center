@@ -17,7 +17,7 @@ vllm/图像)。所以对齐器跟 nous-status 一样,独立进程 + 独立 venv 
   NOUS_ALIGNER_MODEL   对齐器模型目录(默认 MODELS_ROOT/nous/speech/Qwen3-ForcedAligner-0.6B)
   NOUS_ALIGNER_DEVICE  cuda:N(默认 cuda:0;PCI_BUS_ID 序)
   NOUS_ALIGNER_PORT    监听端口(默认 8002)
-  MODELS_ROOT          模型根(默认 /media/heygo/Program/models)
+  MODELS_ROOT          模型根(默认 /media/heygo/program/models)
 """
 import os
 
@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 logging.basicConfig(level=logging.INFO, format="%(asctime)s aligner %(levelname)s %(message)s")
 log = logging.getLogger("aligner")
 
-MODELS_ROOT = os.environ.get("MODELS_ROOT", "/media/heygo/Program/models")
+MODELS_ROOT = os.environ.get("MODELS_ROOT", "/media/heygo/program/models")
 MODEL_DIR = os.environ.get(
     "NOUS_ALIGNER_MODEL", f"{MODELS_ROOT}/nous/speech/Qwen3-ForcedAligner-0.6B"
 )

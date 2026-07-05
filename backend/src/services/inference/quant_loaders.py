@@ -290,7 +290,7 @@ def load_fp8mixed(spec: ComponentSpec) -> StateDict:
       3. Drop .weight_scale and .comfy_quant marker keys
       4. Return clean state dict ready for caller's load_state_dict
 
-    Reference fixture: /media/heygo/Program/models/nous/image/diffusion_models/
+    Reference fixture: /media/heygo/program/models/nous/image/diffusion_models/
     Flux2-Klein-9B-True-v2-fp8mixed.safetensors
     """
     target = _dtype_str_to_torch(spec.dtype)

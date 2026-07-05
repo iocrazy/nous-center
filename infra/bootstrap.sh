@@ -105,11 +105,11 @@ check_preflight() {
   local sys_avail prog_avail
   sys_avail="$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')"
   [[ -n "$sys_avail" ]] && { if (( sys_avail >= 50 )); then ok "系统盘 / 余 ${sys_avail}G"; else warn "系统盘 / 仅余 ${sys_avail}G(pg 数据落此,建议 >50G)"; fi; }
-  if [[ -d /media/heygo/Program ]]; then
-    prog_avail="$(df -BG --output=avail /media/heygo/Program 2>/dev/null | tail -1 | tr -dc '0-9')"
-    ok "大盘 /media/heygo/Program 已挂(余 ${prog_avail:-?}G,放模型/备份)"
+  if [[ -d /media/heygo/program ]]; then
+    prog_avail="$(df -BG --output=avail /media/heygo/program 2>/dev/null | tail -1 | tr -dc '0-9')"
+    ok "大盘 /media/heygo/program 已挂(余 ${prog_avail:-?}G,放模型/备份)"
   else
-    miss "大盘 /media/heygo/Program 未挂" "模型权重 + DB 备份落此盘,挂载后重跑"
+    miss "大盘 /media/heygo/program 未挂" "模型权重 + DB 备份落此盘,挂载后重跑"
   fi
 
   # GPU 驱动
