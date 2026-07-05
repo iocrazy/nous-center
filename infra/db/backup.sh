@@ -16,8 +16,6 @@ set -euo pipefail
 
 BACKUP_DIR="${NOUS_DB_BACKUP_DIR:-/mnt/heytime/backup/nous-db-dumps}"
 KEEP_DAYS="${NOUS_DB_BACKUP_KEEP_DAYS:-14}"
-DB="${DB:-nous_center}"; ROLE="${ROLE:-nous_heygo}"
-PGHOST="${PGHOST:-127.0.0.1}"; PGPORT="${PGPORT:-5432}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -25,14 +23,25 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 log() { printf '%s nous-dbbackup: %s\n' "$(date '+%F %T')" "$*"; }
 die() { printf '%s nous-dbbackup ERROR: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
-# 密码:env 优先,否则从 backend/.env 的 DATABASE_URL 抠(与 migrate 脚本同逻辑)。
-if [ -z "${NOUS_DB_PASSWORD:-}" ]; then
-  envf="$REPO_ROOT/backend/.env"
-  [ -f "$envf" ] || die "无 $envf 且未给 NOUS_DB_PASSWORD"
+# 连接参数:统一从 backend/.env 的 DATABASE_URL 解析(user/pass/host/port/db)。
+# 早先只抠 password、user/db/host/port 用硬编码默认(nous_heygo/nous_center)—— .env 里
+# 角色名不同(如 nous)就 `password authentication failed for user "nous_heygo"`。既然信
+# DATABASE_URL 取密码,就该信它取全部连接参数。各字段仍可用同名 env 覆盖。
+envf="$REPO_ROOT/backend/.env"
+if [ -f "$envf" ]; then
   url="$(grep -E '^DATABASE_URL=' "$envf" | head -1 | cut -d= -f2-)"
-  NOUS_DB_PASSWORD="$(printf '%s' "$url" | sed -E 's#^[a-z+]+://[^:]+:([^@]+)@.*$#\1#')"
-  [ -n "${NOUS_DB_PASSWORD:-}" ] || die "DATABASE_URL 抠不出密码"
+  u="${url#*://}"                          # user:pass@host:port/db
+  cred="${u%%@*}"; hpd="${u#*@}"
+  URL_ROLE="${cred%%:*}"; URL_PASS="${cred#*:}"
+  hp="${hpd%%/*}"; URL_DB="${hpd##*/}"
+  URL_HOST="${hp%%:*}"; URL_PORT="${hp#*:}"
 fi
+ROLE="${ROLE:-${URL_ROLE:-nous_heygo}}"
+DB="${DB:-${URL_DB:-nous_center}}"
+PGHOST="${PGHOST:-${URL_HOST:-127.0.0.1}}"
+PGPORT="${PGPORT:-${URL_PORT:-5432}}"
+NOUS_DB_PASSWORD="${NOUS_DB_PASSWORD:-${URL_PASS:-}}"
+[ -n "$NOUS_DB_PASSWORD" ] || die "取不到 DB 密码(设 NOUS_DB_PASSWORD,或在 backend/.env 配 DATABASE_URL)"
 
 command -v pg_dump >/dev/null 2>&1 || die "缺 pg_dump(装 postgresql-client-17)"
 mkdir -p "$BACKUP_DIR" || die "建不了备份目录 $BACKUP_DIR(盘没挂?)"
