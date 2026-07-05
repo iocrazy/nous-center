@@ -1,20 +1,20 @@
 [Unit]
 # nous-center DB 每日备份(spec native-pg-systemd-stack PR-4)。oneshot,由
-# nous-dbbackup.timer 触发。pg_dump → NAS(异机,CIFS //192.168.3.27/sources),滚动保留。
+# nous-dbbackup.timer 触发。pg_dump → NAS(异机,CIFS //192.168.8.9/Sources),滚动保留。
 # 备份落异机 NAS:整机损坏/格式化时备份不随本机一起丢(本地不再留副本)。
 Description=nous-center DB 备份(pg_dump → NAS,滚动保留)
 After=postgresql.service
 Requires=postgresql.service
 # 备份目录在 NAS(fstab _netdev + x-systemd.automount + nofail);RequiresMountsFor 确保
 # NAS 挂载就绪后才跑,否则 mkdir/写入会失败。NAS 不可达时本次备份失败(journal 可见),
-# 不静默成功。
-RequiresMountsFor=/mnt/heytime
+# 不静默成功。全部共享挂在 /mnt/heytime/<共享>,nous 备份落 Sources/backup/nous-db-dumps。
+RequiresMountsFor=/mnt/heytime/Sources
 
 [Service]
 Type=oneshot
 User=heygo
 Group=heygo
-Environment=NOUS_DB_BACKUP_DIR=/mnt/heytime/backup/nous-db-dumps
+Environment=NOUS_DB_BACKUP_DIR=/mnt/heytime/Sources/backup/nous-db-dumps
 Environment=NOUS_DB_BACKUP_KEEP_DAYS=14
 ExecStart=/media/heygo/program/projects-code/repos/nous-center/infra/db/backup.sh
 StandardOutput=journal
