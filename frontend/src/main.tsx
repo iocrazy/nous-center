@@ -1,3 +1,4 @@
+import './utils/cryptoPolyfill' // 必须最先执行:非安全上下文(明文 HTTP 内网)补 crypto.randomUUID
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
