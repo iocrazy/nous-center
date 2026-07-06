@@ -25,12 +25,15 @@ real user benefit at internal-beta scale.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.api_gateway import ResourcePack
+
+logger = logging.getLogger(__name__)
 
 
 def _naive_utc(dt: datetime | None) -> datetime | None:
@@ -60,11 +63,19 @@ async def consume(
     grant_id: int,
     units: int,
     now: datetime | None = None,
+    allow_overshoot: bool = False,
 ) -> ConsumeResult:
     """Atomically charge `units` against the best-fit pack on `grant_id`.
 
     Raises QuotaExhausted if no single pack has >= `units` free, or if the
     only eligible packs are expired.
+
+    allow_overshoot(H1 计费漏洞修复):用于**工作已交付**的 post-work 结算 ——
+    若没有任何 pack 还剩 >= units,不抛异常,而是把 units 强制记到最佳 pack 上
+    (扣成负,remaining < 0)。因为推理已经返回给用户,漏计 = 免费未计费。preflight
+    已把并发滥用收敛到 ~并发数,超扣会被下一个请求的 preflight 挡住而自我修正。
+    仅当 grant **完全没有 pack**(= 无限量语义)时仍抛 QuotaExhausted —— 无处可扣,
+    上层据此按无限量跳过,与 preflight 对无 pack grant 放行一致。
     """
     if units <= 0:
         # Consuming 0/negative is a no-op — surface loudly, don't silently
@@ -110,6 +121,44 @@ async def consume(
                 remaining_units=row.total_units - row.used_units,
             )
         # Race loser — keep trying.
+
+    # 到这里:没有任何 pack 能容纳 units(全满/全过期/被并发抢光)。
+    if allow_overshoot:
+        # 工作已交付,必须记账。选最佳 pack 无条件扣(FIFO-by-expiry,非过期优先;
+        # 全过期则退回任意 pack)。无 pack → 落到下面照常 QuotaExhausted(无限量)。
+        from sqlalchemy import nulls_last as _nulls_last
+        # 先选非过期 pack(FIFO-by-expiry);没有再退回任意 pack(全过期)。
+        best_id = await session.scalar(
+            select(ResourcePack.id)
+            .where(
+                ResourcePack.grant_id == grant_id,
+                (ResourcePack.expires_at.is_(None)) | (ResourcePack.expires_at > now),
+            )
+            .order_by(_nulls_last(ResourcePack.expires_at.asc()))
+        )
+        if best_id is None:
+            best_id = await session.scalar(
+                select(ResourcePack.id)
+                .where(ResourcePack.grant_id == grant_id)
+                .order_by(_nulls_last(ResourcePack.expires_at.asc()))
+            )
+        if best_id is not None:
+            await session.execute(
+                update(ResourcePack)
+                .where(ResourcePack.id == best_id)
+                .values(used_units=ResourcePack.used_units + units)
+            )
+            await session.commit()
+            # 显式 scalar 取余量,避开 commit 后 ORM 属性惰性加载(MissingGreenlet)。
+            remaining = await session.scalar(
+                select(ResourcePack.total_units - ResourcePack.used_units)
+                .where(ResourcePack.id == best_id)
+            )
+            logger.warning(
+                "grant %s overshoot: charged %d units past limit (pack %s remaining=%d)",
+                grant_id, units, best_id, remaining,
+            )
+            return ConsumeResult(pack_id=best_id, remaining_units=remaining)
 
     await session.rollback()
     raise QuotaExhausted(f"grant {grant_id}: no pack has {units} units free")

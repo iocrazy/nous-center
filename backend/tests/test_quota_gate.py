@@ -155,3 +155,24 @@ async def test_alert_fires_on_threshold_cross(db_session):
     )
     assert len(events) == 1
     assert events[0].observed_percent == 60
+
+
+@pytest.mark.asyncio
+async def test_consume_for_request_overshoot_charges_exhausted(db_session):
+    """H1:post-work 结算(工作已交付)传 allow_overshoot=True → 额度耗尽也记账,
+    不抛 QuotaExhausted 被上层吞掉(=免费未计费推理)。"""
+    inst, key, _, pack = await _make_kit(db_session, pack_total=1)
+    iid, kid, pid = inst.id, key.id, pack.id
+    # 用光
+    await consume_for_request(db_session, api_key_id=kid, service_id=iid, units=1)
+    # 不 overshoot:耗尽 → 抛(既有行为)
+    with pytest.raises(QuotaExhausted):
+        await consume_for_request(db_session, api_key_id=kid, service_id=iid, units=1)
+    # overshoot:仍记账,不抛
+    result, _events = await consume_for_request(
+        db_session, api_key_id=kid, service_id=iid, units=1, allow_overshoot=True,
+    )
+    assert result.remaining_units == -1
+    from sqlalchemy import select as _sel
+    used = await db_session.scalar(_sel(ResourcePack.used_units).where(ResourcePack.id == pid))
+    assert used == 2

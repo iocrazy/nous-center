@@ -202,8 +202,13 @@ async def run_published_workflow(
     # (api_key is None) skips quota entirely (no key to charge).
     if api_key is not None:
         try:
+            # allow_overshoot(H1):工作已交付,即使额度被并发抢光也强制记这 1 次
+            # (扣成负,下个请求被 preflight 挡)。旧代码在这里吞 QuotaExhausted →
+            # 输给 CAS 竞争的并发请求拿到免费未计费推理。现在只有无 pack(无限量)
+            # grant 才会走到 except。
             await consume_for_request(
                 session, api_key_id=api_key.id, service_id=svc.id, units=1,
+                allow_overshoot=True,
             )
             await session.commit()
         except (NoActiveGrant, QuotaExhausted):

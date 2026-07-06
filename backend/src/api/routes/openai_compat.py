@@ -116,10 +116,11 @@ async def _preflight_quota(session, api_key_id: int, service_id: int) -> None:
 async def _post_consume_quota(api_key_id: int, service_id: int, units: int) -> None:
     """Charge `units` against the (api_key, service) grant post-inference.
 
-    Best-effort: legacy keys (no grant) are silently skipped; exhaustion is
-    logged but does not fail the already-completed request. A pre-flight
-    check belongs in a follow-up; for now the next call fails at
-    pre-flight once that lands.
+    Best-effort: legacy keys (no grant) are silently skipped. allow_overshoot(H1):
+    工作已交付,额度被并发抢光也强制记账(扣成负),不漏计 —— 旧代码在此吞
+    QuotaExhausted → 输给 CAS 竞争的并发流式请求拿到免费未计费 token。preflight
+    已把滥用收敛到 ~并发数,超扣由下个请求的 preflight 挡住自我修正。只有无 pack
+    (无限量)grant 才会走到 QuotaExhausted 分支。
     """
     if units <= 0:
         return
@@ -132,13 +133,15 @@ async def _post_consume_quota(api_key_id: int, service_id: int, units: int) -> N
         try:
             await consume_for_request(
                 s, api_key_id=api_key_id, service_id=service_id, units=units,
+                allow_overshoot=True,
             )
             await s.commit()
         except NoActiveGrant:
             return
         except QuotaExhausted:
-            logger.warning(
-                "grant exhausted post-inference for api_key=%s service=%s",
+            # 无 pack 的无限量 grant —— 无处可扣,正常跳过。
+            logger.debug(
+                "no resource pack for api_key=%s service=%s (unmetered)",
                 api_key_id, service_id,
             )
 

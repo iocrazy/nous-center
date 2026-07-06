@@ -75,12 +75,16 @@ async def consume_for_request(
     api_key_id: int,
     service_id: int,
     units: int,
+    allow_overshoot: bool = False,
 ) -> tuple[ConsumeResult, list[AlertEvent]]:
     """Atomically charge `units` against the grant for (api_key, service).
 
     Returns (ConsumeResult, events). Raises:
       - NoActiveGrant: caller is not authorized; return 403.
       - QuotaExhausted (from resource_pack.consume): return 402.
+
+    allow_overshoot(H1):post-work 结算传 True —— 工作已交付,额度耗尽也强制记账
+    (扣成负),不漏计。仅无 pack(无限量)grant 仍抛 QuotaExhausted。见 resource_pack.consume。
     """
     grant_id = await session.scalar(
         select(ApiKeyGrant.id).where(
@@ -94,7 +98,9 @@ async def consume_for_request(
             f"api_key {api_key_id} has no active grant on service {service_id}",
         )
 
-    result = await consume(session, grant_id=grant_id, units=units)
+    result = await consume(
+        session, grant_id=grant_id, units=units, allow_overshoot=allow_overshoot,
+    )
 
     # Best-effort: alert failures must not block the caller.
     try:
