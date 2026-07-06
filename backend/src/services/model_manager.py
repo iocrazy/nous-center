@@ -392,12 +392,21 @@ class ModelManager:
         # Fast path: already loaded
         adapter = self.get_adapter(model_id)
         if adapter is not None and adapter.is_loaded:
+            # 已加载的健康模型不该留 stale failure(H2:并发另一个尝试失败写的)。
+            self._load_failures.pop(model_id, None)
             return adapter
 
         # Check for prior failure (set by background preload or a previous
         # load_model attempt). Don't retry indefinitely — admin must
         # restart or call load_model explicitly to clear.
+        # H2:fast-path 检查后、这里之前有竞争窗口 —— 并发另一个 load 可能刚成功,
+        # 而某个失败的并发尝试写了 stale failure。stale failure 不该挡住已加载的健康
+        # 模型(虚假 503)。再确认一次 is_loaded:已加载则清 stale 并返回。
         if model_id in self._load_failures:
+            adapter = self.get_adapter(model_id)
+            if adapter is not None and adapter.is_loaded:
+                self._load_failures.pop(model_id, None)
+                return adapter
             raise ModelLoadError(model_id, self._load_failures[model_id])
 
         # Lazy load. load_model raises ValueError("Unknown model") on
@@ -454,9 +463,16 @@ class ModelManager:
         # Fast path: already loaded
         adapter = self.get_adapter(model_id)
         if adapter is not None and adapter.is_loaded:
+            # 已加载的健康模型不该留 stale failure(H2:并发另一个尝试失败写的)。
+            self._load_failures.pop(model_id, None)
             return adapter
-        # Prior failure check —— 不重试
+        # Prior failure check —— 不重试。H2:stale failure 不挡已加载的健康模型
+        # (并发另一个 load 刚成功;虚假 503)。再确认一次 is_loaded。
         if model_id in self._load_failures:
+            adapter = self.get_adapter(model_id)
+            if adapter is not None and adapter.is_loaded:
+                self._load_failures.pop(model_id, None)
+                return adapter
             raise ModelLoadError(model_id, self._load_failures[model_id])
 
         spec = self._registry.get(model_id)
