@@ -1,40 +1,22 @@
+"""TTS 引擎注册表 —— 薄绑定到泛型 EngineRegistry(见 workers/engine_registry.py)。
+
+模块级 register_engine/get_engine/list_engines + _ENGINE_CLASSES/_ENGINE_INSTANCES
+别名保持既有 import 面不变(engines.py/tts.py 直接读 _ENGINE_INSTANCES)。
+"""
+from src.workers.engine_registry import EngineRegistry
 from src.workers.tts_engines.base import TTSEngine
 
-# Engine class registry - maps engine name to its class
-_ENGINE_CLASSES: dict[str, type[TTSEngine]] = {}
+# TTS 实例化契约:model_path 包成 paths={"main": ...}(v2 adapter),忽略额外 kwargs。
+_registry: EngineRegistry[TTSEngine] = EngineRegistry(
+    "TTS",
+    lambda cls, model_path, device, **kwargs: cls(
+        paths={"main": model_path}, device=device
+    ),
+)
 
-# Loaded engine instances - singleton per engine
-_ENGINE_INSTANCES: dict[str, TTSEngine] = {}
-
-
-def register_engine(cls: type[TTSEngine]) -> type[TTSEngine]:
-    """Decorator to register a TTS engine class."""
-    # Create a temporary instance to get the name, then discard
-    # Or we use a class-level attribute
-    name = cls.ENGINE_NAME  # type: ignore[attr-defined]
-    _ENGINE_CLASSES[name] = cls
-    return cls
-
-
-def get_engine(name: str, model_path: str, device: str = "cuda") -> TTSEngine:
-    """Get or create a TTS engine instance.
-
-    `model_path` is the legacy single-component path; wrapped into
-    paths={"main": model_path} for the v2 adapter contract.
-    """
-    if name in _ENGINE_INSTANCES:
-        return _ENGINE_INSTANCES[name]
-
-    if name not in _ENGINE_CLASSES:
-        raise ValueError(
-            f"Unknown TTS engine: {name}. Available: {list(_ENGINE_CLASSES.keys())}"
-        )
-
-    engine = _ENGINE_CLASSES[name](paths={"main": model_path}, device=device)
-    _ENGINE_INSTANCES[name] = engine
-    return engine
-
-
-def list_engines() -> list[str]:
-    """List all registered engine names."""
-    return list(_ENGINE_CLASSES.keys())
+# 模块级别名(共享同一 dict/方法)。
+_ENGINE_CLASSES = _registry.classes
+_ENGINE_INSTANCES = _registry.instances
+register_engine = _registry.register
+get_engine = _registry.get
+list_engines = _registry.list
