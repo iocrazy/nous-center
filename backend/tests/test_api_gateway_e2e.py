@@ -122,14 +122,13 @@ async def test_full_provision_and_consume_flow(api_client, mock_vllm):
     )
     assert r.status_code == 200, r.text
 
-    # 8. Pack is now over capacity — consume still attempted, logged but
-    #    not fatal to the already-completed request. used_units caps at
-    #    20 (atomic UPDATE refuses to over-consume).
+    # 8. H1 修复:第二次推理已交付,即使额度不足也必须记账(allow_overshoot),
+    #    否则输给 CAS 竞争的请求拿到免费未计费推理。12 + 12 = 24(pack 超扣到
+    #    remaining=-4),而不是旧的"停在 12"(= 第二次白嫖)。下一次调用会被
+    #    preflight(余量<=0)挡成 402,超扣自我修正。
     async with sf() as s:
         pack = await s.get(ResourcePack, pack_id)
-        # 12 already consumed; second consume(12) on a 20-unit pack fails
-        # atomically (20 - 12 < 12), so used_units stays at 12.
-        assert pack.used_units == 12
+        assert pack.used_units == 24
 
 
 @pytest.mark.asyncio

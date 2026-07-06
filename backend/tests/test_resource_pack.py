@@ -174,3 +174,48 @@ async def test_concurrent_consume_no_overcharge(tmp_path):
         assert final.total_units - final.used_units == 0
 
     await engine.dispose()
+
+
+# ── allow_overshoot(H1 计费漏洞修复)──────────────────────────────
+# 工作已交付的 post-work 结算不能被丢:额度耗尽时强制记一笔(扣成负),
+# 而不是抛 QuotaExhausted 被上层静默吞掉 → 免费未计费推理。preflight 已把
+# 滥用收敛到 ~并发数,超扣自我修正(下个请求被 preflight 挡)。
+
+@pytest.mark.asyncio
+async def test_consume_overshoot_charges_past_limit(db_session):
+    """额度已耗尽 + allow_overshoot → 仍记账(remaining 变负),不抛。"""
+    grant, pack = await _make_grant_with_pack(db_session, total=1)
+    gid, pid = grant.id, pack.id  # 存下 PK:中间 raise 的 consume 会 rollback→expire ORM 对象
+    await consume(db_session, grant_id=gid, units=1)  # 用光
+    with pytest.raises(QuotaExhausted):  # 不 overshoot 仍抛(既有行为)
+        await consume(db_session, grant_id=gid, units=1)
+    # overshoot:强制扣,used=2 / remaining=-1
+    result = await consume(db_session, grant_id=gid, units=1, allow_overshoot=True)
+    assert result.remaining_units == -1
+    from sqlalchemy import select as _select
+    used = await db_session.scalar(
+        _select(ResourcePack.used_units).where(ResourcePack.id == pid)
+    )
+    assert used == 2
+
+
+@pytest.mark.asyncio
+async def test_consume_overshoot_no_packs_still_raises(db_session):
+    """有 grant 但无任何 pack(=无限量)→ 即便 overshoot 也抛 QuotaExhausted
+    (无处可扣;上层据此按无限量跳过,与 preflight 放行语义一致)。"""
+    inst = ServiceInstance(source_type="model", source_name="x", name="np",
+                           type="llm", category="llm", meter_dim="tokens")
+    db_session.add(inst)
+    await db_session.commit()
+    await db_session.refresh(inst)
+    key = InstanceApiKey(instance_id=None, label="k", key_hash="x",
+                         key_prefix=f"sk-np-{inst.id}")
+    db_session.add(key)
+    await db_session.commit()
+    await db_session.refresh(key)
+    grant = ApiKeyGrant(api_key_id=key.id, service_id=inst.id)
+    db_session.add(grant)
+    await db_session.commit()
+    await db_session.refresh(grant)
+    with pytest.raises(QuotaExhausted):
+        await consume(db_session, grant_id=grant.id, units=1, allow_overshoot=True)
