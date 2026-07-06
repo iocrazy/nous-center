@@ -343,6 +343,61 @@ async def quick_provision(
     return svc
 
 
+class RegisterModelBody(BaseModel):
+    name: str
+    source_name: str  # engine key(如 qwen3_embedding_8b / cosyvoice2)
+    type: str = "inference"
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        return _validate_name(v)
+
+
+@router.post(
+    "/services/register-model",
+    response_model=ServiceOut,
+    status_code=201,
+    dependencies=[Depends(require_admin)],
+)
+async def register_model_service(
+    body: RegisterModelBody,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """建 model-backed 服务(source_type=model)—— 取代 legacy POST /api/v1/instances,
+    双轨收敛(#3)。ModelsOverlay「发布模型为 API 接入点」流程指向这里。category 由引擎
+    type 派生(load_model_configs),前端据此给对的调用端点(embedding→/v1/embeddings 等)。"""
+    existing = await session.scalar(
+        select(ServiceInstance).where(ServiceInstance.name == body.name)
+    )
+    if existing is not None:
+        raise HTTPException(409, detail=f"service name '{body.name}' already exists")
+
+    from src.config import load_model_configs
+    category = (load_model_configs().get(body.source_name) or {}).get("type")
+
+    svc = ServiceInstance(
+        name=body.name,
+        type=body.type,
+        status="active",
+        source_type="model",
+        source_name=body.source_name,
+        category=category,
+        meter_dim=_METER_DIM_BY_CATEGORY.get(category, "calls") if category else "calls",
+    )
+    session.add(svc)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, detail=f"service name '{body.name}' already exists")
+    await session.refresh(svc)
+    out = ServiceOut.model_validate(svc)
+    out.models = _service_model_refs(svc)
+    invalidate("services")
+    return out
+
+
 @router.patch(
     "/services/{service_id}",
     response_model=ServiceOut,
