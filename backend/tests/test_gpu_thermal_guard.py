@@ -42,3 +42,30 @@ async def test_check_thermal_no_shed_when_cool(monkeypatch):
     mm.evict_lru = AsyncMock(return_value=None)
     await check_thermal(mm, warn=85, critical=90)
     mm.evict_lru.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fan_anomaly_alert_when_hot_and_fan_zero(monkeypatch, caplog):
+    """温度到告警线 + 风扇 0% → 风扇异常告警(活机现状:86°C/风扇0%)。"""
+    import logging
+    import src.services.gpu_thermal_guard as g
+    monkeypatch.setattr(g, "poll_gpu_stats",
+                        lambda: [{"index": 1, "temperature": 86, "fan_speed": 0}])
+    mm = MagicMock()
+    mm.evict_lru = AsyncMock(return_value=None)
+    with caplog.at_level(logging.WARNING):
+        await check_thermal(mm, warn=85, critical=90)
+    assert any("风扇" in r.message and "0%" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_no_fan_alert_when_cool(monkeypatch, caplog):
+    import logging
+    import src.services.gpu_thermal_guard as g
+    monkeypatch.setattr(g, "poll_gpu_stats",
+                        lambda: [{"index": 0, "temperature": 40, "fan_speed": 0}])
+    mm = MagicMock()
+    mm.evict_lru = AsyncMock(return_value=None)
+    with caplog.at_level(logging.WARNING):
+        await check_thermal(mm, warn=85, critical=90)
+    assert not any("风扇可能没转" in r.message for r in caplog.records)
