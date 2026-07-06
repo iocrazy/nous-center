@@ -513,7 +513,7 @@ class WorkflowExecutor:
             # 连接收所有 task 的 L3 progress,ActiveTaskRow 按 task.id 匹配 — 多任务并发
             # 场景每行 callout 都能拿到自己的 stage/step/ETA。
             if self._task_id is not None:
-                from src.api.websocket import ws_manager  # noqa: PLC0415
+                from src.services.ws_hub import ws_manager  # noqa: PLC0415
                 progress_tasks.append(
                     loop.create_task(ws_manager.broadcast_task_progress(self._task_id, event)))
 
@@ -522,7 +522,7 @@ class WorkflowExecutor:
         # stage=model_load 的不定态任务进度,让 ActiveTaskRow 立刻显示「加载模型中…」。
         # 无 step/不造假百分比(见 #196 删假进度教训);真 step 进度一来即被 denoise 覆盖。
         if self._task_id is not None and self._cur_stage_walk is not None:
-            from src.api.websocket import ws_manager  # noqa: PLC0415
+            from src.services.ws_hub import ws_manager  # noqa: PLC0415
             await ws_manager.broadcast_task_progress(self._task_id, {
                 "type": "node_progress",
                 "node_id": self._cur_stage_walk["initial"],

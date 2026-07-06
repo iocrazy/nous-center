@@ -34,7 +34,7 @@ async def _broadcast(channel_id: str | None, event: dict) -> None:
     """推 WS 进度事件 —— 复用现有 /ws/workflow/{channel_id} 连接桶。"""
     if not channel_id:
         return
-    from src.api.main import _ws_connections
+    from src.services.ws_hub import _ws_connections
 
     sockets = _ws_connections.get(channel_id)
     if not sockets:
@@ -73,7 +73,7 @@ async def _broadcast_task_status(task: ExecutionTask, event: str = "updated") ->
     """
     try:
         from src.api.routes.execution_tasks import _task_to_dict
-        from src.api.websocket import ws_manager
+        from src.services.ws_hub import ws_manager
         await ws_manager.broadcast_task_update(event, _task_to_dict(task))
     except Exception as e:  # noqa: BLE001
         logger.warning("broadcast_task_status failed: %s", e)
