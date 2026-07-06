@@ -782,7 +782,10 @@ def create_app() -> FastAPI:
         AuditMiddleware,
         RequestIdMiddleware,
         AdminSessionGateMiddleware,
+        SecurityHeadersMiddleware,
     )
+    # 安全响应头(二轮安全 §7):所有响应注入 X-Frame-Options/nosniff/Referrer-Policy。
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuditMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     # Admin session gate sits before logging so 401s still get a request id but

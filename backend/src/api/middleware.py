@@ -212,3 +212,23 @@ class AdminSessionGateMiddleware(BaseHTTPMiddleware):
                 from starlette.responses import JSONResponse
                 return JSONResponse({"detail": "admin login required"}, status_code=401)
         return await call_next(request)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """给所有响应注入零风险安全头(二轮安全 §7):
+
+    - X-Frame-Options: DENY —— 防 admin 控制台被 iframe 嵌入做点击劫持。
+    - X-Content-Type-Options: nosniff —— 防 MIME 嗅探。
+    - Referrer-Policy: same-origin —— 收敛 referrer 泄漏。
+
+    CSP / Strict-Transport-Security 未加:前者需内联脚本白名单(SPA 现状会被打断),
+    后者强制 https(需先确认部署),都应 report-only 先观察,故本次不含。
+    setdefault 不覆盖路由已显式设的同名头。
+    """
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        return response
