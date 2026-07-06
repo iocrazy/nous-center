@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
+from src.api.response_cache import cached
 from src.models.database import get_async_session
 from src.services.status_sampler import (
     COMPONENTS,
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/api/v1/status", tags=["status"])
 
 
 @router.get("", dependencies=[Depends(require_admin)])
+@cached("status", ttl=10)
 async def status_snapshot(
     request: Request,
     session: AsyncSession = Depends(get_async_session),

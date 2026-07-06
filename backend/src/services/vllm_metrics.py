@@ -78,12 +78,24 @@ def parse_metrics_text(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     return config, gauges
 
 
+# 模块级共享 httpx client(性能二轮 P2-G):observability/vllm 每 3s × N 实例调
+# fetch_instance,原每次新建 client + 连接池拆建。共享单例复用连接。localhost 到
+# vLLM 子进程,trust_env=False 绕开本机代理(与 adapter 取齐)。
+_client: "httpx.AsyncClient | None" = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(trust_env=False)
+    return _client
+
+
 async def fetch_instance(name: str, port: int, *, timeout: float = 1.5) -> VLLMInstanceSnapshot:
     """Hit one vLLM /metrics. Short timeout — UI poll mustn't block on a slow vLLM."""
     url = f"http://127.0.0.1:{port}/metrics"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.get(url)
+        r = await _get_client().get(url, timeout=timeout)
         if r.status_code != 200:
             return VLLMInstanceSnapshot(
                 name=name, port=port, healthy=False, error=f"HTTP {r.status_code}"
