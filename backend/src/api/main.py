@@ -543,6 +543,10 @@ async def lifespan(app: FastAPI):
 
         bg_tasks.append(asyncio.create_task(idle_checker()))
         bg_tasks.append(asyncio.create_task(memory_guard_loop(model_mgr, reserved_gb=4.0)))
+        # GPU 热保护看门狗:超温告警 + 自动降载(卸非常驻/非在用模型救卡)。活机实测
+        # 加载一下就 86°C/风扇 0%、离降频仅 ~7°C —— 满载推理该有软件刹车。
+        from src.services.gpu_thermal_guard import gpu_thermal_guard_loop
+        bg_tasks.append(asyncio.create_task(gpu_thermal_guard_loop(model_mgr)))
 
         # vLLM 健康看门狗(稳定性加固 2026-06-16):自愈「model_manager 记着 loaded 但
         # vLLM 端口连不上」的陈旧/孤儿态(改 cap·重启周期 / host OOM 杀子进程后的
