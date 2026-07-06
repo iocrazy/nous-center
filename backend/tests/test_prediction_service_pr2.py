@@ -146,12 +146,14 @@ async def test_fire_webhook_event_filter(monkeypatch):
 
     import httpx  # noqa: PLC0415
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    # 公网 IP 字面量:过 SSRF 校验(见 test_webhook_ssrf),不依赖 DNS。
+    hook = "http://93.184.216.34/cb"
     # filter 不含 start → 跳过
-    await PS.fire_webhook("http://x", ["completed"], "start", {"id": "1"})
+    await PS.fire_webhook(hook, ["completed"], "start", {"id": "1"})
     assert posted == []
     # filter 含 completed → 发,payload = {event, prediction}
-    await PS.fire_webhook("http://x", ["completed"], "completed", {"id": "1"})
-    assert posted == [("http://x", {"event": "completed", "prediction": {"id": "1"}})]
+    await PS.fire_webhook(hook, ["completed"], "completed", {"id": "1"})
+    assert posted == [(hook, {"event": "completed", "prediction": {"id": "1"}})]
 
 
 def test_workflow_runner_fires_webhook_wiring():

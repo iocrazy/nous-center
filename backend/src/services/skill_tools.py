@@ -203,10 +203,24 @@ def _check_code_safety(code: str) -> str | None:
 
 
 async def _execute_python(code: str) -> str:
-    """Execute Python code in a subprocess sandbox with safety checks."""
+    """Execute Python code in a subprocess sandbox with safety checks.
+
+    安全默认关闭(安全 P1):`_check_code_safety` 是 AST 黑名单,本质可绕
+    (getattr(__builtins__,'__imp'+'ort__')('os') / __subclasses__ gadget 等),
+    子进程又是全 builtins、同用户、无 seccomp。经已发布工作流 + granted key 可达
+    → 等价 RCE(能读 backend/.env)。故整节点默认禁用,operator 显式设
+    NOUS_ENABLE_PYTHON_EXEC=1 才放行(单管理员自担风险)。
+    """
     import asyncio
     import os
     import tempfile
+
+    if os.getenv("NOUS_ENABLE_PYTHON_EXEC") != "1":
+        return (
+            "Error: python_exec node is disabled (unsafe sandbox). "
+            "Set NOUS_ENABLE_PYTHON_EXEC=1 to enable. "
+            "(python_exec 默认禁用:AST 黑名单可绕、等价 RCE;需显式开启)"
+        )
 
     if not code.strip():
         return "Error: empty code"
