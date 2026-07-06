@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, DateTime, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.models.database import Base
@@ -53,3 +53,7 @@ class ExecutionTask(Base):
     # webhook_events = 过滤(["start","completed",...]),空=全发。nullable。
     webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     webhook_events: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # created_at 索引 —— 支撑保留清理(usage_retention)按 created_at 删旧行 + run-history
+    # 时间范围查询。既有 prod DB 由 main.py 微迁移补(CREATE INDEX IF NOT EXISTS)。
+    __table_args__ = (Index("ix_execution_tasks_created", "created_at"),)

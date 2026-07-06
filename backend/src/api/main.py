@@ -114,6 +114,9 @@ async def lifespan(app: FastAPI):
                     "CREATE INDEX IF NOT EXISTS idx_mem_key_ctx_cat ON memory_entries (api_key_id, context_key, category)",
                     # 节点分组(ComfyUI 式可视框,不入执行图)。旧表补列,默认空 []。
                     "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS groups JSONB DEFAULT '[]'::jsonb",
+                    # execution_tasks.created_at 索引 —— 支撑 usage 保留清理按 created_at 删旧行
+                    # (usage_retention);既有 prod 表补索引(新/测试 DB 由模型 __table_args__ 建)。
+                    "CREATE INDEX IF NOT EXISTS ix_execution_tasks_created ON execution_tasks (created_at)",
                 ):
                     try:
                         await conn.execute(text(_ddl))
@@ -584,6 +587,20 @@ async def lifespan(app: FastAPI):
                     logger.warning("Log cleanup failed: %s", e)
 
         bg_tasks.append(asyncio.create_task(log_cleanup_loop()))
+
+        async def usage_retention_loop():
+            # usage/task 历史表保留清理(审查 P1:三表无限增长)。每 6h 删 >90 天旧行。
+            while True:
+                await asyncio.sleep(6 * 3600)
+                try:
+                    from src.models.database import get_session_factory
+                    from src.services.usage_retention import cleanup_usage
+                    async with get_session_factory()() as session:
+                        await cleanup_usage(session)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("usage retention failed: %s", e)
+
+        bg_tasks.append(asyncio.create_task(usage_retention_loop()))
 
         # Image output orphan reaper. PR-6's signed-URL TTL is 1h by
         # default; once a URL expires the file is unreachable but stays
