@@ -626,7 +626,11 @@ class ModelManager:
                         self._allocator.release_reservation(reserved_gpu, reserved_mb)
 
             if detect_after_load:
-                gpu_indices = self._detect_vllm_gpus_for_adapter(adapter) or [0]
+                # _detect_vllm_gpus_for_adapter 内含 nvidia-smi subprocess(同步阻塞)
+                # → 丢线程池,别在 load 后卡事件循环(性能二轮 P2-C)。
+                gpu_indices = await asyncio.to_thread(
+                    self._detect_vllm_gpus_for_adapter, adapter
+                ) or [0]
                 gpu_index = gpu_indices[0] if gpu_indices else 0
 
             self._models[model_id] = LoadedModel(
