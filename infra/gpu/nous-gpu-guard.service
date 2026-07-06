@@ -1,0 +1,18 @@
+[Unit]
+Description=nous-center GPU 稳定性守护(persistence mode + 3090 功率封顶)
+# 驱动就绪后、后端起来前应用。persistenced 若存在则排在其后。
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+Before=nous-backend.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 3090 功率上限(W),可按需调整;PRO 6000 保持默认。
+Environment=NOUS_GPU_3090_WATTS=320
+ExecStart=/media/heygo/program/projects-code/repos/nous-center/infra/gpu/nous-gpu-guard.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
