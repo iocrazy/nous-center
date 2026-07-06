@@ -433,34 +433,12 @@ async def lifespan(app: FastAPI):
 
     # Re-register model references for published workflows
     from sqlalchemy import select
-    from src.models.workflow import Workflow
-    from src.models.service_instance import ServiceInstance
-    wf_model_deps: list[dict] = []
-    orphan_published = 0
+    from src.services.startup_reconcile import reconcile_orphan_published_workflows
     async with sf() as session:
-        stmt = select(Workflow).where(Workflow.status == "published")
-        result = await session.execute(stmt)
-        for wf in result.scalars():
-            # 一次性状态对账:published 但已无关联服务的工作流 → 退回 "draft"。
-            # 历史上「删服务」没回退工作流 status,留下一批「已发布但无服务」的孤儿
-            # (卡片绿徽章与"未关联服务"+发布按钮冲突)。delete_service 已修根因,这里清存量。
-            svc_exists = (
-                await session.execute(
-                    select(ServiceInstance.id)
-                    .where(ServiceInstance.workflow_id == wf.id)
-                    .limit(1)
-                )
-            ).first() is not None
-            if not svc_exists:
-                wf.status = "draft"
-                orphan_published += 1
-                continue
-            deps = model_mgr.get_model_dependencies({"nodes": wf.nodes, "edges": wf.edges})
-            for dep in deps:
-                model_mgr.add_reference(dep["key"], str(wf.id))
-                wf_model_deps.append({"key": dep["key"], "wf_id": wf.id})
+        orphan_published, wf_model_deps = await reconcile_orphan_published_workflows(
+            session, model_mgr,
+        )
         if orphan_published:
-            await session.commit()
             logger.info(
                 "startup: reconciled %d orphan published workflows → draft (no linked service)",
                 orphan_published,
