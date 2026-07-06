@@ -207,7 +207,9 @@ async def scan_models_endpoint():
     # 显式 /scan 意图就是"现在重扫" → 先清 TTL 缓存,强制走盘一次(否则最长 30s 内看不到
     # 新模型)。
     from src.services.model_scanner import invalidate_scan_cache
+    from src.services.model_metadata_service import invalidate_local_scan_cache
     invalidate_scan_cache()
+    invalidate_local_scan_cache()  # scan_local_models 也有 30s 缓存,一并清
     configs = scan_models()
     local_dirs = scan_local_models()
     # configs 已包含 local_path;在 local_dirs 中即「磁盘上真有目录的模型」。

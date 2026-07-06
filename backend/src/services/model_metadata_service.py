@@ -188,7 +188,41 @@ async def refresh_metadata(session: AsyncSession, engine_key: str) -> ModelMetad
     return await fetch_and_store(session, engine_key, cfg)
 
 
+# scan_local_models 的 30s TTL 缓存(性能 P1):原每次调用全走盘(nested iterdir),
+# /engines 冷 miss 阻塞(实测 859ms 里的一部分)。照 model_scanner._SCAN_CACHE 口径缓存。
+# base 变了(LOCAL_MODELS_PATH 改)自动失效;/scan 端点显式 invalidate_local_scan_cache。
+_LOCAL_SCAN_CACHE: dict = {"data": None, "ts": 0.0, "base": None}
+_LOCAL_SCAN_TTL_SECONDS = 30
+
+
+def invalidate_local_scan_cache() -> None:
+    """清 scan_local_models 缓存 —— /scan 端点或模型目录变更后调用,强制下次重扫。"""
+    _LOCAL_SCAN_CACHE["data"] = None
+    _LOCAL_SCAN_CACHE["ts"] = 0.0
+    _LOCAL_SCAN_CACHE["base"] = None
+
+
 def scan_local_models() -> set[str]:
+    """scan_local_models 的缓存包装(30s TTL)。见 _scan_local_models_uncached。"""
+    import time
+    settings = get_settings()
+    base = str(settings.LOCAL_MODELS_PATH)
+    now = time.monotonic()
+    cached = _LOCAL_SCAN_CACHE["data"]
+    if (
+        cached is not None
+        and _LOCAL_SCAN_CACHE["base"] == base
+        and now - _LOCAL_SCAN_CACHE["ts"] < _LOCAL_SCAN_TTL_SECONDS
+    ):
+        return cached
+    result = _scan_local_models_uncached()
+    _LOCAL_SCAN_CACHE["data"] = result
+    _LOCAL_SCAN_CACHE["ts"] = now
+    _LOCAL_SCAN_CACHE["base"] = base
+    return result
+
+
+def _scan_local_models_uncached() -> set[str]:
     """Scan LOCAL_MODELS_PATH and return set of local_path dirs that exist.
 
     Layout:
