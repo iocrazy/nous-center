@@ -50,3 +50,14 @@ export function installErrorReporter() {
     }
   }
 }
+
+// React 渲染错误(ErrorBoundary 用)—— window.onerror 抓不到 React 组件树内的
+// 渲染异常,需 ErrorBoundary.componentDidCatch 显式上报到同一 /logs/frontend。
+export function reportReactError(error: Error, componentStack?: string) {
+  report(
+    'react_error_boundary',
+    error.message || String(error),
+    window.location.pathname,
+    (error.stack || '') + (componentStack ? '\n--- component stack ---\n' + componentStack : ''),
+  )
+}
