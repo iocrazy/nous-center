@@ -22,10 +22,10 @@ echo "   真正把 persistence mode 打开的是下面的 nous-gpu-guard(-pm 1))
 systemctl enable --now nvidia-persistenced.service || \
   echo "   ⚠️ nvidia-persistenced enable 失败(驱动未装该 unit?跳过)"
 
-echo ">> 装 + enable nous-gpu-guard(开机强制 persistence mode + 3090 功率封顶)"
+echo ">> 装 + enable nous-gpu-guard(开机强制 persistence mode)"
 # 排查发现:旧脚本只 enable nvidia-persistenced,但发行版 unit 带 --no-persistence-mode
 # → persistence mode 始终 Disabled;且脚本是一次性,没人保证跑过。改成开机 systemd
-# oneshot 强制到位(-pm 1 + 3090 -pl),每次启动生效,不再"缓解没上机"。
+# oneshot 强制到位(-pm 1),每次启动生效,不再"缓解没上机"。
 chmod +x "$SD/nous-gpu-guard.sh"
 install -m 0644 "$SD/nous-gpu-guard.service" /etc/systemd/system/nous-gpu-guard.service
 systemctl daemon-reload
@@ -34,7 +34,6 @@ systemctl enable --now nous-gpu-guard.service && \
   echo "   ⚠️ nous-gpu-guard 启动失败,看 journalctl -u nous-gpu-guard"
 
 echo
-echo "✅ 完成。modprobe 改动需**重启**生效;persistence/功率封顶已即时应用(并随开机强制)。"
+echo "✅ 完成。modprobe 改动需**重启**生效;persistence mode 已即时应用(并随开机强制)。"
 echo "   建议配合冷断电(断 AC 2-3min)重启,既应用本缓解,又复位掉 PRO 6000 的"
-echo "   fullchip-reset 僵死。核验:nvidia-smi --query-gpu=index,persistence_mode,"
-echo "   power.limit --format=csv"
+echo "   fullchip-reset 僵死。核验:nvidia-smi --query-gpu=index,persistence_mode --format=csv"
