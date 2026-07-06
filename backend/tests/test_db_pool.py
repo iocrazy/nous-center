@@ -19,14 +19,17 @@ def test_pool_recycle_set():
     assert kw["pool_recycle"] > 0
 
 
-def test_no_pool_size_left_to_default():
-    # pool_size/max_overflow 需配合 PG max_connections 调,不在代码里硬设。
+def test_postgres_gets_bounded_pool():
+    # postgres 用 QueuePool,设保守常驻+溢出;峰值须远低于 PG 默认 max_connections=100。
     kw = _engine_kwargs("postgresql+asyncpg://u:p@h/db")
-    assert "pool_size" not in kw
-    assert "max_overflow" not in kw
+    assert kw["pool_size"] == 10
+    assert kw["max_overflow"] == 20
+    assert kw["pool_size"] + kw["max_overflow"] < 100
 
 
-def test_sqlite_also_gets_pre_ping():
-    # pool_pre_ping/pool_recycle 是 Pool 基类参数,sqlite 池也接受,不该分叉。
+def test_sqlite_no_pool_size():
+    # aiosqlite 池不接受 pool_size/max_overflow(设了 TypeError),只留 pre_ping/recycle。
     kw = _engine_kwargs("sqlite+aiosqlite:///./test.db")
     assert kw["pool_pre_ping"] is True
+    assert "pool_size" not in kw
+    assert "max_overflow" not in kw

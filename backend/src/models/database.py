@@ -9,13 +9,24 @@ class Base(DeclarativeBase):
 
 
 def _engine_kwargs(url: str) -> dict:
-    """连接池参数。pool_pre_ping/pool_recycle 是 Pool 基类参数,sqlite 与 postgres 池都接受。
+    """连接池参数。
 
-    pool_pre_ping:checkout 前发轻量 SELECT 1,PG 重启/空闲断连后自动丢弃陈旧连接取新的,
-    而非把 "server closed connection unexpectedly" 抛给请求。pool_recycle:主动回收超龄连接,
-    绕开 PG 空闲超时。pool_size/max_overflow **不设** —— 需配合 PG max_connections 调,留默认。
+    pool_pre_ping/pool_recycle 是 Pool 基类参数,sqlite 与 postgres 池都接受:
+    - pool_pre_ping:checkout 前发轻量 SELECT 1,PG 重启/空闲断连后自动丢弃陈旧连接取新的,
+      而非把 "server closed connection unexpectedly" 抛给请求。
+    - pool_recycle:主动回收超龄连接,绕开 PG 空闲超时。
+
+    pool_size/max_overflow 是 QueuePool 专属,**只对 postgres 设**(sqlite 的
+    aiosqlite 池不接受这俩参数,设了会 TypeError)。取保守值:单管理员长驻服务、单后台
+    进程,PG 默认 max_connections=100。10 常驻 + 20 溢出 = 峰值 30 连接,远低于 100,给
+    请求处理器 + 后台循环(热保护/对账/日志消费/状态采样)留足余量,又不至打爆 PG。
+    真要再调,配合 PG max_connections 一起改。
     """
-    return {"pool_pre_ping": True, "pool_recycle": 1800}
+    kwargs = {"pool_pre_ping": True, "pool_recycle": 1800}
+    if url.startswith("postgresql"):
+        kwargs["pool_size"] = 10
+        kwargs["max_overflow"] = 20
+    return kwargs
 
 
 def create_engine():
