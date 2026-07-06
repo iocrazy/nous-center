@@ -26,6 +26,15 @@ ExecStart=/home/linuxbrew/.linuxbrew/bin/uv run uvicorn src.api.main:app --host 
 # 永不放弃重试。重启/停服由 systemctl 主动发起时不受影响(那是 stop 不是 Restart 触发)。
 Restart=always
 RestartSec=15
+# KillMode=mixed(2026-07-05 显卡稳定性):默认 control-group 会在 stop/restart 时
+# 把整个 cgroup(主进程 + 所有 vLLM/runner 子进程)**同时** SIGTERM → 三张卡在同一
+# 瞬间释放/reset CUDA 上下文 = 相关联的多卡功率/PCIe 尖峰(掉总线诱因)。mixed 只对
+# 主进程发 SIGTERM,交给 lifespan 优雅关闭:它会顺序 unload_model(force) 逐个错峰
+# 收掉 vLLM 进程组,再由 cgroup SIGKILL 兜底清理。避免"一锅端齐 reset"。
+KillMode=mixed
+# 给优雅关闭留足时间:每个 vLLM unload 最长等 10s(SIGTERM→SIGKILL),多模型顺序
+# 卸载可能几十秒。超时后 systemd 才对 cgroup SIGKILL 兜底。
+TimeoutStopSec=120
 # host 级 OOM 时让内核优先杀别的(桌面/临时工具),保住推理后端 —— 这是本机的核心
 # 服务。注意:这只影响 host 全局 OOM 的「选谁杀」;后端自己撑爆 MemoryMax=96G 时仍由
 # cgroup OOM 在本 cgroup 内处理,与此无关。

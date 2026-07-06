@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { Copy, Check, X, Search } from 'lucide-react'
+import { Copy, Check, X, Search, Pin, PinOff } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
   useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
@@ -964,9 +964,19 @@ function ModelCard({
       {/* Row 3a: chips (VRAM / GPU / resident toggle) — m11 style */}
       <div className="flex items-center gap-3 mt-1" style={{ fontSize: 9, color: 'var(--muted)' }}>
         <span>{model.vram_gb}GB VRAM</span>
-        <span>GPU {Array.isArray(model.gpu) ? model.gpu.join(',') : model.gpu}</span>
+        {/* 已加载 → 显示实际落卡(loaded_gpus,物理 index,与 Dashboard 一致);
+         未加载 → 显示配置槽位并标注「配置」,避免与 Dashboard 的实际卡名读成矛盾。 */}
+        {model.loaded_gpus && model.loaded_gpus.length > 0 ? (
+          <span title="实际加载所在 GPU(物理编号,与 Dashboard 一致)">
+            GPU {model.loaded_gpus.join(',')}
+          </span>
+        ) : (
+          <span title="配置的 GPU 槽位(未加载时的预定落卡,实际以加载时分配为准)">
+            GPU {Array.isArray(model.gpu) ? model.gpu.join(',') : model.gpu}(配置)
+          </span>
+        )}
         <button
-          title={model.resident ? '点击取消常驻' : '点击设为常驻（不会被自动卸载）'}
+          title={model.resident ? '常驻(不被自动卸载) — 点击取消常驻' : '按需(空闲自动卸载) — 点击设为常驻'}
           onClick={(e) => {
             e.stopPropagation()
             onToggleResident(model)
@@ -981,9 +991,11 @@ function ModelCard({
             border: 'none',
             cursor: 'pointer',
             fontSize: 9,
+            display: 'inline-flex',
+            alignItems: 'center',
           }}
         >
-          {model.resident ? 'resident' : 'on-demand'}
+          {model.resident ? <Pin size={11} /> : <PinOff size={11} />}
         </button>
       </div>
 

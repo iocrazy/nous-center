@@ -1,0 +1,16 @@
+[Unit]
+Description=nous-center GPU 稳定性守护(强制 persistence mode)
+# 驱动就绪后、后端起来前应用。persistenced 若存在则排在其后。
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+Before=nous-backend.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/media/heygo/program/projects-code/repos/nous-center/infra/gpu/nous-gpu-guard.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

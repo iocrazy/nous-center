@@ -31,6 +31,45 @@ from src.utils.constants import ALLOWED_LLM_HOSTS
 logger = logging.getLogger(__name__)
 
 
+def _pid_cmdline_is_vllm(pid: int) -> bool:
+    """True iff /proc/<pid> exists and its cmdline still looks like a vLLM process.
+
+    Guards against recycled-PID friendly fire: an *adopted* orphan PID may have
+    died (e.g. after the GPU falls off the bus, Xid 79) and been reused by the OS
+    for an unrelated process — a proxy daemon, an sshd session, or `systemd --user`.
+    killpg() on such a stale PID would take down innocent process groups. Always
+    re-verify identity immediately before signalling an externally-sourced PID.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmdline = fh.read()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return False
+    return b"vllm" in cmdline.lower()
+
+
+def clamp_util_to_free(utilization: float, gpu_free_gb: float, gpu_total_gb: float) -> float:
+    """把 gpu_memory_utilization 压到所选卡当前 free 以内(留 0.5G 余量)。
+
+    vLLM 的 utilization 以 total 为分母、按「整卡归它」假设 claim 显存;
+    resolve_vram_utilization 的三条路(overlay 预算/yaml/auto 公式)也都不看 free。
+    卡上已有别的进程时预算超过 free → 启动期 CUDA OOM、exit 1、日志截断难查
+    (2026-07-05 GPU2 上 22G 预算/22.5G free 启动即炸)。下限 0.05:free 见底时
+    也给 vLLM 一个合法值,让它自己报「显存不足」而不是这里除零/负数。
+    """
+    if gpu_total_gb <= 0:
+        return utilization
+    cap = max(0.05, (gpu_free_gb - 0.5) / gpu_total_gb)
+    if utilization > cap:
+        logger.warning(
+            "gpu_memory_utilization %.2f exceeds free VRAM cap %.2f "
+            "(free=%.1fG/total=%.1fG) — clamping to avoid startup OOM",
+            utilization, cap, gpu_free_gb, gpu_total_gb,
+        )
+        return round(cap, 4)
+    return utilization
+
+
 class VLLMAdapter(InferenceAdapter):
     """Adapter that spawns vLLM as a subprocess and manages its lifecycle.
 
@@ -232,6 +271,7 @@ class VLLMAdapter(InferenceAdapter):
             "gpu_idx": gpu_idx,
             "model_size_gb": round(model_size_gb, 2),
             "gpu_total_gb": round(gpu_total_gb, 2),
+            "gpu_free_gb": round(gpu_free_gb, 2),
             "is_multimodal": is_multimodal,
             "is_audio": is_audio,
         }
@@ -266,6 +306,13 @@ class VLLMAdapter(InferenceAdapter):
         from src.config import resolve_vram_utilization
         utilization = resolve_vram_utilization(
             self._vram_budget, auto["gpu_total_gb"], self._gpu_mem_util, auto["utilization"],
+        )
+        # 三条预算路径都不看 free —— 统一在此按所选卡实际剩余封顶,防启动期 OOM。
+        # 用 .get 容忍精简的 auto dict(测试 patch / 老快照可能缺 gpu_*_gb 键);
+        # total<=0 时 clamp 自身直接返回原值,不误伤。
+        _total_gb = auto.get("gpu_total_gb", 0.0)
+        utilization = clamp_util_to_free(
+            utilization, auto.get("gpu_free_gb", _total_gb), _total_gb,
         )
         quantization = self._quantization or auto["quantization"]
         dtype = self._dtype or auto["dtype"]
@@ -435,32 +482,39 @@ class VLLMAdapter(InferenceAdapter):
 
     def _kill_process(self) -> None:
         import signal
+        from src.services.safe_signal import safe_killpg
 
-        # Kill subprocess we spawned
+        # Kill subprocess we spawned. safe_killpg refuses pgid<=1 (broadcast guard)
+        # — even our own child can resolve to a bad pgid if it died + PID recycled.
         if self._process is not None:
             try:
-                pgid = os.getpgid(self._process.pid)
-                os.killpg(pgid, signal.SIGTERM)
-                try:
-                    self._process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pgid, signal.SIGKILL)
-                    self._process.wait(timeout=5)
+                if safe_killpg(self._process.pid, signal.SIGTERM):
+                    try:
+                        self._process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        safe_killpg(self._process.pid, signal.SIGKILL)
+                        self._process.wait(timeout=5)
             except Exception as e:
                 logger.warning("Error killing vLLM subprocess: %s", e)
             finally:
                 self._process = None
             return
 
-        # Kill adopted orphan process
+        # Kill adopted orphan process. Re-validate identity before signalling:
+        # the adopted PID came from an external scan and may have died (GPU fell
+        # off the bus) and been recycled to an unrelated process — killpg on a
+        # stale PID is friendly fire (has taken down mihomo / sshd / user sessions).
+        # safe_killpg enforces both the cmdline verify and the pgid<=1 broadcast guard.
         adopted = getattr(self, "_adopted_pid", None)
         if adopted:
             try:
-                pgid = os.getpgid(adopted)
-                os.killpg(pgid, signal.SIGTERM)
-                logger.info("Sent SIGTERM to adopted vLLM process group (pid=%d)", adopted)
-            except ProcessLookupError:
-                pass  # Already gone
+                if safe_killpg(adopted, signal.SIGTERM, verify=_pid_cmdline_is_vllm):
+                    logger.info("Sent SIGTERM to adopted vLLM process group (pid=%d)", adopted)
+                else:
+                    logger.warning(
+                        "Refused to kill adopted PID %d (recycled PID or broadcast guard).",
+                        adopted,
+                    )
             except Exception as e:
                 logger.warning("Error killing adopted vLLM (pid=%d): %s", adopted, e)
             finally:

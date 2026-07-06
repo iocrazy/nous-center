@@ -90,3 +90,17 @@ def test_registry_reload_picks_up_overlay_change(tmp_path):
         assert reg.get("m1").gpu == 2, "reload 后应从覆盖取到 gpu"
     finally:
         runtime_override_store.reset_cache()
+
+def test_set_resident_updates_spec_in_place(registry_yaml):
+    """set_resident 直接翻内存 spec 的常驻位(#resident 三口径脱节修复):
+    PATCH /engines/{name}/resident 后 /health 统计与 preload 名单立即对齐,不用等重启。"""
+    reg = ModelRegistry(str(registry_yaml))
+    assert reg.get("test-tts").resident is False
+    assert reg.set_resident("test-tts", True) is True
+    assert reg.get("test-tts").resident is True
+    assert reg.set_resident("test-tts", False) is True
+    assert reg.get("test-tts").resident is False
+
+def test_set_resident_unknown_id_returns_false(registry_yaml):
+    reg = ModelRegistry(str(registry_yaml))
+    assert reg.set_resident("nonexistent", True) is False

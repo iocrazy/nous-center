@@ -146,3 +146,47 @@ async def test_health_failed_llm_runner_degraded(monkeypatch):
         "healthy": False, "restart_count": 1, "pid": None, "current_task": None,
     })
     assert body["status"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_health_preloading_false_when_preload_task_not_running():
+    """preload 任务不在跑 → preloading 必须 False,哪怕有 resident 未加载
+    (#banner-stuck 根因):TTL 卸载/加载失败后旧逻辑 r_total>r_loaded 恒 True,
+    「系统启动中」横幅在运行了几小时的系统上永远挂着。"""
+    import asyncio
+    from unittest.mock import MagicMock
+    from httpx import ASGITransport, AsyncClient
+
+    app = create_app()
+    mgr = MagicMock()
+    mgr.loaded_model_ids = []
+    mgr._load_failures = {}
+    spec = MagicMock()
+    spec.resident = True
+    spec.id = "cold-res"
+    mgr._registry.specs = [spec]
+    mgr.is_loaded = MagicMock(return_value=False)
+    app.state.model_manager = mgr
+    # 情形 A:没有 preload 任务(如已跑完被回收)→ False
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        body_a = (await client.get("/health")).json()
+        # 情形 B:preload 任务已结束(done)→ False
+        async def _noop():
+            return None
+        t = asyncio.get_event_loop().create_task(_noop())
+        await t
+        app.state._resident_preload_task = t
+        body_b = (await client.get("/health")).json()
+        # 情形 C:preload 任务仍在跑 → True(真启动窗口)
+        async def _hang():
+            await asyncio.sleep(30)
+        t2 = asyncio.get_event_loop().create_task(_hang())
+        app.state._resident_preload_task = t2
+        body_c = (await client.get("/health")).json()
+        t2.cancel()
+
+    assert body_a["startup"]["resident_total"] == 1
+    assert body_a["startup"]["preloading"] is False
+    assert body_b["startup"]["preloading"] is False
+    assert body_c["startup"]["preloading"] is True

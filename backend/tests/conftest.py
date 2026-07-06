@@ -14,11 +14,48 @@ os.environ.setdefault("NOUS_DISABLE_BG_TASKS", "1")
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["NVIDIA_VISIBLE_DEVICES"] = ""
 
+# CRITICAL SAFETY (2026-07-05 事故): pytest 把 SIGTERM 广播到宿主 mihomo/sshd/
+# systemd user@1000 —— 清理代码 `os.killpg(os.getpgid(pid), sig)` 在 pid 是孤儿/
+# 已死回收时解析出 pgid<=1,killpg(1)==kill(-1) 向该用户所有进程广播。生产代码已
+# 全部改走 src.services.safe_signal;这里再给测试进程一道**物理护栏**:模块级替换
+# os.killpg/os.kill,pgid<=1 / pid<=1 一律 raise(把 bug 就地炸出来,绝不投递),
+# pgid>1 / pid>1 才委托真实实现(自己 spawn 的子进程仍能正常清理)。装在模块级
+# 而非 fixture,连 collection 期 / lifespan 期直接调 os.killpg 的路径也覆盖。
+_real_killpg = os.killpg
+_real_kill = os.kill
+
+
+def _guarded_killpg(pgid, sig):
+    assert pgid > 1, (
+        f"BLOCKED broadcast killpg(pgid={pgid}, sig={sig}) in tests — "
+        "pgid<=1 would signal every process the user owns (host takedown bug)."
+    )
+    return _real_killpg(pgid, sig)
+
+
+def _guarded_kill(pid, sig):
+    assert pid > 1, (
+        f"BLOCKED kill(pid={pid}, sig={sig}) in tests — pid<=1/0 broadcasts "
+        "to init / caller's process group (host takedown bug)."
+    )
+    return _real_kill(pid, sig)
+
+
+os.killpg = _guarded_killpg
+os.kill = _guarded_kill
+
 # Tests must not inherit the developer's local admin password from .env —
 # pydantic-settings reads .env automatically, which would 401 every admin-gated
 # route. Force-empty here disables the cookie gate (dev mode) for the whole
 # suite. Bare assignment (not setdefault) overrides whatever .env provides.
 os.environ["ADMIN_PASSWORD"] = ""
+# is_login_required() (admin_session.py) arms the gate on `ADMIN_PASSWORD or
+# ADMIN_TOKEN`. Clearing only ADMIN_PASSWORD leaves the gate armed on any box
+# whose backend/.env sets ADMIN_TOKEN (every production/deploy host) —
+# pydantic-settings reads .env automatically → the whole admin-gated suite 401s
+# locally while passing on CI (no .env). Force-empty ADMIN_TOKEN too so the
+# dev-mode gate-off is honored everywhere.
+os.environ["ADMIN_TOKEN"] = ""
 # image_generate node demands a signing secret since p2-polish-3 (no more
 # base64 fallback). Tests don't need a real secret — anything non-empty
 # unlocks the URL path. Specific tests that exercise the missing-secret

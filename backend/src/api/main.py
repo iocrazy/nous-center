@@ -378,7 +378,6 @@ async def lifespan(app: FastAPI):
 
     # Auto-detect running vLLM instances BEFORE resident auto-load
     # (so we reconnect to orphans instead of spawning duplicates)
-    import os as _os
     import signal as _signal
     from src.services.inference.vllm_scanner import scan_running_vllm
     running_vllm = scan_running_vllm()
@@ -394,14 +393,16 @@ async def lifespan(app: FastAPI):
             )
             try:
                 pid = vllm_info["pid"]
-                # Try process group kill first (catches worker subprocesses)
-                try:
-                    pgid = _os.getpgid(pid)
-                    _os.killpg(pgid, _signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    _os.kill(pid, _signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                # safe_killpg refuses pgid<=1 (broadcast guard) + re-verifies the
+                # scanned PID is still a vLLM (scan→kill window: PID may have died
+                # and been recycled to sshd/mihomo). Fall back to a single-PID kill
+                # only when the group kill was refused for a non-broadcast reason.
+                from src.services.safe_signal import safe_killpg, safe_kill, _proc_cmdline_contains
+                def _is_vllm(p: int) -> bool:
+                    return _proc_cmdline_contains(p, "vllm")
+                if not safe_killpg(pid, _signal.SIGKILL, verify=_is_vllm):
+                    if _is_vllm(pid):
+                        safe_kill(pid, _signal.SIGKILL)
             except Exception as e:
                 logger.warning("Failed to kill orphan pid=%d: %s", vllm_info["pid"], e)
             continue
@@ -820,10 +821,16 @@ def create_app() -> FastAPI:
             r_loaded = sum(1 for s in resident_specs if mgr.is_loaded(s.id))
         except Exception:  # noqa: BLE001 — 启动提示是 best-effort,坏了不拖垮 /health
             r_total = r_loaded = 0
+        # preloading 必须绑「preload 任务真的在跑」:旧逻辑 r_total > r_loaded 是纯状态
+        # 比较,resident 模型被 TTL 卸载/加载失败后,运行了几小时的系统也会永远挂
+        # 「系统启动中·刚重启」横幅(2026-07-05 用户报障根因)。失败态走 load_failures
+        # → degraded,不归启动横幅管。
+        _pt = getattr(app.state, "_resident_preload_task", None)
+        preload_running = _pt is not None and not _pt.done()
         checks["startup"] = {
             "resident_total": r_total,
             "resident_loaded": r_loaded,
-            "preloading": r_total > r_loaded,
+            "preloading": preload_running and r_total > r_loaded,
         }
 
         # Per-runner state (spec 4.2). runner_supervisors is populated by Lane K
