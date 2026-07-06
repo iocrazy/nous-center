@@ -241,6 +241,12 @@ def resolve_image(item: dict) -> dict:
         # Sentinel for async resolver; handled in transform stage with instance ctx.
         return {"_pending_file_id": item["file_id"]}
     if item.get("image_url"):
+        # SSRF 防护:image_url 会被 vLLM 服务端 fetch,校验拒私网/http(同 understand)。
+        from src.utils.url_security import UnsafeURLError, validate_external_image_url
+        try:
+            validate_external_image_url(item["image_url"])
+        except UnsafeURLError as e:
+            raise InvalidRequestError(str(e), code="unsafe_image_url")
         return {
             "type": "image_url",
             "image_url": {

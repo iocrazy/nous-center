@@ -56,7 +56,13 @@ def verify_token(token: str | None) -> bool:
     expires = int(expires_str)
     if expires < int(time.time()):
         return False
-    expected = hmac.new(_secret(), expires_str.encode("ascii"), hashlib.sha256).hexdigest()
+    try:
+        secret = _secret()
+    except RuntimeError:
+        # token-only 部署(ADMIN_SESSION_SECRET 空):无法验签 cookie token → 视为无效,
+        # 不让含 "." 的伪造 cookie 触发未捕获 500(S3 robustness)。
+        return False
+    expected = hmac.new(secret, expires_str.encode("ascii"), hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig, expected)
 
 

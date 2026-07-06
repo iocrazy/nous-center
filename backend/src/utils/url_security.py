@@ -65,3 +65,23 @@ def validate_external_image_url(url: str) -> None:
             f"image_url host {host!r} does not resolve to a public address "
             "(private/loopback/metadata targets are blocked)"
         )
+
+
+async def validate_chat_image_urls(messages: list | None) -> None:
+    """遍历 OpenAI chat messages 的 content 数组,对每个 image_url part 做 SSRF 校验。
+
+    vLLM 服务端会 fetch messages[].content[].image_url.url → 任何下游 API-key 持有者
+    可用 http://169.254.169.254/... 或 http://127.0.0.1:<port> 探测内网/云 metadata。
+    与 understand/webhook 口径一致(放行 data:/公网 https,拒私网/http/非法主机)。
+    getaddrinfo 阻塞 → 逐个 to_thread。命中即抛 UnsafeURLError,调用方转 400。
+    """
+    import asyncio
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url")
+                if isinstance(url, str) and url:
+                    await asyncio.to_thread(validate_external_image_url, url)

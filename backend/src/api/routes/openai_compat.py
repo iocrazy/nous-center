@@ -191,6 +191,13 @@ async def chat_completions(
     instance, api_key = auth
 
     body = await request.json()
+    # SSRF 防护:messages[].content[].image_url 会被 vLLM 服务端 fetch,校验拒私网/http
+    # (与 understand 口径一致;放行 data:/公网 https)。
+    from src.utils.url_security import UnsafeURLError, validate_chat_image_urls
+    try:
+        await validate_chat_image_urls(body.get("messages"))
+    except UnsafeURLError as e:
+        raise InvalidRequestError(str(e), code="unsafe_image_url")
     requested_model = body.get("model") or None
 
     # Resolve target service. Legacy 1:1 keys (instance set by the auth dep)
