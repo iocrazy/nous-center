@@ -703,11 +703,10 @@ async def lifespan(app: FastAPI):
         # check_idle_models / nvidia-smi poll 中途留半完成状态。
         for t in bg_tasks:
             t.cancel()
-        for t in bg_tasks:
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        # gather(return_exceptions=True) 排空已取消的后台任务:task 的 CancelledError
+        # 作为结果收集而非泛化吞掉;若 lifespan 本身被取消,gather 会正确向上传播
+        # (A4:不再 bare except 吞 CancelledError,符合结构化并发语义)。
+        await asyncio.gather(*bg_tasks, return_exceptions=True)
         # Flush + stop the structured-log writer (drains queued log rows).
         try:
             from src.services.log_store import log_writer

@@ -480,20 +480,32 @@ class SGLangAdapter(InferenceAdapter):
                     payload={"status_code": resp.status_code, "body": body[:300].decode("utf-8", errors="replace")},
                 )
                 return
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                payload_text = line[5:].strip()
-                if payload_text == "[DONE]":
-                    break
-                try:
-                    chunk = _json.loads(payload_text)
-                except _json.JSONDecodeError:
-                    continue
-                if chunk.get("usage"):
-                    last_usage = chunk["usage"]
-                choices = chunk.get("choices") or []
-                delta = choices[0].get("delta") if choices else None
-                if delta:
-                    yield StreamEvent(type="delta", payload=delta)
+            try:
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload_text = line[5:].strip()
+                    if payload_text == "[DONE]":
+                        break
+                    try:
+                        chunk = _json.loads(payload_text)
+                    except _json.JSONDecodeError:
+                        continue
+                    if chunk.get("usage"):
+                        last_usage = chunk["usage"]
+                    choices = chunk.get("choices") or []
+                    delta = choices[0].get("delta") if choices else None
+                    if delta:
+                        yield StreamEvent(type="delta", payload=delta)
+            except httpx.HTTPError as e:
+                # 中途断流(SGLang 崩溃/网络 reset)—— yield 结构化 error 事件(带已产 usage),
+                # 与首段 status!=200 契约一致,不裸冒泡拖垮上游流(A5 同 llm_vllm)。
+                yield StreamEvent(
+                    type="error",
+                    payload={
+                        "error": f"stream interrupted: {type(e).__name__}: {e}",
+                        "usage": last_usage or {},
+                    },
+                )
+                return
         yield StreamEvent(type="done", payload={"usage": last_usage or {}})
