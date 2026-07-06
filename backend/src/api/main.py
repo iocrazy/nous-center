@@ -378,7 +378,6 @@ async def lifespan(app: FastAPI):
 
     # Auto-detect running vLLM instances BEFORE resident auto-load
     # (so we reconnect to orphans instead of spawning duplicates)
-    import os as _os
     import signal as _signal
     from src.services.inference.vllm_scanner import scan_running_vllm
     running_vllm = scan_running_vllm()
@@ -399,7 +398,8 @@ async def lifespan(app: FastAPI):
                 # and been recycled to sshd/mihomo). Fall back to a single-PID kill
                 # only when the group kill was refused for a non-broadcast reason.
                 from src.services.safe_signal import safe_killpg, safe_kill, _proc_cmdline_contains
-                _is_vllm = lambda p: _proc_cmdline_contains(p, "vllm")
+                def _is_vllm(p: int) -> bool:
+                    return _proc_cmdline_contains(p, "vllm")
                 if not safe_killpg(pid, _signal.SIGKILL, verify=_is_vllm):
                     if _is_vllm(pid):
                         safe_kill(pid, _signal.SIGKILL)

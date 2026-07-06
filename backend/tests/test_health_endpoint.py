@@ -161,7 +161,9 @@ async def test_health_preloading_false_when_preload_task_not_running():
     mgr = MagicMock()
     mgr.loaded_model_ids = []
     mgr._load_failures = {}
-    spec = MagicMock(); spec.resident = True; spec.id = "cold-res"
+    spec = MagicMock()
+    spec.resident = True
+    spec.id = "cold-res"
     mgr._registry.specs = [spec]
     mgr.is_loaded = MagicMock(return_value=False)
     app.state.model_manager = mgr
