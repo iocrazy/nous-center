@@ -27,12 +27,16 @@ import hashlib
 import json
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import wraps
 from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
+
+# _Metrics/metrics 下沉到 services/cache_metrics(打破 services→api 反向依赖):
+# runtime_metrics 只读 snapshot,本模块写 bump。re-export 保持 response_cache.metrics 兼容。
+from src.services.cache_metrics import _Metrics, metrics  # noqa: F401
 
 # `Cache-Control: private` ensures Cloudflare / shared caches never store this.
 # `max-age=0, must-revalidate` lets the browser cache the body and use If-None-Match
@@ -47,32 +51,8 @@ class _Entry:
     expires_at: float
 
 
-@dataclass
-class _Metrics:
-    hits: int = 0
-    misses: int = 0
-    etag_304: int = 0
-    invalidations: int = 0
-    by_prefix: dict[str, dict[str, int]] = field(default_factory=dict)
-
-    def bump(self, prefix: str, kind: str) -> None:
-        setattr(self, kind, getattr(self, kind) + 1)
-        per = self.by_prefix.setdefault(prefix, {"hits": 0, "misses": 0, "etag_304": 0, "invalidations": 0})
-        per[kind] += 1
-
-    def snapshot(self) -> dict:
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "etag_304": self.etag_304,
-            "invalidations": self.invalidations,
-            "by_prefix": {k: dict(v) for k, v in self.by_prefix.items()},
-        }
-
-
 _store: dict[tuple[str, str], _Entry] = {}
 _locks: dict[str, asyncio.Lock] = {}
-metrics = _Metrics()
 
 
 def _lock_for(prefix: str) -> asyncio.Lock:

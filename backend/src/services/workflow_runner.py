@@ -72,7 +72,7 @@ async def _broadcast_task_status(task: ExecutionTask, event: str = "updated") ->
     WS 推送失败静默吞(spec §4.1)。
     """
     try:
-        from src.api.routes.execution_tasks import _task_to_dict
+        from src.services.execution_task_serialize import _task_to_dict
         from src.services.ws_hub import ws_manager
         await ws_manager.broadcast_task_update(event, _task_to_dict(task))
     except Exception as e:  # noqa: BLE001
