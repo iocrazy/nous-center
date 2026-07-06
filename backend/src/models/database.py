@@ -8,9 +8,19 @@ class Base(DeclarativeBase):
     pass
 
 
+def _engine_kwargs(url: str) -> dict:
+    """连接池参数。pool_pre_ping/pool_recycle 是 Pool 基类参数,sqlite 与 postgres 池都接受。
+
+    pool_pre_ping:checkout 前发轻量 SELECT 1,PG 重启/空闲断连后自动丢弃陈旧连接取新的,
+    而非把 "server closed connection unexpectedly" 抛给请求。pool_recycle:主动回收超龄连接,
+    绕开 PG 空闲超时。pool_size/max_overflow **不设** —— 需配合 PG max_connections 调,留默认。
+    """
+    return {"pool_pre_ping": True, "pool_recycle": 1800}
+
+
 def create_engine():
     settings = get_settings()
-    return create_async_engine(settings.DATABASE_URL)
+    return create_async_engine(settings.DATABASE_URL, **_engine_kwargs(settings.DATABASE_URL))
 
 
 def create_session_factory(engine=None):
