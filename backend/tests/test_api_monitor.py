@@ -188,3 +188,49 @@ def test_gpu_processes_orphan_when_no_ancestor_match(monkeypatch):
     proc = result[1][0]
     assert proc["managed"] is False
     assert proc["model_name"] is None
+
+
+@pytest.fixture(autouse=True)
+def _clear_stats_cache():
+    """/monitor/stats 有 1.5s TTL 缓存;测试间清掉,否则前一个测试的 mock 结果
+    在 TTL 内被后一个测试串用(性能 P0 缓存的副作用)。"""
+    from src.api.routes import monitor as _m
+    _m._reset_stats_cache()
+    yield
+    _m._reset_stats_cache()
+
+
+async def test_monitor_stats_ttl_cache_dedupes_rapid_polls(db_client: AsyncClient):
+    """性能 P0:1.5s 内的重复轮询(前端双 query key)命中缓存,底层采集只跑一次。"""
+    calls = {"n": 0}
+
+    def _counting_gpu():
+        calls["n"] += 1
+        return []
+
+    with patch("src.api.routes.monitor._gpu_stats_nvidia_smi", side_effect=_counting_gpu), \
+         patch("src.api.routes.monitor._gpu_processes", return_value={}), \
+         patch("src.api.routes.monitor._top_processes", return_value=[]):
+        r1 = await db_client.get("/api/v1/monitor/stats")
+        r2 = await db_client.get("/api/v1/monitor/stats")
+        r3 = await db_client.get("/api/v1/monitor/stats")
+    assert r1.status_code == r2.status_code == r3.status_code == 200
+    assert calls["n"] == 1, f"expected 1 collection, got {calls['n']} (cache miss)"
+
+
+async def test_monitor_stats_recomputes_after_ttl(db_client: AsyncClient, monkeypatch):
+    """TTL 过期后重新采集。用 TTL=0 强制每次都 miss。"""
+    from src.api.routes import monitor as _m
+    monkeypatch.setattr(_m, "_STATS_TTL_S", 0.0)
+    calls = {"n": 0}
+
+    def _counting_gpu():
+        calls["n"] += 1
+        return []
+
+    with patch("src.api.routes.monitor._gpu_stats_nvidia_smi", side_effect=_counting_gpu), \
+         patch("src.api.routes.monitor._gpu_processes", return_value={}), \
+         patch("src.api.routes.monitor._top_processes", return_value=[]):
+        await db_client.get("/api/v1/monitor/stats")
+        await db_client.get("/api/v1/monitor/stats")
+    assert calls["n"] == 2, f"TTL=0 应每次重算,got {calls['n']}"

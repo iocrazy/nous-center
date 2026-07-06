@@ -75,7 +75,10 @@ interface MonitorStatsResponse {
 // Single query that fetches everything from the Python backend
 export function useMonitorStats() {
   return useQuery({
-    queryKey: ['monitor-stats'],
+    // 与 gpuStats.ts 的 MONITOR_QK 同键 ['monitor','stats'] → React Query 去重:
+    // 此前本 hook 用 ['monitor-stats'],和 gpuStats 的 ['monitor','stats'] 是两个独立
+    // 缓存 → 同一 /monitor/stats 端点被两套各 2s 独立轮询。统一后合并为一次(性能 P0)。
+    queryKey: ['monitor', 'stats'],
     queryFn: () => apiFetch<MonitorStatsResponse>('/api/v1/monitor/stats'),
     refetchInterval: 2000,
     refetchIntervalInBackground: false,

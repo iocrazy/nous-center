@@ -214,9 +214,44 @@ def _top_processes(limit: int = 20) -> list[dict]:
     return procs[:limit]
 
 
+# 短 TTL 服务端缓存(性能 P0):/monitor/stats 无缓存,被前端两个独立 query key
+# 各 2s 轮询,每次 nvidia-smi 子进程 + 全主机 process_iter + cpu_percent(0.1)。
+# 1.5s TTL 把重复计算折叠掉(双 key 轮询命中缓存),asyncio.Lock 防缓存 miss 时
+# 并发惊群(N 个请求只算一次)。live 数据,过期即重算,无需失效逻辑。
+_STATS_TTL_S = 1.5
+_stats_cache: dict = {"ts": -1e9, "payload": None}
+_stats_lock: "asyncio.Lock | None" = None
+
+
+def _reset_stats_cache() -> None:
+    """测试钩子:清缓存,避免跨测试(TTL 内)串用上一个测试的 mock 结果。"""
+    _stats_cache["ts"] = -1e9
+    _stats_cache["payload"] = None
+
+
 @router.get("/stats")
 async def get_system_stats(request: Request):
-    """Return real-time system resource usage."""
+    """Return real-time system resource usage (short-TTL cached)."""
+    global _stats_lock
+    now = time.monotonic()
+    cached = _stats_cache["payload"]
+    if cached is not None and now - _stats_cache["ts"] < _STATS_TTL_S:
+        return cached
+    if _stats_lock is None:
+        _stats_lock = asyncio.Lock()
+    async with _stats_lock:
+        # 二次确认:等锁期间别的协程可能已填好。
+        now = time.monotonic()
+        if _stats_cache["payload"] is not None and now - _stats_cache["ts"] < _STATS_TTL_S:
+            return _stats_cache["payload"]
+        payload = await _compute_system_stats(request)
+        _stats_cache["payload"] = payload
+        _stats_cache["ts"] = time.monotonic()
+        return payload
+
+
+async def _compute_system_stats(request: Request):
+    """实际采集系统资源(nvidia-smi / psutil)。经 get_system_stats 的 TTL 缓存包裹。"""
     import asyncio
 
     # GPU stats via nvidia-smi — 同步 subprocess(nvidia-smi, timeout=5),前端每 2s 轮询;
@@ -317,9 +352,10 @@ async def get_system_stats(request: Request):
                     "vram_gb": round((entry.get("vram_mb") or 0) / 1024, 1),
                 })
 
-    # CPU stats
-    cpu_pct = psutil.cpu_percent(interval=0.1)
-    cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)
+    # CPU stats。cpu_percent(interval=0.1) 阻塞 100ms 采样 → 丢线程池,别卡事件循环
+    # (性能 P0:此前直接在循环上跑,每次 /stats 请求停摆 100ms 影响所有并发含流式)。
+    cpu_pct = await asyncio.to_thread(psutil.cpu_percent, 0.1)
+    cpu_per_core = psutil.cpu_percent(interval=0, percpu=True)  # interval=0 非阻塞,即时返回
 
     # Memory stats
     mem = psutil.virtual_memory()
@@ -331,8 +367,8 @@ async def get_system_stats(request: Request):
     # Uptime
     uptime_seconds = time.time() - psutil.boot_time()
 
-    # Top processes
-    processes = _top_processes()
+    # Top processes。process_iter 遍历全主机进程 → 丢线程池,别在事件循环上扫(性能 P0)。
+    processes = await asyncio.to_thread(_top_processes)
 
     # pinned / stash RAM 聚合(spec ram-pinned-linkage PR-1b):各 runner 经 Pong 上报本进程
     # 的 pinned(含流式预 pin)+ stash 池字节;主进程本体也算上(主进程模型/组件若 stash)。
