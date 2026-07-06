@@ -1,34 +1,22 @@
+"""LLM 引擎注册表 —— 薄绑定到泛型 EngineRegistry(见 workers/engine_registry.py)。
+
+模块级 register_engine/get_engine/list_engines + _ENGINE_CLASSES/_ENGINE_INSTANCES
+别名保持既有 import 面不变(engines.py/tts.py/openai_compat.py 直接读 _ENGINE_INSTANCES)。
+"""
+from src.workers.engine_registry import EngineRegistry
 from src.workers.llm_engines.base import LLMEngine
 
-# Engine class registry - maps engine name to its class
-_ENGINE_CLASSES: dict[str, type[LLMEngine]] = {}
+# LLM 实例化契约:cls(model_path=..., device=..., **kwargs)。
+_registry: EngineRegistry[LLMEngine] = EngineRegistry(
+    "LLM",
+    lambda cls, model_path, device, **kwargs: cls(
+        model_path=model_path, device=device, **kwargs
+    ),
+)
 
-# Loaded engine instances - singleton per engine
-_ENGINE_INSTANCES: dict[str, LLMEngine] = {}
-
-
-def register_engine(cls: type[LLMEngine]) -> type[LLMEngine]:
-    """Decorator to register an LLM engine class."""
-    name = cls.ENGINE_NAME  # type: ignore[attr-defined]
-    _ENGINE_CLASSES[name] = cls
-    return cls
-
-
-def get_engine(name: str, model_path: str, device: str = "cuda", **kwargs) -> LLMEngine:
-    """Get or create an LLM engine instance."""
-    if name in _ENGINE_INSTANCES:
-        return _ENGINE_INSTANCES[name]
-
-    if name not in _ENGINE_CLASSES:
-        raise ValueError(
-            f"Unknown LLM engine: {name}. Available: {list(_ENGINE_CLASSES.keys())}"
-        )
-
-    engine = _ENGINE_CLASSES[name](model_path=model_path, device=device, **kwargs)
-    _ENGINE_INSTANCES[name] = engine
-    return engine
-
-
-def list_engines() -> list[str]:
-    """List all registered engine names."""
-    return list(_ENGINE_CLASSES.keys())
+# 模块级别名(共享同一 dict/方法)。
+_ENGINE_CLASSES = _registry.classes
+_ENGINE_INSTANCES = _registry.instances
+register_engine = _registry.register
+get_engine = _registry.get
+list_engines = _registry.list
