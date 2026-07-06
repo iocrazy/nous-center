@@ -101,6 +101,46 @@ def _iso(dt) -> str | None:
     return dt.isoformat() if dt is not None else None
 
 
+def validate_webhook_url(url: str | None) -> str | None:
+    """SSRF 防护:校验用户提供的 webhook URL。返回错误串(拒绝)或 None(放行)。
+
+    任何 API-key 持有者都能设 webhook URL,后端会向它发 POST。不校验 → 攻击者让
+    后端向内网/云元数据(169.254.169.254)/回环发请求 = 从可信 origin 内网穿透。
+    - 只允许 http/https。
+    - 解析主机名(getaddrinfo,含 IP 字面量),**任一**解析到的地址落在
+      私网/回环/链路本地/保留/未指定/多播 → 拒绝(防 DNS rebinding:逐个 IP 查)。
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    if not url:
+        return "webhook url 为空"
+    try:
+        parsed = urlparse(url)
+    except Exception:  # noqa: BLE001
+        return f"webhook url 解析失败: {url!r}"
+    if parsed.scheme not in ("http", "https"):
+        return f"webhook 仅允许 http/https,收到 {parsed.scheme!r}"
+    host = parsed.hostname
+    if not host:
+        return "webhook url 缺少主机名"
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        return f"webhook 主机解析失败: {e}"
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return f"webhook 解析出非法地址: {ip_str}"
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_unspecified or ip.is_multicast):
+            return f"webhook 目标地址不允许(私网/回环/元数据): {ip_str}"
+    return None
+
+
 async def fire_webhook(url: str | None, events_filter: Any, event: str, prediction: dict) -> None:
     """POST 整个 Prediction 对象到 webhook URL(对齐 Cog:payload = prediction 资源本身)。
 
@@ -110,13 +150,19 @@ async def fire_webhook(url: str | None, events_filter: Any, event: str, predicti
         return
     if events_filter and event not in events_filter:
         return
+    import logging  # noqa: PLC0415
+    _log = logging.getLogger(__name__)
+    ssrf_err = validate_webhook_url(url)
+    if ssrf_err:
+        _log.warning("拒绝 webhook(SSRF 防护): %s —— %s", url, ssrf_err)
+        return
     try:
         import httpx  # noqa: PLC0415
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # follow_redirects=False:否则 302 → 内网可绕过上面的地址校验。
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             await client.post(url, json={"event": event, "prediction": prediction})
     except Exception as e:  # noqa: BLE001 — webhook 投递 best-effort
-        import logging  # noqa: PLC0415
-        logging.getLogger(__name__).warning("webhook POST %s failed: %s", url, e)
+        _log.warning("webhook POST %s failed: %s", url, e)
 
 
 def task_to_prediction(task, *, service: str | None = None, input_values: Any = None) -> dict:
