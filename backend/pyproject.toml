@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "celery[redis]>=5.4",
     "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.13",  # 版本化 schema 迁移(取代 lifespan 手写 ALTER IF NOT EXISTS)。纯 Python,小。
     "asyncpg>=0.30",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
