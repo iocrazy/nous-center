@@ -260,12 +260,12 @@ export default function ModelsOverlay() {
               .slice(0, 50) || 'model'
             const serviceName = `${slug}-${Date.now().toString(36).slice(-4)}`
             try {
-              // 1) 把模型登记成服务(ServiceInstance,M:N 解析按 name 匹配 request.model)
-              const instance = await apiFetch<{ id: string }>('/api/v1/instances', {
+              // 1) 把模型登记成服务(v3 /services/register-model,双轨收敛 #3;
+              //    M:N 解析按 name 匹配 request.model)
+              const instance = await apiFetch<{ id: string }>('/api/v1/services/register-model', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  source_type: 'model',
                   source_name: model.name,
                   name: serviceName,
                   type: model.type,
