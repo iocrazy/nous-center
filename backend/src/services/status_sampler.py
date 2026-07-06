@@ -144,7 +144,11 @@ async def compute_statuses(app_state, session: AsyncSession | None = None) -> di
     # gpu:nvidia-smi 能列出卡。
     try:
         from src.services.gpu_monitor import get_gpu_stats
-        out["gpu"] = OPERATIONAL if len(get_gpu_stats()) > 0 else DOWN
+        # get_gpu_stats → subprocess(nvidia-smi, timeout=5) 同步阻塞;compute_statuses
+        # 被状态页每 15s + sampler 每 60s 调,均 ≥ gpu_monitor 的 2s 缓存 → 必然重跑
+        # subprocess → 丢线程池,别卡事件循环最长 5s(性能二轮 P1-A)。
+        gpu_stats = await asyncio.to_thread(get_gpu_stats)
+        out["gpu"] = OPERATIONAL if len(gpu_stats) > 0 else DOWN
     except Exception as e:  # noqa: BLE001
         logger.warning("status: gpu check failed: %s", e)
         out["gpu"] = DOWN
