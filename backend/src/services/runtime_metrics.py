@@ -127,9 +127,9 @@ class RuntimeSnapshot(TypedDict):
 
 def snapshot() -> RuntimeSnapshot:
     """Atomic snapshot — copies under lock so reads can't tear."""
-    # Imported lazily to avoid circular import (response_cache imports
-    # nothing from this module today, but pinning the order keeps it safe).
-    from src.api.response_cache import metrics as _rc_metrics
+    # metrics 已下沉到 services/cache_metrics(与 response_cache 共享同一单例),
+    # services→services 向下依赖,不再反向 import api 层。
+    from src.services.cache_metrics import metrics as _rc_metrics
 
     with _state.lock:
         g = _state.gzip
