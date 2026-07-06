@@ -14,9 +14,6 @@ into a void.
 
 from __future__ import annotations
 
-import hashlib
-import json
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -25,108 +22,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
 from src.api.response_cache import invalidate
-from src.api.routes.services import NAME_RE, ServiceDetailOut, _METER_DIM_BY_CATEGORY
+from src.api.routes.services import ServiceDetailOut
 from src.models.database import get_async_session
 from src.models.schemas import ExposedParam
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
+from src.services.workflow_snapshot import (
+    _IMAGE_NODE_TYPES,
+    _IMAGE_OUTPUT_FIELDS,
+    _METER_DIM_BY_CATEGORY,
+    _build_snapshot,
+    _detect_category,
+    _node_ids,
+    _node_types_by_id,
+    _snapshot_hash,
+    NAME_RE,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["workflow-publish"])
 
-# Output fields image-producing nodes emit — exposed_outputs pointing at
-# any node in `_IMAGE_NODE_TYPES` may only reference one of these.
-# Anything else is either a typo (image_url vs image_uri) or a mistake
-# about the envelope shape; either way, surfacing 422 at publish time
-# beats a 500 at runtime when the caller hits the service.
-#
-# Both nodes (the V0 integrated image_generate and the V1' Lane C
-# component-path terminus flux2_vae_decode) emit the same {image_url,
-# media_type, width, height, image_uuid, image_expires} bundle —
-# image_generate additionally carries steps/seed/cfg/loras/duration_ms
-# metadata. We use the union as the allowlist; the field check is
-# inclusive across both terminus types.
-_IMAGE_OUTPUT_FIELDS = {
-    "image_url",
-    "image",          # base64 fallback for dev mode
-    "image_uuid",
-    "image_expires",
-    "media_type",
-    "width",
-    "height",
-    "steps",
-    "seed",
-    "loras",
-    "duration_ms",
-}
-
-_IMAGE_NODE_TYPES = {"flux2_vae_decode"}
-
-# Category detection set — DISTINCT from `_IMAGE_NODE_TYPES` (the exposed-output
-# field guard above, which is scoped to producing-node terminuses). Detection
-# keys off the canonical image *sink* `image_output`: every image flow ends in
-# it regardless of how the image was produced (component-path flux2_vae_decode,
-# legacy integrated image_generate, Z-Image, Qwen-Edit, SeedVR2 upscale). Keying
-# on the sink — not one specific producer — is why the old single-element
-# `{flux2_vae_decode}` set misclassified image_generate-based services as "app"
-# (their snapshot has no flux2_vae_decode node). Producing terminuses stay in
-# the set as belt-and-suspenders for snapshots without an image_output sink.
-_IMAGE_DETECT_TYPES = {
-    "image_output",       # canonical image sink — primary, producer-agnostic signal
-    "flux2_vae_decode",   # component-path terminus
-    "image_generate",     # legacy integrated image node (Family B frozen snapshots)
-    "seedvr2_upscale",    # image→image upscale terminus
-}
-
-
-def _snapshot_hash(snapshot: dict) -> str:
-    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
-
-
-def _node_ids(snapshot: dict) -> set[str]:
-    """Pull node ids out of either the api-style dict or the editor-style list."""
-    nodes = snapshot.get("nodes")
-    if isinstance(nodes, dict):
-        return {str(k) for k in nodes.keys()}
-    if isinstance(nodes, list):
-        return {str(n.get("id")) for n in nodes if isinstance(n, dict) and n.get("id") is not None}
-    return set()
-
-
-def _node_types_by_id(snapshot: dict) -> dict[str, str]:
-    """Map node_id → class_type for either snapshot shape."""
-    out: dict[str, str] = {}
-    nodes = snapshot.get("nodes")
-    if isinstance(nodes, dict):
-        for nid, node in nodes.items():
-            ct = node.get("class_type") if isinstance(node, dict) else None
-            if ct:
-                out[str(nid)] = str(ct)
-    elif isinstance(nodes, list):
-        for n in nodes:
-            if not isinstance(n, dict):
-                continue
-            nid = n.get("id")
-            ct = n.get("class_type") or n.get("type")
-            if nid is not None and ct:
-                out[str(nid)] = str(ct)
-    return out
-
-
-def _detect_category(snapshot: dict) -> str | None:
-    """Heuristic per-modality detection from the snapshot's node types.
-
-    Returned value drops into ServiceInstance.category + meter_dim. We only
-    auto-detect image here (via the image sink node, see `_IMAGE_DETECT_TYPES`)
-    — LLM/TTS/VL flow through the explicit body.category path that
-    quick-provision already controls. Returns None when no image sink is found,
-    so callers fall back to body.category or "app" without clobbering an
-    explicitly-locked modality.
-    """
-    types = set(_node_types_by_id(snapshot).values())
-    if types & _IMAGE_DETECT_TYPES:
-        return "image"
-    return None
+# 快照/类别的纯逻辑(_snapshot_hash / _node_ids / _detect_category / _build_snapshot
+# / _IMAGE_* / NAME_RE / _METER_DIM_BY_CATEGORY)已移到 services.workflow_snapshot,
+# 打破本文件 ↔ services.py 的循环依赖(顶部 import)。
 
 
 async def reconcile_service_categories(session: AsyncSession) -> int:
@@ -141,9 +58,6 @@ async def reconcile_service_categories(session: AsyncSession) -> int:
     commit + cache invalidation so this stays unit-testable against a session.
     """
     from sqlalchemy.orm import undefer
-
-    from src.api.routes.services import _METER_DIM_BY_CATEGORY
-    from src.models.service_instance import ServiceInstance
 
     stmt = (
         select(ServiceInstance)
@@ -176,30 +90,6 @@ class PublishBody(BaseModel):
                 "service name must match ^[a-z][a-z0-9-]{1,62}$",
             )
         return v
-
-
-def _build_snapshot(wf: Workflow) -> dict[str, Any]:
-    """Render the workflow's working state into the api-shape we freeze.
-
-    Editor stores nodes as a list with explicit ids; api-shape is a dict
-    keyed by node id. We always emit api-shape so consumers (executor,
-    schema validator) only have to handle one form.
-    """
-    nodes_dict: dict[str, Any] = {}
-    for node in (wf.nodes or []):
-        nid = node.get("id")
-        if nid is None:
-            continue
-        nodes_dict[str(nid)] = {
-            "class_type": node.get("type") or node.get("class_type"),
-            "inputs": node.get("data", node.get("inputs", {})),
-            "_meta": node.get("meta", {}),
-        }
-    return {
-        "schema": "comfy/api-1",
-        "nodes": nodes_dict,
-        "edges": wf.edges or [],
-    }
 
 
 @router.post(
