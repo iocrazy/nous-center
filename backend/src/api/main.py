@@ -46,14 +46,38 @@ def _make_component_event_handler(registry, ws):
     return _handler
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Create database tables on startup."""
-    # Ensure localhost requests bypass proxy
-    import os
-    no_proxy = os.environ.get("NO_PROXY", "")
-    if "localhost" not in no_proxy:
-        os.environ["NO_PROXY"] = f"{no_proxy},localhost,127.0.0.1" if no_proxy else "localhost,127.0.0.1"
+# 开发期微迁移(无 alembic):create_all 不给**已存在**的表加列/索引,这些幂等 DDL 补上
+# 缺口(Postgres `IF NOT EXISTS`)。每条 best-effort —— 单条失败只 warn、不阻断启动。
+# 提成模块常量:一处集中、可 grep、也是未来引入 alembic 时 baseline 的清单来源。
+_MICRO_MIGRATIONS: tuple[str, ...] = (
+    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS input_json JSONB",
+    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_url VARCHAR(500)",
+    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_events JSONB",
+    # PR-5b:files 作用域 instance_id → api_key_id。加列 + 旧列降 nullable(孤儿)+ 新键/索引。
+    "ALTER TABLE files ADD COLUMN IF NOT EXISTS api_key_id BIGINT",
+    "ALTER TABLE files ALTER COLUMN instance_id DROP NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_files_apikey_sha256 ON files (api_key_id, sha256)",
+    "CREATE INDEX IF NOT EXISTS ix_files_apikey_created ON files (api_key_id, created_at)",
+    # legacy rip:memory_entries 作用域 instance_id → api_key_id。降 instance_id nullable
+    # (M:N 无单一 instance)+ 建 api_key 索引(旧 idx_mem_inst_* create_all 已建,不删)。
+    "ALTER TABLE memory_entries ALTER COLUMN instance_id DROP NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_mem_key_created ON memory_entries (api_key_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_mem_key_ctx_cat ON memory_entries (api_key_id, context_key, category)",
+    # 节点分组(ComfyUI 式可视框,不入执行图)。旧表补列,默认空 []。
+    "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS groups JSONB DEFAULT '[]'::jsonb",
+    # execution_tasks.created_at 索引 —— 支撑 usage 保留清理按 created_at 删旧行
+    # (usage_retention);既有 prod 表补索引(新/测试 DB 由模型 __table_args__ 建)。
+    "CREATE INDEX IF NOT EXISTS ix_execution_tasks_created ON execution_tasks (created_at)",
+)
+
+
+async def _connect_and_init_db() -> None:
+    """建表 + 跑微迁移,带连接重试。lifespan 启动第一步(god-lifespan 拆分,行为不变)。
+
+    Retry DB connect:docker postgres 容器可能 backend 启动时还在 healthcheck 阶段
+    (race condition seen 2026-05-07)。Backoff 2/4/8/16/32/60s = 122s 总等超时再死。
+    SQLite URL 永远 1 次成功,循环退化为零成本。
+    """
     from src.models.database import Base, create_engine
     import src.models.voice_preset  # noqa: F401
     import src.models.tts_usage  # noqa: F401
@@ -81,10 +105,6 @@ async def lifespan(app: FastAPI):
             "请在 backend/.env 设置强口令的 DATABASE_URL。"
         )
 
-    # Retry DB connect: docker postgres 容器可能 backend 启动时还在 healthcheck 阶段
-    # (race condition seen 2026-05-07). Backoff: 2s, 4s, 8s, 16s, 32s, 60s = 122s 总等
-    # 超时再死。SQLite URL 永远 1 次成功,这个循环退化为零成本。
-    import asyncio as _asyncio
     last_err = None
     for attempt in range(6):
         # round4 #2:engine 用 try/finally dispose —— begin() 在 postgres 还没起来时会抛,
@@ -95,35 +115,14 @@ async def lifespan(app: FastAPI):
             import src.models.model_runtime_override  # noqa: F401, PLC0415
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-                # 无 alembic,create_all 不给已存在表加列。新列用幂等 ALTER ADD COLUMN IF NOT EXISTS
-                # 补(Postgres 支持)。开发期微迁移,单条失败不阻断启动。服务层 API spec PR-2:input_json。
                 from sqlalchemy import text  # noqa: PLC0415
-                for _ddl in (
-                    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS input_json JSONB",
-                    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_url VARCHAR(500)",
-                    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_events JSONB",
-                    # PR-5b:files 作用域 instance_id → api_key_id。加列 + 旧列降 nullable(孤儿)+ 新键/索引。
-                    "ALTER TABLE files ADD COLUMN IF NOT EXISTS api_key_id BIGINT",
-                    "ALTER TABLE files ALTER COLUMN instance_id DROP NOT NULL",
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_files_apikey_sha256 ON files (api_key_id, sha256)",
-                    "CREATE INDEX IF NOT EXISTS ix_files_apikey_created ON files (api_key_id, created_at)",
-                    # legacy rip:memory_entries 作用域 instance_id → api_key_id。降 instance_id nullable
-                    # (M:N 无单一 instance)+ 建 api_key 索引(旧 idx_mem_inst_* create_all 已建,不删)。
-                    "ALTER TABLE memory_entries ALTER COLUMN instance_id DROP NOT NULL",
-                    "CREATE INDEX IF NOT EXISTS idx_mem_key_created ON memory_entries (api_key_id, created_at)",
-                    "CREATE INDEX IF NOT EXISTS idx_mem_key_ctx_cat ON memory_entries (api_key_id, context_key, category)",
-                    # 节点分组(ComfyUI 式可视框,不入执行图)。旧表补列,默认空 []。
-                    "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS groups JSONB DEFAULT '[]'::jsonb",
-                    # execution_tasks.created_at 索引 —— 支撑 usage 保留清理按 created_at 删旧行
-                    # (usage_retention);既有 prod 表补索引(新/测试 DB 由模型 __table_args__ 建)。
-                    "CREATE INDEX IF NOT EXISTS ix_execution_tasks_created ON execution_tasks (created_at)",
-                ):
+                for _ddl in _MICRO_MIGRATIONS:
                     try:
                         await conn.execute(text(_ddl))
                     except Exception as _e:  # noqa: BLE001 — 微迁移 best-effort
                         logger.warning("micro-migration skipped (%s): %s", _ddl, _e)
             logger.info("Database tables ensured%s", f" (after {attempt} retries)" if attempt else "")
-            break
+            return
         except Exception as e:
             last_err = e
             wait_s = min(2 ** (attempt + 1), 60)
@@ -131,40 +130,52 @@ async def lifespan(app: FastAPI):
                 "DB connect attempt %d failed: %s — retrying in %ds",
                 attempt + 1, type(e).__name__, wait_s,
             )
-            await _asyncio.sleep(wait_s)
+            await asyncio.sleep(wait_s)
         finally:
             await engine.dispose()
-    else:
-        logger.error("DB connect failed after 6 retries; last error: %s", last_err)
-        raise last_err
+    logger.error("DB connect failed after 6 retries; last error: %s", last_err)
+    raise last_err
 
+
+def _install_log_handlers() -> None:
+    """装 structured-log writer + application-log handler(god-lifespan 拆分,行为不变)。"""
     # Start the structured-log writer: async queue + single batch-insert consumer
     # into the main PG DB (spec 2026-06-10 — one DB, no separate SQLite log_db).
     from src.services.log_store import log_writer
     log_writer.start()
     logger.info("Log writer started (PG-backed)")
 
-    # Install DB log handler for application logs
     from src.services.log_collector import DbLogHandler
-    import logging as _logging
     db_handler = DbLogHandler()
-    db_handler.setLevel(_logging.INFO)
+    db_handler.setLevel(logging.INFO)
     # Surface application INFO logs to stdout too — otherwise operators tailing
     # uvicorn only see the access log, and slow image-load helpers (which print
     # "image: dequant fp8→bf16 done ..." progress markers) look like a black
     # hole from the terminal. Without these handlers the lines went only to
     # the DB log handler, which is queryable but invisible to humans.
-    stream_handler = _logging.StreamHandler()
-    stream_handler.setLevel(_logging.INFO)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(
-        _logging.Formatter("%(asctime)s %(levelname)-5s %(name)s — %(message)s")
+        logging.Formatter("%(asctime)s %(levelname)-5s %(name)s — %(message)s")
     )
     for _logger_name in ("src", "nous"):
-        _l = _logging.getLogger(_logger_name)
-        _l.setLevel(_logging.INFO)
+        _l = logging.getLogger(_logger_name)
+        _l.setLevel(logging.INFO)
         _l.addHandler(db_handler)
         _l.addHandler(stream_handler)
     logger.info("Application log collector installed (db + stdout)")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create database tables on startup."""
+    # Ensure localhost requests bypass proxy
+    no_proxy = os.environ.get("NO_PROXY", "")
+    if "localhost" not in no_proxy:
+        os.environ["NO_PROXY"] = f"{no_proxy},localhost,127.0.0.1" if no_proxy else "localhost,127.0.0.1"
+
+    await _connect_and_init_db()
+    _install_log_handlers()
 
     # Auto-sync model metadata for any new engines
     from src.models.database import get_session_factory
