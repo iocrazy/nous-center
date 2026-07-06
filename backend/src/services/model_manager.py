@@ -167,6 +167,12 @@ class ModelManager:
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
         self._load_failures: dict[str, str] = {}
+        # 全局加载串行门(2026-07-06 生产事故:_load_wf_deps 与 preload_residents 是两个
+        # 独立 asyncio task,开机同一瞬间往同一张卡 spawn 两个 vLLM → engine core init
+        # 竞争,embedding 加载失败;跨卡则是相关联功率尖峰,GPU 掉总线诱因)。选卡由
+        # allocator 的在途预留保证并发安全;这里串行化真正的 adapter.load(),一次只加载
+        # 一个模型 —— 开机变顺序加载(略慢但稳),消除同卡 init 竞争 + 多卡功率齐冲。
+        self._global_load_lock = asyncio.Lock()
         # round3 #2:load_model 自动选卡(spec.gpu is None → get_best_gpu)后,实际落卡
         # index 是局部变量;OOM 时 load_model raise、还没写进 _models → get_or_load 拿不到
         # 真正 OOM 的卡,退成 evict_lru(None) 驱全局 LRU(可能驱了另一张没满的卡,OOM 的卡
@@ -591,12 +597,17 @@ class ModelManager:
             else:
                 adapter = self._instantiate_adapter(spec)
 
-            try:
-                await adapter.load(device)
-            finally:
-                # 权重已落卡(或 load 失败)→ 释放在途预留;nvidia-smi 之后能反映真实占用。
-                if reserved_gpu >= 0:
-                    self._allocator.release_reservation(reserved_gpu, reserved_mb)
+            # 全局串行门:一次只加载一个模型。选卡已由 allocator 在途预留保证并发
+            # 安全,这里串行化真正的 adapter.load(),避免多个 vLLM 同一瞬间在同卡
+            # (或跨卡)做 CUDA init → engine core init 竞争 / 相关联功率尖峰
+            # (2026-07-06 生产事故:35B + embedding 同时上 PRO6000,embedding 起不来)。
+            async with self._global_load_lock:
+                try:
+                    await adapter.load(device)
+                finally:
+                    # 权重已落卡(或 load 失败)→ 释放在途预留;nvidia-smi 之后能反映真实占用。
+                    if reserved_gpu >= 0:
+                        self._allocator.release_reservation(reserved_gpu, reserved_mb)
 
             if detect_after_load:
                 gpu_indices = self._detect_vllm_gpus_for_adapter(adapter) or [0]
