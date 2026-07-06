@@ -121,7 +121,10 @@ image = [
 
 [tool.uv]
 override-dependencies = [
-    "transformers @ git+https://github.com/huggingface/transformers.git",
+    # 钉死 commit(同 diffusers 做法,见 CLAUDE.md「图像引擎」)。原裸 git → 每次全新安装
+    # 拉 HEAD,HF 主线一改可能悄悄搞挂图像引擎/tokenizer。此 commit = 当前 uv.lock 已解析、
+    # 生产正在跑的已知可用版本,钉它零行为变化,只锁死未来不再漂。升级前须跑 smoke_image_ab.py。
+    "transformers @ git+https://github.com/huggingface/transformers.git@380e3cc5d59912a48508cb6d4959a31cd460e12e",
 ]
 
 [dependency-groups]
