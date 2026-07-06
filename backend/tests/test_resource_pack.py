@@ -205,11 +205,17 @@ async def test_consume_overshoot_no_packs_still_raises(db_session):
     (无处可扣;上层据此按无限量跳过,与 preflight 放行语义一致)。"""
     inst = ServiceInstance(source_type="model", source_name="x", name="np",
                            type="llm", category="llm", meter_dim="tokens")
-    db_session.add(inst); await db_session.commit(); await db_session.refresh(inst)
+    db_session.add(inst)
+    await db_session.commit()
+    await db_session.refresh(inst)
     key = InstanceApiKey(instance_id=None, label="k", key_hash="x",
                          key_prefix=f"sk-np-{inst.id}")
-    db_session.add(key); await db_session.commit(); await db_session.refresh(key)
+    db_session.add(key)
+    await db_session.commit()
+    await db_session.refresh(key)
     grant = ApiKeyGrant(api_key_id=key.id, service_id=inst.id)
-    db_session.add(grant); await db_session.commit(); await db_session.refresh(grant)
+    db_session.add(grant)
+    await db_session.commit()
+    await db_session.refresh(grant)
     with pytest.raises(QuotaExhausted):
         await consume(db_session, grant_id=grant.id, units=1, allow_overshoot=True)
