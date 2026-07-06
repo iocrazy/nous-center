@@ -404,20 +404,24 @@ async def kill_gpu_process(req: KillProcessRequest, request: Request):
                 content={"detail": f"PID {pid} is managed model '{pid_map[pid]}'. Use the unload API instead."},
             )
 
-    # 3. Kill with SIGTERM, fallback to SIGKILL
+    # 3. Kill with SIGTERM, fallback to SIGKILL. safe_kill refuses pid<=1/0
+    #    (broadcast guard). pid is already validated to be in the GPU-process list
+    #    (step 1) and not a managed model (step 2), so it's a real GPU worker.
+    from src.services.safe_signal import safe_kill
     try:
-        os.kill(pid, signal.SIGTERM)
+        if not safe_kill(pid, signal.SIGTERM):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=400,
+                                content={"detail": f"Refused to signal pid {pid} (guard)"})
         logger.info("Sent SIGTERM to GPU process %d", pid)
         # Wait for process to exit — await(非 time.sleep),否则最多 5s 阻塞整个
         # 事件循环,期间所有请求 / WS 心跳 / runner ping 全卡(round2 低)。
         for _ in range(10):
             await asyncio.sleep(0.5)
-            try:
-                os.kill(pid, 0)  # Check if still alive
-            except ProcessLookupError:
+            if not safe_kill(pid, 0):  # 0 = liveness probe; False → gone
                 return {"killed": True, "pid": pid}
         # Still alive, force kill
-        os.kill(pid, signal.SIGKILL)
+        safe_kill(pid, signal.SIGKILL)
         logger.info("Sent SIGKILL to GPU process %d", pid)
         return {"killed": True, "pid": pid}
     except ProcessLookupError:

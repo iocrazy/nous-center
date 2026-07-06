@@ -35,6 +35,12 @@ from src.utils.constants import ALLOWED_LLM_HOSTS
 logger = logging.getLogger(__name__)
 
 
+def _proc_cmdline_is_sglang(pid: int) -> bool:
+    """Recycled-PID guard for adopted SGLang orphans (see safe_signal)."""
+    from src.services.safe_signal import _proc_cmdline_contains
+    return _proc_cmdline_contains(pid, "sglang")
+
+
 class SGLangAdapter(InferenceAdapter):
     """Adapter that spawns SGLang as a subprocess and manages its lifecycle."""
 
@@ -321,16 +327,18 @@ class SGLangAdapter(InferenceAdapter):
 
     def _kill_process(self) -> None:
         import signal
+        from src.services.safe_signal import safe_killpg
 
+        # safe_killpg refuses pgid<=1 (broadcast guard: killpg(1)/killpg(0) would
+        # signal every process the user can reach — took down mihomo/sshd/systemd).
         if self._process is not None:
             try:
-                pgid = os.getpgid(self._process.pid)
-                os.killpg(pgid, signal.SIGTERM)
-                try:
-                    self._process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pgid, signal.SIGKILL)
-                    self._process.wait(timeout=5)
+                if safe_killpg(self._process.pid, signal.SIGTERM):
+                    try:
+                        self._process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        safe_killpg(self._process.pid, signal.SIGKILL)
+                        self._process.wait(timeout=5)
             except Exception as e:
                 logger.warning("Error killing SGLang subprocess: %s", e)
             finally:
@@ -339,11 +347,16 @@ class SGLangAdapter(InferenceAdapter):
 
         if self._adopted_pid:
             try:
-                pgid = os.getpgid(self._adopted_pid)
-                os.killpg(pgid, signal.SIGTERM)
-                logger.info("Sent SIGTERM to adopted SGLang (pid=%d)", self._adopted_pid)
-            except ProcessLookupError:
-                pass
+                if safe_killpg(
+                    self._adopted_pid, signal.SIGTERM,
+                    verify=lambda p: _proc_cmdline_is_sglang(p),
+                ):
+                    logger.info("Sent SIGTERM to adopted SGLang (pid=%d)", self._adopted_pid)
+                else:
+                    logger.warning(
+                        "Refused to kill adopted SGLang PID %d (recycled or broadcast guard).",
+                        self._adopted_pid,
+                    )
             except Exception as e:
                 logger.warning("Error killing adopted SGLang (pid=%d): %s", self._adopted_pid, e)
             finally:

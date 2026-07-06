@@ -71,6 +71,9 @@ async def test_load_fails_if_no_vllm_and_bad_model(adapter):
         "port": 19999, "tp": 1, "max_model_len": 4096,
         "utilization": 0.85, "quantization": None, "dtype": None,
         "max_num_seqs": 32, "gpu_idx": 0, "model_size_gb": 0.0,
+        # gpu_total_gb / gpu_free_gb are consumed by resolve_vram_utilization
+        # and clamp_util_to_free on the load path — must be present.
+        "gpu_total_gb": 24.0, "gpu_free_gb": 20.0,
     }
     # Health check fails (no existing vLLM)
     with patch.object(adapter, "_health_check", new_callable=AsyncMock, return_value=False), \
@@ -82,15 +85,23 @@ async def test_load_fails_if_no_vllm_and_bad_model(adapter):
 
 
 async def test_unload_kills_subprocess(adapter):
-    """unload() on a managed adapter kills the subprocess."""
+    """unload() on a managed adapter signals the subprocess's process group via
+    safe_killpg (broadcast-guarded) and clears state. The adapter kills by
+    process GROUP (os.killpg), never proc.terminate() — assert the real path."""
+    import src.services.safe_signal as _ss
     adapter._model = True
     adapter._managed = True
     mock_proc = MagicMock()
-    mock_proc.terminate = MagicMock()
+    mock_proc.pid = 424242  # real int so the broadcast guard (pid<=1) evaluates
     mock_proc.wait = MagicMock()
     adapter._process = mock_proc
-    adapter.unload()
-    mock_proc.terminate.assert_called_once()
+
+    sent: list = []
+    with patch.object(_ss, "safe_killpg",
+                      side_effect=lambda pid, sig, **kw: sent.append((pid, sig)) or True):
+        adapter.unload()
+
+    assert sent and sent[0][0] == 424242  # signalled our child's pid
     assert not adapter.is_loaded
     assert adapter._process is None
 
@@ -126,3 +137,4 @@ async def test_infer_returns_result(adapter):
     assert b"hi" in result.data
     assert result.usage.input_tokens == 5
     assert result.usage.output_tokens == 2
+

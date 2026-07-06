@@ -698,13 +698,20 @@ class ModelManager:
         """切已加载 by-key 模型(如 SeedVR2)的常驻位 —— resident=True → evict_lru/unload(非 force)
         跳过它(不被自动驱逐)。组件 L1 PR-2c:引擎库 SeedVR2 卡常驻 toggle。
 
-        ModelSpec 是 frozen,经 model_copy 换新 spec(LoadedModel.spec 可重赋)。没加载 → False。
-        in-memory pin(runner 重启失效;SeedVR2 非 registry 模型,无 yaml 持久 resident)。
+        ModelSpec 是 frozen,经 model_copy 换新 spec(LoadedModel.spec 可重赋)。
+        同时同步 registry spec(见 ModelRegistry.set_resident)—— 未加载模型标常驻
+        也要让 /health 统计和 preload 名单立即生效,不等重启。registry 没有该 id
+        (by-key 模型如 SeedVR2 combo)且未加载 → False。
         """
+        reg_updated = False
+        set_res = getattr(self._registry, "set_resident", None)
+        if callable(set_res):
+            reg_updated = bool(set_res(model_id, resident))
         entry = self._models.get(model_id)
-        if entry is None:
+        if entry is not None:
+            entry.spec = entry.spec.model_copy(update={"resident": resident})
+        if not reg_updated and entry is None:
             return False
-        entry.spec = entry.spec.model_copy(update={"resident": resident})
         logger.info("set_model_resident %r → %s", model_id, resident)
         return True
 
@@ -787,11 +794,12 @@ class ModelManager:
             做「invalidate engines/models cache + 推 ws/models 事件」。回调本身
             抛异常会被吞掉（best-effort，不影响 preload 流程）。
 
-        LLM 类模型不在此处 preload —— vLLM 的 spawn / health 是 LLM Runner 的
-        职责（spec 4.2），走另一条路。本方法只处理 image / tts 等进 image/TTS
-        runner 的 resident 模型。
+        LLM 类模型也在此处 preload:LLMRunner 从不自己 spawn vLLM(只做 crash
+        recovery/health),旧版这里又排除 llm → resident LLM 没有任何路径随启动
+        加载,重启后 /health 的 resident 计数永远缺员、启动横幅卡死。vLLM 的
+        实际拉起就是 load_model → VLLMAdapter.load,与手动加载同一条路。
         """
-        residents = [s for s in self._registry.specs if s.resident and s.model_type != "llm"]
+        residents = [s for s in self._registry.specs if s.resident]
         # 升序 key：preload_order 有值的在前（按值升序），None 的统一排到最后。
         # (0, order) < (1, 0) 保证所有 None 都在所有有值的之后。
         residents.sort(

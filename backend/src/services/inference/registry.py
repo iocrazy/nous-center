@@ -79,6 +79,19 @@ class ModelRegistry:
             self._specs[spec.id] = spec
             logger.debug("Loaded model spec: %s (%s)", spec.id, spec.model_type)
 
+    def set_resident(self, model_id: str, resident: bool) -> bool:
+        """翻内存 spec 的常驻位。ModelSpec 是 frozen → model_copy 换新对象。
+
+        PATCH /engines/{name}/resident 持久化走 DB override(重启后 _load 叠加),
+        这里补运行期同步 —— 否则 /health 的 resident 统计和 preload_residents
+        名单读的是启动时快照,与 UI 显示的 override 脱节直到重启。
+        """
+        spec = self._specs.get(model_id)
+        if spec is None:
+            return False
+        self._specs[model_id] = spec.model_copy(update={"resident": resident})
+        return True
+
     @property
     def specs(self) -> list[ModelSpec]:
         return list(self._specs.values())

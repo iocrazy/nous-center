@@ -125,3 +125,32 @@ async def test_preload_residents_callback_failure_is_swallowed():
 
     # 不抛 —— 回调失败被吞
     await mm.preload_residents(on_loaded=_bad_callback)
+
+
+@pytest.mark.asyncio
+async def test_preload_residents_includes_llm():
+    """resident 的 LLM 也要预载(#banner-stuck 根因):LLMRunner 不 spawn vLLM,
+    preload_residents 再排除 llm → resident LLM 没人加载,重启后 /health 永远 M<N。"""
+    specs = [
+        _spec("res-llm", preload_order=10, model_type="llm"),
+        _spec("res-img", preload_order=20, model_type="image"),
+    ]
+    mm = _make_manager(specs)
+    loaded: list[str] = []
+
+    async def _fake_load(model_id, **kw):
+        loaded.append(model_id)
+
+    mm.load_model = _fake_load
+    await mm.preload_residents()
+    assert loaded == ["res-llm", "res-img"]
+
+
+def test_set_model_resident_syncs_registry_even_when_unloaded():
+    """未加载模型标常驻也要同步 registry spec(#resident 三口径脱节):
+    否则 /health resident_total 与 preload 名单要等重启才看到新常驻位。"""
+    specs = [_spec("cold", resident=False)]
+    mm = _make_manager(specs)
+    mm._registry.set_resident = MagicMock(return_value=True)
+    assert mm.set_model_resident("cold", True) is True
+    mm._registry.set_resident.assert_called_once_with("cold", True)
