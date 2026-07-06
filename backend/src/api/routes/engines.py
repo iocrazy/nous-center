@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_admin import require_admin
 from src.api.response_cache import cached, invalidate
-from src.services.model_scanner import scan_models
+from src.services.model_scanner import scan_models, _VLLM_ADAPTER
 from src.gpu.detector import gpu_summary
 from src.models.database import get_async_session
 from src.models.schemas import EngineInfo, EngineLoadResponse
@@ -845,7 +845,7 @@ def _card_total_gb_for_engine(cfg: dict, loaded_gpu: int | None = None) -> float
     return float(by_index.get(gpu_field) or 24.0)
 
 
-_VLLM_ADAPTER = "src.services.inference.llm_vllm.VLLMAdapter"
+# _VLLM_ADAPTER 单一来源在 model_scanner(顶部 import;去重:此前两处各定义一份同值)。
 
 
 @router.get("/{name}/vram-budget", dependencies=[Depends(require_admin)])
