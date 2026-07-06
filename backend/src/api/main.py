@@ -20,14 +20,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import understand, generate, tts, engines, audio, voices, openai_compat, ollama_compat, api_gateway as api_gateway_routes, settings, instances, workflows, agents, skills, monitor, node_packages, execution_tasks, apps, logs, context_cache as context_cache_routes, files as files_routes, services as services_routes, workflow_publish as workflow_publish_routes, usage as usage_routes, dashboard as dashboard_routes, api_keys as api_keys_routes, anthropic_compat, observability, loras as loras_routes, image_files as image_files_routes, models as models_routes, predictions as predictions_routes
-from src.api.websocket import ws_manager
 from src.api.ws_tts import handle_tts_websocket
 from src.services.gpu_monitor import memory_guard_loop
+# WS 广播基础设施已下沉到 services/ws_hub(打破 services→api 反向依赖)。
+from src.services.ws_hub import _ws_connections, ws_manager  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-# Active WebSocket connections for workflow progress updates, keyed by instance_id
-_ws_connections: dict[str, list[WebSocket]] = {}
 
 
 def _make_component_event_handler(registry, ws):
