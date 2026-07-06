@@ -14,9 +14,6 @@ Endpoints:
 
 from __future__ import annotations
 
-import hashlib
-import json
-import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -36,13 +33,19 @@ from src.models.schemas import ExposedParam
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
 from src.services.service_models import extract_service_models
+from src.services.workflow_snapshot import (
+    _IMAGE_NODE_TYPES,
+    _IMAGE_OUTPUT_FIELDS,
+    _METER_DIM_BY_CATEGORY,
+    _node_ids,
+    _node_types_by_id,
+    _snapshot_hash,
+    NAME_RE,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["services"])
 
 logger = logging.getLogger(__name__)
-
-NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
-
 
 def _validate_name(name: str) -> str:
     if not NAME_RE.match(name):
@@ -51,11 +54,6 @@ def _validate_name(name: str) -> str:
             "(start with a-z, then a-z/0-9/-, total 2-63 chars)",
         )
     return name
-
-
-def _snapshot_hash(snapshot: dict) -> str:
-    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 # ---------- Pydantic shapes ----------
@@ -133,7 +131,6 @@ class QuickProvisionBody(BaseModel):
 # ---------- Helpers ----------
 
 
-_METER_DIM_BY_CATEGORY = {"llm": "tokens", "tts": "chars", "vl": "calls", "image": "images"}
 
 
 def _trivial_workflow_for(category: str, engine: str, params: dict[str, Any]) -> dict:
@@ -412,15 +409,8 @@ def _validate_exposed_against_snapshot(
 ) -> None:
     """Same hard contract as publish: every exposed.node_id must resolve in
     the frozen snapshot, and image-node outputs may only reference fields the
-    node actually emits. Imported lazily — workflow_publish imports from this
-    module, so a top-level import would be circular."""
-    from src.api.routes.workflow_publish import (
-        _IMAGE_NODE_TYPES,
-        _IMAGE_OUTPUT_FIELDS,
-        _node_ids,
-        _node_types_by_id,
-    )
-
+    node actually emits. Helpers now live in services.workflow_snapshot (纯模块),
+    top-level import 不再循环。"""
     valid_ids = _node_ids(snapshot)
     types_by_id = _node_types_by_id(snapshot)
     for kind, params in (("input", inputs), ("output", outputs)):
