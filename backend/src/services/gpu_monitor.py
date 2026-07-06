@@ -41,7 +41,7 @@ def poll_gpu_stats() -> list[dict]:
             result = subprocess.run(
                 [
                     "nvidia-smi",
-                    "--query-gpu=index,memory.used,memory.total,memory.free,utilization.gpu,temperature.gpu",
+                    "--query-gpu=index,memory.used,memory.total,memory.free,utilization.gpu,temperature.gpu,fan.speed",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output=True,
@@ -68,6 +68,8 @@ def poll_gpu_stats() -> list[dict]:
                             "free_mb": _smi_int(parts[3]),
                             "utilization_pct": _smi_int(parts[4]),
                             "temperature": _smi_int(parts[5]),
+                            # 风扇转速%(热保护风扇 0% 异常告警用;部分卡读不到=[N/A]→ None)。
+                            "fan_speed": _smi_int(parts[6]) if len(parts) > 6 else None,
                         }
                     )
                 except Exception:  # noqa: BLE001 — 单卡坏行不清空整表

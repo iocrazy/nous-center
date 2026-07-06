@@ -48,6 +48,15 @@ async def check_thermal(model_manager, *, warn: int = WARN_C, critical: int = CR
     for gpu in poll_gpu_stats():
         temp = gpu.get("temperature")
         idx = gpu.get("index")
+        fan = gpu.get("fan_speed")
+        # 风扇异常告警:温度到告警线但风扇 0% → 风扇可能没转/读不到(2026-07-06 活机
+        # 就是这情况:加载一下就 86°C、风扇 0%)。散热失效前给运维一个明确信号。
+        if temp is not None and temp >= warn and fan == 0:
+            logger.warning(
+                "GPU %s 温度 %s°C 已达告警线但风扇转速 0%% —— 风扇可能没转/散热失效,"
+                "请立即物理检查风扇与风道!",
+                idx, temp,
+            )
         action = thermal_action(temp, warn, critical)
         if action == "shed":
             evicted = await model_manager.evict_lru(gpu_index=idx)
