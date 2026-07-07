@@ -1555,9 +1555,18 @@ class ModularImageBackend(InferenceAdapter):
         _loaded_loras 存**消毒后**的 adapter 名(与 pipe 内 peft 状态同口径)。"""
         pipe = self._pipe
         if not loras:
+            # 本次请求不带 LoRA:停用 + **删掉所有已装 LoRA**。审查发现:早先只 set_adapters([])
+            # (仅停用不释放权重)+ 提前 return,跳过了下面的 delete_adapters 清理 → [loraA]→[]
+            # 转换下 loraA 权重常驻 pipe、_loaded_loras 也不清 → 显存累积。这里补齐删除+收敛。
             active = pipe.get_active_adapters() if hasattr(pipe, "get_active_adapters") else []
             if active:
                 pipe.set_adapters([])
+            if self._loaded_loras and hasattr(pipe, "delete_adapters"):
+                try:
+                    pipe.delete_adapters(list(self._loaded_loras))
+                except Exception:  # noqa: BLE001 — 删 LoRA 失败不该挡出图
+                    pass
+            self._loaded_loras.clear()
             return
         for spec in loras:
             adapter = self._lora_adapter_name(spec.name)
