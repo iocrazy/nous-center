@@ -864,13 +864,7 @@ class ModularImageBackend(InferenceAdapter):
         # 逐组件跨卡放置 + 逐组件 offload(2026-06-04):任一组件落与 transformer 不同的卡,
         # **或**某组件 offload 跟整管线 offload 不同 → 走逐组件路径。全同卡且全同 offload
         #(含全 auto→同 target、全 none)→ 落下面的整模型单卡 offload 路径(零回归)。
-        import torch  # noqa: PLC0415
-        same_card = (not self.comp_devices) or all(
-            torch.device(d) == torch.device(self.device) for d in self.comp_devices.values())
-        same_offload = all(
-            (self.comp_offloads.get(k, "none")) == self.offload for k in self.comp_devices)
-        homogeneous = same_card and same_offload
-        if not homogeneous:
+        if not self._components_homogeneous():
             _place_components_per_device(
                 pipe, compute_device=self.device,
                 comp_devices=self.comp_devices, comp_offloads=self.comp_offloads)
@@ -1547,6 +1541,22 @@ class ModularImageBackend(InferenceAdapter):
         legacy yaml 名不带点所以 #131 当年没暴露。消毒只影响内部 adapter 标识,
         缓存键/UI 仍用原始 spec.name。"""
         return name.replace(".", "_")
+
+    def _components_homogeneous(self) -> bool:
+        """所有组件是否与整管线**同卡 + 同 offload** → True 走整模型单卡路径(零回归),
+        False 走逐组件放置。
+
+        审查发现:early same_offload 只遍历 comp_devices 的 key —— 若设了 comp_offloads
+        但没设 comp_devices(只想某组件 offload,不改卡),`all([])` == True 会误判同质、
+        **忽略逐组件 offload**。这里遍历 comp_devices ∪ comp_offloads 的并集 key。
+        """
+        import torch  # noqa: PLC0415
+        same_card = (not self.comp_devices) or all(
+            torch.device(d) == torch.device(self.device) for d in self.comp_devices.values())
+        comp_keys = set(self.comp_devices) | set(self.comp_offloads)
+        same_offload = all(
+            self.comp_offloads.get(k, "none") == self.offload for k in comp_keys)
+        return same_card and same_offload
 
     def _apply_loras(self, loras: list) -> None:
         """LoRA(含 ComfyUI 格式)接 Flux2Klein modular pipe(经 Flux2LoraLoaderMixin,

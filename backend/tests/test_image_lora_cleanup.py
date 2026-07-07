@@ -43,3 +43,25 @@ def test_apply_loras_empty_noop_when_none_loaded():
     be._loaded_loras = set()
     be._apply_loras([])
     assert be._pipe.deleted == []
+
+
+# —— _components_homogeneous:comp_offloads 无 comp_devices 时不该误判同质(审查 🟡-2)——
+def test_comp_offloads_without_comp_devices_not_homogeneous():
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", offload="none")
+    be.comp_devices = {}
+    be.comp_offloads = {"clip": "cpu"}  # 组件级 offload != 整管线 none → 该走逐组件
+    assert be._components_homogeneous() is False, "设了 comp_offloads 却被误判同质(忽略逐组件 offload)"
+
+
+def test_homogeneous_when_all_default():
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", offload="none")
+    be.comp_devices = {}
+    be.comp_offloads = {}
+    assert be._components_homogeneous() is True
+
+
+def test_homogeneous_when_comp_offload_matches_pipeline():
+    be = image_modular.ModularImageBackend(repo="/m/flux2", device="cpu", offload="cpu")
+    be.comp_devices = {}
+    be.comp_offloads = {"clip": "cpu"}  # 与整管线 offload 一致 → 同质
+    assert be._components_homogeneous() is True
