@@ -673,7 +673,7 @@ class ModelManager:
             else:
                 self._in_use[mid] = n
 
-    async def unload_model(self, model_id: str, force: bool = False) -> None:
+    async def unload_model(self, model_id: str, force: bool = False) -> bool:
         """Unload *model_id*.
 
         If the model is *resident* or has active references it will NOT be
@@ -682,19 +682,19 @@ class ModelManager:
         async with self._lock_for(model_id):
             entry = self._models.get(model_id)
             if entry is None:
-                return
+                return False
 
             # in-use 是硬守卫,**强于 force**:绝不卸载正在 infer 的 adapter —— denoise 在
             # to_thread 工作线程跑,卸载会释放它正在用的 CUDA 权重 → segfault。
             if model_id in self._in_use:
                 logger.warning(
                     "Skipping unload of in-use model %r(正在 infer,卸载会 segfault)", model_id)
-                return
+                return False
 
             if not force:
                 if entry.spec.resident:
                     logger.debug("Skipping unload of resident model %r", model_id)
-                    return
+                    return False
                 refs = self._references.get(model_id, set())
                 if refs:
                     logger.debug(
@@ -702,7 +702,7 @@ class ModelManager:
                         model_id,
                         refs,
                     )
-                    return
+                    return False
 
             # unload 同步杀 vLLM 子进程(SIGTERM→wait(10s)→SIGKILL→wait(5s),最长 ~15s)。
             # 直接在事件循环上跑会冻结所有 API/SSE/WS。in-use 硬守卫上面已在锁内查过 →
@@ -728,6 +728,7 @@ class ModelManager:
             if sk is not None:
                 self._image_stick.pop(sk, None)
             logger.info("Unloaded model %r", model_id)
+            return True
 
     def set_model_resident(self, model_id: str, resident: bool) -> bool:
         """切已加载 by-key 模型(如 SeedVR2)的常驻位 —— resident=True → evict_lru/unload(非 force)
@@ -946,9 +947,14 @@ class ModelManager:
         if await self.stash_model(model_id):
             logger.info("Evicted(stash) LRU model %r from gpu %s", model_id, lru.gpu_index)
             return model_id
-        await self.unload_model(model_id, force=True)
-        logger.info("Evicted LRU model %r from gpu %s", model_id, lru.gpu_index)
-        return model_id
+        if await self.unload_model(model_id, force=True):
+            logger.info("Evicted LRU model %r from gpu %s", model_id, lru.gpu_index)
+            return model_id
+        # unload 被 in-use 硬守卫跳过 —— 选候选(排除 in_use)后、unload 前有并发
+        # mark_adapter_in_use 插入。显存没真腾出,别谎报 evicted,否则调用方
+        # (OOM-evict-retry)以为腾了空转重试。返回 None = 本轮没驱逐成功。
+        logger.info("evict_lru: %r 变 in-use,跳过卸载,未腾出显存", model_id)
+        return None
 
     # --- PR-1 Task 6: component-level cache APIs -----------------------------
     #
