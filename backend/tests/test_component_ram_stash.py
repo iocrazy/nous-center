@@ -53,7 +53,6 @@ def l1(monkeypatch):
     monkeypatch.setattr(mm, "_free_vram_mb", lambda dev: None)
     monkeypatch.setattr(MM, "_modular_repo_from_components", lambda resolved: "/fake/repo")
     monkeypatch.setattr(MM, "_is_standalone_single_file", lambda spec: True)
-    monkeypatch.setattr(MM, "_is_comfy_single_file_unet", lambda spec: False)
     # 文件大小估算不读磁盘(假路径)
     monkeypatch.setattr(ModelManager, "_component_bytes", staticmethod(lambda f: 1024))
 

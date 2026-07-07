@@ -349,14 +349,6 @@ _E2M1_MAG = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 _NVFP4_BLOCK = 16
 
 
-def has_comfy_per_tensor_quant(file_path: str) -> bool:
-    """文件是否含 `.comfy_quant`(逐张量混合量化标记)。仅读 header(safetensors keys)。"""
-    from safetensors import safe_open  # noqa: PLC0415
-
-    with safe_open(file_path, framework="pt") as f:
-        return any(k.endswith(".comfy_quant") for k in f.keys())
-
-
 def dequant_comfy_mixed(spec: ComponentSpec) -> StateDict:
     """comfy 逐张量混合量化 → target dtype state_dict(标准键,**不转架构键**)。
 

@@ -84,15 +84,6 @@ def poll_gpu_stats() -> list[dict]:
         return list(_gpu_stats)
 
 
-def get_gpu_free_mb(gpu_index: int) -> int:
-    """Get free memory in MB for a specific GPU."""
-    stats = poll_gpu_stats()
-    for s in stats:
-        if s["index"] == gpu_index:
-            return s["free_mb"]
-    return 0
-
-
 def get_gpu_stats() -> list[dict]:
     """Get cached GPU stats."""
     return poll_gpu_stats()

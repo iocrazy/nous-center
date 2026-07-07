@@ -36,7 +36,6 @@ def mm(monkeypatch):
     monkeypatch.setattr(m, "_free_vram_mb", lambda dev: None)
     monkeypatch.setattr(MM, "_modular_repo_from_components", lambda resolved: "/fake/repo")
     monkeypatch.setattr(MM, "_is_standalone_single_file", lambda spec: True)
-    monkeypatch.setattr(MM, "_is_comfy_single_file_unet", lambda spec: False)
     # 组件 need 固定小值(TE/VAE 各 1G);整模型 footprint 固定大值(装不下)
     monkeypatch.setattr(m, "_component_need_mb", lambda spec: 1024)
     monkeypatch.setattr(m, "_colocated_auto_footprint_mb", lambda comps: 60000)

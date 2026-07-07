@@ -40,7 +40,6 @@ def stubbed(monkeypatch):
     # PR-2:adapter builder 用 _is_standalone_single_file 判每个组件是否需桥接;stub→False
     # 让这些 wiring 测试走 HF-layout 路径(不对 fake 文件触发 build_bridged_*)。
     monkeypatch.setattr(MM, "_is_standalone_single_file", lambda spec: False)
-    monkeypatch.setattr(MM, "_is_comfy_single_file_unet", lambda spec: False)
     # PR-A:_import_modular 已删 —— monkeypatch 不再需要(_FakeBackend 也绕开 _ensure_pipe 真路径)。
 
     builds = []
