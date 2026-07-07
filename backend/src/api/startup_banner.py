@@ -93,6 +93,35 @@ def _residents(app) -> list[str]:
         return []
 
 
+# 推理/图像栈的关键模块(inference/image extras)。全在 backend/.venv,裸 uv sync 会裁掉
+# → 每次加载才静默 ModuleNotFoundError(2026-07-06 事故)。开机预检,缺了大声报。
+_STACK_MODULES = ("vllm", "torch", "diffusers", "safetensors", "transformers")
+
+
+def _inference_stack(find_spec=None) -> tuple[str, list[str]]:
+    """返回 (banner 显示串, 缺失模块列表)。find_spec 只定位不 import → 不触发 CUDA init。
+
+    find_spec 可注入便于测试;默认用 importlib.util.find_spec。
+    """
+    if find_spec is None:
+        import importlib.util  # noqa: PLC0415
+        find_spec = importlib.util.find_spec
+
+    missing = []
+    for m in _STACK_MODULES:
+        try:
+            if find_spec(m) is None:
+                missing.append(m)
+        except (ImportError, ValueError):
+            missing.append(m)
+    if not missing:
+        return f"ok ({'/'.join(_STACK_MODULES[:3])}…)", []
+    return (
+        _c("1;33", f"⚠ MISSING: {', '.join(missing)} — run: uv sync --all-extras"),
+        missing,
+    )
+
+
 def _backup_status() -> str:
     """PR-4 的自动备份落 dump 到 NOUS_DB_BACKUP_DIR;此前显示未配置。"""
     try:
@@ -136,6 +165,15 @@ async def log_startup_banner(app) -> None:
         residents = _residents(app)
         res_line = " · ".join(residents) if residents else "none"
 
+        stack_line, stack_missing = _inference_stack()
+        if stack_missing:
+            # banner 可能被后续日志刷走 → 另记一条 WARNING,journald 里可 grep。
+            logger.warning(
+                "启动预检:推理/图像栈缺失 %s —— venv 可能被裸 `uv sync` 裁过,"
+                "跑 `uv sync --all-extras` 修复(否则模型加载会 ModuleNotFoundError)。",
+                stack_missing,
+            )
+
         rp = getattr(settings, "ADMIN_PASSKEY_RP_ID", "localhost")
         public = rp if rp and rp != "localhost" else None
 
@@ -146,6 +184,7 @@ async def log_startup_banner(app) -> None:
             ("Database", db_line),
             ("GPUs", gpu_line),
             ("Resident", res_line),
+            ("Inference", stack_line),
             ("DB Backup", _backup_status()),
             ("Logs", "journalctl -u nous-backend -f"),
         ]
