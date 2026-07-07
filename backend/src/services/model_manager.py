@@ -607,23 +607,27 @@ class ModelManager:
             if gpu_index >= 0:
                 self._last_attempt_gpu[model_id] = gpu_index
 
-            # Build adapter
-            if adapter_factory is not None:
-                adapter = adapter_factory(spec)
-            else:
-                adapter = self._instantiate_adapter(spec)
+            # Build adapter + load:统一 try/finally 保证在途预留一定释放。
+            # 审查发现的真 bug:adapter 构建在 load 锁之前,若它抛异常,原来放在
+            # 锁内 finally 的释放会被跳过 → _pending[gpu] 幻影预留泄漏,那张卡永远
+            # 少 spec.vram_mb 可用。释放挪到覆盖「构建 + load」的外层 finally,并删掉
+            # 锁内那份避免双重释放(会把 _pending 扣穿)。
+            try:
+                if adapter_factory is not None:
+                    adapter = adapter_factory(spec)
+                else:
+                    adapter = self._instantiate_adapter(spec)
 
-            # 全局串行门:一次只加载一个模型。选卡已由 allocator 在途预留保证并发
-            # 安全,这里串行化真正的 adapter.load(),避免多个 vLLM 同一瞬间在同卡
-            # (或跨卡)做 CUDA init → engine core init 竞争 / 相关联功率尖峰
-            # (2026-07-06 生产事故:35B + embedding 同时上 PRO6000,embedding 起不来)。
-            async with self._global_load_lock:
-                try:
+                # 全局串行门:一次只加载一个模型。选卡已由 allocator 在途预留保证并发
+                # 安全,这里串行化真正的 adapter.load(),避免多个 vLLM 同一瞬间在同卡
+                # (或跨卡)做 CUDA init → engine core init 竞争 / 相关联功率尖峰
+                # (2026-07-06 生产事故:35B + embedding 同时上 PRO6000,embedding 起不来)。
+                async with self._global_load_lock:
                     await adapter.load(device)
-                finally:
-                    # 权重已落卡(或 load 失败)→ 释放在途预留;nvidia-smi 之后能反映真实占用。
-                    if reserved_gpu >= 0:
-                        self._allocator.release_reservation(reserved_gpu, reserved_mb)
+            finally:
+                # 权重已落卡(或构建/load 失败)→ 释放在途预留;nvidia-smi 之后能反映真实占用。
+                if reserved_gpu >= 0:
+                    self._allocator.release_reservation(reserved_gpu, reserved_mb)
 
             if detect_after_load:
                 # _detect_vllm_gpus_for_adapter 内含 nvidia-smi subprocess(同步阻塞)

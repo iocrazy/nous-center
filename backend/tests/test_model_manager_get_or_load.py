@@ -173,3 +173,39 @@ async def test_get_or_load_prior_failure_raises_without_retry():
     mm._load_failures["m4"] = "previous OOM"
     with pytest.raises(ModelLoadError):
         await mm.get_or_load("m4")
+
+
+class _TrackingAllocator:
+    """记账 allocator:统计 get_best_gpu 的在途预留次数 vs release 次数。"""
+    def __init__(self):
+        self.reserved = 0
+        self.releases = 0
+
+    def get_best_gpu(self, vram_mb, *, reserve=True):
+        if reserve:
+            self.reserved += 1
+        return 0
+
+    def release_reservation(self, gpu_index, vram_mb):
+        self.releases += 1
+
+
+@pytest.mark.asyncio
+async def test_reservation_released_when_adapter_build_raises():
+    """回归:adapter 构建(load 锁之前)抛异常时,GPU 在途预留必须释放。
+
+    否则 _pending[gpu] 永不清 → allocator 永远认为那张卡少 spec.vram_mb 可用
+    (幻影预留),后续选卡失真。审查发现的真 bug。
+    """
+    alloc = _TrackingAllocator()
+    reg = _StubRegistry([_spec("m1")])
+    mm = ModelManager(registry=reg, allocator=alloc)
+
+    def boom(spec):
+        raise RuntimeError("adapter build failed")
+
+    with pytest.raises(RuntimeError, match="adapter build failed"):
+        await mm.load_model("m1", adapter_factory=boom)
+
+    assert alloc.reserved == 1, "应已登记一次在途预留"
+    assert alloc.releases == 1, "adapter 构建抛异常后在途预留泄漏了(未 release)"
