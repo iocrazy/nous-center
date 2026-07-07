@@ -166,6 +166,204 @@ def _install_log_handlers() -> None:
     logger.info("Application log collector installed (db + stdout)")
 
 
+def _start_background_tasks(app, model_mgr, wf_model_deps):
+    """启动常驻后台 loop(god-lifespan 拆分第二刀)。
+
+    内联 async def 保持在函数内、闭包 app/model_mgr/wf_model_deps —— 不把闭包变量穿线到
+    模块级,零 NameError 风险,行为逐字不变。返回 shutdown/finally 要 cancel 的 4 个句柄;
+    NOUS_DISABLE_BG_TASKS=1(测试)时全为空([]/None)。
+    """
+    # NOUS_DISABLE_BG_TASKS=1 → skip all background tasks.
+    # CRITICAL for tests: the default background set includes memory_guard_loop
+    # which polls `nvidia-smi` via subprocess every 5s. When multiple test
+    # processes simultaneously trigger lifespan (via TestClient), concurrent
+    # nvidia-smi invocations contend with gnome-shell's GPU compositor, which
+    # can crash the NVIDIA driver and log out the X session. conftest.py sets
+    # this env var at the top so `uv run pytest` never spawns these loops.
+    import os as _os
+    _bg_tasks_disabled = _os.getenv("NOUS_DISABLE_BG_TASKS") == "1"
+
+    cache_cleanup_task = None
+    response_cleanup_task = None
+    partial_worker = None
+    # round4 #8/#9:常驻后台 loop 早先用裸 asyncio.create_task,既不持引用(Py3.11+
+    # event loop 只持弱引用 → _load_wf_deps 这种起手无 sleep 护栏的可能被 GC 丢弃),
+    # shutdown 也不 cancel(留半完成 subprocess)。收进 list 持引用 + finally 统一 cancel。
+    bg_tasks: list = []
+
+    if not _bg_tasks_disabled:
+        # Load workflow dependencies in background (non-blocking)
+        async def _load_wf_deps():
+            for dep in wf_model_deps:
+                try:
+                    await model_mgr.load_model(dep["key"])
+                except Exception as e:
+                    logger.warning("Failed to load model %s for workflow %s: %s", dep["key"], dep["wf_id"], e)
+
+        if wf_model_deps:
+            bg_tasks.append(asyncio.create_task(_load_wf_deps()))
+
+        # Resident models marked resident: preload in the background, ordered
+        # by preload_order ascending (spec 4.2). The ~120s diffusers compose
+        # must not block /health (cloudflared / systemd probes would mark the
+        # backend down). preload_residents is fail-soft: a single model's
+        # OOM / corrupt-weights failure records into mm._load_failures and is
+        # surfaced on /health — it never blocks startup or the rest of the
+        # preload sequence (spec 4.3). on_loaded flips the engines/models
+        # cache + UI badge within ~1s per successful load.
+        async def _on_resident_loaded(spec_id: str) -> None:
+            from src.api.response_cache import invalidate as _invalidate
+            _invalidate("models", "engines")
+            from src.api.websocket import ws_manager as _ws
+            await _ws.broadcast_model_status(spec_id, "loaded")
+
+        # Persist the task ref so 3.11+ doesn't garbage-collect a still-running
+        # background coroutine and silently drop the preload.
+        app.state._resident_preload_task = asyncio.create_task(
+            model_mgr.preload_residents(on_loaded=_on_resident_loaded)
+        )
+
+        # Start idle model checker background task
+        async def idle_checker():
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    await model_mgr.check_idle_models()
+                except Exception as e:
+                    logger.warning("Idle model check failed: %s", e)
+
+        bg_tasks.append(asyncio.create_task(idle_checker()))
+        bg_tasks.append(asyncio.create_task(memory_guard_loop(model_mgr, reserved_gb=4.0)))
+        # GPU 热保护看门狗:超温告警 + 自动降载(卸非常驻/非在用模型救卡)。活机实测
+        # 加载一下就 86°C/风扇 0%、离降频仅 ~7°C —— 满载推理该有软件刹车。
+        from src.services.gpu_thermal_guard import gpu_thermal_guard_loop
+        bg_tasks.append(asyncio.create_task(gpu_thermal_guard_loop(model_mgr)))
+
+        # vLLM 健康看门狗(稳定性加固 2026-06-16):自愈「model_manager 记着 loaded 但
+        # vLLM 端口连不上」的陈旧/孤儿态(改 cap·重启周期 / host OOM 杀子进程后的
+        # ConnectError,2026-06-16 qwen35 真机踩到)。只对 ConnectError + 连续确认动手。
+        if _os.getenv("NOUS_DISABLE_VLLM_WATCHDOG") != "1":
+            from src.services.vllm_watchdog import vllm_health_watchdog
+
+            async def _wd_notify(mid: str, action: str) -> None:
+                from src.api.response_cache import invalidate as _invalidate
+                _invalidate("models", "engines")
+                from src.api.websocket import ws_manager as _ws
+                await _ws.broadcast_model_status(
+                    mid, "loaded" if action == "reloaded" else "unloaded")
+
+            bg_tasks.append(asyncio.create_task(
+                vllm_health_watchdog(model_mgr, notify=_wd_notify)))
+
+        # 状态页采样器(status 页 v1,2026-06-17):每 60s 给各组件落一行状态,供
+        # status 页画 7 天 uptime 条。NOUS_DISABLE_STATUS_SAMPLER=1 可关。
+        if _os.getenv("NOUS_DISABLE_STATUS_SAMPLER") != "1":
+            from src.services.status_sampler import status_sampler_loop
+            bg_tasks.append(asyncio.create_task(status_sampler_loop(app.state)))
+
+        async def log_cleanup_loop():
+            while True:
+                await asyncio.sleep(3600)  # Every hour
+                try:
+                    from src.services.log_store import cleanup_logs
+                    from src.models.database import get_session_factory
+                    # Now async on the main DB; no to_thread needed (it awaits I/O,
+                    # doesn't block the loop). One short-lived session per sweep.
+                    async with get_session_factory()() as session:
+                        await cleanup_logs(session)
+                except Exception as e:
+                    logger.warning("Log cleanup failed: %s", e)
+
+        bg_tasks.append(asyncio.create_task(log_cleanup_loop()))
+
+        async def usage_retention_loop():
+            # usage/task 历史表保留清理(审查 P1:三表无限增长)。每 6h 删 >90 天旧行。
+            while True:
+                await asyncio.sleep(6 * 3600)
+                try:
+                    from src.models.database import get_session_factory
+                    from src.services.usage_retention import cleanup_usage
+                    async with get_session_factory()() as session:
+                        await cleanup_usage(session)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("usage retention failed: %s", e)
+
+        bg_tasks.append(asyncio.create_task(usage_retention_loop()))
+
+        # Image output orphan reaper. PR-6's signed-URL TTL is 1h by
+        # default; once a URL expires the file is unreachable but stays
+        # on disk. Walk every 6h and delete files older than 24h
+        # (4× the URL TTL leaves enough room for a caller who fetched
+        # the URL near expiry to still pull the bytes once).
+        async def image_orphan_reap_loop(interval_seconds: int = 6 * 3600):
+            from src.api.routes.execution_tasks import collect_referenced_image_uuids
+            from src.models.database import get_session_factory as _isf
+            from src.services.image_output_storage import reap_orphans
+            sf = _isf()
+            while True:
+                try:
+                    # 图寿命=任务寿命(spec 2026-06-09 run-history):先查仍被 ExecutionTask
+                    # 引用的图 uuid,只清没人引用的真 orphan(失败/已删任务残留)→ /history
+                    # 画廊历史图不被误删。round4 #6:reap 同步全盘遍历,丢 to_thread 不卡 loop。
+                    async with sf() as session:
+                        keep = await collect_referenced_image_uuids(session)
+                    await asyncio.to_thread(
+                        reap_orphans, older_than_seconds=24 * 3600, keep_uuids=keep,
+                    )
+                except Exception:
+                    logger.exception("image orphan reap error")
+                try:
+                    await asyncio.sleep(interval_seconds)
+                except asyncio.CancelledError:
+                    break
+
+        bg_tasks.append(asyncio.create_task(image_orphan_reap_loop()))
+
+        async def context_cache_cleanup_loop(interval_seconds: int = 3600):
+            from src.services.context_cache_service import cleanup_expired
+            from src.models.database import get_session_factory as _csf
+            sf = _csf()
+            while True:
+                try:
+                    async with sf() as s:
+                        n = await cleanup_expired(s)
+                        if n:
+                            logger.info("context cache cleanup: %d expired rows", n)
+                except Exception:
+                    logger.exception("context cache cleanup error")
+                try:
+                    await asyncio.sleep(interval_seconds)
+                except asyncio.CancelledError:
+                    break
+
+        cache_cleanup_task = asyncio.create_task(context_cache_cleanup_loop())
+
+        # Step 4: expired-session cleanup + partial-write background worker
+        async def response_cleanup_loop(interval_seconds: int = 3600):
+            from src.services.responses_service import cleanup_expired_sessions
+            from src.models.database import get_session_factory as _csf
+            sf = _csf()
+            while True:
+                try:
+                    async with sf() as s:
+                        n = await cleanup_expired_sessions(s)
+                        if n:
+                            logger.info("response cleanup: %d expired sessions", n)
+                except Exception:
+                    logger.exception("response cleanup error")
+                try:
+                    await asyncio.sleep(interval_seconds)
+                except asyncio.CancelledError:
+                    break
+
+        response_cleanup_task = asyncio.create_task(response_cleanup_loop())
+
+        from src.api.routes import responses as responses_routes
+        responses_routes._set_queue(asyncio.Queue(maxsize=1000))
+        partial_worker = asyncio.create_task(responses_routes.partial_write_worker())
+    return bg_tasks, cache_cleanup_task, response_cleanup_task, partial_worker
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Create database tables on startup."""
@@ -474,194 +672,9 @@ async def lifespan(app: FastAPI):
                 recategorized,
             )
 
-    # NOUS_DISABLE_BG_TASKS=1 → skip all background tasks.
-    # CRITICAL for tests: the default background set includes memory_guard_loop
-    # which polls `nvidia-smi` via subprocess every 5s. When multiple test
-    # processes simultaneously trigger lifespan (via TestClient), concurrent
-    # nvidia-smi invocations contend with gnome-shell's GPU compositor, which
-    # can crash the NVIDIA driver and log out the X session. conftest.py sets
-    # this env var at the top so `uv run pytest` never spawns these loops.
-    import os as _os
-    _bg_tasks_disabled = _os.getenv("NOUS_DISABLE_BG_TASKS") == "1"
-
-    cache_cleanup_task = None
-    response_cleanup_task = None
-    partial_worker = None
-    # round4 #8/#9:常驻后台 loop 早先用裸 asyncio.create_task,既不持引用(Py3.11+
-    # event loop 只持弱引用 → _load_wf_deps 这种起手无 sleep 护栏的可能被 GC 丢弃),
-    # shutdown 也不 cancel(留半完成 subprocess)。收进 list 持引用 + finally 统一 cancel。
-    bg_tasks: list = []
-
-    if not _bg_tasks_disabled:
-        # Load workflow dependencies in background (non-blocking)
-        async def _load_wf_deps():
-            for dep in wf_model_deps:
-                try:
-                    await model_mgr.load_model(dep["key"])
-                except Exception as e:
-                    logger.warning("Failed to load model %s for workflow %s: %s", dep["key"], dep["wf_id"], e)
-
-        if wf_model_deps:
-            bg_tasks.append(asyncio.create_task(_load_wf_deps()))
-
-        # Resident models marked resident: preload in the background, ordered
-        # by preload_order ascending (spec 4.2). The ~120s diffusers compose
-        # must not block /health (cloudflared / systemd probes would mark the
-        # backend down). preload_residents is fail-soft: a single model's
-        # OOM / corrupt-weights failure records into mm._load_failures and is
-        # surfaced on /health — it never blocks startup or the rest of the
-        # preload sequence (spec 4.3). on_loaded flips the engines/models
-        # cache + UI badge within ~1s per successful load.
-        async def _on_resident_loaded(spec_id: str) -> None:
-            from src.api.response_cache import invalidate as _invalidate
-            _invalidate("models", "engines")
-            from src.api.websocket import ws_manager as _ws
-            await _ws.broadcast_model_status(spec_id, "loaded")
-
-        # Persist the task ref so 3.11+ doesn't garbage-collect a still-running
-        # background coroutine and silently drop the preload.
-        app.state._resident_preload_task = asyncio.create_task(
-            model_mgr.preload_residents(on_loaded=_on_resident_loaded)
-        )
-
-        # Start idle model checker background task
-        async def idle_checker():
-            while True:
-                await asyncio.sleep(60)
-                try:
-                    await model_mgr.check_idle_models()
-                except Exception as e:
-                    logger.warning("Idle model check failed: %s", e)
-
-        bg_tasks.append(asyncio.create_task(idle_checker()))
-        bg_tasks.append(asyncio.create_task(memory_guard_loop(model_mgr, reserved_gb=4.0)))
-        # GPU 热保护看门狗:超温告警 + 自动降载(卸非常驻/非在用模型救卡)。活机实测
-        # 加载一下就 86°C/风扇 0%、离降频仅 ~7°C —— 满载推理该有软件刹车。
-        from src.services.gpu_thermal_guard import gpu_thermal_guard_loop
-        bg_tasks.append(asyncio.create_task(gpu_thermal_guard_loop(model_mgr)))
-
-        # vLLM 健康看门狗(稳定性加固 2026-06-16):自愈「model_manager 记着 loaded 但
-        # vLLM 端口连不上」的陈旧/孤儿态(改 cap·重启周期 / host OOM 杀子进程后的
-        # ConnectError,2026-06-16 qwen35 真机踩到)。只对 ConnectError + 连续确认动手。
-        if _os.getenv("NOUS_DISABLE_VLLM_WATCHDOG") != "1":
-            from src.services.vllm_watchdog import vllm_health_watchdog
-
-            async def _wd_notify(mid: str, action: str) -> None:
-                from src.api.response_cache import invalidate as _invalidate
-                _invalidate("models", "engines")
-                from src.api.websocket import ws_manager as _ws
-                await _ws.broadcast_model_status(
-                    mid, "loaded" if action == "reloaded" else "unloaded")
-
-            bg_tasks.append(asyncio.create_task(
-                vllm_health_watchdog(model_mgr, notify=_wd_notify)))
-
-        # 状态页采样器(status 页 v1,2026-06-17):每 60s 给各组件落一行状态,供
-        # status 页画 7 天 uptime 条。NOUS_DISABLE_STATUS_SAMPLER=1 可关。
-        if _os.getenv("NOUS_DISABLE_STATUS_SAMPLER") != "1":
-            from src.services.status_sampler import status_sampler_loop
-            bg_tasks.append(asyncio.create_task(status_sampler_loop(app.state)))
-
-        async def log_cleanup_loop():
-            while True:
-                await asyncio.sleep(3600)  # Every hour
-                try:
-                    from src.services.log_store import cleanup_logs
-                    from src.models.database import get_session_factory
-                    # Now async on the main DB; no to_thread needed (it awaits I/O,
-                    # doesn't block the loop). One short-lived session per sweep.
-                    async with get_session_factory()() as session:
-                        await cleanup_logs(session)
-                except Exception as e:
-                    logger.warning("Log cleanup failed: %s", e)
-
-        bg_tasks.append(asyncio.create_task(log_cleanup_loop()))
-
-        async def usage_retention_loop():
-            # usage/task 历史表保留清理(审查 P1:三表无限增长)。每 6h 删 >90 天旧行。
-            while True:
-                await asyncio.sleep(6 * 3600)
-                try:
-                    from src.models.database import get_session_factory
-                    from src.services.usage_retention import cleanup_usage
-                    async with get_session_factory()() as session:
-                        await cleanup_usage(session)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("usage retention failed: %s", e)
-
-        bg_tasks.append(asyncio.create_task(usage_retention_loop()))
-
-        # Image output orphan reaper. PR-6's signed-URL TTL is 1h by
-        # default; once a URL expires the file is unreachable but stays
-        # on disk. Walk every 6h and delete files older than 24h
-        # (4× the URL TTL leaves enough room for a caller who fetched
-        # the URL near expiry to still pull the bytes once).
-        async def image_orphan_reap_loop(interval_seconds: int = 6 * 3600):
-            from src.api.routes.execution_tasks import collect_referenced_image_uuids
-            from src.models.database import get_session_factory as _isf
-            from src.services.image_output_storage import reap_orphans
-            sf = _isf()
-            while True:
-                try:
-                    # 图寿命=任务寿命(spec 2026-06-09 run-history):先查仍被 ExecutionTask
-                    # 引用的图 uuid,只清没人引用的真 orphan(失败/已删任务残留)→ /history
-                    # 画廊历史图不被误删。round4 #6:reap 同步全盘遍历,丢 to_thread 不卡 loop。
-                    async with sf() as session:
-                        keep = await collect_referenced_image_uuids(session)
-                    await asyncio.to_thread(
-                        reap_orphans, older_than_seconds=24 * 3600, keep_uuids=keep,
-                    )
-                except Exception:
-                    logger.exception("image orphan reap error")
-                try:
-                    await asyncio.sleep(interval_seconds)
-                except asyncio.CancelledError:
-                    break
-
-        bg_tasks.append(asyncio.create_task(image_orphan_reap_loop()))
-
-        async def context_cache_cleanup_loop(interval_seconds: int = 3600):
-            from src.services.context_cache_service import cleanup_expired
-            from src.models.database import get_session_factory as _csf
-            sf = _csf()
-            while True:
-                try:
-                    async with sf() as s:
-                        n = await cleanup_expired(s)
-                        if n:
-                            logger.info("context cache cleanup: %d expired rows", n)
-                except Exception:
-                    logger.exception("context cache cleanup error")
-                try:
-                    await asyncio.sleep(interval_seconds)
-                except asyncio.CancelledError:
-                    break
-
-        cache_cleanup_task = asyncio.create_task(context_cache_cleanup_loop())
-
-        # Step 4: expired-session cleanup + partial-write background worker
-        async def response_cleanup_loop(interval_seconds: int = 3600):
-            from src.services.responses_service import cleanup_expired_sessions
-            from src.models.database import get_session_factory as _csf
-            sf = _csf()
-            while True:
-                try:
-                    async with sf() as s:
-                        n = await cleanup_expired_sessions(s)
-                        if n:
-                            logger.info("response cleanup: %d expired sessions", n)
-                except Exception:
-                    logger.exception("response cleanup error")
-                try:
-                    await asyncio.sleep(interval_seconds)
-                except asyncio.CancelledError:
-                    break
-
-        response_cleanup_task = asyncio.create_task(response_cleanup_loop())
-
-        from src.api.routes import responses as responses_routes
-        responses_routes._set_queue(asyncio.Queue(maxsize=1000))
-        partial_worker = asyncio.create_task(responses_routes.partial_write_worker())
+    bg_tasks, cache_cleanup_task, response_cleanup_task, partial_worker = (
+        _start_background_tasks(app, model_mgr, wf_model_deps)
+    )
 
     # 启动自检 banner(对齐 PAPERCLIP)—— 全 wiring 完后打一屏聚合状态到 stdout/journald。
     # 测试态(catch-all 关)跳过避免噪声;全 best-effort,绝不阻断启动。
