@@ -364,6 +364,43 @@ def _start_background_tasks(app, model_mgr, wf_model_deps):
     return bg_tasks, cache_cleanup_task, response_cleanup_task, partial_worker
 
 
+async def _seed_voice_preset_templates(sf) -> None:
+    """首次启动(无模板时)把 voice_presets 迁成 workflow 模板(god-lifespan 拆分,行为不变)。"""
+    from src.models.voice_preset import VoicePreset
+    from src.models.workflow import Workflow as WfModel
+    from sqlalchemy import select, func as sa_func
+
+    async with sf() as session:
+        wf_count = await session.scalar(
+            select(sa_func.count()).select_from(WfModel).where(WfModel.is_template == True)  # noqa: E712
+        )
+        if wf_count == 0:
+            result = await session.execute(select(VoicePreset))
+            presets = result.scalars().all()
+            for preset in presets:
+                wf = WfModel(
+                    name=preset.name,
+                    description=f"从预设 '{preset.name}' 自动迁移",
+                    is_template=True,
+                    nodes=[
+                        {"id": "n1", "type": "text_input", "data": {"text": ""}, "position": {"x": 0, "y": 0}},
+                        {"id": "n2", "type": "tts_engine", "data": {
+                            "engine": preset.engine,
+                            **(preset.params or {}),
+                        }, "position": {"x": 350, "y": 0}},
+                        {"id": "n3", "type": "output", "data": {}, "position": {"x": 700, "y": 0}},
+                    ],
+                    edges=[
+                        {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
+                        {"id": "e2", "source": "n2", "sourceHandle": "audio", "target": "n3", "targetHandle": "audio"},
+                    ],
+                )
+                session.add(wf)
+            await session.commit()
+            if presets:
+                logger.info("Migrated %d voice presets to workflow templates", len(presets))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Create database tables on startup."""
@@ -413,39 +450,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Model metadata sync failed (non-fatal): %s", e)
 
     # Auto-migrate voice presets to workflow templates
-    from src.models.voice_preset import VoicePreset
-    from src.models.workflow import Workflow as WfModel
-    from sqlalchemy import select, func as sa_func
-
-    async with sf() as session:
-        wf_count = await session.scalar(
-            select(sa_func.count()).select_from(WfModel).where(WfModel.is_template == True)  # noqa: E712
-        )
-        if wf_count == 0:
-            result = await session.execute(select(VoicePreset))
-            presets = result.scalars().all()
-            for preset in presets:
-                wf = WfModel(
-                    name=preset.name,
-                    description=f"从预设 '{preset.name}' 自动迁移",
-                    is_template=True,
-                    nodes=[
-                        {"id": "n1", "type": "text_input", "data": {"text": ""}, "position": {"x": 0, "y": 0}},
-                        {"id": "n2", "type": "tts_engine", "data": {
-                            "engine": preset.engine,
-                            **(preset.params or {}),
-                        }, "position": {"x": 350, "y": 0}},
-                        {"id": "n3", "type": "output", "data": {}, "position": {"x": 700, "y": 0}},
-                    ],
-                    edges=[
-                        {"id": "e1", "source": "n1", "sourceHandle": "text", "target": "n2", "targetHandle": "text"},
-                        {"id": "e2", "source": "n2", "sourceHandle": "audio", "target": "n3", "targetHandle": "audio"},
-                    ],
-                )
-                session.add(wf)
-            await session.commit()
-            if presets:
-                logger.info("Migrated %d voice presets to workflow templates", len(presets))
+    await _seed_voice_preset_templates(sf)
 
     # Scan node packages
     from nodes import scan_packages
@@ -641,7 +646,6 @@ async def lifespan(app: FastAPI):
     # Resident flag only prevents auto-unload by idle checker
 
     # Re-register model references for published workflows
-    from sqlalchemy import select
     from src.services.startup_reconcile import reconcile_orphan_published_workflows
     async with sf() as session:
         orphan_published, wf_model_deps = await reconcile_orphan_published_workflows(
