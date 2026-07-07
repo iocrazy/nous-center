@@ -82,3 +82,34 @@ async def test_infer_stream_forces_include_usage_over_extra(tmp_path):
                 pass
 
         assert captured["json"]["stream_options"]["include_usage"] is True
+
+
+class _FakeHttpxClient:
+    """记录 aclose 是否被调用。"""
+    def __init__(self):
+        self.closed = False
+
+    async def aclose(self):
+        self.closed = True
+
+
+def test_vllm_unload_closes_httpx_client(tmp_path):
+    """回归:unload 必须关闭 httpx client,否则每轮 load/unload 泄漏连接池。"""
+    adapter = VLLMAdapter(paths={"main": str(tmp_path)}, device="cpu", vllm_port=19992)
+    fake = _FakeHttpxClient()
+    adapter._client = fake
+    adapter._managed = False  # external → 跳过杀进程,只测 client 关闭
+    adapter.unload()
+    assert fake.closed is True, "unload 没关 httpx client(连接池泄漏)"
+    assert adapter._client is None
+
+
+def test_sglang_unload_closes_httpx_client(tmp_path):
+    """同上,SGLangAdapter。"""
+    adapter = SGLangAdapter(paths={"main": str(tmp_path)}, device="cpu", sglang_port=19993)
+    fake = _FakeHttpxClient()
+    adapter._client = fake
+    adapter._managed = False
+    adapter.unload()
+    assert fake.closed is True
+    assert adapter._client is None

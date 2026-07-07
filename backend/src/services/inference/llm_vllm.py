@@ -464,6 +464,30 @@ class VLLMAdapter(InferenceAdapter):
         else:
             logger.info("Disconnecting from external vLLM at %s", self._base_url)
         self._model = None
+        self._close_client()
+
+    def _close_client(self) -> None:
+        """关闭 httpx client 的连接池。审查发现:每次 load 新建 adapter(含新 _client),
+        unload 丢弃却从不 aclose → 每轮 load/unload 泄漏一个 AsyncClient(连接池 + FD)。
+
+        unload 是 sync 且可能在 to_thread 工作线程里跑(无 running loop),故两条路径都兜:
+        有正在跑的 loop → schedule aclose(fire-and-forget);无 loop → asyncio.run 同步关。
+        """
+        client = getattr(self, "_client", None)
+        if client is None:
+            return
+        self._client = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        try:
+            if loop is not None and loop.is_running():
+                loop.create_task(client.aclose())
+            else:
+                asyncio.run(client.aclose())
+        except Exception:  # noqa: BLE001 — 关闭 best-effort,别挡住 unload
+            pass
 
     def _drain_stdout(self) -> None:
         """后台线程:持续读子进程 stdout 进有界 deque,防 PIPE 填满阻塞子进程。

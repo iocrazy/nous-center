@@ -313,6 +313,27 @@ class SGLangAdapter(InferenceAdapter):
         else:
             logger.info("Disconnecting from external SGLang at %s", self._base_url)
         self._model = None
+        self._close_client()
+
+    def _close_client(self) -> None:
+        """关闭 httpx client 连接池(同 VLLMAdapter):unload 丢弃 adapter 却不 aclose →
+        每轮 load/unload 泄漏一个 AsyncClient。unload 是 sync 且可能在 to_thread 线程跑,
+        故有 loop→schedule aclose,无 loop→asyncio.run。"""
+        client = getattr(self, "_client", None)
+        if client is None:
+            return
+        self._client = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        try:
+            if loop is not None and loop.is_running():
+                loop.create_task(client.aclose())
+            else:
+                asyncio.run(client.aclose())
+        except Exception:  # noqa: BLE001 — 关闭 best-effort,别挡住 unload
+            pass
 
     def _drain_stdout(self) -> None:
         """后台线程:持续读子进程 stdout 进有界 deque,防 PIPE 填满阻塞(同 vLLM adapter)。"""
