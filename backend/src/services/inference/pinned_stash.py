@@ -103,20 +103,31 @@ def pin_module_inplace(module: Any) -> list[tuple[int, int]]:
 
 
 def unpin(regs: list[tuple[int, int]]) -> None:
-    """注销 cudaHostRegister。调用方必须保证对应内存还活着(持引用)。"""
+    """注销 cudaHostRegister。调用方必须保证对应内存还活着(持引用)。
+
+    审查发现:早先 per-ptr 用 try/**finally**(非 except)—— 某 ptr cudaHostUnregister
+    抛异常会跳出整个循环,**剩余 ptr 不注销(真泄漏)**;且 finally 对失败项也减了字节
+    (账目漂),日志还按 len(regs) 夸大泄漏数。现改 per-ptr except:每条都尝试,**仅注销
+    成功才减字节**,统计真实泄漏数。
+    """
     global _total_pinned_bytes
     if not regs:
         return
     try:
         import torch  # noqa: PLC0415
         cudart = torch.cuda.cudart()
-        for ptr, size in regs:
-            try:
-                cudart.cudaHostUnregister(ptr)
-            finally:
-                _total_pinned_bytes -= size
-    except Exception as e:  # noqa: BLE001
-        logger.warning("unpin 失败(泄漏 %d 条注册):%s", len(regs), e)
+    except Exception as e:  # noqa: BLE001 — 连 cudart 都取不到 → 整批只能泄漏
+        logger.warning("unpin 取 cudart 失败(泄漏 %d 条注册):%s", len(regs), e)
+        return
+    leaked = 0
+    for ptr, size in regs:
+        try:
+            cudart.cudaHostUnregister(ptr)
+            _total_pinned_bytes -= size  # 仅注销成功才减账
+        except Exception:  # noqa: BLE001 — 单条失败不挡其余 ptr 继续注销
+            leaked += 1
+    if leaked:
+        logger.warning("unpin: %d/%d 条 cudaHostUnregister 失败(泄漏)", leaked, len(regs))
 
 
 def restore_module_fast(module: Any, device: str, regs: list[tuple[int, int]]) -> None:
