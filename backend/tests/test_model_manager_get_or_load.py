@@ -209,3 +209,46 @@ async def test_reservation_released_when_adapter_build_raises():
 
     assert alloc.reserved == 1, "应已登记一次在途预留"
     assert alloc.releases == 1, "adapter 构建抛异常后在途预留泄漏了(未 release)"
+
+
+@pytest.mark.asyncio
+async def test_unload_model_returns_false_when_in_use():
+    """in-use 硬守卫跳过卸载时,unload_model 必须回报 False(不是 None)。"""
+    mm = _mm([_spec("m1")])
+    a = _StubAdapter(paths={"main": "/fake/m1"})
+    await mm.load_model("m1", adapter_factory=lambda s: a)
+    mm._in_use["m1"] = 1  # 正在 infer
+    ok = await mm.unload_model("m1", force=True)
+    assert ok is False, "in-use 跳过卸载应回报 False"
+    assert mm.is_loaded("m1"), "in-use 模型不该被卸"
+
+
+@pytest.mark.asyncio
+async def test_unload_model_returns_true_on_success():
+    mm = _mm([_spec("m1")])
+    a = _StubAdapter(paths={"main": "/fake/m1"})
+    await mm.load_model("m1", adapter_factory=lambda s: a)
+    ok = await mm.unload_model("m1", force=True)
+    assert ok is True
+    assert not mm.is_loaded("m1")
+
+
+@pytest.mark.asyncio
+async def test_evict_lru_returns_none_when_unload_skipped_by_in_use(monkeypatch):
+    """竞态:候选选中后、unload 前 m1 变 in-use → unload 被跳过、显存没腾出。
+
+    evict_lru 不该谎报 evicted(否则 OOM-evict-retry 以为腾了空转)。用 stash_model
+    调用点注入「此刻变 in-use」的竞态。
+    """
+    mm = _mm([_spec("m1")])
+    a = _StubAdapter(paths={"main": "/fake/m1"})
+    await mm.load_model("m1", adapter_factory=lambda s: a)
+
+    async def fake_stash(mid):
+        mm._in_use[mid] = 1  # 竞态:选完候选后变 in-use
+        return False
+
+    monkeypatch.setattr(mm, "stash_model", fake_stash)
+    evicted = await mm.evict_lru()
+    assert evicted is None, "unload 被 in-use 跳过时 evict_lru 不该返回 model_id"
+    assert mm.is_loaded("m1")
