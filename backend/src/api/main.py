@@ -70,6 +70,16 @@ _MICRO_MIGRATIONS: tuple[str, ...] = (
     # execution_tasks.created_at 索引 —— 支撑 usage 保留清理按 created_at 删旧行
     # (usage_retention);既有 prod 表补索引(新/测试 DB 由模型 __table_args__ 建)。
     "CREATE INDEX IF NOT EXISTS ix_execution_tasks_created ON execution_tasks (created_at)",
+    # prod 漂移 reconcile(alembic stamp 时 check 出,2026-07-06):models 早把 agent_id
+    # 加宽到 String(128)+index、key_prefix 加 index,但既有 prod 列仍 VARCHAR(64)/缺索引
+    # (micro-migration 历史只加列不改类型/补这些索引)。加宽是非破坏(64→128 不丢数据);
+    # 索引 IF NOT EXISTS 幂等。sqlite(测试)不支持 ALTER COLUMN TYPE → best-effort 跳过无害
+    # (fresh DB 由 create_all 直接按 model 建对)。
+    "ALTER TABLE llm_usage ALTER COLUMN agent_id TYPE VARCHAR(128)",
+    "ALTER TABLE response_sessions ALTER COLUMN agent_id TYPE VARCHAR(128)",
+    "CREATE INDEX IF NOT EXISTS ix_llm_usage_agent_id ON llm_usage (agent_id)",
+    "CREATE INDEX IF NOT EXISTS ix_response_sessions_agent_id ON response_sessions (agent_id)",
+    "CREATE INDEX IF NOT EXISTS ix_instance_api_keys_key_prefix ON instance_api_keys (key_prefix)",
 )
 
 
