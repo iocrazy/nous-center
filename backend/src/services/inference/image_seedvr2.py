@@ -345,13 +345,14 @@ class SeedVR2UpscaleBackend(InferenceAdapter):
                 overall = min(1.0, offset + frac * weight)
 
                 def _deferred() -> None:
-                    try:
-                        progress_callback(
-                            done, total, progress=overall, stage=stage,
-                            detail=f"{label} {done}/{total}",
-                        )
-                    except TypeError:  # 老签名 fake 只接 (done, total)
-                        progress_callback(done, total)
+                    # emit_to_callback 用 signature.bind 判兼容,老签名 fake 只接 (done,total)
+                    # 时降级;但回调 body 里真抛的 TypeError 不再被吞(审查 footgun)。
+                    from src.services.inference.progress_tracker import emit_to_callback
+                    emit_to_callback(
+                        progress_callback, done, total,
+                        [{"progress": overall, "stage": stage,
+                          "detail": f"{label} {done}/{total}"}],
+                    )
 
                 loop.call_soon_threadsafe(_deferred)
 

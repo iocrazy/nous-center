@@ -23,11 +23,47 @@ latency / ETA / emit 全由 tracker 处理。但 nous 多任务 + 多 lane(image
 """
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Any, Callable
 
 # Callback signature:`(done, total, **extras)` ── 兼容旧 fake 的 `(done, total)`。
 ProgressCallback = Callable[..., None]
+
+
+def emit_to_callback(cb, done: int, total: int, kwarg_candidates: list[dict]) -> None:
+    """按候选 kwargs 顺序找**第一个签名能接受**的调用方式,只调一次。
+
+    用 inspect.signature().bind 判定兼容(不触发回调 body),故回调 body 里真抛的
+    TypeError **不再被误当签名不符吞掉 + 降级重调**(审查发现的 footgun:签名匹配但
+    body 有 bug 抛 TypeError 时,旧写法 `except TypeError` 会把它当降级信号,副作用重复
+    执行、真错被掩盖)。所有候选都不匹配 → 退到最简 (done, total)。
+
+    signature 无法内省(C 函数/内建等罕见情形)→ 回退旧的 try/except 探测(接受 footgun)。
+    """
+    try:
+        sig = inspect.signature(cb)
+    except (ValueError, TypeError):
+        sig = None
+
+    if sig is not None:
+        for kwargs in kwarg_candidates:
+            try:
+                sig.bind(done, total, **kwargs)
+            except TypeError:
+                continue  # 这个签名不接受这组参数 → 试下一个候选
+            cb(done, total, **kwargs)  # 兼容 → 调一次;body 的 TypeError 正常冒泡
+            return
+        cb(done, total)  # 没有候选匹配 → 最简契约
+        return
+
+    # 无法内省签名:退回旧探测(极少见,如内建 C 回调)。
+    for kwargs in [*kwarg_candidates, {}]:
+        try:
+            cb(done, total, **kwargs)
+            return
+        except TypeError:
+            continue
 
 
 class ProgressTracker:
@@ -260,17 +296,7 @@ class ProgressTracker:
         cb = self._callback
         if cb is None:
             return payload
-        try:
-            cb(done, total, **extras)
-            return payload
-        except TypeError:
-            pass
-        # 降级 1:只 preview_url(老 PR-F 契约)
-        try:
-            cb(done, total, preview_url=preview_url)
-            return payload
-        except TypeError:
-            pass
-        # 降级 2:最简 (done, total)
-        cb(done, total)
+        # 候选签名(富 → 简):full extras → 只 preview_url(老 PR-F 契约)→ (done,total)。
+        # emit_to_callback 用 signature.bind 判兼容,不会把回调 body 的真 TypeError 当降级信号。
+        emit_to_callback(cb, done, total, [extras, {"preview_url": preview_url}])
         return payload
