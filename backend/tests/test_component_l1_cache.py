@@ -49,7 +49,6 @@ def l1(monkeypatch):
     monkeypatch.setattr(MM, "_modular_repo_from_components", lambda resolved: "/fake/repo")
     # 关键:走单文件桥接路径(L1 缓存就在这条路径上)
     monkeypatch.setattr(MM, "_is_standalone_single_file", lambda spec: True)
-    monkeypatch.setattr(MM, "_is_comfy_single_file_unet", lambda spec: False)
 
     # build_bridged_* 记录调用 + 返回唯一对象(便于断言「复用 = 同一对象」)。
     calls = {"transformer": [], "text_encoder": [], "vae": []}

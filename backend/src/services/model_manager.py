@@ -50,14 +50,6 @@ def _modular_repo_from_components(resolved: dict) -> str:
     )
 
 
-def _is_comfy_single_file_unet(unet_spec) -> bool:
-    """unet 是 repo 外的 comfy 量化单文件(需桥接 override)而非 HF-layout transformer。
-
-    HF-layout transformer 目录有 config.json;comfy 单文件(diffusion_models/flux/)没有。
-    """
-    return not (Path(unet_spec.file).parent / "config.json").exists()
-
-
 def _is_standalone_single_file(spec) -> bool:
     """任意组件:文件是 repo 外单文件(parent 无 config.json)→ 需桥接 override。
     HF-layout 组件(diffusers/<m>/{transformer,text_encoder,vae}/)parent 有 config.json。"""
@@ -331,36 +323,6 @@ class ModelManager:
         except Exception:
             return []
 
-    def _detect_vllm_gpus(self, spec: ModelSpec) -> list[int]:
-        """Detect which GPUs vLLM is using by checking nvidia-smi."""
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode != 0:
-                return [0]
-            gpu_result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
-                capture_output=True, text=True, timeout=5,
-            )
-            uuid_to_idx: dict[str, int] = {}
-            for line in gpu_result.stdout.strip().split("\n"):
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 2:
-                    uuid_to_idx[parts[1]] = int(parts[0])
-            vllm_gpus: set[int] = set()
-            for line in result.stdout.strip().split("\n"):
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 2:
-                    idx = uuid_to_idx.get(parts[1])
-                    if idx is not None:
-                        vllm_gpus.add(idx)
-            return sorted(vllm_gpus) if vllm_gpus else [0]
-        except Exception:
-            return [0]
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -593,7 +555,6 @@ class ModelManager:
                     )
                     gpu_index = 0
                     gpu_indices = [0]
-                detect_after_load = False
             else:
                 # External service (e.g. vLLM) — detect GPUs AFTER the process
                 # has actually claimed them (pre-load nvidia-smi returns nothing).
