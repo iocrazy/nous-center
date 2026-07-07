@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import time
 
-from src.services.inference.progress_tracker import ProgressTracker
+import pytest
+
+from src.services.inference.progress_tracker import ProgressTracker, emit_to_callback
 
 
 def _collect():
@@ -182,3 +184,52 @@ def test_latency_window_smooths_spike():
     # 后期 eta(基于滑窗均值)应低于首步
     later_eta = events[-1]["eta_ms"]
     assert later_eta < spike_eta
+
+
+# —— emit_to_callback:signature.bind 判兼容,不吞回调 body 的真 TypeError(审查 footgun)——
+def test_emit_body_typeerror_not_swallowed():
+    """回调签名匹配但 body 真抛 TypeError → 必须冒泡,不被当降级信号吞掉/重调。"""
+    calls = []
+
+    def cb(done, total, **extras):
+        calls.append((done, total))
+        raise TypeError("real bug inside callback body")
+
+    with pytest.raises(TypeError, match="real bug inside callback body"):
+        emit_to_callback(cb, 1, 2, [{"stage": "x"}])
+    assert len(calls) == 1, "只该调一次(没因吞 TypeError 降级重调)"
+
+
+def test_emit_signature_mismatch_falls_back_to_min():
+    """回调只接 (done, total) → 降级到最简契约,不抛。"""
+    calls = []
+
+    def cb(done, total):
+        calls.append((done, total))
+
+    emit_to_callback(cb, 3, 4, [{"stage": "x", "progress": 0.5}])
+    assert calls == [(3, 4)]
+
+
+def test_emit_full_signature_gets_extras():
+    """回调接 **extras → 收到富参数(第一候选)。"""
+    got = {}
+
+    def cb(done, total, **extras):
+        got.update(extras)
+        got["dt"] = (done, total)
+
+    emit_to_callback(cb, 5, 6, [{"stage": "denoise", "progress": 0.9}])
+    assert got["dt"] == (5, 6)
+    assert got["stage"] == "denoise" and got["progress"] == 0.9
+
+
+def test_emit_middle_candidate_preview_url():
+    """只接 preview_url(老 PR-F 契约)→ 命中第二候选。"""
+    got = {}
+
+    def cb(done, total, preview_url=None):
+        got["preview_url"] = preview_url
+
+    emit_to_callback(cb, 1, 1, [{"stage": "x"}, {"preview_url": "http://p"}])
+    assert got["preview_url"] == "http://p"
