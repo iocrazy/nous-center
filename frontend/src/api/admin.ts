@@ -43,6 +43,10 @@ export function useAdminLogout() {
       // Drop every cached query so the next admin (or post-relogin session)
       // can't see stale list data via placeholderData.
       qc.clear()
+      // 显式把 admin/me 置为未认证 —— AuthGate 立刻翻回登录页。原先只 clear()+invalidate
+      // 靠 refetch 翻页,clear() 后 observer 刷新有时序竞态、不保证同步翻 authenticated,
+      // 导致「点登出仍停在主页面」。setQueryData 同步写入,确定性触发 AuthGate 重渲染。
+      qc.setQueryData<AdminMe>(ADMIN_ME_KEY, { login_required: true, authenticated: false })
       qc.invalidateQueries({ queryKey: ADMIN_ME_KEY })
     },
   })
