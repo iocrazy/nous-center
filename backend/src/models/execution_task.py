@@ -12,6 +12,9 @@ class ExecutionTask(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=snowflake_id)
     workflow_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 归属:创建该 prediction 的调用方 API key。predictions by-id 端点据此校验 owner
+    # (IDOR 防护)。nullable —— admin UI / workflow runner 创建的 task + 老行为 NULL。
+    api_key_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     workflow_name: Mapped[str] = mapped_column(String(100), default="")
     status: Mapped[str] = mapped_column(String(20), default="queued")  # queued/running/completed/failed/cancelled
     nodes_total: Mapped[int] = mapped_column(Integer, default=0)

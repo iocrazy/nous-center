@@ -230,3 +230,33 @@ async def test_predictions_webhook_stored(async_client_with_db, prediction_servi
         task = await s.get(ExecutionTask, pid)
         assert task.webhook_url == "https://hook.example/cb"
         assert task.webhook_events == ["completed"]
+
+
+@pytest.mark.asyncio
+async def test_prediction_by_id_is_owner_scoped_idor(async_client_with_db, prediction_service):
+    """IDOR 回归:别的 API key 不能按 id 读/取消我的 prediction(get/cancel owner-scoped)。"""
+    from src.models.instance_api_key import InstanceApiKey
+
+    client, p = async_client_with_db, prediction_service
+    resp = await client.post(
+        f"/v1/services/{p.name}/predictions", json={"input": {}},
+        headers={"Authorization": f"Bearer {p.raw_key}", "Prefer": "respond-async"})
+    assert resp.status_code == 202, resp.text
+    pid = resp.json()["id"]
+
+    # 合法但非 owner 的 key B
+    raw_b = f"sk-other-{_secrets.token_hex(8)}"
+    async with client.session_factory() as s:
+        s.add(InstanceApiKey(
+            instance_id=None, label="b",
+            key_hash=bcrypt.hashpw(raw_b.encode(), bcrypt.gensalt()).decode(),
+            key_prefix=raw_b[:10], is_active=True))
+        await s.commit()
+
+    hb = {"Authorization": f"Bearer {raw_b}"}
+    # key B 不该读到 / 取消 key A 的 prediction → 404(不泄漏存在性)
+    assert (await client.get(f"/v1/predictions/{pid}", headers=hb)).status_code == 404
+    assert (await client.post(f"/v1/predictions/{pid}/cancel", headers=hb)).status_code == 404
+    # owner key A 仍能读 → 200
+    ha = {"Authorization": f"Bearer {p.raw_key}"}
+    assert (await client.get(f"/v1/predictions/{pid}", headers=ha)).status_code == 200
