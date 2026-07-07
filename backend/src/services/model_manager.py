@@ -934,7 +934,13 @@ class ModelManager:
             # stashed 的不占卡 —— 选它销毁腾不出显存,守卫会误以为腾了 → 重试仍 OOM 空转。
             # 它的 RAM 回收出口 = 手动二次卸载 / stash 水位拒绝(spec 2026-06-12 PR-3)。
             and not getattr(entry, "stashed", False)
-            and (gpu_index is None or entry.gpu_index == gpu_index)
+            # 张量并行模型占多张卡(gpu_indices),某副卡 OOM 时也该能选中它驱逐 ——
+            # 早先只比主卡 entry.gpu_index,TP 模型的副卡 OOM 永远选不中它(审查发现)。
+            and (
+                gpu_index is None
+                or entry.gpu_index == gpu_index
+                or gpu_index in (getattr(entry, "gpu_indices", None) or [])
+            )
         ]
 
         if not candidates:
