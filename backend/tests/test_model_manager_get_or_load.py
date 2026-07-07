@@ -252,3 +252,21 @@ async def test_evict_lru_returns_none_when_unload_skipped_by_in_use(monkeypatch)
     evicted = await mm.evict_lru()
     assert evicted is None, "unload 被 in-use 跳过时 evict_lru 不该返回 model_id"
     assert mm.is_loaded("m1")
+
+
+@pytest.mark.asyncio
+async def test_evict_lru_matches_tensor_parallel_secondary_gpu():
+    """张量并行模型占多卡(gpu_indices),副卡 OOM 时也该能选中它驱逐。
+
+    早先候选只比主卡 entry.gpu_index → TP 模型副卡 OOM 永远选不中它(审查发现)。
+    """
+    mm = _mm([_spec("tp")])
+    a = _StubAdapter(paths={"main": "/fake/tp"})
+    await mm.load_model("tp", adapter_factory=lambda s: a)
+    entry = mm._models["tp"]
+    entry.gpu_index = 1        # 主卡
+    entry.gpu_indices = [1, 2]  # 张量并行铺到 1、2
+
+    # 副卡 2 OOM → 应能选中占着卡 2 的 tp
+    evicted = await mm.evict_lru(gpu_index=2)
+    assert evicted == "tp", "张量并行模型的副卡 OOM 应能驱逐它(修前只比主卡→选不中)"
