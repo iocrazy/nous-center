@@ -158,6 +158,7 @@ async def create_prediction(
 
     task = ExecutionTask(
         workflow_id=instance.source_id,
+        api_key_id=api_key.id,  # 归属:by-id 端点据此校验 owner(IDOR 防护)
         workflow_name=instance.name,
         status="queued",
         nodes_total=len(patched.get("nodes") or []),
@@ -205,9 +206,12 @@ async def get_prediction(
     session: AsyncSession = Depends(get_async_session),
 ):
     """轮询一个 prediction 的状态/结果。"""
+    _, api_key = auth
     task = (await session.execute(
         select(ExecutionTask).where(ExecutionTask.id == prediction_id))).scalar_one_or_none()
-    if task is None:
+    # IDOR 防护:by-id 只允许创建它的 key 访问;归属不符 / NULL(admin·老行)对 api-key
+    # 调用方一律 404(不泄漏存在性)。
+    if task is None or task.api_key_id != api_key.id:
         raise HTTPException(404, detail="prediction not found")
     return task_to_prediction(task, service=task.workflow_name)
 
@@ -227,13 +231,16 @@ async def stream_prediction(
 
     from src.models.database import get_session_factory  # noqa: PLC0415
 
+    _, api_key = auth
+
     async def _gen():
         sf = get_session_factory()
         last_sig = None
         while True:
             async with sf() as s:
                 task = await s.get(ExecutionTask, prediction_id)
-            if task is None:
+            # IDOR 防护:归属不符 / NULL 对 api-key 调用方一律当"不存在"(同 get_prediction)。
+            if task is None or task.api_key_id != api_key.id:
                 yield f"event: error\ndata: {json.dumps({'error': 'prediction not found'})}\n\n"
                 return
             pred = task_to_prediction(task, service=task.workflow_name)
@@ -255,9 +262,11 @@ async def cancel_prediction(
     session: AsyncSession = Depends(get_async_session),
 ):
     """取消一个进行中的 prediction(runner 在节点边界检查 status=cancelled 中止)。"""
+    _, api_key = auth
     task = (await session.execute(
         select(ExecutionTask).where(ExecutionTask.id == prediction_id))).scalar_one_or_none()
-    if task is None:
+    # IDOR 防护:非 owner(含 NULL·admin·老行)一律 404,防跨租户取消(DoS)。
+    if task is None or task.api_key_id != api_key.id:
         raise HTTPException(404, detail="prediction not found")
     if task.status in ("completed", "failed", "cancelled"):
         return task_to_prediction(task, service=task.workflow_name)

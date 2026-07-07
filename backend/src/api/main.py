@@ -51,6 +51,8 @@ def _make_component_event_handler(registry, ws):
 # 提成模块常量:一处集中、可 grep、也是未来引入 alembic 时 baseline 的清单来源。
 _MICRO_MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS input_json JSONB",
+    # 归属列(IDOR 防护):predictions by-id 端点据 api_key_id 校验 owner。
+    "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS api_key_id BIGINT",
     "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_url VARCHAR(500)",
     "ALTER TABLE execution_tasks ADD COLUMN IF NOT EXISTS webhook_events JSONB",
     # PR-5b:files 作用域 instance_id → api_key_id。加列 + 旧列降 nullable(孤儿)+ 新键/索引。
