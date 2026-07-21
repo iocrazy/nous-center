@@ -190,6 +190,27 @@ backend 重启 = MOSS 跟随重启(warm ~秒级,可接受);外部平台依赖靠
 - [ ] 转写端点经 ModelManager 选址,e2e(auth→segments→计量)不回归。
 - [ ] watchdog 不误杀 sglang 进程;systemd unit 退役后无双头。
 
+## 8. Arc 3 — API 调用进任务中心(2026-07-21 用户需求)
+
+用户:「有 api 调用,你就应该有感知吧?建立任务吧」。现状:任务中心=ExecutionTask,
+只有工作流家族(服务运行/画布/predictions)建 task;OpenAI 兼容直连推理零感知。
+
+设计:
+- 通用 helper `record_api_call_task(...)`(如 `src/services/api_call_tasks.py`):调用完成后
+  **一次性写 completed/failed 的 ExecutionTask**(不建 running 中间态——同步调用无进度可言,
+  也别在请求关键路径上加往返;失败路径同样落 task,error 带简短原因)。字段复用:
+  `workflow_id=None`、`workflow_name=服务名`、`api_key_id`、`duration_ms`、
+  `input_json={model, timestamps, context?, filename}`、
+  `result={text 预览(截断), segments_count, speakers, audio_seconds}`。
+- 本 arc 只接 **ASR 转写端点**(当前痛点);chat/图像后续按需一行接入;
+  embeddings 这类高频批量**默认不接**(任务中心会刷屏)。
+- 前端:task_type 增 `asr`(badge/卡片摘要:时长 + 段数 + 文本预览);TaskDetailModal
+  按 result 通用字段降级展示即可,不做专属大改。
+- 写 task 失败不影响转写主路(log warning 降级)。
+
+验收:远程 API 调一次转写 → 任务中心出一条 completed 的 asr 任务(服务名/时长/预览);
+失败调用出 failed 任务;转写响应耗时无可感知回归;ruff+单测+前端 tsc/vitest 绿。
+
 ## 6. 非目标 / 风险
 
 - 不做流式 ASR;不做 UI 启停 MOSS(常驻)。
