@@ -758,6 +758,95 @@ async def _asr_align_timestamps(
         return None
 
 
+# MOSS verbose_json 的 segments[].text 形如 `[S01]正文`(说话人无独立字段,是文本前缀,
+# 真机实测见 infra/moss-asr/SPIKE.md)。抠出 [Sxx] 前缀作 speaker,剩余为纯文本。
+_MOSS_SPEAKER_RE = re.compile(r"^\s*\[(S\d+)\]\s*(.*)$", re.DOTALL)
+
+# MOSS 的默认「转写 + 说话人分离」指令,逐字取自 sglang-omni 服务端
+# `sglang_omni/models/moss_transcribe_diarize/request_builders.py:41-45`
+# 的 DEFAULT_TRANSCRIBE_DIARIZE_PROMPT(亦即 MOSS 模型卡 README 公开的推荐 prompt,
+# 属稳定契约)。context 热词经服务端 `prompt` 入参下传,但该入参**整体替换**默认指令
+# (`_prompt_from_payload`:170-198,非空 prompt 直接作 user text、:182-183 仅空时才用
+# 默认)——故我们自带这份默认指令、在尾部拼热词,既保 [Sxx]/时间戳输出契约,又生效热词。
+# 即便服务端某次升级改了内部默认,我们这份仍是模型卡官方 prompt,输出契约不破。
+_MOSS_DEFAULT_PROMPT = (
+    "请将音频转写为文本，每一段需以起始时间戳和说话人编号"
+    "（[S01]、[S02]、[S03]…）开头，正文为对应的语音内容，"
+    "并在段末标注结束时间戳，以清晰标明该段语音范围。"
+)
+
+
+async def _asr_moss_transcribe(
+    client: httpx.AsyncClient, wav: bytes, context: str | None, audio_seconds: int,
+) -> tuple[str, str | None, list[dict]]:
+    """走 MOSS-Transcribe-Diarize SGLang 微服务(spec 2026-07-20)做转写 + 说话人分离。
+
+    POST 归一化 16k WAV 到 `{NOUS_MOSS_ASR_URL}/v1/audio/transcriptions`,
+    response_format=verbose_json 拿到段级(时间戳 + [Sxx] 说话人)结果。返回
+    `(text, language, segments)`:
+    - text = 各段纯文本顺序拼接(剥掉时间戳/[Sxx],纯文本客户端不退化);
+    - language = MOSS 响应有 language 字段就透传,没有则 None(防御式,不假设有);
+    - segments = [{start, end, speaker, text}](start/end 保留秒 float,speaker 抠自 [Sxx])。
+
+    MOSS 是唯一 ASR 主路(退役了 Qwen3-ASR + aligner),不可达/非 200 → HTTPException 503,
+    **不静默降级**(spec §3)。
+
+    context(领域/热词偏置)非空时:下传 `prompt = 默认指令 + 热词提示:{context}`(热词后缀
+    = MOSS 模型卡 README 官方配方,transformers 真机 smoke 验过 steer 生效且不幻觉;见
+    `_MOSS_DEFAULT_PROMPT` 处注释)。context 为空:不传 `prompt`,吃服务端默认指令。
+    """
+    base = os.environ.get("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    # max_new_tokens 按时长动态:0.9B 输出 ≈12.5 audio-token/s + 文本,盈余给标点/说话人标记;
+    # 下限 5120 保短音频,上限 65536 防长音频失控。
+    max_new_tokens = min(65536, max(5120, int(audio_seconds * 32) + 512))
+    # 超时按时长给:长音频转写慢,至少 300s。
+    timeout = max(300, audio_seconds * 2)
+    files = {"file": ("audio.wav", wav, "audio/wav")}
+    data = {
+        "model": "moss-transcribe-diarize",
+        "response_format": "verbose_json",
+        "max_new_tokens": str(max_new_tokens),
+    }
+    # context → 热词:自带默认指令 + 官方热词后缀(空则不传,走服务端默认)。
+    if context and context.strip():
+        data["prompt"] = f"{_MOSS_DEFAULT_PROMPT}热词提示:{context.strip()}"
+    try:
+        resp = await client.post(
+            f"{base.rstrip('/')}/v1/audio/transcriptions",
+            files=files, data=data, timeout=timeout,
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(503, detail=f"MOSS ASR 服务不可达: {e}") from e
+    if resp.status_code != 200:
+        raise HTTPException(
+            503, detail=f"MOSS ASR 服务错误 HTTP {resp.status_code}: {resp.text[:200]}",
+        )
+
+    body = resp.json()
+    language = body.get("language")  # MOSS 未必回语种;没有则 None,字段保留。
+    segments: list[dict] = []
+    texts: list[str] = []
+    for seg in body.get("segments") or []:
+        raw = seg.get("text") or ""
+        m = _MOSS_SPEAKER_RE.match(raw)
+        if m:
+            speaker: str | None = m.group(1)
+            seg_text = m.group(2).strip()
+        else:
+            # 防御:段缺 [Sxx] 前缀(格式异常)→ speaker=None,文本原样保留,不崩。
+            speaker = None
+            seg_text = raw.strip()
+        segments.append({
+            "start": seg.get("start"),
+            "end": seg.get("end"),
+            "speaker": speaker,
+            "text": seg_text,
+        })
+        texts.append(seg_text)
+    text = "".join(texts)
+    return text, language, segments
+
+
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     request: Request,
@@ -770,17 +859,17 @@ async def audio_transcriptions(
     auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_transcriptions),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """OpenAI 兼容语音转写(ASR,2026-06-20 接入;spec asr-qwen3-integration / asr-context-lid)。
+    """OpenAI 兼容语音转写(ASR)。
 
     multipart:`file`(音频)+ `model`(服务名)+ 可选 `context`(领域/热词偏置)。解析链同
-    /v1/embeddings:model → 服务(M:N grant)→ source_type=model → vLLM ASR 子进程
-    (Qwen3-ASR)。上传音频先 ffmpeg 归一化。
+    /v1/embeddings:model → 服务(M:N grant)→ source_type=model。上传音频先 ffmpeg 归一化。
 
-    2026-06-21 起走 **chat/completions** 而非转写端点:一次拿到**语种(LID)+ 文本**,且
-    `context` 注入 system 槽做偏置(转写端点拿不到语种、也没 context 入口)。返回
-    `{text, language, usage:{type:"duration",seconds}}`(text 仍首字段,纯文本客户端不受影响)。
-    秒数自算(chat 不回音频秒数)。`language`/`response_format` 为 OpenAI 兼容保留位
-    (chat 路径自动判语种)。Bearer 走 grant+quota;admin cookie(Playground)直查服务、跳配额。
+    2026-07-20 起后端切 **MOSS-Transcribe-Diarize SGLang 微服务**(退役 Qwen3-ASR vLLM chat
+    路径 + nous-aligner:MOSS 内建时间戳 + 说话人分离;spec 2026-07-20-moss-asr-sglang-serving)。
+    返回 `{text, language, usage:{type:"duration",seconds}}`(text 仍首字段,纯文本客户端不受
+    影响);`timestamps=true` 时加 `segments`(段级 {start,end,speaker,text},不再有 words 字段)。
+    秒数自算(归一化 wav)。`language`/`response_format` 为 OpenAI 兼容保留位。Bearer 走
+    grant+quota;admin cookie(Playground)直查服务、跳配额。MOSS 不可达 → 503(唯一 ASR 主路)。
     """
     instance, api_key = auth
     requested_model = model or None
@@ -816,31 +905,22 @@ async def audio_transcriptions(
         )
 
     engine_name = instance.source_name or str(instance.source_id)
-    model_mgr = getattr(request.app.state, "model_manager", None)
-    try:
-        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
-    except VLLMNotLoaded as e:
-        raise HTTPException(503, detail=str(e)) from e
-    except VLLMNoEndpoint as e:
-        raise HTTPException(500, detail=str(e)) from e
 
     raw = await file.read()
     if not raw:
         raise InvalidRequestError("空音频文件")
     wav = await _ffmpeg_to_wav16k(raw)
+    # MOSS 不回音频秒数 → 自算(归一化 wav 16k/mono/s16le);计量 + max_new_tokens + 超时都按它。
+    audio_seconds = _wav16k_seconds(wav)
 
     start_ms = time.monotonic()
-    words: list[dict] | None = None
-    async with httpx.AsyncClient(timeout=300, proxy=None) as client:
-        # chat 路径:一次拿到 语种(LID) + 文本,且支持 context 偏置(见 _asr_chat_transcribe)。
-        text, detected_language = await _asr_chat_transcribe(client, base_url, wav, context)
-        # 时间戳(可选):调独立对齐器微服务,失败降级为 None(spec Arc B)。
-        if timestamps and text:
-            words = await _asr_align_timestamps(client, wav, text, detected_language)
+    async with httpx.AsyncClient(proxy=None) as client:
+        # MOSS 微服务:一次拿到 文本 + 段级时间戳 + 说话人分离(不可达 → 503)。
+        text, detected_language, segments = await _asr_moss_transcribe(
+            client, wav, context, audio_seconds,
+        )
 
     duration_ms = int((time.monotonic() - start_ms) * 1000)
-    # chat 不回音频秒数 → 自算(归一化 wav 16k/mono/s16le)。
-    audio_seconds = _wav16k_seconds(wav)
     from src.services.usage_service import record_llm_usage
     await record_llm_usage(
         model=engine_name,
@@ -854,15 +934,15 @@ async def audio_transcriptions(
     # 计量:按音频秒数扣(ASR 无 token 概念);至少 1。admin(Playground)跳过 grant/quota。
     if api_key is not None:
         await _post_consume_quota(api_key.id, instance.id, max(1, audio_seconds))
-    # OpenAI 兼容:text 仍是首要字段(纯文本客户端不受影响);language/words 是增量字段。
+    # OpenAI 兼容:text 仍是首要字段(纯文本客户端不受影响);language/segments 是增量字段。
     out: dict = {
         "text": text,
         "language": detected_language,
         "usage": {"type": "duration", "seconds": audio_seconds},
     }
     if timestamps:
-        # words=None 表示请求了时间戳但对齐器不可用(降级);前端可据此提示。
-        out["words"] = words
+        # 段级 diar 结果(MOSS 内建,{start,end,speaker,text});不再有字级 words。
+        out["segments"] = segments
     return out
 
 
