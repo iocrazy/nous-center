@@ -241,6 +241,104 @@ async def test_endpoint_moss_unreachable_returns_503(
     assert resp.status_code == 503, resp.text
 
 
+# --- Arc 3:直连转写进任务中心(spec §8) --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_endpoint_records_completed_asr_task(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 成功转写 → 落一条 completed 的 asr task(服务名/时长/预览/段数/说话人);
+    # _task_to_dict 派生 type=asr。
+    import src.api.routes.openai_compat as oc
+    from sqlalchemy import select
+    from src.models.execution_task import ExecutionTask
+    from src.services.execution_task_serialize import _task_to_dict
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(4.0)
+    long_text = "你好世界，" * 40  # >120 字符,验证预览截断
+
+    async def _fake_ffmpeg(raw):
+        return wav
+
+    async def _fake_moss(client, w, ctx, secs, base_url):
+        return (long_text, "zh", [
+            {"start": 0.0, "end": 2.0, "speaker": "S01", "text": "你好世界"},
+            {"start": 2.0, "end": 4.0, "speaker": "S02", "text": "再见"},
+        ])
+
+    monkeypatch.setattr(oc, "_ffmpeg_to_wav16k", _fake_ffmpeg)
+    monkeypatch.setattr(oc, "_asr_moss_transcribe", _fake_moss)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("clip.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "timestamps": "true", "context": "瑞幸咖啡"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    sf = api_client.app.state.async_session_factory
+    async with sf() as s:
+        tasks = (await s.execute(select(ExecutionTask))).scalars().all()
+    assert len(tasks) == 1
+    t = tasks[0]
+    assert t.status == "completed"
+    assert t.workflow_id is None
+    assert t.workflow_name == "qwen3.5"
+    assert t.api_key_id is not None
+    assert t.result["segments_count"] == 2
+    assert t.result["speakers"] == ["S01", "S02"]
+    assert t.result["audio_seconds"] == 4
+    assert len(t.result["text"]) == 120  # 预览截 120
+    assert t.input_json == {
+        "model": "qwen3.5", "timestamps": True,
+        "context": "瑞幸咖啡", "filename": "clip.wav",
+    }
+    assert _task_to_dict(t)["type"] == "asr"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_records_failed_asr_task(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # MOSS 不可达 → 503,且落一条 failed task(error 简短,无 result)。
+    import src.api.routes.openai_compat as oc
+    from sqlalchemy import select
+    from src.models.execution_task import ExecutionTask
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(2.0)
+
+    async def _fake_ffmpeg(raw):
+        return wav
+
+    async def _fake_moss(client, w, ctx, secs, base_url):
+        raise HTTPException(503, detail="MOSS ASR 服务不可达")
+
+    monkeypatch.setattr(oc, "_ffmpeg_to_wav16k", _fake_ffmpeg)
+    monkeypatch.setattr(oc, "_asr_moss_transcribe", _fake_moss)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("clip.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5"},
+    )
+    assert resp.status_code == 503, resp.text
+
+    sf = api_client.app.state.async_session_factory
+    async with sf() as s:
+        tasks = (await s.execute(select(ExecutionTask))).scalars().all()
+    assert len(tasks) == 1
+    t = tasks[0]
+    assert t.status == "failed"
+    assert t.workflow_name == "qwen3.5"
+    assert t.error == "MOSS ASR 服务不可达"
+    assert t.result is None
+
+
 # --- 计量口径不变(既有断言保住) ----------------------------------------
 
 

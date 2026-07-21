@@ -15,7 +15,7 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, Image as ImageIcon, Mic, MessageSquare, Eye,
+  X, Image as ImageIcon, Mic, MessageSquare, Eye, Captions,
   RefreshCw, Copy, Play,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
@@ -23,11 +23,11 @@ import { useTasks, type ExecutionTask } from '../../api/tasks'
 import { useServices } from '../../api/services'
 import { useExecutionStore } from '../../stores/execution'
 
-type TaskType = 'image' | 'tts' | 'vision' | 'llm'
+type TaskType = 'image' | 'tts' | 'vision' | 'llm' | 'asr'
 
 function getTaskType(t: ExecutionTask): TaskType | null {
   const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
-  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ? v : null
+  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' || v === 'asr' ? v : null
 }
 
 function getAudioDuration(t: ExecutionTask): number | null {
@@ -130,7 +130,8 @@ export default function TaskDetailModal() {
           {type === 'tts' && <TtsDetailBody task={task} />}
           {type === 'llm' && <LlmDetailBody task={task} />}
           {type === 'vision' && <VisionDetailBody task={task} />}
-          {!type && <GenericDetailBody task={task} />}
+          {/* Arc 3:ASR 不做专属大改,按 result 通用字段降级展示(spec §8)。 */}
+          {(type === 'asr' || !type) && <GenericDetailBody task={task} />}
         </div>
       </div>
     </div>
@@ -153,6 +154,7 @@ function ModalHeader({
                   : type === 'tts' ? Mic
                   : type === 'llm' ? MessageSquare
                   : type === 'vision' ? Eye
+                  : type === 'asr' ? Captions
                   : null
   return (
     <div

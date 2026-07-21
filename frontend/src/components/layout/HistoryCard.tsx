@@ -24,30 +24,32 @@
  * llm_*_tokens/vision_completion_tokens(已在 #175-177 落地)。
  */
 import {
-  Image as ImageIcon, Mic, MessageSquare, Eye,
+  Image as ImageIcon, Mic, MessageSquare, Eye, Captions,
   Search, RefreshCw, Copy, Download, Play, ChevronRight,
   AlertTriangle,
 } from 'lucide-react'
 import type { ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
 
-type TaskType = 'image' | 'tts' | 'vision' | 'llm'
+type TaskType = 'image' | 'tts' | 'vision' | 'llm' | 'asr'
 
 const TYPE_LABEL: Record<TaskType, string> = {
-  image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM',
+  image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM', asr: '语音识别',
 }
 
 const DEFAULT_EXPANDED_TYPES = new Set<TaskType>(['image', 'tts'])
 
 function getTaskType(t: ExecutionTask): TaskType | null {
   const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
-  if (v === 'image' || v === 'tts' || v === 'vision' || v === 'llm') return v
-  // failed task 拿不到 task.type(后端 _detect_*_meta 只在 result.outputs 有内容时
+  if (v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' || v === 'asr') return v
+  // failed task 拿不到 task.type(后端 _detect_*_meta 只在 result 有内容时
   // 推断)→ 从 workflow_name 关键词兜底,让 chip 至少能显示意图。
   // 优先 image:多数失败发生在最重的图像工作流上,且 image chip 视觉权重最强。
   const name = (t.workflow_name || '').toLowerCase()
   if (/flux|sdxl|sd[-_]|klein|ernie|image|clip|t5|vae|kohya|lora|diff/.test(name)) return 'image'
-  if (/tts|cosy|voxcpm|moss|asr|audio|speech/.test(name)) return 'tts'
+  // asr 在 tts 之前 —— MOSS-Transcribe-Diarize 是 ASR;转写/whisper 关键词归 asr。
+  if (/asr|transcri|whisper|moss/.test(name)) return 'asr'
+  if (/tts|cosy|voxcpm|audio|speech/.test(name)) return 'tts'
   if (/vl|vision|qwen[-_]?vl|gemma[-_]?vl/.test(name)) return 'vision'
   if (/llm|chat|gemma|qwen|mistral|llama/.test(name)) return 'llm'
   return null
@@ -67,6 +69,20 @@ function errorExcerpt(t: ExecutionTask, maxLen: number = 80): string | null {
 
 function getAudioDuration(t: ExecutionTask): number | null {
   return (t as ExecutionTask & { audio_duration_seconds?: number | null }).audio_duration_seconds ?? null
+}
+
+/** Arc 3:ASR 任务的音频时长(秒)+ 说话人分段数(后端 _detect_asr_meta 暴露;缺 → null)。 */
+function getAsrSeconds(t: ExecutionTask): number | null {
+  return (t as ExecutionTask & { audio_seconds?: number | null }).audio_seconds ?? null
+}
+function getAsrSegments(t: ExecutionTask): number | null {
+  return (t as ExecutionTask & { segments_count?: number | null }).segments_count ?? null
+}
+/** ASR 转写文本预览(后端落在 flat result.text,截断)。 */
+function getAsrText(t: ExecutionTask): string | null {
+  if (!t.result || typeof t.result !== 'object') return null
+  const txt = (t.result as Record<string, unknown>).text
+  return typeof txt === 'string' && txt ? txt : null
 }
 
 function getLlmTokens(t: ExecutionTask): { prompt: number | null; completion: number | null } {
@@ -278,6 +294,16 @@ function summaryMetaLine(task: ExecutionTask, type: TaskType | null): string {
         durationLabel(task.duration_ms),
       ].filter(Boolean).join(' · ')
     }
+    case 'asr': {
+      // Arc 3:音频时长 + 分段数(undefined 降级不显示)+ 调用耗时。
+      const secs = getAsrSeconds(task)
+      const segs = getAsrSegments(task)
+      return [
+        secs != null ? `${secs}s` : null,
+        segs != null ? `${segs} 段` : null,
+        durationLabel(task.duration_ms),
+      ].filter(Boolean).join(' · ')
+    }
     default:
       return durationLabel(task.duration_ms) || task.status
   }
@@ -324,6 +350,7 @@ function HistoryCardExpanded({
       {type === 'tts' && <TtsExpandedBody task={task} />}
       {type === 'llm' && <LlmExpandedBody task={task} />}
       {type === 'vision' && <VisionExpandedBody task={task} />}
+      {type === 'asr' && <AsrExpandedBody task={task} />}
       {!type && <GenericExpandedBody task={task} />}
 
       {/* failed 任务追加错误窗(任何 type 都显示)。 */}
@@ -569,6 +596,41 @@ function VisionExpandedBody({ task }: { task: ExecutionTask }) {
   )
 }
 
+/* ============================================================
+ * ASR body(Arc 3:直连转写调用)
+ * ============================================================ */
+function AsrExpandedBody({ task }: { task: ExecutionTask }) {
+  const secs = getAsrSeconds(task)
+  const segs = getAsrSegments(task)
+  const text = getAsrText(task)
+  return (
+    <>
+      <ExpMeta task={task} segments={[
+        secs != null ? `${secs}s 音频` : null,
+        segs != null ? `${segs} 段` : null,
+        durationLabel(task.duration_ms),
+      ]} />
+      <div
+        className="mx-3 mb-3 p-2.5 rounded text-[11.5px] leading-relaxed font-mono"
+        style={{
+          background: 'var(--type-asr-bg-chip)',
+          border: '1px solid var(--type-asr-border-subtle, rgba(52, 211, 153, 0.25))',
+          borderLeft: '3px solid var(--type-asr)',
+          color: 'var(--tp-text)',
+          maxHeight: 80,
+          overflow: 'hidden',
+        }}
+      >
+        {text ? (
+          <span>{text.length > 200 ? text.slice(0, 200) + '…' : text}</span>
+        ) : (
+          <span style={{ color: 'var(--tp-text-faint)' }}>(no transcript)</span>
+        )}
+      </div>
+    </>
+  )
+}
+
 function GenericExpandedBody({ task }: { task: ExecutionTask }) {
   return (
     <ExpMeta task={task} segments={[task.status, durationLabel(task.duration_ms)]} />
@@ -717,6 +779,7 @@ function MiniThumb({ task }: { task: ExecutionTask }) {
       {type === 'tts' && <Mic size={14} />}
       {type === 'llm' && <MessageSquare size={14} />}
       {type === 'vision' && <Eye size={14} />}
+      {type === 'asr' && <Captions size={14} />}
     </div>
   )
 }

@@ -859,29 +859,52 @@ async def audio_transcriptions(
         )
 
     engine_name = instance.source_name or str(instance.source_id)
+    key_id = api_key.id if api_key else None
+    # Arc 3(spec §8):直连转写调用进任务中心 —— 入参快照(回显)+ 整调用计时。
+    from src.services.api_call_tasks import record_api_call_task
+    task_input = {
+        "model": requested_model,
+        "timestamps": timestamps,
+        "context": context,
+        "filename": file.filename or None,
+    }
+    req_start = time.monotonic()
 
-    # MOSS 引擎选址(Arc 2):env override > ModelManager(resident,未加载则按需拉起)。
-    model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        moss_base_url = await _resolve_moss_base_url(model_mgr, engine_name)
-    except VLLMNotLoaded as e:
-        raise HTTPException(503, detail=f"MOSS ASR 引擎不可用: {e}") from e
-    except VLLMNoEndpoint as e:
-        raise HTTPException(500, detail=str(e)) from e
+        # MOSS 引擎选址(Arc 2):env override > ModelManager(resident,未加载则按需拉起)。
+        model_mgr = getattr(request.app.state, "model_manager", None)
+        try:
+            moss_base_url = await _resolve_moss_base_url(model_mgr, engine_name)
+        except VLLMNotLoaded as e:
+            raise HTTPException(503, detail=f"MOSS ASR 引擎不可用: {e}") from e
+        except VLLMNoEndpoint as e:
+            raise HTTPException(500, detail=str(e)) from e
 
-    raw = await file.read()
-    if not raw:
-        raise InvalidRequestError("空音频文件")
-    wav = await _ffmpeg_to_wav16k(raw)
-    # MOSS 不回音频秒数 → 自算(归一化 wav 16k/mono/s16le);计量 + max_new_tokens + 超时都按它。
-    audio_seconds = _wav16k_seconds(wav)
+        raw = await file.read()
+        if not raw:
+            raise InvalidRequestError("空音频文件")
+        wav = await _ffmpeg_to_wav16k(raw)
+        # MOSS 不回音频秒数 → 自算(归一化 wav 16k/mono/s16le);计量 + max_new_tokens + 超时都按它。
+        audio_seconds = _wav16k_seconds(wav)
 
-    start_ms = time.monotonic()
-    async with httpx.AsyncClient(proxy=None) as client:
-        # MOSS 微服务:一次拿到 文本 + 段级时间戳 + 说话人分离(不可达 → 503)。
-        text, detected_language, segments = await _asr_moss_transcribe(
-            client, wav, context, audio_seconds, moss_base_url,
+        start_ms = time.monotonic()
+        async with httpx.AsyncClient(proxy=None) as client:
+            # MOSS 微服务:一次拿到 文本 + 段级时间戳 + 说话人分离(不可达 → 503)。
+            text, detected_language, segments = await _asr_moss_transcribe(
+                client, wav, context, audio_seconds, moss_base_url,
+            )
+    except Exception as exc:
+        # 失败也进任务中心(503/解析异常):落 failed task,error 带简短原因;不吞异常(照抛)。
+        detail = getattr(exc, "detail", None) or str(exc)
+        await record_api_call_task(
+            service_name=engine_name,
+            api_key_id=key_id,
+            status="failed",
+            duration_ms=int((time.monotonic() - req_start) * 1000),
+            input_json=task_input,
+            error=str(detail)[:200],
         )
+        raise
 
     duration_ms = int((time.monotonic() - start_ms) * 1000)
     from src.services.usage_service import record_llm_usage
@@ -891,12 +914,28 @@ async def audio_transcriptions(
         completion_tokens=0,
         duration_ms=duration_ms,
         instance_id=instance.id,
-        api_key_id=api_key.id if api_key else None,
+        api_key_id=key_id,
         agent_id=None,
     )
     # 计量:按音频秒数扣(ASR 无 token 概念);至少 1。admin(Playground)跳过 grant/quota。
     if api_key is not None:
         await _post_consume_quota(api_key.id, instance.id, max(1, audio_seconds))
+    # 成功进任务中心(await —— 写一行很快,保证任务中心即时可见)。text 预览截 120 字符;
+    # speakers 去重排序;result 的 audio_seconds 是前端派生 task_type=asr 的判据。
+    speakers = sorted({s.get("speaker") for s in segments if s.get("speaker")})
+    await record_api_call_task(
+        service_name=engine_name,
+        api_key_id=key_id,
+        status="completed",
+        duration_ms=int((time.monotonic() - req_start) * 1000),
+        input_json=task_input,
+        result={
+            "text": text[:120] if isinstance(text, str) else "",
+            "segments_count": len(segments),
+            "speakers": speakers,
+            "audio_seconds": audio_seconds,
+        },
+    )
     # OpenAI 兼容:text 仍是首要字段(纯文本客户端不受影响);language/segments 是增量字段。
     out: dict = {
         "text": text,

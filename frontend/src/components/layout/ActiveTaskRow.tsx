@@ -15,12 +15,12 @@
  *
  * type icon 映射:image → Image、tts → Mic、llm → MessageSquare、vision → Eye。
  */
-import { Image as ImageIcon, Mic, MessageSquare, Eye, Zap, Activity } from 'lucide-react'
+import { Image as ImageIcon, Mic, MessageSquare, Eye, Captions, Zap, Activity } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ExecutionTask } from '../../api/tasks'
 import { useTaskProgressStore } from '../../stores/taskProgress'
 
-type TaskType = 'image' | 'tts' | 'vision' | 'llm'
+type TaskType = 'image' | 'tts' | 'vision' | 'llm' | 'asr'
 
 /** RUNNING 任务卡实时运行计时:active 时每秒 tick 一次 Date.now() 触发 re-render。
  * 非 active 不起 interval(完成后停在终值,由 duration_ms 接管展示)。 */
@@ -41,7 +41,7 @@ function formatElapsed(ms: number): string {
 }
 
 const TYPE_LABEL: Record<TaskType, string> = {
-  image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM',
+  image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM', asr: '语音识别',
 }
 
 const STAGE_LABEL: Record<string, string> = {
@@ -56,7 +56,7 @@ const STAGE_LABEL: Record<string, string> = {
 
 function getTaskType(t: ExecutionTask): TaskType | null {
   const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
-  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ? v : null
+  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' || v === 'asr' ? v : null
 }
 
 // 把 icon 选择写成直接返回 JSX,避免「render 期间创建组件 ref」eslint 报错
@@ -68,6 +68,7 @@ function renderTypeIcon(type: TaskType | null) {
     case 'tts': return <Mic {...props} />
     case 'llm': return <MessageSquare {...props} />
     case 'vision': return <Eye {...props} />
+    case 'asr': return <Captions {...props} />
     default: return <Activity {...props} />
   }
 }

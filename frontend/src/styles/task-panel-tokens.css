@@ -77,6 +77,11 @@
   --type-llm-bg-history: rgba(96, 165, 250, 0.08);
   --type-llm-border-history: rgba(96, 165, 250, 0.35);
 
+  /* Arc 3:ASR(语音识别)—— emerald,区别于 TTS 的 cyan。 */
+  --type-asr: #34d399;
+  --type-asr-bg-chip: rgba(52, 211, 153, 0.13);
+  --type-asr-border-subtle: rgba(52, 211, 153, 0.25);
+
   /* === Typography === */
   --tp-font-ui: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --tp-font-mono: 'JetBrains Mono', 'Fira Code', monospace;

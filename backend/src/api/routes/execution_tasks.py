@@ -11,6 +11,7 @@ from src.api.websocket import ws_manager
 # 序列化器下沉到 services 层(打破 workflow_runner→本模块 的反向依赖)。reaper
 # collect_referenced_image_uuids 仍在本文件(用 session),向下 import 抽 url 的纯 helper。
 from src.services.execution_task_serialize import (  # noqa: F401
+    _detect_asr_meta,
     _detect_image_meta,
     _detect_llm_meta,
     _detect_tts_meta,

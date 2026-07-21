@@ -322,6 +322,48 @@ def test_task_to_dict_exposes_type_field_for_tts_result():
     assert d["audio_duration_seconds"] == 2.5
 
 
+def test_detect_asr_meta_recognizes_flat_envelope():
+    """Arc 3(spec 2026-07-20-moss-asr §8):ASR 直连 task result 是 flat 顶层
+    {text, segments_count, speakers, audio_seconds}(非 workflow 节点输出);
+    audio_seconds 是判据。"""
+    from src.api.routes.execution_tasks import _detect_asr_meta
+
+    result = {"text": "你好", "segments_count": 3, "speakers": ["S01"], "audio_seconds": 12}
+    meta = _detect_asr_meta(result)
+    assert meta == {"task_type": "asr", "audio_seconds": 12, "segments_count": 3}
+
+
+def test_detect_asr_meta_returns_none_without_audio_seconds():
+    """无 audio_seconds 判据(workflow 结果 / 其它 result)→ 不误判 asr。"""
+    from src.api.routes.execution_tasks import _detect_asr_meta
+
+    assert _detect_asr_meta({"outputs": {"n": {"text": "hi"}}})["task_type"] is None
+    assert _detect_asr_meta({"text": "hi"})["task_type"] is None
+    assert _detect_asr_meta(None)["task_type"] is None
+
+
+def test_task_to_dict_exposes_type_field_for_asr_result():
+    """Arc 3:ASR-only flat result → type=\"asr\" + audio_seconds + segments_count。"""
+    from datetime import datetime, timezone
+
+    from src.api.routes.execution_tasks import _task_to_dict
+    from src.models.execution_task import ExecutionTask
+
+    now = datetime.now(timezone.utc)
+    t_asr = ExecutionTask(
+        id=9, workflow_id=None, workflow_name="moss-asr", status="completed",
+        nodes_total=0, nodes_done=0, current_node=None,
+        result={"text": "你好世界", "segments_count": 2,
+                "speakers": ["S01", "S02"], "audio_seconds": 7},
+        error=None, duration_ms=800, created_at=now, updated_at=now,
+    )
+    d = _task_to_dict(t_asr)
+    assert d["type"] == "asr"
+    assert d["task_type"] == "asr"
+    assert d["audio_seconds"] == 7
+    assert d["segments_count"] == 2
+
+
 def test_task_to_dict_exposes_type_field_for_image_result():
     """PR-1a:_task_to_dict 加显式 `type` 字段(对齐 spec State model ServiceType)。
     image result → type="image";text-only / None result → type=None(前端 Other 兜底)。

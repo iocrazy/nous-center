@@ -132,6 +132,26 @@ def _detect_tts_meta(result: object) -> dict:
     return out
 
 
+def _detect_asr_meta(result: object) -> dict:
+    """Arc 3(spec 2026-07-20-moss-asr §8):ASR 直连调用 task 的 result envelope 识别。
+
+    与 image/tts/… 的 workflow 节点输出不同 —— api_call_tasks.record_api_call_task 落的是
+    **flat 顶层 dict** `{text, segments_count, speakers, audio_seconds}`(非 `{outputs:{...}}`
+    包裹),所以直接看顶层 result,不走 _iter_node_outputs。`audio_seconds` 是判据(ASR 独有;
+    workflow 结果顶层不会有此键 → 不误判)。返 audio_seconds + segments_count 供前端卡片摘要。
+    """
+    out: dict = {"task_type": None, "audio_seconds": None, "segments_count": None}
+    if isinstance(result, dict) and "audio_seconds" in result:
+        out["task_type"] = "asr"
+        secs = result.get("audio_seconds")
+        if isinstance(secs, (int, float)):
+            out["audio_seconds"] = secs
+        sc = result.get("segments_count")
+        if isinstance(sc, int):
+            out["segments_count"] = sc
+    return out
+
+
 def _task_to_dict(t: ExecutionTask) -> dict:
     d = {
         "id": str(t.id),
@@ -157,8 +177,14 @@ def _task_to_dict(t: ExecutionTask) -> dict:
     img_meta = _detect_image_meta(t.result)
     d.update(img_meta)
     if img_meta.get("task_type") is None:
-        tts_meta = _detect_tts_meta(t.result)
-        if tts_meta.get("task_type"):
+        # Arc 3:ASR 直连调用 task 是 flat 顶层 result(audio_seconds 判据),
+        # 与 workflow 节点输出形状不同 —— 先查 asr,命中就归 asr。
+        asr_meta = _detect_asr_meta(t.result)
+        if asr_meta.get("task_type"):
+            d["task_type"] = asr_meta["task_type"]
+            d["audio_seconds"] = asr_meta["audio_seconds"]
+            d["segments_count"] = asr_meta["segments_count"]
+        elif (tts_meta := _detect_tts_meta(t.result)).get("task_type"):
             d["task_type"] = tts_meta["task_type"]
             d["audio_duration_seconds"] = tts_meta["audio_duration_seconds"]
         else:

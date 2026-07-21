@@ -49,4 +49,30 @@ describe('ExecutionTask V1.5 fields', () => {
     }
     expect(legacy.gpu_group).toBeUndefined()
   })
+
+  it('Arc 3: accepts asr task_type + audio_seconds / segments_count', () => {
+    const asr: ExecutionTask = {
+      id: 'act_1',
+      workflow_id: null,
+      workflow_name: 'moss-asr',
+      status: 'completed',
+      nodes_total: 0,
+      nodes_done: 0,
+      current_node: null,
+      result: { text: '你好世界', segments_count: 2, speakers: ['S01', 'S02'], audio_seconds: 7 },
+      error: null,
+      duration_ms: 800,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      task_type: 'asr',
+      type: 'asr',
+      image_width: null,
+      image_height: null,
+      audio_seconds: 7,
+      segments_count: 2,
+    }
+    expect(asr.task_type).toBe('asr')
+    expect(asr.audio_seconds).toBe(7)
+    expect(asr.segments_count).toBe(2)
+  })
 })
