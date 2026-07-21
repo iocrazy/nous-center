@@ -149,6 +149,12 @@ def _detect_model(model_dir: Path, local_path: str) -> dict[str, Any] | None:
     into a confusing "Unknown model" failure.
     """
 
+    # 目录带 .nous-external 标记 = 由外部微服务托管(如 MOSS-Transcribe-Diarize 走
+    # nous-moss-asr systemd,spec 2026-07-20-moss-asr-sglang-serving)。不生成引擎卡:
+    # ModelManager 不认这些架构,点加载必报 Unknown engine,卡片纯误导。
+    if (model_dir / ".nous-external").exists():
+        return None
+
     # Check for HuggingFace LLM (config.json with model_type)
     config_json = model_dir / "config.json"
     if config_json.exists():

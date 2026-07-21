@@ -120,3 +120,24 @@ async def test_api_v1_models_endpoint_returns_scanner_output(client, monkeypatch
     assert [m["id"] for m in body["models"]] == ["a-model", "b-model"]
     assert body["models"][0]["type"] == "image"
     invalidate("models")
+
+
+def test_scanner_skips_nous_external_marker(tmp_path, monkeypatch):
+    """带 .nous-external 标记的目录 = 外部微服务托管(如 MOSS 走 nous-moss-asr systemd),
+    不得生成引擎卡 —— ModelManager 不认其架构,点加载必报 Unknown engine。"""
+    import json
+
+    for name, marked in (("MOSS-Transcribe-Diarize", True), ("Some-LLM", False)):
+        d = tmp_path / "speech" / name
+        d.mkdir(parents=True)
+        (d / "config.json").write_text(json.dumps({"model_type": "x", "architectures": ["XForCausalLM"]}))
+        if marked:
+            (d / ".nous-external").write_text("externally managed\n")
+    _stub_settings_to(tmp_path, monkeypatch)
+
+    from src.services.model_scanner import scan_models
+    found = scan_models()
+
+    paths = {v["local_path"] for v in found.values()}
+    assert "speech/MOSS-Transcribe-Diarize" not in paths
+    assert "speech/Some-LLM" in paths
