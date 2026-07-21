@@ -897,7 +897,7 @@ async def audio_transcriptions(
         # 失败也进任务中心(503/解析异常):落 failed task,error 带简短原因;不吞异常(照抛)。
         detail = getattr(exc, "detail", None) or str(exc)
         await record_api_call_task(
-            service_name=engine_name,
+            service_name=instance.name,  # 用户视角服务名(moss-asr),非引擎名 —— 任务卡显示用
             api_key_id=key_id,
             status="failed",
             duration_ms=int((time.monotonic() - req_start) * 1000),
@@ -924,7 +924,7 @@ async def audio_transcriptions(
     # speakers 去重排序;result 的 audio_seconds 是前端派生 task_type=asr 的判据。
     speakers = sorted({s.get("speaker") for s in segments if s.get("speaker")})
     await record_api_call_task(
-        service_name=engine_name,
+        service_name=instance.name,
         api_key_id=key_id,
         status="completed",
         duration_ms=int((time.monotonic() - req_start) * 1000),
