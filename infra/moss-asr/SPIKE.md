@@ -166,7 +166,7 @@ nvidia-cuda-runtime 13.3.29    nvidia-npp 13.1.2.81
 
 ## 8. 生产选型仲裁(主循环定,PR-1 已固化)
 
-两条可用通路,**生产走 ①**:
+两条可用通路;**2026-07-21 生产切至 ②**(流量上来后 3× 提速值得,五钉工具链已固化在 setup.sh;① 保留为回退,见 moss_config.yaml 头注释):
 
 | | ① torch_native(PR-1 采用) | ② flashinfer + CUDA graph(本文件 §1-4 实测) |
 |---|---|---|

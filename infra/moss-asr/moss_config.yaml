@@ -1,18 +1,15 @@
 # nous-moss-asr 生产 pipeline config —— sgl-omni serve --config 读它。
-# 基线 = 默认 MossTranscribeDiarizePipelineConfig,只改三处;每处都是 PR-0 spike
-# (infra/moss-asr/SPIKE.md)真机验过的必要项,不是随手调参:
+# 基线 = 默认 MossTranscribeDiarizePipelineConfig,只改两处(SPIKE.md 真机验证):
 #
 #   1. mem_fraction_static: 0.5
 #      共享 3090(index0,与桌面/ComfyUI 同卡),不能抢整卡。spike 实测:0.25 起得来但
-#      KV 只 1143 token(权重 + 4GB encoder cache 挤占)→ 单请求都不够;0.5(≈13.4GB 实测占用)
-#      跑 7.7min 双人播客稳。要更高并发/更长音频再上专卡拉高。
-#   2. server_args_overrides.disable_cuda_graph: true
-#      本机无系统级 CUDA 工具链,CUDA graph 捕获会崩。顶层 CLI 无此开关(pydantic
-#      extra_forbidden),只能经 stage factory_args 的 server_args_overrides 注入。
-#   3. server_args_overrides.attention_backend: torch_native
-#      3090 = sm_86。默认 flashinfer 要 JIT(需完整 CUDA 工具链现场编译);triton backend
-#      数值坏——编译能过但输出乱码(满屏 "people" 重复)。torch_native 正确,7.7min→31.5s 够用。
-#      未来若迁 Blackwell 卡再评 flashinfer。
+#      KV 挤占后单请求都不够;0.5 跑 7.7min 双人播客稳,KV 余量覆盖长音频 max_new_tokens。
+#   2. attention/CUDA graph 走默认 = **flashinfer 通路**(2026-07-21 切换,SPIKE §8):
+#      venv 已五钉 13.3 工具链(setup.sh),sm_86 JIT 现编可过;实测 7.7min 播客 11s
+#      (torch_native 是 31.5s)。冷启(空 JIT 缓存)首次要数分钟现编;warm ~36s。
+#      【回退】若 flashinfer 出数值/编译问题,在 factory_args 加回:
+#        server_args_overrides: {disable_cuda_graph: true, attention_backend: torch_native}
+#      (三行,即回 torch_native 通路;triton backend 别用——数值坏,输出乱码。)
 config_cls: MossTranscribeDiarizePipelineConfig
 model_path: /media/heygo/program/models/nous/speech/MOSS-Transcribe-Diarize
 entry_stage: asr
@@ -27,8 +24,5 @@ stages:
       request_build_max_workers: 8
       request_build_max_pending: 16
       mem_fraction_static: 0.5
-      server_args_overrides:
-        disable_cuda_graph: true
-        attention_backend: torch_native
     gpu: 0
     terminal: true
