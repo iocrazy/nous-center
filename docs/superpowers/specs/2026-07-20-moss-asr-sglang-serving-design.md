@@ -129,6 +129,40 @@ sudo systemctl restart nous-backend           # 恢复 Qwen3-ASR chat 路径
 ```
 revert 后 `models.yaml` 的 qwen3_asr 条目随之恢复,重启 backend 即回到旧栈。
 
+## 7. Arc 2 — ModelManager 统一纳管(2026-07-21 用户改判)
+
+Arc 1(§1-§5b)上线后,用户拍板推翻「常驻 systemd、UI 不管」:**所有模型统一走
+ModelManager**。已确认:MOSS `resident: true` 常驻(行为等同 systemd 版);
+`nous-moss-asr.service` 退役删除(单一管理源,不留双头)。
+
+### 7.1 改动面(镜像 embedding/vLLM 接入模式)
+
+- **`SGLangAdapter`**(新,核心):ModelManager 起 `infra/moss-asr/.venv/bin/sgl-omni serve
+  --config moss_config.yaml` 子进程。进程管理**必须**:`start_new_session=True` 起独立
+  进程组 + unload 时对**准确 pgid** 走仓库既有 safe_signal 杀整组(sglang 有 cmdline
+  不含引擎名的 worker 子进程,杀主进程必留孤儿囤显存——PR-0 实测;killpg 广播事故教训,
+  pgid 必须校验 >1)。子进程 env 完整复刻 `start_serve.sh`(CUDA_DEVICE_ORDER/UUID 钉卡/
+  CUDA_HOME/PATH/LD_LIBRARY_PATH/HF 离线/NO_PROXY)。
+- `models.yaml`/models.d 加 MOSS 条目:`type: asr`、adapter 指 SGLangAdapter、
+  `resident: true`、GPU 钉 UUID。撤 MOSS 目录的 `.nous-external` 标记(正式条目取代;
+  Qwen3-ASR/ForcedAligner 两个待删目录的标记保留)。
+- vllm_watchdog:纳管 sglang 引擎端口(现假设「端口⟺vLLM」,需扩展,勿误杀)。
+- 转写端点:`NOUS_MOSS_ASR_URL` env 直连改为**经 ModelManager 取引擎 base_url**
+  (复用 embedding 的选址模式);env override 保留给测试。
+- systemd:仓库 unit 文件标记已退役;runbook 更新(disable --now + 删 /etc/systemd 下
+  unit;backend 重启后 resident 自动拉起)。
+
+### 7.2 代价(用户已知悉)
+
+backend 重启 = MOSS 跟随重启(warm ~秒级,可接受);外部平台依赖靠 resident 保证。
+
+### 7.3 验收
+
+- [ ] 引擎库出 MOSS 卡(语音识别 tab),网页可启停,resident 随 backend 自起。
+- [ ] unload 后 GPU 无孤儿 worker(compute-apps 清零)。
+- [ ] 转写端点经 ModelManager 选址,e2e(auth→segments→计量)不回归。
+- [ ] watchdog 不误杀 sglang 进程;systemd unit 退役后无双头。
+
 ## 6. 非目标 / 风险
 
 - 不做流式 ASR;不做 UI 启停 MOSS(常驻)。
