@@ -1069,24 +1069,28 @@ function buildLlmBody(svc: ServiceDetailT, values: Record<string, unknown>): Rec
   }
 }
 
+const curlPreStyle = {
+  margin: 0,
+  padding: 12,
+  background: 'var(--bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 4,
+  fontSize: 11,
+  color: 'var(--text)',
+  overflow: 'auto',
+  fontFamily: 'var(--mono, monospace)',
+} as const
+
 function DocsTab({ svc }: { svc: ServiceDetailT }) {
+  // ASR(语音识别)是 multipart /v1/audio/transcriptions,不是 JSON /v1/apps 或 chat —— 单独出
+  // 两种输出格式的调用说明(默认平台增强段 vs OpenAI-Whisper verbose_json),curl 各一条。
+  if (svc.category === 'asr') return <AsrDocsTab svc={svc} />
+
   const curl = buildCurl(svc)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <Panel title="cURL">
-        <pre
-          style={{
-            margin: 0,
-            padding: 12,
-            background: 'var(--bg)',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            fontSize: 11,
-            color: 'var(--text)',
-            overflow: 'auto',
-            fontFamily: 'var(--mono, monospace)',
-          }}
-        >
+        <pre style={curlPreStyle}>
           {curl}
         </pre>
       </Panel>
@@ -1098,6 +1102,53 @@ function DocsTab({ svc }: { svc: ServiceDetailT }) {
       </Panel>
     </div>
   )
+}
+
+// ASR 调用文档:两种 response_format 各一段说明 + curl。默认格式是平台增强(段带 speaker),
+// verbose_json 是 OpenAI-Whisper 生态标准(openai-python SDK 直连)。
+function AsrDocsTab({ svc }: { svc: ServiceDetailT }) {
+  const docNote = { fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, padding: '0 14px 8px' } as const
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Panel title="默认格式 · 平台增强(段含 speaker)">
+        <div style={docNote}>
+          multipart POST <code>/v1/audio/transcriptions</code>。返回
+          <code>{' { text, language, usage } '}</code>;带
+          <code>{' timestamps=true '}</code>时追加
+          <code>{' segments '}</code>(段级 <code>{'{ start, end, speaker, text }'}</code>,MOSS
+          内建说话人分离)。<code>text</code> 永远首字段、纯文本,最简客户端只读它即可。
+          <code>language</code> 由引擎或后端文本检测得出(均无则 <code>null</code>)。
+        </div>
+        <pre style={curlPreStyle}>{buildAsrCurl(svc.name, false)}</pre>
+      </Panel>
+      <Panel title="response_format=verbose_json · OpenAI-Whisper 标准(SDK 直连)">
+        <div style={docNote}>
+          与 OpenAI Whisper <code>verbose_json</code> 同形状(<code>task</code> /
+          <code>language</code>(空时 <code>und</code>)/ <code>duration</code> /
+          <code>text</code> / <code>segments[]</code>),openai-python 等 SDK 可直连。隐含分段:
+          始终返回 <code>segments</code>,无需另传 <code>timestamps</code>;逐段统计字段
+          (<code>avg_logprob</code> 等)为中性占位(MOSS 不产),<code>speaker</code> 为附加字段
+          (SDK 忽略未知字段)。
+        </div>
+        <pre style={curlPreStyle}>{buildAsrCurl(svc.name, true)}</pre>
+      </Panel>
+      <Panel title="出参 schema">
+        <SchemaTable rows={svc.exposed_outputs} kind="output" />
+      </Panel>
+    </div>
+  )
+}
+
+export function buildAsrCurl(serviceName: string, verbose: boolean): string {
+  return [
+    `curl -X POST 'https://YOUR_HOST/v1/audio/transcriptions' \\`,
+    `  -H 'Authorization: Bearer YOUR_API_KEY' \\`,
+    `  -F 'file=@audio.wav' \\`,
+    `  -F 'model=${serviceName}' \\`,
+    verbose
+      ? `  -F 'response_format=verbose_json'`
+      : `  -F 'timestamps=true'`,
+  ].join('\n')
 }
 
 function buildCurl(svc: ServiceDetailT): string {

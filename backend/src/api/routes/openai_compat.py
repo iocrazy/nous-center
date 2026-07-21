@@ -801,6 +801,91 @@ async def _asr_moss_transcribe(
     return text, language, segments
 
 
+def _detect_language(text: str) -> str | None:
+    """纯字符集启发式的文本语种检测(**无第三方依赖**),返回 ISO 639-1 码。
+
+    引擎不回语种时(MOSS 现状)由它兜底,让 `language` 出真值而非恒 null。按 Unicode 区段
+    逐字符统计归属,覆盖 zh / ja / ko / ru / en:
+    - 平假名 / 片假名(kana)是日语独有 → 有 kana 即判 `ja`(**优先于 CJK**,日文汉字混排
+      不误判 zh);
+    - 谚文(hangul)→ `ko`;
+    - 否则在 CJK(`zh`)/ 西里尔(`ru`)/ 拉丁及其余字母(`en` 兜底)间取**字符数最多**者;
+    - 无任何可判定字母(纯数字 / 标点 / 空)→ `None`(调用方据此保持 null 或落 `"und"`)。
+    """
+    kana = hangul = cjk = cyrillic = latin = 0
+    for ch in text:
+        o = ord(ch)
+        if 0x3040 <= o <= 0x30FF or 0x31F0 <= o <= 0x31FF:  # 平假名 / 片假名(含片假名扩展)
+            kana += 1
+        elif (0xAC00 <= o <= 0xD7A3 or 0x1100 <= o <= 0x11FF
+              or 0x3130 <= o <= 0x318F):  # 谚文音节 + Jamo + 兼容 Jamo
+            hangul += 1
+        elif (0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF
+              or 0xF900 <= o <= 0xFAFF):  # CJK 统一表意(含扩展 A / 兼容表意)
+            cjk += 1
+        elif 0x0400 <= o <= 0x04FF:  # 西里尔
+            cyrillic += 1
+        elif ch.isalpha():  # 前面已剥离东亚 / 西里尔,余下字母归拉丁(en)兜底桶
+            latin += 1
+    if kana:
+        return "ja"
+    if hangul:
+        return "ko"
+    counts = {"zh": cjk, "ru": cyrillic, "en": latin}
+    best = max(counts, key=counts.get)
+    return best if counts[best] > 0 else None
+
+
+# response_format 白名单(OpenAI 兼容)。json/text = v1 契约语义;verbose_json = 契约 §4
+# 演进钩子(→ OpenAI-Whisper 段形状)。未知值 → 400。
+_ASR_RESPONSE_FORMATS = ("json", "text", "verbose_json")
+
+
+def _asr_verbose_json(
+    text: str, language: str | None, segments: list[dict], audio_seconds: int,
+) -> dict:
+    """把归一化后的 (text, language, segments) 映射成 OpenAI-Whisper `verbose_json` 形状。
+
+    契约 §4 的「严格 OpenAI-Whisper 兼容走 response_format=verbose_json 开新分支映射」在此实现:
+    默认输出(text 首字段 + language + usage + 平台增强 segments)一字不动,verbose_json 是
+    **另一条出参分支**,OpenAI SDK(openai-python `verbose_json`)可直连。
+
+    - `language`:MOSS 无语种识别时(None)填 `"und"`(OpenAI 语义:未定语种;不缺字段)。
+    - `duration`:= 自算 `audio_seconds`(float 化)。**取值来源**:`_asr_moss_transcribe` 只回
+      `(text, language, segments)` 三元组、**不透传** MOSS 响应里的 `duration`,而 `audio_seconds`
+      是全局计费/超时/max_new_tokens 的单一秒数口径(自归一化 wav 算),复用它保持一致、不引入
+      第二个时长来源。
+    - `segments[].{seek,tokens,temperature,avg_logprob,compression_ratio,no_speech_prob}`:**中性
+      占位** —— MOSS 0.9B 不产这些 token 级/逐段置信度指标,给 OpenAI SDK 惯例默认值(字段在、
+      值中性),避免 SDK 因缺字段报错。
+    - `segments[].speaker`:nous **附加字段**(OpenAI schema 无此键),SDK 忽略未知字段;无说话人
+      归属的段为 `null`(与 v1 契约 speaker nullability 一致)。
+    """
+    verbose_segments = [
+        {
+            "id": i,
+            "seek": 0,
+            "start": seg.get("start"),
+            "end": seg.get("end"),
+            "text": seg.get("text", ""),
+            "tokens": [],
+            "temperature": 0.0,
+            "avg_logprob": 0.0,
+            "compression_ratio": 1.0,
+            "no_speech_prob": 0.0,
+            "speaker": seg.get("speaker"),
+        }
+        for i, seg in enumerate(segments)
+    ]
+    return {
+        "task": "transcribe",
+        "language": language if language is not None else "und",
+        "duration": float(audio_seconds),
+        "text": text,
+        "segments": verbose_segments,
+    }
+
+
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     request: Request,
@@ -820,14 +905,30 @@ async def audio_transcriptions(
 
     2026-07-20 起后端切 **MOSS-Transcribe-Diarize SGLang 微服务**(退役 Qwen3-ASR vLLM chat
     路径 + nous-aligner:MOSS 内建时间戳 + 说话人分离;spec 2026-07-20-moss-asr-sglang-serving)。
-    返回 `{text, language, usage:{type:"duration",seconds}}`(text 仍首字段,纯文本客户端不受
-    影响);`timestamps=true` 时加 `segments`(段级 {start,end,speaker,text},不再有 words 字段)。
-    秒数自算(归一化 wav)。`language`/`response_format` 为 OpenAI 兼容保留位。Bearer 走
-    grant+quota;admin cookie(Playground)直查服务、跳配额。MOSS 不可达 → 503(唯一 ASR 主路)。
+    默认 / `response_format=json`:返回 `{text, language, usage:{type:"duration",seconds}}`
+    (text 仍首字段,纯文本客户端不受影响);`timestamps=true` 时加 `segments`(段级
+    {start,end,speaker,text},不再有 words 字段)。`response_format=text`:纯文本 body
+    (text/plain,OpenAI 语义,无 JSON 包裹)。`response_format=verbose_json`:OpenAI-Whisper
+    段形状(契约 §4,`_asr_verbose_json`;**隐含分段**,始终带 segments,无需另传 timestamps)。
+    未知 `response_format` → 400。秒数自算(归一化 wav)。计量/任务中心记录不受 format 影响。
+    出参 `language`:引擎回了用引擎值,没回(MOSS 现状)退回文本字符集检测(`_detect_language`,
+    出 zh/ja/... ISO 码),都判不出才 null(verbose_json 落 "und")。入参 `language` 仍为 OpenAI
+    兼容保留位(不消费)。Bearer 走 grant+quota;admin cookie(Playground)直查服务、跳配额。
+    MOSS 不可达 → 503(唯一 ASR 主路)。
     """
     instance, api_key = auth
     requested_model = model or None
     admin_run = api_key is None  # admin session 旁路(Playground)
+
+    # response_format 消费(契约 §4):校验取值(未知 → 400,纯客户端错误,早于任何 MOSS 调用/
+    # 任务落库,不噪 failed task);归一化小写。verbose_json 隐含分段。
+    fmt = (response_format or "json").strip().lower()
+    if fmt not in _ASR_RESPONSE_FORMATS:
+        raise InvalidRequestError(
+            f"unsupported response_format '{response_format}'; "
+            f"expected one of {', '.join(_ASR_RESPONSE_FORMATS)}",
+            code="unsupported_response_format",
+        )
 
     if admin_run:
         # admin:按服务名直查(单管理员隐式授权,跳 grant/quota),同 /v1/apps execute_service。
@@ -936,10 +1037,22 @@ async def audio_transcriptions(
             "audio_seconds": audio_seconds,
         },
     )
-    # OpenAI 兼容:text 仍是首要字段(纯文本客户端不受影响);language/segments 是增量字段。
+    # language:引擎回了(未来引擎)优先用引擎值;没回(MOSS 现状)退回文本字符集检测,
+    # 让两种格式都出真值(zh/ja/... ISO 码),都判不出才是 None。
+    out_language = detected_language or _detect_language(text)
+
+    # response_format 出参映射(契约 §4)。计量/任务中心已按 v1 口径记完,不受 format 影响。
+    if fmt == "text":
+        # OpenAI text 语义:纯文本 body(text/plain),无 JSON 包裹、无 language/usage/segments。
+        return Response(content=text, media_type="text/plain; charset=utf-8")
+    if fmt == "verbose_json":
+        # OpenAI-Whisper 形状:隐含分段,始终带 segments(不看 timestamps);language None → "und"。
+        return _asr_verbose_json(text, out_language, segments, audio_seconds)
+    # 默认 / json:v1 契约不变 —— text 仍是首要字段(纯文本客户端不受影响);
+    # language/segments 是增量字段,segments 仅 timestamps=true 时出现。
     out: dict = {
         "text": text,
-        "language": detected_language,
+        "language": out_language,
         "usage": {"type": "duration", "seconds": audio_seconds},
     }
     if timestamps:

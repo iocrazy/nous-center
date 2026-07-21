@@ -1,6 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { formatHms, AsrSegments } from './ServiceDetail'
+import { formatHms, AsrSegments, buildAsrCurl } from './ServiceDetail'
+
+describe('buildAsrCurl', () => {
+  it('默认格式:multipart /v1/audio/transcriptions + timestamps=true(平台增强段)', () => {
+    const curl = buildAsrCurl('moss-asr', false)
+    expect(curl).toContain("POST 'https://YOUR_HOST/v1/audio/transcriptions'")
+    expect(curl).toContain("-F 'file=@audio.wav'")
+    expect(curl).toContain("-F 'model=moss-asr'")
+    expect(curl).toContain("-F 'timestamps=true'")
+    expect(curl).not.toContain('verbose_json')
+  })
+  it('verbose_json:走 response_format=verbose_json(OpenAI-Whisper SDK 直连)', () => {
+    const curl = buildAsrCurl('moss-asr', true)
+    expect(curl).toContain("-F 'response_format=verbose_json'")
+    expect(curl).toContain("-F 'model=moss-asr'")
+    expect(curl).not.toContain('timestamps=true')
+  })
+})
 
 describe('formatHms', () => {
   it('mm:ss below 1h(分/秒两位)', () => {

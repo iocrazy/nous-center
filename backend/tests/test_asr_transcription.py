@@ -15,6 +15,8 @@ from fastapi import HTTPException
 from src.api.routes.openai_compat import (
     _MOSS_DEFAULT_PROMPT,
     _asr_moss_transcribe,
+    _asr_verbose_json,
+    _detect_language,
     _resolve_moss_base_url,
     _wav16k_seconds,
 )
@@ -347,6 +349,202 @@ def test_wav16k_seconds():
     assert _wav16k_seconds(_make_wav16k(0.3)) == 1  # 至少 1 秒计费
     # 损坏/非 wav 字节 → 退化估算不崩(至少 1)
     assert _wav16k_seconds(b"not a wav") >= 1
+
+
+# --- PR-7:文本语种检测(_detect_language,纯字符集启发式,无第三方依赖) ------
+
+
+def test_detect_language_covers_scripts():
+    assert _detect_language("今天天气很好啊真的不错") == "zh"       # CJK → zh
+    assert _detect_language("the quick brown fox") == "en"        # 拉丁 → en
+    assert _detect_language("こんにちは、今日はいい天気です") == "ja"  # kana 优先于混排 CJK → ja
+    assert _detect_language("안녕하세요 반갑습니다") == "ko"         # 谚文 → ko
+    assert _detect_language("Привет как дела") == "ru"            # 西里尔 → ru
+
+
+def test_detect_language_mixed_takes_majority():
+    # 混合(拉丁 4 vs CJK 8)取占比最高 → zh。
+    assert _detect_language("这是一个 test 测试用例呀") == "zh"
+
+
+def test_detect_language_undetectable_is_none():
+    assert _detect_language("") is None            # 空文本
+    assert _detect_language("123 ... !!! @#$") is None  # 纯数字/标点/空白,无字母
+
+
+# --- PR-7:verbose_json 形状(_asr_verbose_json,纯函数) ---------------------
+
+
+def test_asr_verbose_json_shape_and_placeholders():
+    segments = [
+        {"start": 0.26, "end": 3.24, "speaker": "S01", "text": "你好"},
+        {"start": 3.5, "end": 6.0, "speaker": None, "text": "无归属"},
+    ]
+    out = _asr_verbose_json("你好无归属", "zh", segments, 6)
+    assert out["task"] == "transcribe"
+    assert out["language"] == "zh"
+    assert out["duration"] == 6.0 and isinstance(out["duration"], float)
+    assert out["text"] == "你好无归属"
+    # 段:id 递增、start/end 保留、speaker 附加字段(null 段为 None)、统计占位中性。
+    assert out["segments"][0] == {
+        "id": 0, "seek": 0, "start": 0.26, "end": 3.24, "text": "你好",
+        "tokens": [], "temperature": 0.0, "avg_logprob": 0.0,
+        "compression_ratio": 1.0, "no_speech_prob": 0.0, "speaker": "S01",
+    }
+    assert out["segments"][1]["id"] == 1
+    assert out["segments"][1]["speaker"] is None  # 无 speaker 段 → null
+
+
+def test_asr_verbose_json_none_language_falls_to_und():
+    # language 为 None(引擎/检测都判不出)→ "und"(OpenAI 语义)。
+    out = _asr_verbose_json("", None, [], 3)
+    assert out["language"] == "und"
+    assert out["segments"] == []
+
+
+# --- PR-7:端点 response_format 消费 -----------------------------------------
+
+
+def _patch_moss(monkeypatch, wav, ret):
+    """把端点内 ffmpeg + MOSS 调用整体 mock 成返回固定 (text, language, segments)。"""
+    import src.api.routes.openai_compat as oc
+
+    async def _fake_ffmpeg(raw):
+        return wav
+
+    async def _fake_moss(client, w, ctx, secs, base_url):
+        return ret
+
+    monkeypatch.setattr(oc, "_ffmpeg_to_wav16k", _fake_ffmpeg)
+    monkeypatch.setattr(oc, "_asr_moss_transcribe", _fake_moss)
+
+
+@pytest.mark.asyncio
+async def test_endpoint_verbose_json_full_shape(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # verbose_json:OpenAI-Whisper 全形状 + 隐含分段(不传 timestamps 也带 segments)。
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(6.0)
+    _patch_moss(monkeypatch, wav, ("你好再见", "zh", [
+        {"start": 0.26, "end": 3.24, "speaker": "S01", "text": "你好"},
+        {"start": 3.5, "end": 6.0, "speaker": "S02", "text": "再见"},
+    ]))
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "response_format": "verbose_json"},  # 不传 timestamps
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["task"] == "transcribe"
+    assert body["language"] == "zh"
+    assert body["duration"] == 6.0
+    assert body["text"] == "你好再见"
+    # 隐含分段:verbose_json 始终带 segments(等效 timestamps=true)。
+    assert len(body["segments"]) == 2
+    seg0 = body["segments"][0]
+    assert seg0["id"] == 0 and seg0["start"] == 0.26 and seg0["end"] == 3.24
+    assert seg0["speaker"] == "S01" and seg0["text"] == "你好"
+    # 统计占位中性(MOSS 不产)。
+    assert seg0["tokens"] == [] and seg0["seek"] == 0
+    assert seg0["temperature"] == 0.0 and seg0["avg_logprob"] == 0.0
+    assert seg0["compression_ratio"] == 1.0 and seg0["no_speech_prob"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_endpoint_verbose_json_und_when_undetectable(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 引擎无 language + 文本无可判定字母 → language "und"。
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(2.0)
+    _patch_moss(monkeypatch, wav, ("123 !!!", None, []))
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "response_format": "verbose_json"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["language"] == "und"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_json_default_no_regression_with_detection(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 默认(不传 response_format):v1 形状不变;引擎无 language 时文本检测补真值(zh)。
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(4.0)
+    _patch_moss(monkeypatch, wav, ("你好世界大家好呀", None, [
+        {"start": 0.0, "end": 4.0, "speaker": "S01", "text": "你好世界大家好呀"},
+    ]))
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5"},  # 默认 json,不传 timestamps
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # v1 契约:text 首字段、usage duration、无 segments(未请求 timestamps)。
+    assert body["text"] == "你好世界大家好呀"
+    assert body["language"] == "zh"  # 引擎没回 → 文本检测补
+    assert body["usage"] == {"type": "duration", "seconds": 4}
+    assert "segments" not in body
+    assert "task" not in body and "duration" not in body  # 不混入 verbose_json 字段
+
+
+@pytest.mark.asyncio
+async def test_endpoint_text_format_returns_plain_text(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # response_format=text → 纯文本 body(text/plain),无 JSON 包裹。
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(3.0)
+    _patch_moss(monkeypatch, wav, ("你好世界", "zh", [
+        {"start": 0.0, "end": 3.0, "speaker": "S01", "text": "你好世界"},
+    ]))
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "response_format": "text"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert resp.text == "你好世界"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_unknown_response_format_400(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 未知 response_format → 400(清晰 message),且不触发 MOSS 调用。
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(2.0)
+
+    import src.api.routes.openai_compat as oc
+
+    async def _boom(*a, **k):
+        raise AssertionError("未知 format 应在校验阶段 400,不该走到 MOSS")
+
+    monkeypatch.setattr(oc, "_asr_moss_transcribe", _boom)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "response_format": "srt"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "response_format" in resp.text
 
 
 # --- Arc 2:base_url 选址(env override > ModelManager) --------------------
