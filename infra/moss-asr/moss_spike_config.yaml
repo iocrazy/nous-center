@@ -1,0 +1,25 @@
+# PR-0 spike 用 pipeline config:等同默认 MossTranscribeDiarizePipelineConfig,
+# 仅两处改动:mem_fraction_static 压到 0.25(共享 3090 不抢卡)、
+# server_args_overrides.disable_cuda_graph=true(本机无 nvcc,CUDA graph 捕获会崩;
+# 顶层 CLI 无此开关,只能经 stage factory_args 注入)。
+config_cls: MossTranscribeDiarizePipelineConfig
+model_path: /media/heygo/program/models/nous/speech/MOSS-Transcribe-Diarize
+entry_stage: asr
+stages:
+  - name: asr
+    process: asr
+    factory: sglang_omni.models.moss_transcribe_diarize.stages.create_sglang_moss_transcribe_diarize_executor
+    factory_args:
+      device: "cuda:0"
+      max_running_requests: 16
+      encoder_cache_size_bytes: 4294967296
+      request_build_max_workers: 8
+      request_build_max_pending: 16
+      mem_fraction_static: 0.5
+      server_args_overrides:
+        disable_cuda_graph: true
+        # 3090(sm_86)上 flashinfer 走 JIT 需要 nvcc(本机无 CUDA 工具链,/usr/local/cuda 不存在)。
+        # 同 Qwen3-ASR spike 的坑;切 triton attention(自带 ptxas)绕开。
+        attention_backend: torch_native
+    gpu: 0
+    terminal: true

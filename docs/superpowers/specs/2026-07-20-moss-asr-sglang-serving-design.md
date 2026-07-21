@@ -2,6 +2,12 @@
 
 - Date: 2026-07-20
 - Status: 设计(用户已拍 serving=SGLang、常驻 systemd、完全取代 Qwen3-ASR)
+  + **PR-0 spike ✅ PASS(2026-07-20 真机)**——详见 `infra/moss-asr/SPIKE.md`。
+  要点:attention 必须 `torch_native`(sm_86 上 flashinfer 要 JIT、triton 数值坏);
+  CUDA 工具链 pip 补装(nvcc 13.3 系,配 lib64/libcudart 软链);配置走 `--config` YAML
+  的 `server_args_overrides`;verbose_json 的 speaker 在 `segments[].text` 的 `[Sxx]` 前缀
+  (无独立字段,PR-2 正则抠);mem_fraction 0.5(实测 13.4GB);微服务只吃 16k WAV
+  (mp3 靠 backend ffmpeg 归一化,torchcodec 缺 libav 不修)。7.7min 播客 31.5s / 53 段 / S01-S02 正确。
 - Trigger: 用户装了 `MOSS-Transcribe-Diarize-0.9B`(ModelScope),问能否替代 Qwen3-ASR。
 
 ## 0. 能力验证(2026-07-20 真机已验,transformers 路径)
