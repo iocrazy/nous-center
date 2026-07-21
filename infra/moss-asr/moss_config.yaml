@@ -1,0 +1,34 @@
+# nous-moss-asr 生产 pipeline config —— sgl-omni serve --config 读它。
+# 基线 = 默认 MossTranscribeDiarizePipelineConfig,只改三处;每处都是 PR-0 spike
+# (infra/moss-asr/SPIKE.md)真机验过的必要项,不是随手调参:
+#
+#   1. mem_fraction_static: 0.5
+#      共享 3090(index0,与桌面/ComfyUI 同卡),不能抢整卡。spike 实测:0.25 起得来但
+#      KV 只 1143 token(权重 + 4GB encoder cache 挤占)→ 单请求都不够;0.5(≈13.4GB 实测占用)
+#      跑 7.7min 双人播客稳。要更高并发/更长音频再上专卡拉高。
+#   2. server_args_overrides.disable_cuda_graph: true
+#      本机无系统级 CUDA 工具链,CUDA graph 捕获会崩。顶层 CLI 无此开关(pydantic
+#      extra_forbidden),只能经 stage factory_args 的 server_args_overrides 注入。
+#   3. server_args_overrides.attention_backend: torch_native
+#      3090 = sm_86。默认 flashinfer 要 JIT(需完整 CUDA 工具链现场编译);triton backend
+#      数值坏——编译能过但输出乱码(满屏 "people" 重复)。torch_native 正确,7.7min→31.5s 够用。
+#      未来若迁 Blackwell 卡再评 flashinfer。
+config_cls: MossTranscribeDiarizePipelineConfig
+model_path: /media/heygo/program/models/nous/speech/MOSS-Transcribe-Diarize
+entry_stage: asr
+stages:
+  - name: asr
+    process: asr
+    factory: sglang_omni.models.moss_transcribe_diarize.stages.create_sglang_moss_transcribe_diarize_executor
+    factory_args:
+      device: "cuda:0"          # 进程内唯一可见卡(start_serve.sh 用 UUID 钉 3090)= cuda:0
+      max_running_requests: 16
+      encoder_cache_size_bytes: 4294967296
+      request_build_max_workers: 8
+      request_build_max_pending: 16
+      mem_fraction_static: 0.5
+      server_args_overrides:
+        disable_cuda_graph: true
+        attention_backend: torch_native
+    gpu: 0
+    terminal: true
