@@ -1,5 +1,9 @@
 # nous-aligner — ForcedAligner 时间戳微服务
 
+> ⚠️ **已退役(2026-07-20,spec `2026-07-20-moss-asr-sglang-serving`)**:时间戳/说话人
+> 分离已由 MOSS-Transcribe-Diarize 微服务(`infra/moss-asr/`)内建接管,本服务待一个
+> release 周期后删除。停用:`sudo systemctl disable --now nous-aligner`。
+
 ASR 时间戳(词/字级 start/end)的独立微服务。spec
 `docs/superpowers/specs/2026-06-21-asr-context-lid-timestamps-design.md`(Arc B)。
 

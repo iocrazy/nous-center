@@ -493,7 +493,8 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
   const [dragging, setDragging] = useState(false)
   // context = 领域/热词偏置(人名/术语),注入 system 槽提升专有名词识别(spec asr-context-lid)。
   const [asrContext, setAsrContext] = useState('')
-  // 时间戳:走独立对齐器微服务,返回词/字级 start/end(spec Arc B)。
+  // 时间戳 + 说话人分段:MOSS 微服务内建,返回段级 {start,end,speaker,text}
+  // (spec 2026-07-20-moss-asr-sglang-serving;退役对齐器后不再有词/字级 words)。
   const [asrTimestamps, setAsrTimestamps] = useState(false)
 
   // 拖拽/选择共用:只收音频文件(部分音频 type 为空,放行靠扩展名兜底)。
@@ -624,7 +625,7 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
                 onChange={(e) => setAsrTimestamps(e.target.checked)}
                 style={{ cursor: 'pointer' }}
               />
-              返回时间戳(词/字级 · 需对齐器服务)
+              返回时间戳与说话人分段(段级 · MOSS 内建)
             </label>
             <button
               type="button"
@@ -686,7 +687,7 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
                   <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
                     {result.text as string}
                   </div>
-                  <AsrTimestamps words={result.words} requested={asrTimestamps} />
+                  <AsrSegments segments={result.segments} requested={asrTimestamps} />
                 </div>
               ) : null
             ) : (
@@ -864,43 +865,29 @@ function SectionHeader({ title }: { title: string }) {
   )
 }
 
-type AsrWord = { text: string; start: number; end: number }
+type AsrSegment = { start: number; end: number; speaker: string | null; text: string }
 
-/** ASR 词/字级时间戳展示(spec Arc B)。requested 但 words=null = 对齐器服务不可用(降级)。 */
-function AsrTimestamps({ words, requested }: { words: unknown; requested: boolean }) {
+/** ASR 段级说话人分段展示(MOSS 内建 diar 段;spec 2026-07-20-moss-asr-sglang-serving)。
+ *  朴素渲染:每段一行 `[speaker] text`。时间轴/mm:ss 美化留 PR-4。 */
+function AsrSegments({ segments, requested }: { segments: unknown; requested: boolean }) {
   if (!requested) return null
-  if (words === null || words === undefined) {
-    return (
-      <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-        时间戳不可用(对齐器服务未启用或失败)
-      </div>
-    )
-  }
-  if (!Array.isArray(words) || words.length === 0) return null
-  const ws = words as AsrWord[]
+  if (!Array.isArray(segments) || segments.length === 0) return null
+  const segs = segments as AsrSegment[]
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-        时间戳 · {ws.length} 段
+        分段 · {segs.length} 段
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-        {ws.map((w, i) => (
-          <span
-            key={i}
-            title={`${w.start.toFixed(2)}s – ${w.end.toFixed(2)}s`}
-            style={{
-              display: 'inline-flex', flexDirection: 'column', alignItems: 'center',
-              padding: '2px 6px', borderRadius: 4, border: '1px solid var(--border)',
-              background: 'var(--bg)', fontSize: 12, lineHeight: 1.3,
-            }}
-          >
-            <span style={{ color: 'var(--text)' }}>{w.text}</span>
-            <span style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'var(--mono, monospace)' }}>
-              {w.start.toFixed(2)}
+      {segs.map((s, i) => (
+        <div key={i} style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>
+          {s.speaker && (
+            <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono, monospace)', marginRight: 6 }}>
+              [{s.speaker}]
             </span>
-          </span>
-        ))}
-      </div>
+          )}
+          {s.text}
+        </div>
+      ))}
     </div>
   )
 }

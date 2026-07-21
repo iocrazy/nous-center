@@ -92,6 +92,43 @@ smoke `tests/manual/smoke_moss_asr_diarize.py`(prod venv 零安装,GPU2 3090):
 - [ ] Qwen3-ASR 引擎 + aligner 微服务退役,无残留调用;`nous-moss-asr.service` 开机自启。
 - [ ] 计量:秒数口径与切换前一致;key/grant/quota 全链路真机 e2e 过。
 
+## 5b. 切换 runbook(用户 sudo 手工步骤)
+
+代码栈合并后,生产切换由用户在 prod 检出手工执行(不自动、不由 CI/agent 跑):
+
+```bash
+# ① 起 MOSS 微服务:建独立 venv + 装 sglang-omni(一次性;已装可跳)
+cd /media/heygo/program/projects-code/repos/nous-center
+infra/moss-asr/setup.sh
+
+# ② 装 + 开机自启 systemd unit
+sudo cp infra/systemd/nous-moss-asr.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nous-moss-asr
+
+# ③ 停用旧对齐器(MOSS 已内建时间戳/说话人分离)
+sudo systemctl disable --now nous-aligner
+
+# ④ 退役 Qwen3-ASR 引擎常驻:网页停掉 qwen3_asr 引擎;或本 PR 已从 models.yaml 删条目,
+#    重启 backend 后该引擎自然消失(sudo systemctl restart nous-backend)
+
+# ⑤ 探活 + 端到端一发
+curl 127.0.0.1:8003/health
+# 建 key → curl /v1/audio/transcriptions(见 §3 契约)→ 确认回 segments 且计量入库
+```
+
+**顺序**:必须先 ①②(MOSS 起来)再 ③④(退旧)—— 否则中间有窗口无 ASR 主路。⑤ 验通再算切换完成。
+
+**回滚**(MOSS 出问题):
+```bash
+sudo systemctl stop nous-moss-asr             # 停 MOSS
+sudo systemctl enable --now nous-aligner      # 重新拉起对齐器
+git revert <PR-3> <PR-2> <PR-1>               # 按栈自顶向下 revert(先 PR-3 再 PR-2 再 PR-1)
+cd frontend && npm run build                  # 重建前端(恢复 words UI)
+sudo systemctl restart nous-backend           # 恢复 Qwen3-ASR chat 路径
+```
+revert 后 `models.yaml` 的 qwen3_asr 条目随之恢复,重启 backend 即回到旧栈。
+
 ## 6. 非目标 / 风险
 
 - 不做流式 ASR;不做 UI 启停 MOSS(常驻)。

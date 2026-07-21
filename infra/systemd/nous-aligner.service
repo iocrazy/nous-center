@@ -1,5 +1,5 @@
 [Unit]
-Description=nous-center ForcedAligner 时间戳微服务(独立 venv,2026-06-21)
+Description=[已退役] nous-center ForcedAligner 时间戳微服务(独立 venv,2026-06-21)
 # 不 Requires/PartOf nous-backend —— 独立进程/venv(qwen-asr 钉 transformers 4.57,与 backend
 # 的 5.6-dev 冲突,故隔离)。backend 仅在 timestamps=true 时 HTTP 调它;它挂了纯文本主路不受影响。
 After=network-online.target

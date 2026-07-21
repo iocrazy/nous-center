@@ -1,7 +1,6 @@
 """OpenAI-compatible endpoints: chat/completions, audio/speech, models."""
 
 import asyncio
-import base64
 import io
 import json
 import logging
@@ -685,10 +684,6 @@ async def _auth_transcriptions(
     raise HTTPException(401, detail="Missing API key or admin session")
 
 
-# Qwen3-ASR 的 chat 路径原始输出稳定为 `language {LANG}<asr_text>{TEXT}`(真机多次验证)。
-_ASR_OUT_RE = re.compile(r"^\s*language\s+(.+?)\s*<asr_text>(.*)$", re.DOTALL)
-
-
 def _wav16k_seconds(wav: bytes) -> int:
     """16k/mono/s16le WAV 的时长秒(metering 用;chat 路径不回 audio 秒数,自算)。"""
     try:
@@ -698,64 +693,6 @@ def _wav16k_seconds(wav: bytes) -> int:
     except Exception:
         # 退化:s16le mono 16k → 每秒 32000 字节(减去 ~100 字节头开销可忽略)
         return max(1, round(len(wav) / 32000))
-
-
-async def _asr_chat_transcribe(
-    client: httpx.AsyncClient, base_url: str, wav: bytes, context: str | None,
-) -> tuple[str, str | None]:
-    """走 vLLM chat/completions 跑 Qwen3-ASR:audio_url(base64)+ 可选 system(context 偏置)。
-    返回 (text, language)。context = 领域/热词提示(注入 system 槽,提升专有名词识别)。
-
-    选 chat 而非转写端点:转写端点只回纯文本、拿不到语种;chat 原生输出 `language X<asr_text>Y`,
-    一次拿到**语种 + 文本**,且 system 槽 = Qwen3-ASR 的 context 偏置入口。
-    """
-    b64 = base64.b64encode(wav).decode("ascii")
-    messages: list[dict] = []
-    if context:
-        messages.append({"role": "system", "content": context})
-    messages.append({
-        "role": "user",
-        "content": [{"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{b64}"}}],
-    })
-    resp = await client.post(
-        f"{base_url.rstrip('/')}/v1/chat/completions",
-        json={"model": "", "messages": messages, "max_tokens": 2048, "temperature": 0.0},
-    )
-    if resp.status_code != 200:
-        raise InvalidRequestError(
-            f"ASR chat 调用失败 HTTP {resp.status_code}: {resp.text[:200]}"
-        )
-    content = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-    m = _ASR_OUT_RE.match(content)
-    if m:
-        return m.group(2).strip(), m.group(1).strip()
-    # 无 `<asr_text>` 标记(格式异常/未来变更)→ 整体当文本,language 未知,不崩。
-    return content.strip(), None
-
-
-async def _asr_align_timestamps(
-    client: httpx.AsyncClient, wav: bytes, text: str, language: str | None,
-) -> list[dict] | None:
-    """调独立的 nous-aligner 微服务做强制对齐 → 词/字级时间戳(spec Arc B,方案②)。
-
-    对齐器是独立进程/venv(qwen-asr 钉 transformers 4.57,与 backend 冲突,故隔离)。
-    它没开/挂了/出错 → 返回 None(降级:纯文本主路不受影响,不让时间戳拖垮转写)。
-    """
-    base = os.environ.get("NOUS_ALIGNER_URL", "http://127.0.0.1:8002")
-    try:
-        b64 = base64.b64encode(wav).decode("ascii")
-        resp = await client.post(
-            f"{base.rstrip('/')}/align",
-            json={"audio_b64": b64, "text": text, "language": language},
-            timeout=120,
-        )
-        if resp.status_code != 200:
-            logger.warning("aligner %s: HTTP %s %s", base, resp.status_code, resp.text[:200])
-            return None
-        return resp.json().get("words")
-    except Exception as e:  # noqa: BLE001 — 对齐器不可用不该让转写失败
-        logger.warning("aligner unreachable (%s): %s", base, e)
-        return None
 
 
 # MOSS verbose_json 的 segments[].text 形如 `[S01]正文`(说话人无独立字段,是文本前缀,
