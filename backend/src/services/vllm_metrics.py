@@ -91,11 +91,37 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
+async def _health_fallback(name: str, port: int, *, timeout: float) -> VLLMInstanceSnapshot:
+    """/metrics 返 404 的后端(非 vLLM,如 MOSS 的 sgl-omni serve)没有 Prometheus
+    /metrics 路由 —— 退回探 /health 判活(spec 2026-07-20 Arc 2:sglang 引擎端口纳入
+    监控口径、被视为合法后端)。/health 200 → healthy(无 KV 统计);否则维持不健康。
+
+    仅对 **404**(路由不存在=确定非 vLLM 指标端点)兜底,不动 vLLM 启动期 5xx 语义,
+    也不改「端口连不上=ConnectError」这条 watchdog 唯一的自愈触发判据。"""
+    try:
+        r = await _get_client().get(f"http://127.0.0.1:{port}/health", timeout=timeout)
+        if r.status_code == 200:
+            return VLLMInstanceSnapshot(
+                name=name, port=port, healthy=True,
+                config={"backend": "sglang_omni"}, stats={},
+            )
+        return VLLMInstanceSnapshot(
+            name=name, port=port, healthy=False, error=f"HTTP {r.status_code}"
+        )
+    except (httpx.ConnectError, httpx.ReadTimeout, httpx.HTTPError) as exc:
+        return VLLMInstanceSnapshot(
+            name=name, port=port, healthy=False, error=type(exc).__name__
+        )
+
+
 async def fetch_instance(name: str, port: int, *, timeout: float = 1.5) -> VLLMInstanceSnapshot:
     """Hit one vLLM /metrics. Short timeout — UI poll mustn't block on a slow vLLM."""
     url = f"http://127.0.0.1:{port}/metrics"
     try:
         r = await _get_client().get(url, timeout=timeout)
+        if r.status_code == 404:
+            # 非 vLLM 后端(sgl-omni ASR 无 /metrics)→ 退 /health 判活,不误判为死。
+            return await _health_fallback(name, port, timeout=timeout)
         if r.status_code != 200:
             return VLLMInstanceSnapshot(
                 name=name, port=port, healthy=False, error=f"HTTP {r.status_code}"

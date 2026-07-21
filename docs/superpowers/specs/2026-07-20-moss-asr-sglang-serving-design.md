@@ -129,6 +129,33 @@ sudo systemctl restart nous-backend           # 恢复 Qwen3-ASR chat 路径
 ```
 revert 后 `models.yaml` 的 qwen3_asr 条目随之恢复,重启 backend 即回到旧栈。
 
+### 5b-Arc2. 切换 runbook(从独立 systemd → ModelManager 纳管)
+
+Arc 2 代码栈合并后,把 MOSS 从独立 systemd unit 交给 backend 的 ModelManager(单一管理源,
+不留双头)。用户在 prod 检出手工执行:
+
+```bash
+# ① 退役独立 systemd unit(先停,免与 resident 抢同一张 3090/端口 = 双头)
+sudo systemctl disable --now nous-moss-asr
+sudo rm /etc/systemd/system/nous-moss-asr.service
+sudo systemctl daemon-reload
+
+# ② 重启 backend —— resident 会**自动拉起** MOSS(configs/models.d/moss_transcribe_diarize.yaml
+#    resident: true,SGLangOmniAdapter 起 sgl-omni serve 子进程,warm ~秒级)
+sudo systemctl restart nous-backend
+
+# ③ 验通:引擎库「语音识别」tab 出 MOSS 卡且 loaded;转写端点 e2e 回 segments 且计量入库
+curl -s http://127.0.0.1:8000/api/v1/engines?type=asr
+```
+
+**双头风险**:①② 之间若 systemd unit 仍在跑,backend 拉起的 resident MOSS 会与之抢同一张
+3090(UUID 钉死)+ 抢端口 → OOM/端口冲突。**务必先 ① disable 掉 unit 再 ② 重启 backend**。
+应急/测试可用 `NOUS_MOSS_ASR_URL` env override 让转写端点指回手工起的实例(优先级 env > ModelManager)。
+
+**回滚到 Arc 1(独立 systemd)**:`git revert <本 PR>` → `cd frontend && npm run build`(如涉及前端)
+→ 恢复 `infra/systemd/nous-moss-asr.service` 到 `/etc/systemd/system/` → `sudo systemctl enable --now
+nous-moss-asr` → 重启 backend(models.d 的 MOSS 条目随 revert 消失,不再纳管)。
+
 ## 7. Arc 2 — ModelManager 统一纳管(2026-07-21 用户改判)
 
 Arc 1(§1-§5b)上线后,用户拍板推翻「常驻 systemd、UI 不管」:**所有模型统一走

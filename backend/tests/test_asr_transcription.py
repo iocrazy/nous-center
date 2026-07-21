@@ -15,8 +15,13 @@ from fastapi import HTTPException
 from src.api.routes.openai_compat import (
     _MOSS_DEFAULT_PROMPT,
     _asr_moss_transcribe,
+    _resolve_moss_base_url,
     _wav16k_seconds,
 )
+
+# Arc 2:base_url 由端点选址(env override > ModelManager)后传入 _asr_moss_transcribe。
+# 单测直接给固定 base_url(不经选址),锁解析/请求形/503 语义。
+_BASE = "http://127.0.0.1:8003"
 
 
 # --- MOSS 微服务响应替身 --------------------------------------------------
@@ -62,7 +67,7 @@ async def test_moss_transcribe_multi_speaker():
         ],
     }
     client = _FakeClient(resp=_FakeResp(200, body))
-    text, language, segments = await _asr_moss_transcribe(client, b"wav", None, 6)
+    text, language, segments = await _asr_moss_transcribe(client, b"wav", None, 6, _BASE)
     assert text == "你好。再见。"
     assert language == "zh"
     assert segments == [
@@ -76,7 +81,7 @@ async def test_moss_transcribe_missing_speaker_prefix():
     # ④ 防御:段缺 [Sxx] 前缀 → speaker=None,文本原样;顶层无 language → None(不假设有)。
     body = {"segments": [{"start": 0.0, "end": 2.0, "text": "没有前缀的文本"}]}
     client = _FakeClient(resp=_FakeResp(200, body))
-    text, language, segments = await _asr_moss_transcribe(client, b"wav", None, 2)
+    text, language, segments = await _asr_moss_transcribe(client, b"wav", None, 2, _BASE)
     assert language is None
     assert segments == [
         {"start": 0.0, "end": 2.0, "speaker": None, "text": "没有前缀的文本"},
@@ -88,7 +93,7 @@ async def test_moss_transcribe_missing_speaker_prefix():
 async def test_moss_transcribe_request_shape():
     # multipart 固定项 + max_new_tokens 按时长动态(min(65536,max(5120,secs*32+512)))。
     client = _FakeClient(resp=_FakeResp(200, {"segments": []}))
-    await _asr_moss_transcribe(client, b"wavbytes", None, 6)
+    await _asr_moss_transcribe(client, b"wavbytes", None, 6, _BASE)
     url, kwargs = client.last_call
     assert url.endswith("/v1/audio/transcriptions")
     assert kwargs["data"]["model"] == "moss-transcribe-diarize"
@@ -98,7 +103,7 @@ async def test_moss_transcribe_request_shape():
     assert kwargs["data"]["max_new_tokens"] == "5120"
     # 中等时长走公式;长音频封顶 65536
     for secs, expected in [(460, 460 * 32 + 512), (3000, 65536)]:
-        await _asr_moss_transcribe(client, b"w", None, secs)
+        await _asr_moss_transcribe(client, b"w", None, secs, _BASE)
         assert client.last_call[1]["data"]["max_new_tokens"] == str(expected)
 
 
@@ -109,7 +114,7 @@ async def test_moss_transcribe_request_shape():
 async def test_moss_transcribe_context_appends_hotword_prompt():
     # context 非空:multipart 含 prompt,以默认转写指令开头、以热词后缀结尾(保输出契约 + 生效热词)。
     client = _FakeClient(resp=_FakeResp(200, {"segments": []}))
-    await _asr_moss_transcribe(client, b"wav", "  瑞幸咖啡  ", 4)
+    await _asr_moss_transcribe(client, b"wav", "  瑞幸咖啡  ", 4, _BASE)
     prompt = client.last_call[1]["data"]["prompt"]
     assert prompt.startswith(_MOSS_DEFAULT_PROMPT)
     assert prompt.endswith("热词提示:瑞幸咖啡")  # context 两端空白已 strip
@@ -120,7 +125,7 @@ async def test_moss_transcribe_no_context_omits_prompt():
     # context 空/纯空白:不传 prompt,吃服务端默认指令。
     for ctx in (None, "", "   "):
         client = _FakeClient(resp=_FakeResp(200, {"segments": []}))
-        await _asr_moss_transcribe(client, b"wav", ctx, 4)
+        await _asr_moss_transcribe(client, b"wav", ctx, 4, _BASE)
         assert "prompt" not in client.last_call[1]["data"]
 
 
@@ -132,7 +137,7 @@ async def test_moss_transcribe_unreachable_503():
     # ③ 连接失败 → HTTPException 503。
     client = _FakeClient(exc=httpx.ConnectError("connection refused"))
     with pytest.raises(HTTPException) as ei:
-        await _asr_moss_transcribe(client, b"wav", None, 4)
+        await _asr_moss_transcribe(client, b"wav", None, 4, _BASE)
     assert ei.value.status_code == 503
 
 
@@ -141,7 +146,7 @@ async def test_moss_transcribe_non_200_503():
     # 非 200 → 503(不把上游错误当结果)。
     client = _FakeClient(resp=_FakeResp(500, {}, "internal error"))
     with pytest.raises(HTTPException) as ei:
-        await _asr_moss_transcribe(client, b"wav", None, 4)
+        await _asr_moss_transcribe(client, b"wav", None, 4, _BASE)
     assert ei.value.status_code == 503
 
 
@@ -165,12 +170,16 @@ async def test_endpoint_segments_gated_by_timestamps(
     # ② timestamps=true 带 segments、=false 不带;⑤ usage.seconds = 自算音频秒(4)。
     import src.api.routes.openai_compat as oc
 
+    # Arc 2:端点先经 _resolve_moss_base_url 选址。设 env override → 走 override 分支,
+    # 不依赖 ModelManager(仍锁 env>ModelManager 优先级;_asr_moss_transcribe 已整体 mock)。
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+
     wav = _make_wav16k(4.0)
 
     async def _fake_ffmpeg(raw):
         return wav
 
-    async def _fake_moss(client, w, ctx, secs):
+    async def _fake_moss(client, w, ctx, secs, base_url):
         return ("你好世界", "zh", [
             {"start": 0.0, "end": 4.0, "speaker": "S01", "text": "你好世界"},
         ])
@@ -210,12 +219,14 @@ async def test_endpoint_moss_unreachable_returns_503(
     # ③ 端点透传:MOSS 不可达 → 503(不静默降级)。
     import src.api.routes.openai_compat as oc
 
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+
     wav = _make_wav16k(2.0)
 
     async def _fake_ffmpeg(raw):
         return wav
 
-    async def _fake_moss(client, w, ctx, secs):
+    async def _fake_moss(client, w, ctx, secs, base_url):
         raise HTTPException(503, detail="MOSS ASR 服务不可达")
 
     monkeypatch.setattr(oc, "_ffmpeg_to_wav16k", _fake_ffmpeg)
@@ -238,3 +249,35 @@ def test_wav16k_seconds():
     assert _wav16k_seconds(_make_wav16k(0.3)) == 1  # 至少 1 秒计费
     # 损坏/非 wav 字节 → 退化估算不崩(至少 1)
     assert _wav16k_seconds(b"not a wav") >= 1
+
+
+# --- Arc 2:base_url 选址(env override > ModelManager) --------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_moss_base_url_env_overrides_modelmanager(monkeypatch):
+    # env 显式设 → 用它,**不**碰 ModelManager(应急/测试 override 优先)。
+    import src.api.routes.openai_compat as oc
+
+    async def _boom(mm, name):  # 若被调到就说明没走 override 分支
+        raise AssertionError("ModelManager 不该在 env override 时被调用")
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:9911/")
+    monkeypatch.setattr(oc, "ensure_vllm_base_url", _boom)
+    url = await _resolve_moss_base_url(object(), "moss_transcribe_diarize")
+    assert url == "http://127.0.0.1:9911"  # 末尾 / 已剥
+
+
+@pytest.mark.asyncio
+async def test_resolve_moss_base_url_falls_back_to_modelmanager(monkeypatch):
+    # env 未设 → 经 ModelManager 选址(ensure_vllm_base_url,resident 未加载则拉起)。
+    import src.api.routes.openai_compat as oc
+
+    async def _mm(mm, name):
+        assert name == "moss_transcribe_diarize"
+        return "http://127.0.0.1:8123/"
+
+    monkeypatch.delenv("NOUS_MOSS_ASR_URL", raising=False)
+    monkeypatch.setattr(oc, "ensure_vllm_base_url", _mm)
+    url = await _resolve_moss_base_url(object(), "moss_transcribe_diarize")
+    assert url == "http://127.0.0.1:8123"

@@ -1,5 +1,12 @@
+# ⚠️ [已退役 2026-07-21,Arc 2:改由 ModelManager 纳管]
+# spec 2026-07-20-moss-asr-sglang-serving-design.md §7:MOSS 已改由 backend 的 ModelManager
+# 起 sgl-omni serve 子进程统一管理(configs/models.d/moss_transcribe_diarize.yaml,resident 常驻,
+# SGLangOmniAdapter)。本 systemd unit **不再使用**,保留仅作历史参考 + 回滚锚点。
+# 生产切换:sudo systemctl disable --now nous-moss-asr && sudo rm /etc/systemd/system/nous-moss-asr.service
+#           && sudo systemctl daemon-reload && sudo systemctl restart nous-backend
+# 切换后 backend 重启会自动拉起 resident MOSS。**别与本 unit 同时开**(双头抢同一张 3090/端口)。
 [Unit]
-Description=nous-center MOSS-Transcribe-Diarize ASR 微服务(SGLang Omni,独立 venv,2026-07-20)
+Description=nous-center MOSS-Transcribe-Diarize ASR 微服务(SGLang Omni,独立 venv,2026-07-20;已退役 Arc 2)
 # 不 Requires/PartOf nous-backend —— 独立进程/venv(sglang-omni 自带 torch 2.11+cu130 /
 # transformers 5.6,与 backend 的 vllm 0.22/torch 2.11 钉两条独立升级轨,不牵扯,故隔离)。
 # backend 经 HTTP(NOUS_MOSS_ASR_URL)调它做 ASR;它挂了转写主路返回 503(MOSS 已是唯一 ASR)。

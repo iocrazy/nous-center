@@ -713,14 +713,31 @@ _MOSS_DEFAULT_PROMPT = (
 )
 
 
+async def _resolve_moss_base_url(model_mgr, engine_name: str) -> str:
+    """MOSS 引擎 base_url 选址(spec 2026-07-20 Arc 2)。优先级 **env > ModelManager**:
+
+    - `NOUS_MOSS_ASR_URL` 显式设了 → 用它(测试/应急 override,如指向手工起的实例)。
+    - 否则 → 经 ModelManager 取 `moss_transcribe_diarize` resident 引擎的 base_url
+      (`ensure_vllm_base_url`:未加载则按需拉起再解析,镜像 embedding/chat 的选址模式;
+      SGLangOmniAdapter 暴露 `base_url`/`is_loaded`,与该 helper 契约一致直接复用)。
+
+    未加载/拉起失败 → VLLMNotLoaded(调用方映射 503);已加载但无端点 → VLLMNoEndpoint(500)。
+    """
+    override = os.environ.get("NOUS_MOSS_ASR_URL")
+    if override:
+        return override.rstrip("/")
+    return (await ensure_vllm_base_url(model_mgr, engine_name)).rstrip("/")
+
+
 async def _asr_moss_transcribe(
     client: httpx.AsyncClient, wav: bytes, context: str | None, audio_seconds: int,
+    base_url: str,
 ) -> tuple[str, str | None, list[dict]]:
     """走 MOSS-Transcribe-Diarize SGLang 微服务(spec 2026-07-20)做转写 + 说话人分离。
 
-    POST 归一化 16k WAV 到 `{NOUS_MOSS_ASR_URL}/v1/audio/transcriptions`,
-    response_format=verbose_json 拿到段级(时间戳 + [Sxx] 说话人)结果。返回
-    `(text, language, segments)`:
+    POST 归一化 16k WAV 到 `{base_url}/v1/audio/transcriptions`(base_url 由
+    `_resolve_moss_base_url` 选址:env override > ModelManager),response_format=
+    verbose_json 拿到段级(时间戳 + [Sxx] 说话人)结果。返回 `(text, language, segments)`:
     - text = 各段纯文本顺序拼接(剥掉时间戳/[Sxx],纯文本客户端不退化);
     - language = MOSS 响应有 language 字段就透传,没有则 None(防御式,不假设有);
     - segments = [{start, end, speaker, text}](start/end 保留秒 float,speaker 抠自 [Sxx])。
@@ -732,7 +749,7 @@ async def _asr_moss_transcribe(
     = MOSS 模型卡 README 官方配方,transformers 真机 smoke 验过 steer 生效且不幻觉;见
     `_MOSS_DEFAULT_PROMPT` 处注释)。context 为空:不传 `prompt`,吃服务端默认指令。
     """
-    base = os.environ.get("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    base = base_url
     # max_new_tokens 按时长动态:0.9B 输出 ≈12.5 audio-token/s + 文本,盈余给标点/说话人标记;
     # 下限 5120 保短音频,上限 65536 防长音频失控。
     max_new_tokens = min(65536, max(5120, int(audio_seconds * 32) + 512))
@@ -843,6 +860,15 @@ async def audio_transcriptions(
 
     engine_name = instance.source_name or str(instance.source_id)
 
+    # MOSS 引擎选址(Arc 2):env override > ModelManager(resident,未加载则按需拉起)。
+    model_mgr = getattr(request.app.state, "model_manager", None)
+    try:
+        moss_base_url = await _resolve_moss_base_url(model_mgr, engine_name)
+    except VLLMNotLoaded as e:
+        raise HTTPException(503, detail=f"MOSS ASR 引擎不可用: {e}") from e
+    except VLLMNoEndpoint as e:
+        raise HTTPException(500, detail=str(e)) from e
+
     raw = await file.read()
     if not raw:
         raise InvalidRequestError("空音频文件")
@@ -854,7 +880,7 @@ async def audio_transcriptions(
     async with httpx.AsyncClient(proxy=None) as client:
         # MOSS 微服务:一次拿到 文本 + 段级时间戳 + 说话人分离(不可达 → 503)。
         text, detected_language, segments = await _asr_moss_transcribe(
-            client, wav, context, audio_seconds,
+            client, wav, context, audio_seconds, moss_base_url,
         )
 
     duration_ms = int((time.monotonic() - start_ms) * 1000)

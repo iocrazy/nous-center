@@ -5,6 +5,15 @@
 `docs/superpowers/specs/2026-07-20-moss-asr-sglang-serving-design.md`,PR-0 spike 结论
 `infra/moss-asr/SPIKE.md`(必读)。
 
+> **⚠️ 现状(2026-07-21,Arc 2):独立 systemd unit 已退役,改由 backend ModelManager 纳管。**
+> MOSS 现由 `configs/models.d/moss_transcribe_diarize.yaml`(`type: asr`、`resident: true`、
+> `SGLangOmniAdapter`)统一管理:backend 起 `sgl-omni serve` 子进程、随 backend 常驻、UI 可见启停。
+> 转写端点经 ModelManager 取引擎 base_url(`NOUS_MOSS_ASR_URL` env 仍是应急/测试 override,
+> 优先级 env > ModelManager)。**本目录的 `.venv` / `setup.sh` / `moss_config.yaml` / `start_serve.sh`
+> 仍是运行载体**(adapter 起的就是 `.venv/bin/sgl-omni serve --config moss_config.yaml`);
+> 退役的只是 `nous-moss-asr.service` 这个 systemd 管理层。切换/回滚 runbook 见 spec §5b-Arc2。
+> 下文「systemd unit」相关段落是 Arc 1 历史,保留作回滚参考。
+
 ## 为什么独立进程 / 独立 venv
 
 MOSS 走 `sglang-omni`(SGLang Omni serving runtime),自带 `torch 2.11+cu130` /
