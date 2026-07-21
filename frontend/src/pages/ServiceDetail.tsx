@@ -867,27 +867,95 @@ function SectionHeader({ title }: { title: string }) {
 
 type AsrSegment = { start: number; end: number; speaker: string | null; text: string }
 
-/** ASR 段级说话人分段展示(MOSS 内建 diar 段;spec 2026-07-20-moss-asr-sglang-serving)。
- *  朴素渲染:每段一行 `[speaker] text`。时间轴/mm:ss 美化留 PR-4。 */
-function AsrSegments({ segments, requested }: { segments: unknown; requested: boolean }) {
+/** 秒(float,后端契约 spec §3)→ 时:分:秒 时间轴标签。<1h 用 `mm:ss`,≥1h 用 `h:mm:ss`。
+ *  分/秒始终两位;小时不补零。非有限/负值视为 0。 */
+export function formatHms(seconds: number): string {
+  const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const ss = String(s).padStart(2, '0')
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`
+  return `${String(m).padStart(2, '0')}:${ss}`
+}
+
+// 说话人徽标色板:从主题色板取(accent-2/info/purple/warn/ok + 补充几个稳定 hue),
+// 按首次出现顺序轮转分配 → 同一说话人全程同色。rgb 三元组:bg 用 0.15 alpha 子色,fg 用实色
+// (同 language 徽标做法,两套主题下都成立)。
+const SPEAKER_HUES = [
+  '20,184,166',  // teal — accent-2
+  '59,130,246',  // blue — info
+  '168,85,247',  // purple
+  '245,158,11',  // amber — warn
+  '34,197,94',   // green — ok
+  '236,72,153',  // pink
+  '14,165,233',  // sky
+  '249,115,22',  // orange
+] as const
+
+function speakerBadgeStyle(index: number): React.CSSProperties {
+  const hue = SPEAKER_HUES[index % SPEAKER_HUES.length]
+  return {
+    flexShrink: 0,
+    fontSize: 10,
+    fontFamily: 'var(--mono, monospace)',
+    padding: '2px 7px',
+    borderRadius: 10,
+    background: `rgba(${hue},0.15)`,
+    color: `rgb(${hue})`,
+    letterSpacing: 0.3,
+  }
+}
+
+/** ASR 段级说话人分段时间轴(MOSS 内建 diar 段;spec 2026-07-20-moss-asr-sglang-serving PR-4)。
+ *  每段一行:`[mm:ss]` 时间轴 + 说话人徽标(稳定轮转色;null 无徽标纯文本)+ 段文本。
+ *  顶部小结:总时长 + 段数 + 说话人数。 */
+export function AsrSegments({ segments, requested }: { segments: unknown; requested: boolean }) {
   if (!requested) return null
   if (!Array.isArray(segments) || segments.length === 0) return null
   const segs = segments as AsrSegment[]
+
+  // 说话人 → 稳定色索引(按首次出现顺序)。null 不入表。
+  const speakerIndex = new Map<string, number>()
+  for (const s of segs) {
+    if (s.speaker && !speakerIndex.has(s.speaker)) {
+      speakerIndex.set(s.speaker, speakerIndex.size)
+    }
+  }
+  const totalDur = segs.reduce((max, s) => (Number.isFinite(s.end) && s.end > max ? s.end : max), 0)
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-        分段 · {segs.length} 段
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{
+        fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4,
+        display: 'flex', gap: 8, flexWrap: 'wrap',
+      }}>
+        <span>总时长 {formatHms(totalDur)}</span>
+        <span>·</span>
+        <span>{segs.length} 段</span>
+        {speakerIndex.size > 0 && (
+          <>
+            <span>·</span>
+            <span>{speakerIndex.size} 位说话人</span>
+          </>
+        )}
       </div>
-      {segs.map((s, i) => (
-        <div key={i} style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>
-          {s.speaker && (
-            <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono, monospace)', marginRight: 6 }}>
-              [{s.speaker}]
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {segs.map((s, i) => (
+          <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 13, lineHeight: 1.5 }}>
+            <span style={{
+              color: 'var(--muted)', fontFamily: 'var(--mono, monospace)', fontSize: 11,
+              flexShrink: 0, minWidth: 46,
+            }}>
+              [{formatHms(s.start)}]
             </span>
-          )}
-          {s.text}
-        </div>
-      ))}
+            {s.speaker && (
+              <span style={speakerBadgeStyle(speakerIndex.get(s.speaker) ?? 0)}>{s.speaker}</span>
+            )}
+            <span style={{ color: 'var(--text)', minWidth: 0 }}>{s.text}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
