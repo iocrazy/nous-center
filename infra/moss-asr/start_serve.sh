@@ -16,11 +16,20 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 # 注意:这张 3090 与 nous-aligner 钉的那张(GPU-78dcdbeb…)是两张不同的 3090。
 export CUDA_VISIBLE_DEVICES=GPU-2fd7c91c-af39-7b02-66b9-988331ce3bd7
 
-# sgl-omni 的 JIT 内核(sm_86 无预编译)现场 nvcc 编译需指向 venv 内自带的 cu13 工具链
-# (本机无 /usr/local/cuda);PATH 加 venv/bin 让它找到 ninja/nvcc。setup.sh 已装好并建软链。
+# sgl-omni 首次冷启会现场 nvcc 编译 sgl-kernel(sm_86 无预编译,如 fused_rope);本机无
+# /usr/local/cuda,指向 venv 内自带的 cu13 工具链(setup.sh 已装好并建 lib64/libcudart 软链)。
+# 三样缺一不可(PR-0 主循环 serve 调通实证):CUDA_HOME 定工具链根;PATH 里 venv/bin 找 ninja、
+# cu13/bin 找 nvcc;LD_LIBRARY_PATH 让链接/运行期找到 libcudart 等。warm cache 时不重编(秒级起),
+# 但首次部署冷启会真编,缺这些直接编不过。
 VENV="$(pwd)/.venv"
 export CUDA_HOME="$VENV/lib/python3.12/site-packages/nvidia/cu13"
-export PATH="$VENV/bin:$PATH"
+export PATH="$VENV/bin:$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}"
+
+# 模型是本地全量检出 + trust_remote_code,不需联网;强制 HF 离线,免得经 mihomo 代理去
+# 探 huggingface.co 拖慢/挂起冷启。
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 
 # 本机 mihomo 代理会拦 127.0.0.1 回环(backend→微服务同机),排除掉。
 export NO_PROXY=127.0.0.1,localhost

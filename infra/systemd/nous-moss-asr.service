@@ -26,6 +26,9 @@ Environment=NOUS_MOSS_ASR_PORT=8003
 Environment=MODELS_ROOT=/media/heygo/program/models
 Restart=on-failure
 RestartSec=10
+# 首次部署冷启会现场 nvcc 编译 sgl-kernel(数分钟);Type=simple 下 systemd 不按就绪门杀,
+# 但给足超时余量,防未来若改 Type=notify 时冷启被误判超时。warm 之后 ~秒级起。
+TimeoutStartSec=600
 # sglang 常驻内存(host RAM,非显存)比 aligner 大;给 24G 上限防意外泄漏拖垮宿主。
 MemoryMax=24G
 # KillMode 用默认 control-group(不写 KillMode= 即此):停服时收整个 cgroup,连 sglang

@@ -3,7 +3,8 @@
 # 以 heygo 身份跑(不用 root)。重建 prod 检出 / 升级 sglang-omni 时重跑。
 # 幂等:重跑不炸(venv/clone 存在则复用,pip install 已满足则 no-op,软链用 -sfn)。
 #
-# 全部配方来自 PR-0 spike(infra/moss-asr/SPIKE.md)真机验证结论:
+# 配方来自 PR-0 spike(infra/moss-asr/SPIKE.md)+ 主循环把 serve 真正调起来时补的
+# CUDA 版本对齐结论(见 §4 注释;SPIKE.md 待回填 runtime==13.3 一项):
 #   - torch 2.11.0+cu130 全家 → PyTorch cu130 index;sglang-kernel/sgl-deep-gemm +cu130
 #     → SGLang cu130 index(两个 --extra-index-url,即"cu130 双 index")。
 #   - --index-strategy unsafe-best-match:允许跨 index 取最优版本(cu130 本地版本号
@@ -69,12 +70,26 @@ if ! ( cd "$CLONE" && uvpip -e . ); then
   ( cd "$CLONE" && uvpip -e . )
 fi
 
-echo "==> 4/5 补 CUDA 工具链(nvcc + 整链 13.3.*;sm_86 JIT 现场编译要)"
-# cuda-toolkit[nvcc] 拿 nvcc,落 .venv/.../nvidia/cu13/bin/。
-uvpip "cuda-toolkit[nvcc]==13.0.2"
-# 整链升 13.3.*(修 glibc 2.41+ 头文件冲突;PTX 版本要整链一致)。
-uvpip "nvidia-cuda-nvcc==13.3.*" "nvidia-cuda-crt==13.3.*" \
-      "nvidia-nvvm==13.3.*" "nvidia-cuda-cccl==13.3.*"
+echo "==> 4/5 CUDA 编译链钉到同一 minor=13.3(nvcc/nvvm/crt/runtime;sm_86 fused_rope JIT 要)"
+# 关键坑(PR-0 主循环真机调通,现编 kernel 能过、serve 起得来的唯一配方):
+# `-e .` 装完后 nvcc/nvvm/crt 是 13.3,但 torch 传递装的 nvidia-cuda-runtime 头停在 13.0
+# (CUDA_VERSION 13000)。sglang fused_rope / flashinfer 在 sm_86 无预编译、要现场 nvcc 编译时,
+# cccl 守卫比对 nvcc(13.3)与 runtime 头(13.0)不一致 → 报「CUDA compiler and CUDA toolkit
+# headers are incompatible」,serve 起不来。必须把 runtime 也钉 13.3(头 CUDA_VERSION 13030
+# == nvcc 13.3)。四件套全显式钉 + --reinstall:否则 unsafe-best-match 会把 runtime 又解回
+# 错配的 13.0。别降到 13.0:其 crt/math_functions.h 撞本机超新 glibc 的 _POSIX_C_SOURCE
+# 报 rsqrtf 异常规格冲突——只有 13.3 两头都满足。
+# 包名是 nvidia-cuda-nvcc(无 -cu13 后缀;-cu13 在 PyPI 是 0.0.1 空壳)。runtime 等在
+# pypi.nvidia.com,故这步显式带上该 index(它不在上面两个 cu130 index 里)。
+# cccl 是第五钉:cuda_fp16.h 要 <nv/target>(cccl wheel 提供)。全新 venv 没它 fused_rope
+# 编不过(fatal error: nv/target);现 venv 已有故 pr1/spike 复验暴露不了,别删。
+uv pip install --python "$PY" --reinstall \
+  'nvidia-cuda-nvcc==13.3.*' 'nvidia-nvvm==13.3.*' \
+  'nvidia-cuda-crt==13.3.*' 'nvidia-cuda-runtime==13.3.*' \
+  'nvidia-cuda-cccl==13.3.*' \
+  --extra-index-url "$PYTORCH_CU130" \
+  --extra-index-url https://pypi.nvidia.com \
+  --index-strategy unsafe-best-match
 
 # JIT 链接期找 lib64 与非版本化 libcudart.so;补两个软链(idempotent: -sfn)。
 CU13="$VENV/lib/python3.12/site-packages/nvidia/cu13"
@@ -82,8 +97,11 @@ ln -sfn lib "$CU13/lib64"
 ln -sfn libcudart.so.13 "$CU13/lib/libcudart.so"
 echo "    软链: $CU13/lib64 -> lib ; $CU13/lib/libcudart.so -> libcudart.so.13"
 
+# 刚改了 CUDA 版本 → 清半成品 JIT 缓存,免得 stale kernel 毒化首次冷启(主循环验)。
+rm -rf "$HOME/.cache/flashinfer" "$HOME/.cache/tvm-ffi"
+
 echo "==> 5/5 自检:导入 sglang_omni + CUDA 可见"
-CUDA_HOME="$CU13" PATH="$VENV/bin:$PATH" "$PY" - <<'PY'
+CUDA_HOME="$CU13" PATH="$VENV/bin:$CU13/bin:$PATH" LD_LIBRARY_PATH="$CU13/lib:${LD_LIBRARY_PATH:-}" "$PY" - <<'PY'
 import sglang_omni  # noqa: F401
 import torch
 print("sglang_omni import OK, torch", torch.__version__,
