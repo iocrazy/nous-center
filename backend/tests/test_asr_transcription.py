@@ -124,12 +124,13 @@ async def test_moss_transcribe_context_appends_hotword_prompt():
 
 
 @pytest.mark.asyncio
-async def test_moss_transcribe_no_context_omits_prompt():
-    # context 空/纯空白:不传 prompt,吃服务端默认指令。
+async def test_moss_transcribe_no_context_sends_default_prompt():
+    # context 空/纯空白:**仍显式传** 我们的默认指令(带标点增补条款,服务端默认没有——
+    # 省略即丢快语速标点),且无热词后缀。
     for ctx in (None, "", "   "):
         client = _FakeClient(resp=_FakeResp(200, {"segments": []}))
         await _asr_moss_transcribe(client, b"wav", ctx, 4, _BASE)
-        assert "prompt" not in client.last_call[1]["data"]
+        assert client.last_call[1]["data"]["prompt"] == _MOSS_DEFAULT_PROMPT
 
 
 # --- _asr_moss_transcribe:503 语义(唯一 ASR 主路,不静默降级) ----------

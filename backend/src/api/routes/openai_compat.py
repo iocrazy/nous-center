@@ -706,8 +706,13 @@ _MOSS_SPEAKER_RE = re.compile(r"^\s*\[(S\d+)\]\s*(.*)$", re.DOTALL)
 # (`_prompt_from_payload`:170-198,非空 prompt 直接作 user text、:182-183 仅空时才用
 # 默认)——故我们自带这份默认指令、在尾部拼热词,既保 [Sxx]/时间戳输出契约,又生效热词。
 # 即便服务端某次升级改了内部默认,我们这份仍是模型卡官方 prompt,输出契约不破。
+# 基底 = 模型卡官方 prompt,**故意增补一句标点条款**(2026-07-22 真机实验):快速连续语流
+# (无停顿口播)下 MOSS 用官方默认 prompt 输出 0 标点(1.8x 变速播客复现:2796 字 0 标点);
+# 把标点要求写进主指令 → 220 标点/密度 7.3%,正常语速与 golden 均零回归(54 段/双说话人/
+# 时间戳完好)。热词后缀 steer 无效(试过),必须在主指令内。
 _MOSS_DEFAULT_PROMPT = (
-    "请将音频转写为文本，每一段需以起始时间戳和说话人编号"
+    "请将音频转写为文本，并为正文添加规范的标点符号（逗号、句号、问号等），"
+    "每一段需以起始时间戳和说话人编号"
     "（[S01]、[S02]、[S03]…）开头，正文为对应的语音内容，"
     "并在段末标注结束时间戳，以清晰标明该段语音范围。"
 )
@@ -761,7 +766,9 @@ async def _asr_moss_transcribe(
         "response_format": "verbose_json",
         "max_new_tokens": str(max_new_tokens),
     }
-    # context → 热词:自带默认指令 + 官方热词后缀(空则不传,走服务端默认)。
+    # **始终显式传 prompt**(不再空 context 时省略):我们的 _MOSS_DEFAULT_PROMPT 带标点
+    # 增补条款,服务端默认没有——省略即丢快语速标点(见常量注释)。context 非空再拼热词后缀。
+    data["prompt"] = _MOSS_DEFAULT_PROMPT
     if context and context.strip():
         data["prompt"] = f"{_MOSS_DEFAULT_PROMPT}热词提示:{context.strip()}"
     try:
