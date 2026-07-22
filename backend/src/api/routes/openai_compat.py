@@ -836,6 +836,110 @@ def _detect_language(text: str) -> str | None:
     return best if counts[best] > 0 else None
 
 
+# --- 段合并后处理(可选,merge_segments=true 开启) ---------------------------
+# MOSS 分段粒度跟内容节奏走:快节奏口播被切到 ~1.9s/段(12 分钟视频出 ~387 段,几乎
+# 一短句一段),对字幕/阅读场景太碎。服务端确定性贪心合并把碎段并成句子级,默认关、
+# 契约既有输出零变化(只加不改)。纯函数、不 mutate 入参,好测。
+_MERGE_MAX_GAP = 0.8       # s:相邻段间隔 > 此值不合并(节奏断点,保停顿语义)
+_MERGE_MIN_DURATION = 3.0  # s:句末标点封组的最小组时长(太短的「一句」不单独成组)
+_MERGE_MAX_DURATION = 15.0  # s:组时长硬上限,超过即封组(防字幕块过长)
+_MERGE_MAX_CHARS = 80      # 字:组字数硬上限,超过即封组(防单块过长)
+# 句末标点:组文本以其一收尾 + 组时长 ≥ MIN_DURATION → 封组(自然句边界)。
+_MERGE_SENTENCE_END = ("。", "!", "?", "!", "?", "…")
+
+
+def _merge_seg_duration(start, end) -> float:
+    """组/段时长(秒);start/end 任一缺失(防御,契约保证是 float)→ 0。"""
+    if start is None or end is None:
+        return 0.0
+    return max(0.0, float(end) - float(start))
+
+
+def _merge_concat_text(a: str, b: str) -> str:
+    """拼接两段文本:中文直接串接;若前段结尾与后段开头都是 ASCII 字母/数字则补一个
+    空格,防英文单词/数字粘连(`good`+`morning` → `good morning`)。"""
+    if a and b and a[-1].isascii() and a[-1].isalnum() and b[0].isascii() and b[0].isalnum():
+        return a + " " + b
+    return a + b
+
+
+def _merge_group_should_close(text: str, start, end) -> bool:
+    """组是否已「封口」(不再接收后续段)。满足其一即封:
+    - 组字数 > 硬上限(80);
+    - 组时长 > 硬上限(15s);
+    - 组文本以句末标点收尾 **且** 组时长 ≥ 下限(3s)—— 自然句边界。
+    speaker 变化 / 间隔超阈是**下一段**触发的封组,不在此(由合并主循环判定)。"""
+    if len(text) > _MERGE_MAX_CHARS:
+        return True
+    dur = _merge_seg_duration(start, end)
+    if dur > _MERGE_MAX_DURATION:
+        return True
+    if dur >= _MERGE_MIN_DURATION and text.rstrip().endswith(_MERGE_SENTENCE_END):
+        return True
+    return False
+
+
+def _merge_segments(segments: list[dict]) -> list[dict]:
+    """把碎分段贪心顺序合并成句子级(merge_segments=true 时用)。规则见常量注释:
+
+    - 只合并**同 speaker**(均为 None 视为同)且相邻间隔 `next.start - cur.end <=
+      _MERGE_MAX_GAP` 的段;
+    - 组内文本拼接(`_merge_concat_text`,中文直接串接、英文补空格);
+    - 断开条件(满足其一即封组,不再接后续段):组文本句末标点收尾且组时长 ≥ 3s;
+      组时长 > 15s;组字数 > 80;speaker 变化或间隔超阈;
+    - 合并后段 `{start=组首 start, end=组尾 end, speaker=组 speaker, text=拼接}`;
+    - 空列表/单段原样返回;**不 mutate 入参**(输出全是新 dict)。
+    """
+    if len(segments) <= 1:
+        return list(segments)
+
+    out: list[dict] = []
+    cur: dict | None = None
+    cur_closed = False  # 组已封口(硬上限 / 句末封组)→ 下一段必起新组
+
+    def _flush() -> None:
+        nonlocal cur
+        if cur is not None:
+            out.append({
+                "start": cur["start"],
+                "end": cur["end"],
+                "speaker": cur["speaker"],
+                "text": cur["text"],
+            })
+            cur = None
+
+    for seg in segments:
+        s_start = seg.get("start")
+        s_end = seg.get("end")
+        s_speaker = seg.get("speaker")
+        s_text = seg.get("text") or ""
+
+        if cur is None:
+            cur = {"start": s_start, "end": s_end, "speaker": s_speaker, "text": s_text}
+            cur_closed = _merge_group_should_close(s_text, s_start, s_end)
+            continue
+
+        # 间隔超阈?(next.start - cur.end;任一缺时间戳则不按间隔断,交由其它条件)
+        gap_over = (
+            s_start is not None and cur["end"] is not None
+            and float(s_start) - float(cur["end"]) > _MERGE_MAX_GAP
+        )
+        # 起新组三情形:组已封口 / speaker 变 / 间隔超阈 —— 不并。
+        if cur_closed or s_speaker != cur["speaker"] or gap_over:
+            _flush()
+            cur = {"start": s_start, "end": s_end, "speaker": s_speaker, "text": s_text}
+            cur_closed = _merge_group_should_close(s_text, s_start, s_end)
+            continue
+
+        # 并入当前组:文本拼接、end 延到本段尾;再判是否封口(供下一段决策)。
+        cur["text"] = _merge_concat_text(cur["text"], s_text)
+        cur["end"] = s_end
+        cur_closed = _merge_group_should_close(cur["text"], cur["start"], cur["end"])
+
+    _flush()
+    return out
+
+
 # response_format 白名单(OpenAI 兼容)。json/text = v1 契约语义;verbose_json = 契约 §4
 # 演进钩子(→ OpenAI-Whisper 段形状)。未知值 → 400。
 _ASR_RESPONSE_FORMATS = ("json", "text", "verbose_json")
@@ -895,6 +999,7 @@ async def audio_transcriptions(
     response_format: str | None = Form(None),
     context: str | None = Form(None),
     timestamps: bool = Form(False),
+    merge_segments: bool = Form(False),
     auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_transcriptions),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -914,7 +1019,9 @@ async def audio_transcriptions(
     出参 `language`:引擎回了用引擎值,没回(MOSS 现状)退回文本字符集检测(`_detect_language`,
     出 zh/ja/... ISO 码),都判不出才 null(verbose_json 落 "und")。入参 `language` 仍为 OpenAI
     兼容保留位(不消费)。Bearer 走 grant+quota;admin cookie(Playground)直查服务、跳配额。
-    MOSS 不可达 → 503(唯一 ASR 主路)。
+    MOSS 不可达 → 503(唯一 ASR 主路)。可选 `merge_segments=true`:把 MOSS 碎分段服务端
+    确定性合并成句子级(字幕/阅读场景),作用于 segments、两种输出格式一处生效;text 全文
+    不变,默认关(既有输出零变化)。
     """
     instance, api_key = auth
     requested_model = model or None
@@ -1006,6 +1113,13 @@ async def audio_transcriptions(
             error=str(detail)[:200],
         )
         raise
+
+    # merge_segments(可选,默认关):把 MOSS 碎分段服务端确定性合并成句子级(字幕/阅读
+    # 场景)。作用在归一化 segments 之后、两种输出格式(默认 + verbose_json)之前,一处
+    # 生效两格式。text 全文不变(全文本来就是全段拼接,合并只并段边界)。任务中心记录的
+    # segments_count 也用合并后数量(用户视角一致)。
+    if merge_segments and segments:
+        segments = _merge_segments(segments)
 
     duration_ms = int((time.monotonic() - start_ms) * 1000)
     from src.services.usage_service import record_llm_usage

@@ -496,6 +496,8 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
   // 时间戳 + 说话人分段:MOSS 微服务内建,返回段级 {start,end,speaker,text}
   // (spec 2026-07-20-moss-asr-sglang-serving;退役对齐器后不再有词/字级 words)。
   const [asrTimestamps, setAsrTimestamps] = useState(false)
+  // 段合并(PR-8):把 MOSS 碎分段服务端合并成句子级,适合字幕/阅读;默认关,只改 segments。
+  const [asrMergeSegments, setAsrMergeSegments] = useState(false)
 
   // 拖拽/选择共用:只收音频文件(部分音频 type 为空,放行靠扩展名兜底)。
   const acceptAudio = (f: File | null | undefined) => {
@@ -527,6 +529,7 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
         fd.append('model', svc.name)
         if (asrContext.trim()) fd.append('context', asrContext.trim())
         if (asrTimestamps) fd.append('timestamps', 'true')
+        if (asrMergeSegments) fd.append('merge_segments', 'true')
         const resp = await fetch('/v1/audio/transcriptions', {
           method: 'POST', body: fd, credentials: 'same-origin',
         })
@@ -626,6 +629,15 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
                 style={{ cursor: 'pointer' }}
               />
               返回时间戳与说话人分段(段级 · MOSS 内建)
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={asrMergeSegments}
+                onChange={(e) => setAsrMergeSegments(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              合并碎段成句子级(字幕/阅读 · 服务端确定性合并)
             </label>
             <button
               type="button"
@@ -1118,6 +1130,8 @@ function AsrDocsTab({ svc }: { svc: ServiceDetailT }) {
           <code>{' segments '}</code>(段级 <code>{'{ start, end, speaker, text }'}</code>,MOSS
           内建说话人分离)。<code>text</code> 永远首字段、纯文本,最简客户端只读它即可。
           <code>language</code> 由引擎或后端文本检测得出(均无则 <code>null</code>)。
+          可选 <code>{' merge_segments=true '}</code>:把碎段服务端合并成句子级(适合字幕/阅读;
+          默认关,只改 <code>segments</code>、<code>text</code> 全文不变),两种输出格式一处生效。
         </div>
         <pre style={curlPreStyle}>{buildAsrCurl(svc.name, false)}</pre>
       </Panel>

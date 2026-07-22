@@ -31,7 +31,16 @@
 
 `file`(multipart,任意常见音频格式,后端 ffmpeg 归一化)、`model`(服务名)、
 `timestamps`(bool,要分段)、`context`(热词/领域偏置,引擎不支持时静默忽略)、
-`language`(OpenAI 兼容保留位,当前不消费)、`response_format`(**已消费**,见下节)。
+`language`(OpenAI 兼容保留位,当前不消费)、`response_format`(**已消费**,见下节)、
+`merge_segments`(bool,默认 `false`,**已消费**,见下)。
+
+`merge_segments`:段级后处理开关。`true` 时后端**确定性贪心合并**碎分段成句子级
+(适合字幕/阅读场景:MOSS 分段跟内容节奏走,快节奏口播被切到 ~1.9s/段,太碎)。
+合并规则:只并同 `speaker`(均 `null` 视为同)且相邻间隔 ≤ 0.8s 的段;组文本以句末标点
+(。!?!?…)收尾且组时长 ≥ 3s、或组时长 > 15s、或组字数 > 80、或 speaker 变化/间隔超阈
+即封组。合并后段 = `{start=组首 start, end=组尾 end, speaker, text=拼接}`。默认 `false` 时
+既有输出**零变化**(只加不改);`true` 只改变 `segments`(默认格式 + verbose_json 一处生效),
+`text` 全文不变(全文本来就是全段拼接)。
 
 ## 演进规则
 
@@ -93,3 +102,6 @@
 - 2026-07-21(PR-7):§4 演进钩子落地 —— `response_format` 开始消费(`json`/`text`/`verbose_json`,
   未知值 400);新增 OpenAI-Whisper `verbose_json` 出参分支(独立映射,默认输出不变);
   `language` 语义扩展为「引擎提供或后端文本字符集检测,均无才 null / und」。纯新增,默认契约冻结不动。
+- 2026-07-21(PR-8):新增可选入参 `merge_segments`(bool,默认 `false`)—— `true` 时服务端确定性
+  贪心合并碎分段成句子级(字幕/阅读场景),作用于 `segments`、默认格式 + verbose_json 一处生效;
+  `text` 全文不变。纯新增可选入参,默认关、既有输出零变化。

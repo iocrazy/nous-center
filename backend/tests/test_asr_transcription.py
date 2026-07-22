@@ -17,6 +17,7 @@ from src.api.routes.openai_compat import (
     _asr_moss_transcribe,
     _asr_verbose_json,
     _detect_language,
+    _merge_segments,
     _resolve_moss_base_url,
     _wav16k_seconds,
 )
@@ -577,3 +578,192 @@ async def test_resolve_moss_base_url_falls_back_to_modelmanager(monkeypatch):
     monkeypatch.setattr(oc, "ensure_vllm_base_url", _mm)
     url = await _resolve_moss_base_url(object(), "moss_transcribe_diarize")
     assert url == "http://127.0.0.1:8123"
+
+
+# --- PR-8:段合并(_merge_segments,纯函数为主) -----------------------------
+
+
+def test_merge_segments_fragments_into_sentences():
+    # 碎段合并成句:6 个 0.5-2s 短段,句号在第 3/6 段尾 → 断成 2 组(句末标点 + 组时长 ≥ 3s)。
+    segs = [
+        {"start": 0.0, "end": 1.2, "speaker": "S01", "text": "大家好"},
+        {"start": 1.3, "end": 2.5, "speaker": "S01", "text": "今天讲个事"},
+        {"start": 2.6, "end": 3.8, "speaker": "S01", "text": "很重要。"},
+        {"start": 3.9, "end": 5.0, "speaker": "S01", "text": "第二部分"},
+        {"start": 5.1, "end": 6.2, "speaker": "S01", "text": "继续说"},
+        {"start": 6.3, "end": 7.5, "speaker": "S01", "text": "就这样。"},
+    ]
+    assert _merge_segments(segs) == [
+        {"start": 0.0, "end": 3.8, "speaker": "S01", "text": "大家好今天讲个事很重要。"},
+        {"start": 3.9, "end": 7.5, "speaker": "S01", "text": "第二部分继续说就这样。"},
+    ]
+
+
+def test_merge_segments_speaker_change_not_merged():
+    # speaker 切换 → 不跨并(相邻但异说话人各自成组)。
+    segs = [
+        {"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好"},
+        {"start": 1.1, "end": 2.0, "speaker": "S02", "text": "我也好"},
+    ]
+    out = _merge_segments(segs)
+    assert len(out) == 2
+    assert out[0]["speaker"] == "S01" and out[0]["text"] == "你好"
+    assert out[1]["speaker"] == "S02" and out[1]["text"] == "我也好"
+
+
+def test_merge_segments_gap_over_threshold_not_merged():
+    # 间隔 > 0.8s(2.0-1.0=1.0)→ 不合并(节奏断点保停顿)。
+    segs = [
+        {"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好"},
+        {"start": 2.0, "end": 3.0, "speaker": "S01", "text": "再见"},
+    ]
+    out = _merge_segments(segs)
+    assert len(out) == 2
+    assert out[0]["text"] == "你好" and out[1]["text"] == "再见"
+
+
+def test_merge_segments_gap_within_threshold_merged():
+    # 间隔 = 0.8s(恰在阈上,<=)→ 合并(边界值)。
+    segs = [
+        {"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好"},
+        {"start": 1.8, "end": 2.5, "speaker": "S01", "text": "世界"},
+    ]
+    out = _merge_segments(segs)
+    assert len(out) == 1
+    assert out[0] == {"start": 0.0, "end": 2.5, "speaker": "S01", "text": "你好世界"}
+
+
+def test_merge_segments_hard_cap_15s_duration():
+    # 组时长 > 15s 硬上限:4 个 6s 段(无句末标点)→ 第 3 段把组推过 18s 封组,断成 2 组。
+    segs = [
+        {"start": 0.0, "end": 6.0, "speaker": "S01", "text": "一段"},
+        {"start": 6.1, "end": 12.0, "speaker": "S01", "text": "二段"},
+        {"start": 12.1, "end": 18.0, "speaker": "S01", "text": "三段"},
+        {"start": 18.1, "end": 24.0, "speaker": "S01", "text": "四段"},
+    ]
+    out = _merge_segments(segs)
+    assert len(out) == 2
+    assert out[0]["start"] == 0.0 and out[0]["end"] == 18.0
+    assert out[0]["text"] == "一段二段三段"
+    assert out[1]["start"] == 18.1 and out[1]["text"] == "四段"
+
+
+def test_merge_segments_hard_cap_80_chars():
+    # 组字数 > 80 硬上限:4 个 30 字短段(短时长、无标点)→ 第 3 段把组推到 90 字封组,断成 2 组。
+    segs = [
+        {"start": 0.0, "end": 0.5, "speaker": "S01", "text": "一" * 30},
+        {"start": 0.6, "end": 1.1, "speaker": "S01", "text": "二" * 30},
+        {"start": 1.2, "end": 1.7, "speaker": "S01", "text": "三" * 30},
+        {"start": 1.8, "end": 2.3, "speaker": "S01", "text": "四" * 30},
+    ]
+    out = _merge_segments(segs)
+    assert len(out) == 2
+    assert len(out[0]["text"]) == 90  # 30*3,超 80 后封组
+    assert len(out[1]["text"]) == 30
+
+
+def test_merge_segments_english_spacing():
+    # 英文/数字边界补空格(防粘连);中文直接串接不加空格。
+    en = _merge_segments([
+        {"start": 0.0, "end": 1.0, "speaker": None, "text": "good"},
+        {"start": 1.1, "end": 2.0, "speaker": None, "text": "morning"},
+    ])
+    assert len(en) == 1 and en[0]["text"] == "good morning"  # 补空格
+    zh = _merge_segments([
+        {"start": 0.0, "end": 1.0, "speaker": None, "text": "你好"},
+        {"start": 1.1, "end": 2.0, "speaker": None, "text": "世界"},
+    ])
+    assert len(zh) == 1 and zh[0]["text"] == "你好世界"  # 无空格
+
+
+def test_merge_segments_empty_and_single_passthrough():
+    # 空列表 / 单段原样返回。
+    assert _merge_segments([]) == []
+    single = [{"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好"}]
+    assert _merge_segments(single) == single
+
+
+def test_merge_segments_does_not_mutate_input():
+    # 不 mutate 入参:输出是新 dict,入参列表与其元素保持原样。
+    segs = [
+        {"start": 0.0, "end": 1.2, "speaker": "S01", "text": "大家好"},
+        {"start": 1.3, "end": 2.5, "speaker": "S01", "text": "世界"},
+    ]
+    import copy
+    snapshot = copy.deepcopy(segs)
+    out = _merge_segments(segs)
+    assert segs == snapshot  # 入参未被改
+    assert out[0] is not segs[0]  # 输出是新对象
+
+
+# --- PR-8:端点 merge_segments 消费 ------------------------------------------
+
+
+_MERGE_MOSS_SEGS = [
+    {"start": 0.0, "end": 1.2, "speaker": "S01", "text": "大家好"},
+    {"start": 1.3, "end": 2.5, "speaker": "S01", "text": "今天讲个事"},
+    {"start": 2.6, "end": 3.8, "speaker": "S01", "text": "很重要。"},
+    {"start": 3.9, "end": 5.0, "speaker": "S01", "text": "第二部分"},
+    {"start": 5.1, "end": 6.2, "speaker": "S01", "text": "继续说"},
+    {"start": 6.3, "end": 7.5, "speaker": "S01", "text": "就这样。"},
+]
+
+
+@pytest.mark.asyncio
+async def test_endpoint_merge_segments_default_false_no_merge(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 端点级:不传 merge_segments(默认 False)→ segments 原样(6 段,不合并)。
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(8.0)
+    _patch_moss(monkeypatch, wav, ("大家好今天讲个事很重要。第二部分继续说就这样。",
+                                   "zh", [dict(s) for s in _MERGE_MOSS_SEGS]))
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "timestamps": "true"},  # 不传 merge_segments
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["segments"]) == 6  # 原样,未合并
+    assert body["text"] == "大家好今天讲个事很重要。第二部分继续说就这样。"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_merge_segments_verbose_json_renumbers_ids(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # verbose_json + merge_segments=true:6 碎段 → 2 句级段,id 重新 0..n 编号;
+    # 任务中心 segments_count 用合并后数量(用户视角一致);text 全文不变。
+    from sqlalchemy import select
+    from src.models.execution_task import ExecutionTask
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(8.0)
+    full_text = "大家好今天讲个事很重要。第二部分继续说就这样。"
+    _patch_moss(monkeypatch, wav, (full_text, "zh", [dict(s) for s in _MERGE_MOSS_SEGS]))
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "response_format": "verbose_json",
+              "merge_segments": "true"},  # verbose_json 隐含分段,无需 timestamps
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["text"] == full_text  # 全文不变
+    assert len(body["segments"]) == 2  # 6 → 2
+    assert [s["id"] for s in body["segments"]] == [0, 1]  # id 重新 0..n
+    assert body["segments"][0]["text"] == "大家好今天讲个事很重要。"
+    assert body["segments"][0]["start"] == 0.0 and body["segments"][0]["end"] == 3.8
+    assert body["segments"][1]["text"] == "第二部分继续说就这样。"
+
+    # 任务中心记录合并后段数。
+    sf = api_client.app.state.async_session_factory
+    async with sf() as s:
+        tasks = (await s.execute(select(ExecutionTask))).scalars().all()
+    assert len(tasks) == 1
+    assert tasks[0].result["segments_count"] == 2
