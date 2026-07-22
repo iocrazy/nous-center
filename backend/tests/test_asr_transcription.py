@@ -296,9 +296,11 @@ async def test_endpoint_records_completed_asr_task(
     assert t.result["speakers"] == ["S01", "S02"]
     assert t.result["audio_seconds"] == 4
     assert len(t.result["text"]) == 120  # 预览截 120
+    # PR-9:input_json 除回显入参外,带 kind/audio_seconds(running 态派生钩子)。
     assert t.input_json == {
         "model": "qwen3.5", "timestamps": True,
         "context": "瑞幸咖啡", "filename": "clip.wav",
+        "kind": "asr", "audio_seconds": 4,
     }
     assert _task_to_dict(t)["type"] == "asr"
 

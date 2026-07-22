@@ -132,13 +132,17 @@ def _detect_tts_meta(result: object) -> dict:
     return out
 
 
-def _detect_asr_meta(result: object) -> dict:
-    """Arc 3(spec 2026-07-20-moss-asr §8):ASR 直连调用 task 的 result envelope 识别。
+def _detect_asr_meta(result: object, input_json: object = None) -> dict:
+    """Arc 3(spec 2026-07-20-moss-asr §8):ASR 直连调用 task 的 type 派生。
 
-    与 image/tts/… 的 workflow 节点输出不同 —— api_call_tasks.record_api_call_task 落的是
-    **flat 顶层 dict** `{text, segments_count, speakers, audio_seconds}`(非 `{outputs:{...}}`
-    包裹),所以直接看顶层 result,不走 _iter_node_outputs。`audio_seconds` 是判据(ASR 独有;
-    workflow 结果顶层不会有此键 → 不误判)。返 audio_seconds + segments_count 供前端卡片摘要。
+    与 image/tts/… 的 workflow 节点输出不同 —— api_call_tasks.finalize 落的是 **flat 顶层 dict**
+    `{text, segments_count, speakers, audio_seconds}`(非 `{outputs:{...}}` 包裹),所以直接看
+    顶层 result,不走 _iter_node_outputs。`audio_seconds` 是判据(ASR 独有;workflow 结果顶层
+    不会有此键 → 不误判)。返 audio_seconds + segments_count 供前端卡片摘要。
+
+    PR-9 两段式:running 态 result 还没落(None),result 判据会失效 → 卡片没类型。此时退回
+    看 `input_json.kind == "asr"`(create 时写入),同样派生 type=asr,audio_seconds 从
+    input_json 取(ffmpeg 归一化后已知)。completed 行为不变(result 判据先命中)。
     """
     out: dict = {"task_type": None, "audio_seconds": None, "segments_count": None}
     if isinstance(result, dict) and "audio_seconds" in result:
@@ -149,6 +153,13 @@ def _detect_asr_meta(result: object) -> dict:
         sc = result.get("segments_count")
         if isinstance(sc, int):
             out["segments_count"] = sc
+        return out
+    # running 态兜底:result 未落,靠 create 时写入的 input_json.kind 派生。
+    if isinstance(input_json, dict) and input_json.get("kind") == "asr":
+        out["task_type"] = "asr"
+        secs = input_json.get("audio_seconds")
+        if isinstance(secs, (int, float)):
+            out["audio_seconds"] = secs
     return out
 
 
@@ -179,7 +190,8 @@ def _task_to_dict(t: ExecutionTask) -> dict:
     if img_meta.get("task_type") is None:
         # Arc 3:ASR 直连调用 task 是 flat 顶层 result(audio_seconds 判据),
         # 与 workflow 节点输出形状不同 —— 先查 asr,命中就归 asr。
-        asr_meta = _detect_asr_meta(t.result)
+        # PR-9:running 态 result 为空时,退回 input_json.kind 判据(见 _detect_asr_meta)。
+        asr_meta = _detect_asr_meta(t.result, t.input_json)
         if asr_meta.get("task_type"):
             d["task_type"] = asr_meta["task_type"]
             d["audio_seconds"] = asr_meta["audio_seconds"]

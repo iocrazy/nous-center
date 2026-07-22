@@ -445,6 +445,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — 覆盖 hydrate 失败不阻断启动(回退 yaml 默认)
         logger.warning("runtime override hydrate failed (non-fatal): %s", e)
 
+    # PR-9(spec 2026-07-20-moss-asr §8):清理孤儿 running 的直连 ASR 任务 —— backend 崩溃/
+    # 重启会留永久 running 的两段式 ASR task(同步转写无后台 worker 复活),一次性置 failed。
+    # 防御式,非致命(函数内部已兜底)。
+    try:
+        from src.services.api_call_tasks import fail_orphaned_running_asr_tasks
+        n_orphans = await fail_orphaned_running_asr_tasks()
+        if n_orphans:
+            logger.info("清理孤儿 running ASR 任务:%d 条置 failed", n_orphans)
+    except Exception as e:  # noqa: BLE001 — 清理失败不阻断启动
+        logger.warning("orphan ASR task cleanup failed (non-fatal): %s", e)
+
     # Wave 1 MemoryProvider: init PGMemoryProvider + expose via app.state
     from src.services.memory.pg_provider import PGMemoryProvider
     try:
