@@ -17,10 +17,10 @@ open-gpu-kernel-modules issues **#1111**(同款 PRO6000+2×3090 WRX90)/ #1151 / 
 长按机箱电源键 30s 放电 → 等 2-3 分钟 → 通电开机。热重启不一定够(GSP 要重新上电复位)。
 
 **2. 开机不再崩(运维,已做)**:
-- **所有模型取消常驻** → nous-backend 开机加载 0 模型,PRO 6000 boot 时空载,不再被 18 秒砸崩。
+- **所有模型取消常驻** → nous-engine-backend 开机加载 0 模型,PRO 6000 boot 时空载,不再被 18 秒砸崩。
   模型靠**按需懒加载**(首调自动 load),见 `ensure_vllm_base_url`。
-- **nous-aligner 已 `systemctl disable`**(开机不在 3090 上加载对齐模型)。要 ASR 词级时间戳时
-  再 `sudo systemctl enable --now nous-aligner`。
+- **nous-engine-aligner 已 `systemctl disable`**(开机不在 3090 上加载对齐模型)。要 ASR 词级时间戳时
+  再 `sudo systemctl enable --now nous-engine-aligner`。
 
 **3. 系统级缓解(本目录,降低复发)**:
 ```bash

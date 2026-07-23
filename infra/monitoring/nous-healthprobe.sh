@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# nous-center 本地健康巡检(2026-06-16 稳定性加固,本地巡检+日志阶段)。
+# nous-engine 本地健康巡检(2026-06-16 稳定性加固,本地巡检+日志阶段)。
 #
-# 由 nous-healthprobe.timer 每 2 分钟触发一次,探三件 vLLM 看门狗管不到的事:
+# 由 nous-engine-healthprobe.timer 每 2 分钟触发一次,探三件 vLLM 看门狗管不到的事:
 #   1. 后端本机存活      (GET 127.0.0.1:8000/healthz → 200)
 #   2. 后端自报健康      (GET /health → status/database/load_failures)
 #   3. 公网隧道存活      (GET <public>/health → 非 530/000)
 #
-# 输出结构化行到 stdout(systemd timer → journald;`journalctl -u nous-healthprobe`)。
+# 输出结构化行到 stdout(systemd timer → journald;`journalctl -u nous-engine-healthprobe`)。
 # 退出码:有「硬故障」(后端连不上 / DB 挂 / 隧道 down)→ 非 0(systemd 标 failed,
 # 将来挂 OnFailure= 告警 hook 即可直接接告警通道);仅「软降级」(degraded /
 # load_failures)→ 0 但日志 WARN。
@@ -14,9 +14,9 @@
 # 隧道自愈(2026-06-16):cloudflared 在烂网络上会进「半开僵尸」态 —— 进程 active、
 # 但 edge 连接全死且它自己不重连(2026-06-17 卡死 2.5h、systemd 全程显示 active)。
 # 本脚本探到「**后端本机健康 但 公网持续 530**」连续 NOUS_AUTOHEAL_THRESHOLD 次 →
-# `sudo systemctl restart nous-cloudflared` 自愈(类比 vLLM 看门狗,但针对隧道)。
+# `sudo systemctl restart nous-engine-cloudflared` 自愈(类比 vLLM 看门狗,但针对隧道)。
 # 只在「后端活、唯独隧道死」时动手 —— 后端本身挂了重启隧道没用,不碰。需 sudoers
-# drop-in 授权 heygo 无密码重启该服务(infra/security/nous-healthprobe.sudoers)。
+# drop-in 授权 heygo 无密码重启该服务(infra/security/nous-engine-healthprobe.sudoers)。
 # NOUS_TUNNEL_AUTOHEAL=0 可关自愈,只巡检+日志。
 #
 # 手动单跑:infra/monitoring/nous-healthprobe.sh
@@ -104,11 +104,11 @@ cur_hard=0
 # --- 隧道自愈:连续 N 次隧道僵尸 → restart cloudflared(它自己不重连半开连接)---
 healed=""
 if [[ "$AUTOHEAL" == "1" ]] && (( cur_tunnel >= AUTOHEAL_THRESHOLD )); then
-  if sudo -n /usr/bin/systemctl restart nous-cloudflared 2>/dev/null; then
-    healed="[HEAL] restart nous-cloudflared(隧道连续 ${cur_tunnel} 次僵尸)"
+  if sudo -n /usr/bin/systemctl restart nous-engine-cloudflared 2>/dev/null; then
+    healed="[HEAL] restart nous-engine-cloudflared(隧道连续 ${cur_tunnel} 次僵尸)"
     cur_tunnel=0  # 重置 → 给重连留时间;没修好下轮重新累计(自带 ~${AUTOHEAL_THRESHOLD}×2min 冷却)
   else
-    healed="[HEAL-FAIL] 想 restart nous-cloudflared 但 sudo 无权限 —— 装 infra/security/nous-healthprobe.sudoers"
+    healed="[HEAL-FAIL] 想 restart nous-engine-cloudflared 但 sudo 无权限 —— 装 infra/security/nous-engine-healthprobe.sudoers"
   fi
 fi
 

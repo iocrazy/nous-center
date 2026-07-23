@@ -1,6 +1,6 @@
 # Admin secrets
 
-nous-center 有**两套**独立的 admin 鉴权，并行存在：
+nous-engine 有**两套**独立的 admin 鉴权，并行存在：
 
 | 用途 | env | 鉴权位置 | 谁用 |
 |---|---|---|---|
@@ -50,7 +50,7 @@ curl -H "Authorization: Bearer $TOKEN" https://api.iocrazy.com/api/v1/keys
 # 2. 编辑 backend/.env 替换旧值
 
 # 3. 重启 backend（systemd 用户）
-sudo systemctl restart nous-backend
+sudo systemctl restart nous-engine-backend
 
 # 4. 所有现存浏览器 session 立即失效（HMAC secret 变了）— 用户需要重新登录
 ```
@@ -61,7 +61,7 @@ sudo systemctl restart nous-backend
 对单管理员 + 自托管场景是合理简化：
 
 - `.env` 已经被 `.gitignore` 排除，不进仓库
-- `nous-center` 是单管理员推理 infra，不存其他用户的密码
+- `nous-engine` 是单管理员推理 infra，不存其他用户的密码
 - bcrypt 主要解决 DB 泄露后批量破解 — 这里没有 DB 存密码
 
 如果未来变多租户 / 有 user 表，改成 bcrypt + per-user salt。

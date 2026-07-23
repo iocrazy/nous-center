@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bootstrap.sh — 裸机格式化后把 nous-center 从空系统带到全栈在跑的编排器。
+# bootstrap.sh — 裸机格式化后把 nous-engine 从空系统带到全栈在跑的编排器。
 #
 # 设计:docs/superpowers/specs/2026-06-23-fresh-format-bootstrap-design.md
 #
@@ -14,7 +14,7 @@
 #   deps       后端 uv sync --extra inference + aligner venv
 #   build      前端 npm ci + npm run build
 #   checkout   (可选)派生 sibling 检出 + .nous-production 标记
-#   services   调 install.sh(装单元+nousctl+sudoers+enable)+ healthz 自检
+#   services   调 install.sh(装单元+enginectl+sudoers+enable)+ healthz 自检
 #
 # 用法:
 #   ./infra/bootstrap.sh --check          # 只读体检:每项 OK/缺 + 恢复指引(零改动)
@@ -198,7 +198,7 @@ check_deps() {
     miss "无后端 venv($BACKEND/.venv)" "cd backend && uv sync --extra inference"
   fi
 
-  # aligner venv 按检出走;systemd nous-aligner 实际指向 prod 检出那份 → 优先认 prod。
+  # aligner venv 按检出走;systemd nous-engine-aligner 实际指向 prod 检出那份 → 优先认 prod。
   local apy="$SCRIPT_DIR/aligner/.venv/bin/python" where="本检出"
   if [[ ! -x "$apy" && -x "$PROD_CHECKOUT/infra/aligner/.venv/bin/python" ]]; then
     apy="$PROD_CHECKOUT/infra/aligner/.venv/bin/python"; where="prod 检出"
@@ -223,7 +223,7 @@ check_checkout() {
   if [[ -d "$PROD_CHECKOUT/.git" || -f "$PROD_CHECKOUT/.git" ]]; then
     ok "prod 检出存在($PROD_CHECKOUT)"
     [[ -f "$PROD_CHECKOUT/.nous-production" ]] && ok ".nous-production 标记在位(deploy 凭它放行)" || miss "prod 检出缺 .nous-production 标记" "touch $PROD_CHECKOUT/.nous-production"
-    [[ -L "$PROD_CHECKOUT/backend/.env" ]] && ok "prod .env symlink → 单一来源" || warn "prod backend/.env 非 symlink(应 ln -s 到 nous-center/backend/.env)"
+    [[ -L "$PROD_CHECKOUT/backend/.env" ]] && ok "prod .env symlink → 单一来源" || warn "prod backend/.env 非 symlink(应 ln -s 到 nous-engine/backend/.env)"
   else
     manual "无专用 prod 检出($PROD_CHECKOUT)" "见 infra/PROD_CHECKOUT.md 一次性搭建序列"
   fi
@@ -232,13 +232,13 @@ check_checkout() {
 # ── services:systemd 单元 + 健康 ──────────────────────────────────────
 check_services() {
   section "services — systemd 单元 + 健康"
-  local svc; for svc in nous-backend nous-cloudflared nous-status nous-aligner; do
+  local svc; for svc in nous-engine-backend nous-engine-cloudflared nous-engine-status nous-engine-aligner; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then ok "$svc active"; else miss "$svc 未运行" "sudo ./infra/systemd/install.sh && sudo systemctl start $svc"; fi
   done
-  local tmr; for tmr in nous-healthprobe.timer nous-dbbackup.timer; do
+  local tmr; for tmr in nous-engine-healthprobe.timer nous-engine-dbbackup.timer; do
     systemctl is-active --quiet "$tmr" 2>/dev/null && ok "$tmr active" || warn "$tmr 未启用"
   done
-  have nousctl && ok "nousctl 在 PATH" || warn "nousctl 未装(install.sh 会装到 /usr/local/bin)"
+  have enginectl && ok "enginectl 在 PATH" || warn "enginectl 未装(install.sh 会装到 /usr/local/bin)"
   if have curl; then
     curl -fsS --noproxy '*' -m 5 http://127.0.0.1:8000/healthz >/dev/null 2>&1 && ok "本机 /healthz 200" || warn "本机 /healthz 不通(backend 未起?)"
   fi
@@ -259,7 +259,7 @@ summary() {
 }
 
 run_check() {
-  printf '%snous-center bootstrap --check%s  (只读体检,零改动)\n' "$C_MAN" "$C_RST"
+  printf '%snous-engine bootstrap --check%s  (只读体检,零改动)\n' "$C_MAN" "$C_RST"
   printf '%srepo: %s%s\n' "$C_DIM" "$REPO_ROOT" "$C_RST"
   check_preflight; check_db; check_secrets; check_deps; check_build; check_checkout; check_services
   summary
@@ -443,12 +443,12 @@ do_services() {
   # systemd unit 把检出路径写死(WorkingDirectory)→ 实际 serve 的检出未必是当前检出。
   # 装服务前确认那个检出已 provision(有 venv),否则会装出起不来的服务。
   local served_repo
-  served_repo="$(grep -m1 '^WorkingDirectory=' "$SCRIPT_DIR/systemd/nous-backend.service" 2>/dev/null | cut -d= -f2)"
+  served_repo="$(grep -m1 '^WorkingDirectory=' "$SCRIPT_DIR/systemd/nous-engine-backend.service" 2>/dev/null | cut -d= -f2)"
   served_repo="${served_repo%/backend}"
   if [[ -n "$served_repo" && ! -x "$served_repo/backend/.venv/bin/python" ]]; then
     die "systemd 指向的检出未 provision($served_repo 无 backend/.venv)。请在该检出内跑:cd $served_repo && sudo ./infra/bootstrap.sh"
   fi
-  log "调 install.sh(装单元 + nousctl + sudoers + enable --now)"
+  log "调 install.sh(装单元 + enginectl + sudoers + enable --now)"
   "$SCRIPT_DIR/systemd/install.sh" install >/dev/null || die "install.sh 失败"
   ok "systemd 单元已装并启用"
   # 自检:本机 healthz(backend + vLLM 起来要几秒,重试)
@@ -457,7 +457,7 @@ do_services() {
     if curl -fsS --noproxy '*' -m 5 http://127.0.0.1:8000/healthz >/dev/null 2>&1; then hit=1; break; fi
     sleep 3
   done
-  (( hit )) && ok "本机 /healthz 200" || warn "本机 /healthz 暂不通(backend 还在起?journalctl -u nous-backend -f)"
+  (( hit )) && ok "本机 /healthz 200" || warn "本机 /healthz 暂不通(backend 还在起?journalctl -u nous-engine-backend -f)"
   if curl -fsS --noproxy '*' -m 8 https://api.iocrazy.com/healthz >/dev/null 2>&1; then
     ok "公网隧道 /healthz 200"
   else

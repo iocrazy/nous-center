@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nous-center 一键上线(2026-06-19)。
+# nous-engine 一键上线(2026-06-19)。
 #
 #   ./infra/deploy.sh
 #
@@ -84,9 +84,9 @@ cd "$REPO"
 # 否则:--no-block restart 是异步的,停掉带 vLLM 的重后端要几十秒~分钟,这期间**旧进程
 # 还在 answer /healthz 200** → 只 poll /healthz 会对着旧进程误判「上线成功」,新代码其实
 # 没生效(2026-06-21 #590 部署真踩到:自检过了但还在跑旧代码)。
-prev_inv=$(systemctl show -p InvocationID --value nous-backend 2>/dev/null || echo "")
-step "重启 nous-backend(卸全模型,vLLM ~30s 重载)"
-sudo systemctl --no-block restart nous-backend || die "systemctl restart 入队失败。"
+prev_inv=$(systemctl show -p InvocationID --value nous-engine-backend 2>/dev/null || echo "")
+step "重启 nous-engine-backend(卸全模型,vLLM ~30s 重载)"
+sudo systemctl --no-block restart nous-engine-backend || die "systemctl restart 入队失败。"
 ok "已发出重启(--no-block,等新实例起来)"
 
 # ---------- 4. 自检:等**新实例**(InvocationID 变 + active + /healthz 200)----------
@@ -94,15 +94,15 @@ ok "已发出重启(--no-block,等新实例起来)"
 step "自检(确认新实例,不是旧进程)"
 new_up=0; inv=""; act=""; code=""
 for i in $(seq 1 90); do
-  inv=$(systemctl show -p InvocationID --value nous-backend 2>/dev/null || echo "")
-  act=$(systemctl is-active nous-backend 2>/dev/null || echo "")
+  inv=$(systemctl show -p InvocationID --value nous-engine-backend 2>/dev/null || echo "")
+  act=$(systemctl is-active nous-engine-backend 2>/dev/null || echo "")
   if [[ -n "$inv" && "$inv" != "$prev_inv" && "$act" == "active" ]]; then
     code=$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 5 "$LOCAL/healthz" 2>/dev/null || echo 000)
     [[ "$code" == "200" ]] && { ok "新实例健康(InvocationID 已换 + /healthz 200,${i}×2s)"; new_up=1; break; }
   fi
   sleep 2
 done
-[[ $new_up -eq 1 ]] || die "新实例 180s 内未就绪(InvocationID=$inv prev=$prev_inv active=$act /healthz=$code)。查 journalctl -u nous-backend -n 50。"
+[[ $new_up -eq 1 ]] || die "新实例 180s 内未就绪(InvocationID=$inv prev=$prev_inv active=$act /healthz=$code)。查 journalctl -u nous-engine-backend -n 50。"
 pub=$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 12 "$PUBLIC/healthz" 2>/dev/null || echo 000)
 if [[ "$pub" == "200" ]]; then ok "公网隧道通(<public>/healthz 200)"
 else echo "⚠️  公网 <public>/healthz=$pub(隧道可能还在重连;巡检/隧道自愈会兜,过会儿再看)"; fi

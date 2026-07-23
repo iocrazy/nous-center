@@ -1,6 +1,6 @@
 # 格式化重建 SOP — 从裸机到全栈在跑
 
-重装系统(或换盘格式化)后,把 nous-center 带回「全栈在跑」的标准流程。
+重装系统(或换盘格式化)后,把 nous-engine 带回「全栈在跑」的标准流程。
 核心工具是 **`infra/bootstrap.sh`** 编排器(设计见
 `docs/superpowers/specs/2026-06-23-fresh-format-bootstrap-design.md`)。
 
@@ -12,7 +12,7 @@ systemd unit(`infra/systemd/*.service`)把检出路径**写死成 `…/nous-prod
 (services 段现在会校验:`nous-prod` 无 venv 直接拒装并提示)。
 
 > 结论:把生产检出 clone/worktree 成 `…/nous-prod`,**在它里面**跑全量 bootstrap。
-> dev 检出(`nous-center`)是可选的、事后再加(`git worktree`)。
+> dev 检出(`nous-engine`)是可选的、事后再加(`git worktree`)。
 
 ## TL;DR
 
@@ -21,7 +21,7 @@ ROOT=/media/heygo/Program/projects-code/_playground
 
 # 0. 装系统级前提(bootstrap 不代装,见下「OS 层」)
 # 1. clone 成生产检出 nous-prod(systemd 指向它)
-git clone git@github.com:iocrazy/nous-center.git "$ROOT/nous-prod"
+git clone git@github.com:iocrazy/nous-engine.git "$ROOT/nous-prod"
 cd "$ROOT/nous-prod"
 touch .nous-production            # deploy.sh 凭它放行
 
@@ -31,10 +31,10 @@ touch .nous-production            # deploy.sh 凭它放行
 # 3. 全量一键(需 root;幂等,已就位即跳过)—— 在 nous-prod 里跑
 sudo ./infra/bootstrap.sh
 #    若 .env 是新建的 → 脚本会停下让你填 DATABASE_URL 密码等,填完重跑
-#    若要从备份恢复 DB:sudo ./infra/bootstrap.sh --restore /path/to/nous_center.dump
+#    若要从备份恢复 DB:sudo ./infra/bootstrap.sh --restore /path/to/nous_engine.dump
 
 # 4.(可选)事后加 dev 检出,各用各的 worktree,不抢生产
-git -C "$ROOT/nous-prod" worktree add "$ROOT/nous-center" master
+git -C "$ROOT/nous-prod" worktree add "$ROOT/nous-engine" master
 ```
 
 跑完 `--check` 应全 OK,公网 `https://api.iocrazy.com/healthz` 返回 200。
@@ -59,7 +59,7 @@ git -C "$ROOT/nous-prod" worktree add "$ROOT/nous-center" master
   `gen-admin-secrets.sh` 自动补缺。
 - **cloudflared 隧道凭证**(`~/.cloudflared/cert.pem` + `<tunnel>.json` + `config.yml`)
   —— 从备份盘复制,或 `cloudflared tunnel login` 重新授权。
-- **DB 数据** —— 靠最近一次 `nous-dbbackup` 的 dump,`--restore <dump>` 恢复;不传则
+- **DB 数据** —— 靠最近一次 `nous-engine-dbbackup` 的 dump,`--restore <dump>` 恢复;不传则
   建空库,backend 首启 `create_all` 自建 schema(单管理员、无 alembic)。
 - **模型权重** —— 在大盘、不入 git。格式化若保留大盘则无需重下。
 
@@ -75,14 +75,14 @@ git -C "$ROOT/nous-prod" worktree add "$ROOT/nous-center" master
 | deps      | 后端 `uv sync --extra inference` + aligner venv | 真实用户(非 root) |
 | build     | 前端 `npm ci` + `npm run build` | 真实用户 |
 | checkout  | 派生专用 prod worktree + 标记 + `.env` symlink | 真实用户 |
-| services  | `install.sh`(单元+nousctl+sudoers+enable)+ healthz 自检 | root |
+| services  | `install.sh`(单元+enginectl+sudoers+enable)+ healthz 自检 | root |
 
 单独重跑某段:`sudo ./infra/bootstrap.sh --stage db`。
 
 ## 生产/dev 检出分离(可选但推荐)
 
 systemd 单元指向**专用 prod 检出** `…/nous-prod`(detached,deploy 独占),dev 用
-`nous-center`,互不抢检出。详见 [PROD_CHECKOUT.md](PROD_CHECKOUT.md)。
+`nous-engine`,互不抢检出。详见 [PROD_CHECKOUT.md](PROD_CHECKOUT.md)。
 
 要点:**venv/dist 是 per-checkout 的 gitignore 物**。所以 prod 检出建好后,要在
 **它内部**再跑一遍 deps/build(即 `cd …/nous-prod && sudo ./infra/bootstrap.sh`),
@@ -92,7 +92,7 @@ systemd 单元指向**专用 prod 检出** `…/nous-prod`(detached,deploy 独�
 
 ```bash
 ./infra/bootstrap.sh --check                       # 应全 OK
-systemctl is-active nous-backend nous-cloudflared nous-status nous-aligner
+systemctl is-active nous-engine-backend nous-engine-cloudflared nous-engine-status nous-engine-aligner
 curl -s --noproxy '*' https://api.iocrazy.com/healthz   # {"status":"ok"}
-nousctl status                                     # 全栈一览
+enginectl status                                     # 全栈一览
 ```

@@ -1,8 +1,10 @@
-# nous-center — Claude / AI agent notes
+# nous-engine — Claude / AI agent notes
 
-Single-admin inference infra. Production deploy = `backend serve frontend/dist` on
-`:8000`, fronted by cloudflared tunnel `api.iocrazy.com`. vite dev (`:9999`) is
-**local-only** for frontend hot reload.
+Single-admin inference infra (推理算力层). Repo/product renamed **nous-center →
+nous-engine** (裸 `nous-` 前缀让给上层平台;systemd 单元全套 `nous-engine-*`,CLI
+`enginectl`). Production deploy = `backend serve frontend/dist` on `:8000`, fronted by
+cloudflared tunnel `api.iocrazy.com` (隧道名仍是 `nous-center`,Cloudflare 侧标识,未随
+仓库改名). vite dev (`:9999`) is **local-only** for frontend hot reload.
 
 ## API endpoint vs UI route — DON'T MIX
 
@@ -17,7 +19,8 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 ## Operational
 
 - Backend + cloudflared: systemd services. `sudo ./infra/systemd/install.sh`,
-  then `journalctl -u nous-backend -f` for logs. Don't `nohup ... & disown`.
+  then `journalctl -u nous-engine-backend -f` for logs. Don't `nohup ... & disown`.
+  一键管控 `enginectl status|up|down|restart|logs`(装到 `/usr/local/bin/enginectl`)。
 - Admin secrets: `./infra/security/gen-admin-secrets.sh > /tmp/secrets && cat /tmp/secrets`
   then paste into `backend/.env`. Three values: `ADMIN_PASSWORD` (browser cookie login),
   `ADMIN_SESSION_SECRET` (HMAC key), `ADMIN_TOKEN` (CLI bearer).
