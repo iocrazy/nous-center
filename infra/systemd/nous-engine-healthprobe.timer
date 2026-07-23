@@ -1,5 +1,5 @@
 [Unit]
-Description=每 2 分钟跑一次 nous-center 健康巡检
+Description=每 2 分钟跑一次 nous-engine 健康巡检
 
 [Timer]
 OnBootSec=2min

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把 nous-center 全栈装成 systemd 服务(开机自启 + 崩溃自重启 + journald),取代 nohup。
+# 把 nous-engine 全栈装成 systemd 服务(开机自启 + 崩溃自重启 + journald),取代 nohup。
 # 幂等 —— 可反复跑。
 #
 # Usage:
@@ -7,22 +7,22 @@
 #   sudo ./infra/systemd/install.sh uninstall  # stop + disable + remove
 #
 # 装完自检 + 访问地址会打印在下面 banner 里。日志:
-#   journalctl -u nous-backend -f    ·    nousctl status    ·    nousctl logs [backend|status|...]
+#   journalctl -u nous-engine-backend -f    ·    enginectl status    ·    enginectl logs [backend|status|...]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET=/etc/systemd/system
-NOUSCTL_DST=/usr/local/bin/nousctl
+ENGINECTL_DST=/usr/local/bin/enginectl
 
 # 长驻服务(cloudflared 单独处理 —— 缺二进制/凭证时优雅跳过,不中止安装)。
-SERVICES=(nous-backend.service nous-status.service nous-aligner.service)
-TIMERS=(nous-healthprobe.timer nous-dbbackup.timer)
-TARGETS=(nous.target)
-SUDOERS=(nous-healthprobe nous-deploy)
+SERVICES=(nous-engine-backend.service nous-engine-status.service nous-engine-aligner.service)
+TIMERS=(nous-engine-healthprobe.timer nous-engine-dbbackup.timer)
+TARGETS=(nous-engine.target)
+SUDOERS=(nous-engine-healthprobe nous-engine-deploy)
 # 全部拷进 /etc/systemd/system(含 cloudflared、oneshot probe/dbbackup、target)。
-UNIT_FILES=(nous-backend.service nous-cloudflared.service nous-status.service nous-aligner.service \
-            nous-healthprobe.service nous-healthprobe.timer nous-dbbackup.service nous-dbbackup.timer nous.target)
+UNIT_FILES=(nous-engine-backend.service nous-engine-cloudflared.service nous-engine-status.service nous-engine-aligner.service \
+            nous-engine-healthprobe.service nous-engine-healthprobe.timer nous-engine-dbbackup.service nous-engine-dbbackup.timer nous-engine.target)
 
 LOCAL_URL="${NOUS_LOCAL_URL:-http://127.0.0.1:8000}"
 ZT_URL="${NOUS_ZT_URL:-http://10.0.0.10:8000}"
@@ -49,7 +49,7 @@ svc_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
 case "${1:-install}" in
   install)
     printf '\n%s╔══════════════════════════════════════════════════════════╗%s\n' "$B" "$RST"
-    printf   '%s║   nous-center · systemd 全栈安装                          ║%s\n' "$B" "$RST"
+    printf   '%s║   nous-engine · systemd 全栈安装                          ║%s\n' "$B" "$RST"
     printf   '%s╚══════════════════════════════════════════════════════════╝%s\n' "$B" "$RST"
     say "${DIM}检出: $(cd "$SCRIPT_DIR/../.." && pwd)${RST}"
 
@@ -69,12 +69,12 @@ case "${1:-install}" in
     # cloudflared:二进制 + 凭证齐才启;否则装单元但不启(公网隧道暂缓,不中止安装)。
     CF_HOME="$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)"
     if command -v cloudflared >/dev/null 2>&1 && [[ -f "$CF_HOME/.cloudflared/cert.pem" ]]; then
-      if systemctl enable --now nous-cloudflared.service >/dev/null 2>&1; then ok "nous-cloudflared(公网隧道)"
-      else bad "nous-cloudflared 启动失败 — 查 journalctl -u nous-cloudflared"; fi
+      if systemctl enable --now nous-engine-cloudflared.service >/dev/null 2>&1; then ok "nous-engine-cloudflared(公网隧道)"
+      else bad "nous-engine-cloudflared 启动失败 — 查 journalctl -u nous-engine-cloudflared"; fi
     else
-      systemctl disable nous-cloudflared.service >/dev/null 2>&1 || true
+      systemctl disable nous-engine-cloudflared.service >/dev/null 2>&1 || true
       warn "cloudflared 二进制/凭证未就位 → 跳过公网隧道(本机 + ZeroTier 不受影响)"
-      warn "  以后配好后: sudo systemctl enable --now nous-cloudflared"
+      warn "  以后配好后: sudo systemctl enable --now nous-engine-cloudflared"
     fi
 
     # ── 3. 定时器 + 总闸 ────────────────────────────────────────────────
@@ -82,9 +82,9 @@ case "${1:-install}" in
     for tmr in "${TIMERS[@]}"; do systemctl enable --now "$tmr" >/dev/null 2>&1 && ok "$tmr"; done
     for tgt in "${TARGETS[@]}"; do systemctl enable "$tgt" >/dev/null 2>&1 && ok "$tgt (开机总闸)"; done
 
-    # ── 4. nousctl + sudoers ────────────────────────────────────────────
-    step "安装 nousctl + sudoers drop-ins"
-    install -m 0755 "$SCRIPT_DIR/nousctl" "$NOUSCTL_DST"; ok "nousctl → $NOUSCTL_DST"
+    # ── 4. enginectl + sudoers ────────────────────────────────────────────
+    step "安装 enginectl + sudoers drop-ins"
+    install -m 0755 "$SCRIPT_DIR/enginectl" "$ENGINECTL_DST"; ok "enginectl → $ENGINECTL_DST"
     for sd in "${SUDOERS[@]}"; do
       src="$SCRIPT_DIR/../security/$sd.sudoers"; dst="/etc/sudoers.d/$sd"
       install -m 0440 "$src" "$dst"
@@ -109,11 +109,11 @@ case "${1:-install}" in
       [[ -n "$db"   ]] && { [[ "$db" == ok ]] && ok "database    → ok" || bad "database    → $db"; }
       [[ -n "$gpus" ]] && ok "GPU 识别    → $gpus 张"
     else
-      bad "本机 /healthz  → $code(后端可能还在预加载常驻模型,稍等再 nousctl status)"
+      bad "本机 /healthz  → $code(后端可能还在预加载常驻模型,稍等再 enginectl status)"
     fi
 
     zt="$(probe "$ZT_URL/healthz")";     [[ "$zt" == 200 ]] && ok "ZeroTier /healthz → 200" || warn "ZeroTier /healthz → $zt(10.0.0.10 未分配?)"
-    if svc_active nous-cloudflared; then
+    if svc_active nous-engine-cloudflared; then
       pub="$(probe "$PUBLIC_URL/healthz" 10)"; [[ "$pub" == 200 ]] && ok "公网隧道 /healthz → 200" || warn "公网隧道 /healthz → $pub(隧道重连中?)"
     fi
 
@@ -121,23 +121,23 @@ case "${1:-install}" in
     printf '\n%s╭─ 访问地址 ────────────────────────────────────────────────%s\n' "$B" "$RST"
     printf   '%s│%s  本机管理台   %s%s%s\n'   "$B" "$RST" "$CYN" "$LOCAL_URL"  "$RST"
     printf   '%s│%s  ZeroTier 内网 %s%s%s\n'  "$B" "$RST" "$CYN" "$ZT_URL"     "$RST"
-    printf   '%s│%s  公网(隧道)   %s%s%s %s\n' "$B" "$RST" "$CYN" "$PUBLIC_URL" "$RST" "$(svc_active nous-cloudflared && echo '' || echo "${DIM}(cloudflared 暂未启用)${RST}")"
+    printf   '%s│%s  公网(隧道)   %s%s%s %s\n' "$B" "$RST" "$CYN" "$PUBLIC_URL" "$RST" "$(svc_active nous-engine-cloudflared && echo '' || echo "${DIM}(cloudflared 暂未启用)${RST}")"
     printf   '%s│%s  独立状态页   %s%s%s\n'   "$B" "$RST" "$CYN" "$STATUS_URL" "$RST"
     printf   '%s╰──────────────────────────────────────────────────────────%s\n' "$B" "$RST"
 
     printf '\n%s✔ 安装完成%s — 服务已开机自启 + 崩溃自重启。\n' "$GRN" "$RST"
-    say "  管控:   ${B}nousctl${RST} status | up | down | restart | logs"
-    say "  日志:   ${B}journalctl -u nous-backend -f${RST}"
-    say "  健康巡检: 每 2 分钟(journalctl -u nous-healthprobe -f)"
+    say "  管控:   ${B}enginectl${RST} status | up | down | restart | logs"
+    say "  日志:   ${B}journalctl -u nous-engine-backend -f${RST}"
+    say "  健康巡检: 每 2 分钟(journalctl -u nous-engine-healthprobe -f)"
     ;;
 
   uninstall)
-    printf '\n%s▸ 卸载 nous-center systemd 栈%s\n' "$CYN" "$RST"
+    printf '\n%s▸ 卸载 nous-engine systemd 栈%s\n' "$CYN" "$RST"
     for tgt in "${TARGETS[@]}"; do systemctl disable "$tgt" 2>/dev/null || true; rm -f "$TARGET/$tgt"; ok "移除 $tgt"; done
     for tmr in "${TIMERS[@]}"; do systemctl disable --now "$tmr" 2>/dev/null || true; rm -f "$TARGET/$tmr"; ok "移除 $tmr"; done
-    for svc in "${SERVICES[@]}" nous-cloudflared.service; do systemctl disable --now "$svc" 2>/dev/null || true; rm -f "$TARGET/$svc"; ok "移除 $svc"; done
-    rm -f "$TARGET/nous-healthprobe.service" "$TARGET/nous-dbbackup.service"
-    rm -f "$NOUSCTL_DST"
+    for svc in "${SERVICES[@]}" nous-engine-cloudflared.service; do systemctl disable --now "$svc" 2>/dev/null || true; rm -f "$TARGET/$svc"; ok "移除 $svc"; done
+    rm -f "$TARGET/nous-engine-healthprobe.service" "$TARGET/nous-engine-dbbackup.service"
+    rm -f "$ENGINECTL_DST"
     for sd in "${SUDOERS[@]}"; do rm -f "/etc/sudoers.d/$sd"; done
     systemctl daemon-reload
     printf '%s✔ 已卸载%s(postgresql 保留)。\n' "$GRN" "$RST"

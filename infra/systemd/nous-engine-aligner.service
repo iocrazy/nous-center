@@ -1,6 +1,6 @@
 [Unit]
-Description=[已退役] nous-center ForcedAligner 时间戳微服务(独立 venv,2026-06-21)
-# 不 Requires/PartOf nous-backend —— 独立进程/venv(qwen-asr 钉 transformers 4.57,与 backend
+Description=[已退役] nous-engine ForcedAligner 时间戳微服务(独立 venv,2026-06-21)
+# 不 Requires/PartOf nous-engine-backend —— 独立进程/venv(qwen-asr 钉 transformers 4.57,与 backend
 # 的 5.6-dev 冲突,故隔离)。backend 仅在 timestamps=true 时 HTTP 调它;它挂了纯文本主路不受影响。
 After=network-online.target
 Wants=network-online.target
@@ -10,9 +10,9 @@ StartLimitIntervalSec=0
 Type=simple
 User=heygo
 Group=heygo
-WorkingDirectory=/media/heygo/program/projects-code/repos/nous-center/infra/aligner
+WorkingDirectory=/media/heygo/program/projects-code/repos/nous-engine/infra/aligner
 # 独立 venv(setup.sh 建);不碰 backend venv。
-ExecStart=/media/heygo/program/projects-code/repos/nous-center/infra/aligner/.venv/bin/python /media/heygo/program/projects-code/repos/nous-center/infra/aligner/aligner_service.py
+ExecStart=/media/heygo/program/projects-code/repos/nous-engine/infra/aligner/.venv/bin/python /media/heygo/program/projects-code/repos/nous-engine/infra/aligner/aligner_service.py
 Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
 # UUID 钉到 3090,**别落 Pro 6000**:Pro 6000 Blackwell GSP 固件有负载触发崩溃 bug
 # (开机被压一把模型就 fullchip-reset 僵死、拖黑整机,见 infra/gpu/README.md)。裸 cuda:0

@@ -1,0 +1,13 @@
+[Unit]
+Description=nous-engine 本地健康巡检(后端 + 公网隧道存活,2026-06-16)
+# 一次性探针;由 nous-engine-healthprobe.timer 触发。失败(后端连不上/DB 挂/隧道 down)
+# 退出非 0 → systemd 标 failed;将来接告警只需加 OnFailure=<alert>.service。
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=heygo
+Group=heygo
+ExecStart=/media/heygo/program/projects-code/repos/nous-engine/infra/monitoring/nous-healthprobe.sh
+StandardOutput=journal
+StandardError=journal

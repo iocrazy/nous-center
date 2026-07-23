@@ -1,5 +1,5 @@
 [Unit]
-Description=nous-center backend (FastAPI + uvicorn)
+Description=nous-engine backend (FastAPI + uvicorn)
 After=network-online.target postgresql.service
 Wants=network-online.target
 # 数据库迁到原生 pg17(2026-06-18,脱离 Docker Desktop,spec native-pg-systemd-stack)。
@@ -16,8 +16,8 @@ StartLimitIntervalSec=0
 Type=simple
 User=heygo
 Group=heygo
-WorkingDirectory=/media/heygo/program/projects-code/repos/nous-center/backend
-EnvironmentFile=/media/heygo/program/projects-code/repos/nous-center/backend/.env
+WorkingDirectory=/media/heygo/program/projects-code/repos/nous-engine/backend
+EnvironmentFile=/media/heygo/program/projects-code/repos/nous-engine/backend/.env
 # uv lives in $HOME/.local/bin; systemd doesn't read .profile, point at it
 Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/heygo/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/linuxbrew/.linuxbrew/bin/uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
@@ -39,7 +39,7 @@ TimeoutStopSec=120
 # 服务。注意:这只影响 host 全局 OOM 的「选谁杀」;后端自己撑爆 MemoryMax=96G 时仍由
 # cgroup OOM 在本 cgroup 内处理,与此无关。
 OOMScoreAdjust=-500
-# Log to journald — view with `journalctl -u nous-backend -f`
+# Log to journald — view with `journalctl -u nous-engine-backend -f`
 StandardOutput=journal
 StandardError=journal
 # Hard memory cap so a vLLM bug or runaway loader can't OOM the host.

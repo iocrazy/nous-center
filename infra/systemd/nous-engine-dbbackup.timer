@@ -1,5 +1,5 @@
 [Unit]
-Description=每日触发 nous-center DB 备份(pg_dump)
+Description=每日触发 nous-engine DB 备份(pg_dump)
 
 [Timer]
 # 每天 03:30 跑;错过(关机)开机后补跑;加最多 5 分钟抖动避开整点 IO 峰。

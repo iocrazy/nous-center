@@ -2,12 +2,12 @@
 # spec 2026-07-20-moss-asr-sglang-serving-design.md §7:MOSS 已改由 backend 的 ModelManager
 # 起 sgl-omni serve 子进程统一管理(configs/models.d/moss_transcribe_diarize.yaml,resident 常驻,
 # SGLangOmniAdapter)。本 systemd unit **不再使用**,保留仅作历史参考 + 回滚锚点。
-# 生产切换:sudo systemctl disable --now nous-moss-asr && sudo rm /etc/systemd/system/nous-moss-asr.service
-#           && sudo systemctl daemon-reload && sudo systemctl restart nous-backend
+# 生产切换:sudo systemctl disable --now nous-engine-moss-asr && sudo rm /etc/systemd/system/nous-engine-moss-asr.service
+#           && sudo systemctl daemon-reload && sudo systemctl restart nous-engine-backend
 # 切换后 backend 重启会自动拉起 resident MOSS。**别与本 unit 同时开**(双头抢同一张 3090/端口)。
 [Unit]
-Description=nous-center MOSS-Transcribe-Diarize ASR 微服务(SGLang Omni,独立 venv,2026-07-20;已退役 Arc 2)
-# 不 Requires/PartOf nous-backend —— 独立进程/venv(sglang-omni 自带 torch 2.11+cu130 /
+Description=nous-engine MOSS-Transcribe-Diarize ASR 微服务(SGLang Omni,独立 venv,2026-07-20;已退役 Arc 2)
+# 不 Requires/PartOf nous-engine-backend —— 独立进程/venv(sglang-omni 自带 torch 2.11+cu130 /
 # transformers 5.6,与 backend 的 vllm 0.22/torch 2.11 钉两条独立升级轨,不牵扯,故隔离)。
 # backend 经 HTTP(NOUS_MOSS_ASR_URL)调它做 ASR;它挂了转写主路返回 503(MOSS 已是唯一 ASR)。
 After=network-online.target
@@ -18,15 +18,15 @@ StartLimitIntervalSec=0
 Type=simple
 User=heygo
 Group=heygo
-WorkingDirectory=/media/heygo/program/projects-code/repos/nous-center/infra/moss-asr
+WorkingDirectory=/media/heygo/program/projects-code/repos/nous-engine/infra/moss-asr
 # 独立 venv + 全部 GPU/CUDA_HOME/PATH/端口 出口都在 start_serve.sh 里(sh 脚本启动,
 # 进程 cmdline 干净,便于 cgroup 收束)。
-ExecStart=/media/heygo/program/projects-code/repos/nous-center/infra/moss-asr/start_serve.sh
+ExecStart=/media/heygo/program/projects-code/repos/nous-engine/infra/moss-asr/start_serve.sh
 # UUID 钉到 index0 的 3090,**别落 Pro 6000**:Pro 6000 Blackwell GSP 固件有负载触发崩溃 bug
 # (被压一把模型就 fullchip-reset 僵死、拖黑整机,见 infra/gpu/README.md)。裸 cuda:0 在
 # PCI_BUS_ID 排序下随槽位变可能命中 Pro 6000 → 不可靠;UUID 绑定永远是这张 3090。start_serve.sh
 # 里也 export 了同一 UUID(直接跑脚本时生效),这里再声明一份保证 systemd 路径同样钉死。
-# 注意:与 nous-aligner 钉的那张 3090(GPU-78dcdbeb…)是两张不同的卡。
+# 注意:与 nous-engine-aligner 钉的那张 3090(GPU-78dcdbeb…)是两张不同的卡。
 Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
 Environment=CUDA_VISIBLE_DEVICES=GPU-2fd7c91c-af39-7b02-66b9-988331ce3bd7
 Environment=NOUS_MOSS_ASR_PORT=8003

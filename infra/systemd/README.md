@@ -17,50 +17,50 @@ sudo ./infra/systemd/install.sh
 
 拉 master → 前端 build → 重启后端 → 自检,每步 fail-loud。**别用 sudo 跑整个脚本**(git/npm
 用 root 会在仓库造 root 属主文件);脚本以你的身份跑,重启那步用 `sudo systemctl restart
-nous-backend` —— 装过 `install.sh` 的机器**免密**(`nous-deploy.sudoers` 只放行这一命令,不存
+nous-engine-backend` —— 装过 `install.sh` 的机器**免密**(`nous-deploy.sudoers` 只放行这一命令,不存
 任何密码);没装则正常弹密码。关键防呆:build 后校验 `frontend/dist` 时间戳真被更新,否则中止不重启 ——
 杜绝「build 没成却以为上线了」(后端 serve 的是编译好的 `frontend/dist`,不是源码)。
 ⚠️ 重启会卸掉所有已加载模型,vLLM ~30s 重载。
 
-## 一键管控 — nousctl
+## 一键管控 — enginectl
 
-装机会同时把 `nousctl` 放到 `/usr/local/bin`,全栈一条命令(取代分别敲多条 systemctl):
+装机会同时把 `enginectl` 放到 `/usr/local/bin`,全栈一条命令(取代分别敲多条 systemctl):
 
 ```bash
-nousctl up        # 拉起全栈(DB→后端→隧道→状态)并打印启动自检 banner
-nousctl down      # 停应用栈(后端/隧道/状态);postgresql 保持运行
-nousctl restart   # 重启应用栈
-nousctl status    # 各 unit active? + 端口 + 公网隧道,一屏
-nousctl logs [u]  # journalctl -f(u 缺省 backend;可 cloudflared/status/postgresql)
+enginectl up        # 拉起全栈(DB→后端→隧道→状态)并打印启动自检 banner
+enginectl down      # 停应用栈(后端/隧道/状态);postgresql 保持运行
+enginectl restart   # 重启应用栈
+enginectl status    # 各 unit active? + 端口 + 公网隧道,一屏
+enginectl logs [u]  # journalctl -f(u 缺省 backend;可 cloudflared/status/postgresql)
 ```
 
 启停内部用 `sudo`(会提示密码);`status`/`logs` 只读无需 sudo。
-底层是 `nous.target`(总闸,`Wants=` 四个 unit)。
+底层是 `nous-engine.target`(总闸,`Wants=` 四个 unit)。
 
 ## 验证
 
 ```bash
-nousctl status                        # 推荐:一屏看全栈
-systemctl status nous-backend nous-cloudflared
-journalctl -u nous-backend -f         # 实时日志
+enginectl status                        # 推荐:一屏看全栈
+systemctl status nous-engine-backend nous-engine-cloudflared
+journalctl -u nous-engine-backend -f         # 实时日志
 ```
 
 ## 修改后重启
 
-改了 `backend/.env` 或 service 文件 → 重新加载 + 重启。**推荐 `nousctl restart`**(内部用
+改了 `backend/.env` 或 service 文件 → 重新加载 + 重启。**推荐 `enginectl restart`**(内部用
 `--no-block`,不挂终端 + 起完打 banner);或手动:
 
 ```bash
 sudo systemctl daemon-reload                       # 仅在改了 .service 文件后才需要
-nousctl restart                                    # 推荐:不挂终端 + 显示自检 banner
+enginectl restart                                    # 推荐:不挂终端 + 显示自检 banner
 # 或手动(注意加 --no-block,否则阻塞客户端在本机会傻等 job-done 不返回):
-sudo systemctl --no-block restart nous-backend
-systemctl is-active nous-backend                   # 确认起来了
+sudo systemctl --no-block restart nous-engine-backend
+systemctl is-active nous-engine-backend                   # 确认起来了
 ```
 
-> ⚠️ **别用裸 `sudo systemctl restart nous-backend`**:实测它的阻塞客户端收不到 job-done
+> ⚠️ **别用裸 `sudo systemctl restart nous-engine-backend`**:实测它的阻塞客户端收不到 job-done
 > 信号、傻等不返回(挂了 48min,但后端 ~3s 就重启完、active)。`--no-block` 入队即返回,
-> 重启照常发生。`nousctl restart` 已封装好。
+> 重启照常发生。`enginectl restart` 已封装好。
 
 ## 卸载
 
@@ -72,9 +72,9 @@ sudo ./infra/systemd/install.sh uninstall
 
 - **没把 `vite dev` 服务化** — vite dev server 仅给本机开发用，生产路径走
   backend 直 serve `frontend/dist`（PR #32），不需要常驻。
-- **`nous-cloudflared` `Requires=nous-backend` + `PartOf=nous-backend`** — Requires
+- **`nous-engine-cloudflared` `Requires=nous-engine-backend` + `PartOf=nous-engine-backend`** — Requires
   让 backend 死了就把 tunnel 也停掉（避免 cloudflare 把空 origin 挂域名上扔 502）。
-  但 Requires 只单向传播「停」：`restart nous-backend` 会停掉隧道，backend 回来后隧道
+  但 Requires 只单向传播「停」：`restart nous-engine-backend` 会停掉隧道，backend 回来后隧道
   **不会**自动跟着起 → 每次发版都静默掐断公网（2026-06-16 踩到的 530）。`PartOf` 补上
   这个：隧道**跟随** backend 的 restart/stop，重启后端隧道自动回来。
 - **`MemoryHigh=88G` + `MemoryMax=96G`** on backend — vLLM 之类有 OOM 史，给 host
@@ -92,10 +92,10 @@ sudo ./infra/systemd/install.sh uninstall
   `MemoryMax=96G` 时仍由 cgroup OOM 在本 cgroup 内处理,与此无关。
 - **`--protocol http2`** for cloudflared — 国内某些 ISP 屏蔽 UDP/7844 (QUIC)，
   http2 是已知能 work 的回落。
-- **`nous-healthprobe.timer`(每 2 分钟)** — 本地健康巡检(`infra/monitoring/
+- **`nous-engine-healthprobe.timer`(每 2 分钟)** — 本地健康巡检(`infra/monitoring/
   nous-healthprobe.sh`):探后端本机存活(`/healthz`)、后端自报健康(`/health` 的
   database / load_failures)、**公网隧道存活**(`<public>/health` 非 530/000)。结果进
-  journal(`journalctl -u nous-healthprobe`)。硬故障(后端连不上 / DB 挂 / 隧道 down)
+  journal(`journalctl -u nous-engine-healthprobe`)。硬故障(后端连不上 / DB 挂 / 隧道 down)
   退出非 0 → unit 标 failed,将来接告警只需给探针 service 加 `OnFailure=<alert>.service`。
   **为何要它**:systemd 的 `active` 会骗人 —— 2026-06-16 cloudflared 进程 `active` 但
   edge 连接掉到 0、公网 530,只有真正打一发 HTTP 才看得出来。**不报裸 status==degraded**
@@ -106,22 +106,22 @@ sudo ./infra/systemd/install.sh uninstall
   edge 连接全死且**它自己不重连**(2026-06-17 卡死 2.5h,systemd 全程 active、journal 静默
   2.5h、`tunnel info` 报 0 connection)。systemd `active` 检测不到,只有真打 HTTP 过 edge
   才看得出。探针探到「**后端本机健康 但 公网持续 530/502/000**」连续 `NOUS_AUTOHEAL_THRESHOLD`
-  (默认 2,×2min)次 → `sudo systemctl restart nous-cloudflared` 自愈,reset streak(自带
+  (默认 2,×2min)次 → `sudo systemctl restart nous-engine-cloudflared` 自愈,reset streak(自带
   ~4min 冷却防 restart 风暴)。**只在「后端活、唯独隧道死」时动手**——后端本身挂了重启隧道
-  没用,不碰。授权靠 `infra/security/nous-healthprobe.sudoers`(install.sh 装 `/etc/sudoers.d/
-  nous-healthprobe` 0440 + visudo 校验):只给 heygo 无密码 `systemctl restart nous-cloudflared`
+  没用,不碰。授权靠 `infra/security/nous-engine-healthprobe.sudoers`(install.sh 装 `/etc/sudoers.d/
+  nous-engine-healthprobe` 0440 + visudo 校验):只给 heygo 无密码 `systemctl restart nous-engine-cloudflared`
   这一条。`NOUS_TUNNEL_AUTOHEAL=0` 关自愈退回只巡检+日志。没装 sudoers 时探针记 `[HEAL-FAIL]`
   不崩。
-- **`nous-status`(独立公开状态监控)** — `infra/monitoring/status_service.py`,**纯 stdlib
+- **`nous-engine-status`(独立公开状态监控)** — `infra/monitoring/status_service.py`,**纯 stdlib
   / 独立进程 / 独立端口(127.0.0.1:8001)/ 独立 unit**,刻意不 `Requires`/`PartOf`
-  nous-backend —— **后端进程挂了它还活着、显示「后端 API:中断」**(对齐 status.claude.ai
+  nous-engine-backend —— **后端进程挂了它还活着、显示「后端 API:中断」**(对齐 status.claude.ai
   是独立平台,不是系统模块)。用系统 `/usr/bin/python3` 跑(不碰 backend venv/torch)。自己
   跑 `nvidia-smi` + 读 `/proc` 拿硬件(每卡显存/利用/温度、CPU%、内存、负载、uptime),
   `urllib` 探 `<backend>/health` 拿组件在线/离线。公开无登录,只露硬件概况 + 组件在线/离线,
   不露模型路径/密钥/内部错误。`/`(HTML 自动刷新 15s)、`/api.json`、`/healthz`。
   与 SPA 内 admin 状态页(#547,`/status` 详细版)并存:一个对外独立监控、一个登录后详查。
 
-### 公网暴露 nous-status(cloudflared,需 cloudflared auth)
+### 公网暴露 nous-engine-status(cloudflared,需 cloudflared auth)
 
 走独立子域,避免和 admin SPA 的 `/status` 路径冲突。编辑 `~/.cloudflared/config.yml`,在
 catch-all(`http_status:404`)**之前**加一条 ingress:
@@ -138,8 +138,10 @@ ingress:
 再建 DNS 路由 + 重启隧道:
 
 ```bash
+# 注意:这里的 `nous-center` 是 cloudflared **隧道名**(Cloudflare 侧标识,建隧道时定的),
+# 不是仓库/systemd 单元名。改仓库名不改隧道名 —— 除非在 Cloudflare 侧重建隧道,否则保持原名。
 cloudflared tunnel route dns nous-center status.iocrazy.com
-sudo systemctl restart nous-cloudflared
+sudo systemctl restart nous-engine-cloudflared
 ```
 
 之后 `https://status.iocrazy.com` 公开可访问(无需登录)。
@@ -149,7 +151,7 @@ sudo systemctl restart nous-cloudflared
 systemd 走 journald，不再写 `/tmp/backend.log`。日志自动轮转，磁盘可控。
 
 ```bash
-journalctl -u nous-backend --since '1 hour ago'
-journalctl -u nous-cloudflared -p err               # 仅 ERROR
-journalctl -u nous-backend --vacuum-time=7d         # 仅保留 7 天
+journalctl -u nous-engine-backend --since '1 hour ago'
+journalctl -u nous-engine-cloudflared -p err               # 仅 ERROR
+journalctl -u nous-engine-backend --vacuum-time=7d         # 仅保留 7 天
 ```

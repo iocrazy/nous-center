@@ -1,8 +1,8 @@
 [Unit]
-# nous-center DB 每日备份(spec native-pg-systemd-stack PR-4)。oneshot,由
-# nous-dbbackup.timer 触发。pg_dump → NAS(异机,CIFS //192.168.8.9/Sources),滚动保留。
+# nous-engine DB 每日备份(spec native-pg-systemd-stack PR-4)。oneshot,由
+# nous-engine-dbbackup.timer 触发。pg_dump → NAS(异机,CIFS //192.168.8.9/Sources),滚动保留。
 # 备份落异机 NAS:整机损坏/格式化时备份不随本机一起丢(本地不再留副本)。
-Description=nous-center DB 备份(pg_dump → NAS,滚动保留)
+Description=nous-engine DB 备份(pg_dump → NAS,滚动保留)
 After=postgresql.service
 Requires=postgresql.service
 # 备份目录在 NAS(fstab _netdev + x-systemd.automount + nofail);RequiresMountsFor 确保
@@ -16,6 +16,6 @@ User=heygo
 Group=heygo
 Environment=NOUS_DB_BACKUP_DIR=/mnt/heytime/Sources/backup/nous-db-dumps
 Environment=NOUS_DB_BACKUP_KEEP_DAYS=14
-ExecStart=/media/heygo/program/projects-code/repos/nous-center/infra/db/backup.sh
+ExecStart=/media/heygo/program/projects-code/repos/nous-engine/infra/db/backup.sh
 StandardOutput=journal
 StandardError=journal
