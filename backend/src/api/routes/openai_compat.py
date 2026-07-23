@@ -37,6 +37,7 @@ from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
     ensure_vllm_base_url,
+    get_vllm_base_url,
 )
 from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.prompt_composer import (
@@ -808,6 +809,117 @@ async def _asr_moss_transcribe(
     return text, language, segments
 
 
+# --- 标点恢复兜底(PR-10)-----------------------------------------------------
+# 快语速 / 无停顿口播下 MOSS 有时整篇 0 标点(prompt steer 已试、真实音频无效:94s「烫嘴」
+# 教程音频 10 段全文零标点;正常语速音频标点齐全)。转写后若标点密度异常低 → 用本机常驻
+# LLM 做**纯标点恢复**(只加标点、严禁改字),校验后回填;任何失败静默降级用原文。加标点
+# 是质量增强、非结构变更(契约 §1 只加不改允许);标点恢复绝不拖垮主转写路径。
+_PUNCT_CHARS = frozenset("，。？！、；,.?!;")  # 中英:逗/句/问/叹/顿/分号
+_PUNCT_MIN_CHARS = 80              # 全文 < 此长度不触发(短文本密度不稳,兜底无意义)
+_PUNCT_DENSITY_THRESHOLD = 0.005  # 标点数/字符数 < 此值判「异常低」→ 触发恢复
+# 标点 LLM(env 可覆盖)= 本机常驻 qwen3。**只读选址、绝不按需拉起**(见 _resolve_punct_base_url)。
+_PUNCT_LLM_ENGINE_DEFAULT = "qwen3_6_35b_a3b_fp8"
+
+
+def _punctuation_density(text: str) -> float:
+    """标点密度 = 标点字符数 / 总字符数(标点集见 `_PUNCT_CHARS`:中英逗/句/问/叹/顿/分号)。
+    空文本 → 0.0。用于判定 MOSS 是否输出了近乎零标点的文本(快语速失效场景)。"""
+    if not text:
+        return 0.0
+    n = sum(1 for c in text if c in _PUNCT_CHARS)
+    return n / len(text)
+
+
+def _strip_punct(s: str) -> str:
+    """剥掉标点集里的所有标点字符(校验回填用:剥标点后逐字对比,防 LLM 幻觉改字)。"""
+    return "".join(c for c in s if c not in _PUNCT_CHARS)
+
+
+def _resolve_punct_base_url(model_mgr) -> str | None:
+    """标点 LLM 选址:`NOUS_PUNCT_LLM_ENGINE`(默认 `qwen3_6_35b_a3b_fp8`)。
+
+    **刻意用只读的 `get_vllm_base_url`(而非 chat/embeddings 用的 `ensure_vllm_base_url`)**
+    —— `ensure_*` 的按需懒加载语义会在未加载时 `await load_model` 拉起一个几十 G 的 LLM,
+    标点恢复只是纯增强,绝不能为它把主转写路径拖成几十秒冷启动。`get_vllm_base_url` 是纯
+    只读:只查 `is_loaded`、取 `base_url`,**不触发任何加载**。engine 未加载 / 无端点 /
+    model_manager 不可用 → 返回 None(调用方静默降级用原文)。
+    """
+    engine = os.environ.get("NOUS_PUNCT_LLM_ENGINE") or _PUNCT_LLM_ENGINE_DEFAULT
+    try:
+        return get_vllm_base_url(model_mgr, engine).rstrip("/")
+    except (VLLMNotLoaded, VLLMNoEndpoint):
+        return None
+
+
+_PUNCT_SYS_PROMPT = (
+    "你是中文文本标点恢复助手。用户会给出多行编号文本,每行格式为 `<行号>|<文本>`。"
+    "你的唯一任务:只为每行中文文本添加标点符号(，。？！、；),"
+    "严禁增、删、改任何一个字,严禁合并或拆分行,严禁改动行号。"
+    "请按完全相同的 `<行号>|<文本>` 格式逐行原样返回全部行,不要输出任何额外说明或代码块。"
+)
+
+_PUNCT_LINE_RE = re.compile(r"^\s*(\d+)\s*\|(.*)$")
+
+
+async def _restore_punctuation(
+    client: httpx.AsyncClient, base_url: str, segments: list[dict],
+) -> list[dict] | None:
+    """用本机常驻 LLM 为 segments 做纯标点恢复,返回新 segments(text 已回填标点)或 None。
+
+    一次 chat/completions:把每段编成 `<n>|<text>` 行(n=0..N-1)喂 LLM,指令只加标点、原样
+    返回。temperature 0、max_tokens=总字数*1.3+256、超时 min(60,总字数/50+10)s。
+    **校验后回填(防 LLM 幻觉)**:逐行解析 `<n>|<text>`;行数不齐 / 编号对不上 → 整体放弃
+    (None);对每行剥掉标点后必须与原段文本剥标点后逐字相等,不等的行保留原文,通过的行用
+    恢复文本。任何异常 / 非 200 / 超时 → None(静默降级,绝不拖垮主路)。不 mutate 入参。
+    """
+    texts = [(s.get("text") or "") for s in segments]
+    total_chars = sum(len(t) for t in texts)
+    if total_chars == 0:
+        return None
+    numbered = "\n".join(f"{i}|{t}" for i, t in enumerate(texts))
+    body = {
+        "model": "",  # vLLM 用自身 served 模型(同 chat/embeddings 的处理)
+        "messages": [
+            {"role": "system", "content": _PUNCT_SYS_PROMPT},
+            {"role": "user", "content": numbered},
+        ],
+        "temperature": 0,
+        "max_tokens": int(total_chars * 1.3) + 256,
+        # qwen3 等思考模型:关思考 —— 否则推理 token 撑爆 max_tokens 截断真正答案,且徒增延迟。
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    timeout = min(60.0, total_chars / 50 + 10)
+    try:
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions", json=body, timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return None
+        content = resp.json()["choices"][0]["message"]["content"] or ""
+    except Exception:  # noqa: BLE001 — 标点恢复是增强,任何失败都静默降级用原文
+        return None
+
+    parsed: list[tuple[int, str]] = []
+    for line in content.splitlines():
+        m = _PUNCT_LINE_RE.match(line)
+        if m:
+            parsed.append((int(m.group(1)), m.group(2).strip()))
+    if len(parsed) != len(segments):
+        return None  # 行数不齐 → 整体放弃
+
+    out: list[dict] = []
+    for i, (seg, (n, restored)) in enumerate(zip(segments, parsed)):
+        if n != i:
+            return None  # 编号对不上 → 整体放弃
+        orig = seg.get("text") or ""
+        # 剥标点逐字对比:相等才采用恢复文本(只多了标点);不等(LLM 改/删/增了字)保留原文。
+        if _strip_punct(restored).strip() == _strip_punct(orig).strip():
+            out.append({**seg, "text": restored})
+        else:
+            out.append({**seg, "text": orig})
+    return out
+
+
 def _detect_language(text: str) -> str | None:
     """纯字符集启发式的文本语种检测(**无第三方依赖**),返回 ISO 639-1 码。
 
@@ -1007,6 +1119,7 @@ async def audio_transcriptions(
     context: str | None = Form(None),
     timestamps: bool = Form(False),
     merge_segments: bool = Form(False),
+    punctuate: bool = Form(True),
     auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_transcriptions),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -1028,7 +1141,9 @@ async def audio_transcriptions(
     兼容保留位(不消费)。Bearer 走 grant+quota;admin cookie(Playground)直查服务、跳配额。
     MOSS 不可达 → 503(唯一 ASR 主路)。可选 `merge_segments=true`:把 MOSS 碎分段服务端
     确定性合并成句子级(字幕/阅读场景),作用于 segments、两种输出格式一处生效;text 全文
-    不变,默认关(既有输出零变化)。
+    不变,默认关(既有输出零变化)。可选 `punctuate`(默认 **true**):快语速 MOSS 出零标点时
+    (len(text)≥80 且标点密度<0.005)自动用本机常驻 LLM 做纯标点恢复(只加标点、严禁改字,
+    校验后回填;LLM 未加载/不可达/校验失败静默降级用原文),在 merge_segments 之前生效。
     """
     instance, api_key = auth
     requested_model = model or None
@@ -1133,6 +1248,25 @@ async def audio_transcriptions(
             error=str(detail)[:200],
         )
         raise
+
+    # 标点恢复兜底(PR-10,默认开、punctuate=false 关):快语速 MOSS 出零标点时,用本机
+    # 常驻 LLM 做纯标点恢复。**必须在 merge_segments 之前** —— 合并的封组断句规则依赖句末
+    # 标点(_MERGE_SENTENCE_END),顺序反了则合并拿到的还是零标点碎段、断句失效。触发条件:
+    # len(text) >= 80 且密度 < 0.005。MOSS verbose_json 始终有 segments,统一在 segments 上
+    # 恢复(timestamps=false 也生效),再由各段 text 拼回顶层 text。选址只读、未加载即放弃,
+    # LLM 不可达/校验失败 → 静默降级用原文(restored is None)。
+    if (
+        punctuate and segments
+        and len(text) >= _PUNCT_MIN_CHARS
+        and _punctuation_density(text) < _PUNCT_DENSITY_THRESHOLD
+    ):
+        punct_base = _resolve_punct_base_url(model_mgr)
+        if punct_base:
+            async with httpx.AsyncClient(proxy=None) as pclient:
+                restored = await _restore_punctuation(pclient, punct_base, segments)
+            if restored is not None:
+                segments = restored
+                text = "".join((s.get("text") or "") for s in segments)
 
     # merge_segments(可选,默认关):把 MOSS 碎分段服务端确定性合并成句子级(字幕/阅读
     # 场景)。作用在归一化 segments 之后、两种输出格式(默认 + verbose_json)之前,一处

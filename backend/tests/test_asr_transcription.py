@@ -18,7 +18,9 @@ from src.api.routes.openai_compat import (
     _asr_verbose_json,
     _detect_language,
     _merge_segments,
+    _punctuation_density,
     _resolve_moss_base_url,
+    _restore_punctuation,
     _wav16k_seconds,
 )
 
@@ -770,3 +772,385 @@ async def test_endpoint_merge_segments_verbose_json_renumbers_ids(
         tasks = (await s.execute(select(ExecutionTask))).scalars().all()
     assert len(tasks) == 1
     assert tasks[0].result["segments_count"] == 2
+
+
+# --- PR-10:标点密度(_punctuation_density,纯函数) --------------------------
+
+
+def test_punctuation_density():
+    assert _punctuation_density("") == 0.0            # 空文本
+    assert _punctuation_density("你好世界大家好") == 0.0  # 无标点 → 0
+    # 6 字 2 标点(中文逗/句号)→ 1/3
+    assert _punctuation_density("你好，世界。") == pytest.approx(2 / 6)
+    # 英文标点也计数
+    assert _punctuation_density("hi, there.") == pytest.approx(2 / 10)
+    # 顿号/分号在标点集内
+    assert _punctuation_density("甲、乙；丙") == pytest.approx(2 / 5)
+
+
+# --- PR-10:标点 LLM 选址(_resolve_punct_base_url,只读、绝不按需拉起) -------
+
+
+def test_resolve_punct_base_url_uses_readonly_never_autoloads(monkeypatch):
+    # **只读**:用 get_vllm_base_url(非 ensure_vllm_base_url)—— 绝不按需拉起 LLM。
+    import src.api.routes.openai_compat as oc
+
+    async def _boom_ensure(mm, name):  # 若被调 = 走了按需拉起路径
+        raise AssertionError("标点恢复绝不能按需拉起 LLM(应走只读 get_vllm_base_url)")
+
+    def _fake_get(mm, name):
+        assert name == "qwen3_6_35b_a3b_fp8"  # 默认引擎
+        return "http://127.0.0.1:8000/"
+
+    monkeypatch.delenv("NOUS_PUNCT_LLM_ENGINE", raising=False)
+    monkeypatch.setattr(oc, "ensure_vllm_base_url", _boom_ensure)
+    monkeypatch.setattr(oc, "get_vllm_base_url", _fake_get)
+    assert oc._resolve_punct_base_url(object()) == "http://127.0.0.1:8000"  # 末尾 / 已剥
+
+
+def test_resolve_punct_base_url_env_overrides_engine(monkeypatch):
+    # NOUS_PUNCT_LLM_ENGINE 覆盖默认引擎名。
+    import src.api.routes.openai_compat as oc
+
+    def _fake_get(mm, name):
+        assert name == "my_other_llm"
+        return "http://127.0.0.1:8001"
+
+    monkeypatch.setenv("NOUS_PUNCT_LLM_ENGINE", "my_other_llm")
+    monkeypatch.setattr(oc, "get_vllm_base_url", _fake_get)
+    assert oc._resolve_punct_base_url(object()) == "http://127.0.0.1:8001"
+
+
+def test_resolve_punct_base_url_not_loaded_returns_none(monkeypatch):
+    # engine 未加载 → VLLMNotLoaded → None(静默降级),**不**触发加载。
+    import src.api.routes.openai_compat as oc
+
+    def _raise(mm, name):
+        raise oc.VLLMNotLoaded("未加载")
+
+    monkeypatch.setattr(oc, "get_vllm_base_url", _raise)
+    assert oc._resolve_punct_base_url(object()) is None
+
+
+# --- PR-10:标点恢复 + 校验回填(_restore_punctuation) ----------------------
+
+
+def _chat_resp(content: str, status=200) -> _FakeResp:
+    """chat/completions 响应替身:content 塞进 choices[0].message.content。"""
+    return _FakeResp(status, {"choices": [{"message": {"content": content}}]})
+
+
+@pytest.mark.asyncio
+async def test_restore_punctuation_normal_backfill():
+    # 正常恢复:LLM 只加标点、原样返回;剥标点逐字相等 → 采用恢复文本,speaker/时间戳保留。
+    segs = [
+        {"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好世界今天天气不错"},
+        {"start": 1.0, "end": 2.0, "speaker": "S02", "text": "我们一起去公园散步吧"},
+    ]
+    client = _FakeClient(resp=_chat_resp(
+        "0|你好世界，今天天气不错。\n1|我们一起去公园散步吧？"
+    ))
+    out = await _restore_punctuation(client, _BASE, segs)
+    assert out is not None
+    assert out[0]["text"] == "你好世界，今天天气不错。"
+    assert out[1]["text"] == "我们一起去公园散步吧？"
+    assert out[0]["speaker"] == "S01" and out[0]["start"] == 0.0
+    # 不 mutate 入参
+    assert segs[0]["text"] == "你好世界今天天气不错"
+
+
+@pytest.mark.asyncio
+async def test_restore_punctuation_request_shape():
+    # 请求形:一次 chat/completions;temperature 0、max_tokens=字数*1.3+256、关思考、编号行。
+    client = _FakeClient(resp=_chat_resp("0|你好。"))
+    await _restore_punctuation(
+        client, _BASE, [{"start": 0.0, "end": 1.0, "speaker": None, "text": "你好"}]
+    )
+    url, kwargs = client.last_call
+    assert url.endswith("/v1/chat/completions")
+    body = kwargs["json"]
+    assert body["temperature"] == 0
+    assert body["max_tokens"] == int(2 * 1.3) + 256  # 2 字
+    assert body["chat_template_kwargs"]["enable_thinking"] is False
+    assert body["messages"][0]["role"] == "system"
+    assert body["messages"][1]["content"] == "0|你好"  # 编号行(0 起)
+
+
+@pytest.mark.asyncio
+async def test_restore_punctuation_line_count_mismatch_aborts():
+    # 行数不齐(LLM 少返一行)→ 整体放弃(None)。
+    segs = [
+        {"start": 0.0, "end": 1.0, "speaker": "S01", "text": "甲乙丙"},
+        {"start": 1.0, "end": 2.0, "speaker": "S01", "text": "丁戊己"},
+    ]
+    client = _FakeClient(resp=_chat_resp("0|甲乙丙。"))  # 只回 1 行
+    assert await _restore_punctuation(client, _BASE, segs) is None
+
+
+@pytest.mark.asyncio
+async def test_restore_punctuation_number_mismatch_aborts():
+    # 编号对不上(第二行 n=2 ≠ 1)→ 整体放弃(None)。
+    segs = [
+        {"start": 0.0, "end": 1.0, "speaker": "S01", "text": "甲乙"},
+        {"start": 1.0, "end": 2.0, "speaker": "S01", "text": "丙丁"},
+    ]
+    client = _FakeClient(resp=_chat_resp("0|甲乙。\n2|丙丁。"))
+    assert await _restore_punctuation(client, _BASE, segs) is None
+
+
+@pytest.mark.asyncio
+async def test_restore_punctuation_changed_char_keeps_original():
+    # 某行被 LLM 改字(剥标点后 ≠ 原文)→ 该行保留原文;其余通过行仍回填(逐行判,非整体弃)。
+    segs = [
+        {"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好世界"},
+        {"start": 1.0, "end": 2.0, "speaker": "S01", "text": "今天天气"},
+    ]
+    # 第 1 行加了标点(合法);第 2 行多塞了个「好」字(幻觉改字)。
+    client = _FakeClient(resp=_chat_resp("0|你好世界。\n1|今天天气好"))
+    out = await _restore_punctuation(client, _BASE, segs)
+    assert out is not None
+    assert out[0]["text"] == "你好世界。"   # 通过 → 采用恢复
+    assert out[1]["text"] == "今天天气"     # 改字 → 保留原文
+
+
+@pytest.mark.asyncio
+async def test_restore_punctuation_unreachable_returns_none():
+    # LLM 不可达(client 抛)→ None(静默降级)。
+    client = _FakeClient(exc=httpx.ConnectError("connection refused"))
+    segs = [{"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好世界"}]
+    assert await _restore_punctuation(client, _BASE, segs) is None
+
+
+@pytest.mark.asyncio
+async def test_restore_punctuation_non_200_returns_none():
+    # 非 200 → None(不把上游错误当结果)。
+    segs = [{"start": 0.0, "end": 1.0, "speaker": "S01", "text": "你好世界"}]
+    client = _FakeClient(resp=_chat_resp("", status=500))
+    assert await _restore_punctuation(client, _BASE, segs) is None
+
+
+# --- PR-10:端点 punctuate 触发条件 + 兜底 + 与 merge 的顺序 -------------------
+
+
+_ZERO_PUNCT_TEXT = "你好世界大家好呀" * 12  # 96 字,零标点(len≥80 且密度<0.005)
+
+
+def _boom_resolve(mm):
+    raise AssertionError("不该触发标点选址")
+
+
+async def _boom_restore(client, base, segments):
+    raise AssertionError("不该触发标点恢复")
+
+
+@pytest.mark.asyncio
+async def test_endpoint_punctuate_restores_when_low_density(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 触发:len≥80 且零标点 + 默认 punctuate(true)→ 顶层 text 与段 text 均回填标点。
+    import src.api.routes.openai_compat as oc
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(4.0)
+    _patch_moss(monkeypatch, wav, (_ZERO_PUNCT_TEXT, "zh", [
+        {"start": 0.0, "end": 4.0, "speaker": "S01", "text": _ZERO_PUNCT_TEXT},
+    ]))
+    monkeypatch.setattr(oc, "_resolve_punct_base_url", lambda mm: "http://127.0.0.1:9000")
+
+    restored_text = "你好世界，大家好呀。" * 12
+
+    async def _fake_restore(client, base, segments):
+        return [{**segments[0], "text": restored_text}]
+
+    monkeypatch.setattr(oc, "_restore_punctuation", _fake_restore)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "timestamps": "true"},  # 不传 punctuate → 默认 true
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["text"] == restored_text                 # 顶层 text 由段拼回
+    assert body["segments"][0]["text"] == restored_text  # 段 text 已回填
+
+
+@pytest.mark.asyncio
+async def test_endpoint_punctuate_false_disables(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # punctuate=false 显式关 → 不选址、不恢复,原文(零标点)原样返回。
+    import src.api.routes.openai_compat as oc
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(4.0)
+    _patch_moss(monkeypatch, wav, (_ZERO_PUNCT_TEXT, "zh", [
+        {"start": 0.0, "end": 4.0, "speaker": "S01", "text": _ZERO_PUNCT_TEXT},
+    ]))
+    monkeypatch.setattr(oc, "_resolve_punct_base_url", _boom_resolve)
+    monkeypatch.setattr(oc, "_restore_punctuation", _boom_restore)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "punctuate": "false"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["text"] == _ZERO_PUNCT_TEXT  # 未改
+
+
+@pytest.mark.asyncio
+async def test_endpoint_punctuate_skipped_when_text_too_short(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 文本 < 80 字 → 不触发(短文本密度不稳)。
+    import src.api.routes.openai_compat as oc
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(2.0)
+    short = "你好世界大家好"  # 7 字 < 80
+    _patch_moss(monkeypatch, wav, (short, "zh", [
+        {"start": 0.0, "end": 2.0, "speaker": "S01", "text": short},
+    ]))
+    monkeypatch.setattr(oc, "_resolve_punct_base_url", _boom_resolve)
+    monkeypatch.setattr(oc, "_restore_punctuation", _boom_restore)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["text"] == short
+
+
+@pytest.mark.asyncio
+async def test_endpoint_punctuate_skipped_when_density_ok(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 已有充足标点(密度 ≥ 0.005)→ 不触发。
+    import src.api.routes.openai_compat as oc
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(4.0)
+    punctuated = "你好，世界。" * 20  # 120 字,密度 1/3
+    _patch_moss(monkeypatch, wav, (punctuated, "zh", [
+        {"start": 0.0, "end": 4.0, "speaker": "S01", "text": punctuated},
+    ]))
+    monkeypatch.setattr(oc, "_resolve_punct_base_url", _boom_resolve)
+    monkeypatch.setattr(oc, "_restore_punctuation", _boom_restore)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["text"] == punctuated
+
+
+@pytest.mark.asyncio
+async def test_endpoint_punctuate_silent_degrade_when_llm_not_loaded(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 触发条件满足但 LLM 未加载(选址 None)→ 不调恢复,静默用原文。
+    import src.api.routes.openai_compat as oc
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(4.0)
+    _patch_moss(monkeypatch, wav, (_ZERO_PUNCT_TEXT, "zh", [
+        {"start": 0.0, "end": 4.0, "speaker": "S01", "text": _ZERO_PUNCT_TEXT},
+    ]))
+    monkeypatch.setattr(oc, "_resolve_punct_base_url", lambda mm: None)  # 未加载
+    monkeypatch.setattr(oc, "_restore_punctuation", _boom_restore)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["text"] == _ZERO_PUNCT_TEXT  # 原文
+
+
+@pytest.mark.asyncio
+async def test_endpoint_punctuate_silent_degrade_when_restore_none(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 选址成功但恢复校验失败/超时(返回 None)→ 静默用原文。
+    import src.api.routes.openai_compat as oc
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(4.0)
+    _patch_moss(monkeypatch, wav, (_ZERO_PUNCT_TEXT, "zh", [
+        {"start": 0.0, "end": 4.0, "speaker": "S01", "text": _ZERO_PUNCT_TEXT},
+    ]))
+    monkeypatch.setattr(oc, "_resolve_punct_base_url", lambda mm: "http://127.0.0.1:9000")
+
+    async def _restore_none(client, base, segments):
+        return None
+
+    monkeypatch.setattr(oc, "_restore_punctuation", _restore_none)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["text"] == _ZERO_PUNCT_TEXT
+
+
+@pytest.mark.asyncio
+async def test_endpoint_punctuate_before_merge_enables_sentence_split(
+    api_client, bearer_headers, mock_vllm, monkeypatch,
+):
+    # 顺序关键:标点恢复在 merge_segments 之前 —— 恢复出的句末标点参与合并断句。
+    # 6 个零标点碎段(总 90 字触发);恢复给第 3/6 段补句号 → merge 断成 2 句级组。
+    # 若顺序反了(先 merge 后恢复),merge 见零标点 + 90 字未过 80 上限 → 合成 1 大组。
+    import src.api.routes.openai_compat as oc
+
+    monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:8003")
+    wav = _make_wav16k(8.0)
+    raw_segs = [
+        {"start": 0.0, "end": 1.2, "speaker": "S01", "text": "大" * 15},
+        {"start": 1.3, "end": 2.5, "speaker": "S01", "text": "家" * 15},
+        {"start": 2.6, "end": 3.8, "speaker": "S01", "text": "好" * 15},
+        {"start": 3.9, "end": 5.0, "speaker": "S01", "text": "你" * 15},
+        {"start": 5.1, "end": 6.2, "speaker": "S01", "text": "我" * 15},
+        {"start": 6.3, "end": 7.5, "speaker": "S01", "text": "他" * 15},
+    ]
+    zero_text = "".join(s["text"] for s in raw_segs)  # 90 字,零标点
+    _patch_moss(monkeypatch, wav, (zero_text, "zh", [dict(s) for s in raw_segs]))
+    monkeypatch.setattr(oc, "_resolve_punct_base_url", lambda mm: "http://127.0.0.1:9000")
+
+    async def _fake_restore(client, base, segments):
+        # 只加标点:第 3、6 段句末补句号(合并封组的句末标点判据)。
+        out = [dict(s) for s in segments]
+        out[2]["text"] = out[2]["text"] + "。"
+        out[5]["text"] = out[5]["text"] + "。"
+        return out
+
+    monkeypatch.setattr(oc, "_restore_punctuation", _fake_restore)
+
+    resp = await api_client.post(
+        "/v1/audio/transcriptions",
+        headers=bearer_headers,
+        files={"file": ("a.wav", wav, "audio/wav")},
+        data={"model": "qwen3.5", "timestamps": "true", "merge_segments": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # 恢复的句号让 merge 断成 2 组(证明恢复在合并之前)。
+    assert len(body["segments"]) == 2
+    assert body["segments"][0]["text"].endswith("。")
+    assert body["segments"][0]["start"] == 0.0 and body["segments"][0]["end"] == 3.8
+    assert body["segments"][1]["text"].endswith("。")
+    # 顶层 text = 恢复后各段拼接(带 2 个句号),合并不改 text。
+    assert body["text"] == zero_text[:45] + "。" + zero_text[45:] + "。"

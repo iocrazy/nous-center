@@ -1132,6 +1132,8 @@ function AsrDocsTab({ svc }: { svc: ServiceDetailT }) {
           <code>language</code> 由引擎或后端文本检测得出(均无则 <code>null</code>)。
           可选 <code>{' merge_segments=true '}</code>:把碎段服务端合并成句子级(适合字幕/阅读;
           默认关,只改 <code>segments</code>、<code>text</code> 全文不变),两种输出格式一处生效。
+          <code>{' punctuate '}</code>(默认开,自动兜底):快语速 MOSS 出零标点时用本机常驻 LLM
+          纯标点恢复(只加标点、严格不改字,失败静默用原文);<code>{' punctuate=false '}</code>关闭。
         </div>
         <pre style={curlPreStyle}>{buildAsrCurl(svc.name, false)}</pre>
       </Panel>
