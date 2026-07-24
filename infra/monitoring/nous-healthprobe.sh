@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # nous-engine 本地健康巡检(2026-06-16 稳定性加固,本地巡检+日志阶段)。
 #
-# 由 nous-engine-healthprobe.timer 每 2 分钟触发一次,探三件 vLLM 看门狗管不到的事:
+# 由 nous-engine-healthprobe.timer 每 2 分钟触发一次,探 vLLM 看门狗管不到的事:
 #   1. 后端本机存活      (GET 127.0.0.1:8000/healthz → 200)
 #   2. 后端自报健康      (GET /health → status/database/load_failures)
-#   3. 公网隧道存活      (GET <public>/health → 非 530/000)
+#   3. 公网隧道存活      (GET <public>/health → 非 530/000)—— 默认关闭,见下
 #
 # 输出结构化行到 stdout(systemd timer → journald;`journalctl -u nous-engine-healthprobe`)。
 # 退出码:有「硬故障」(后端连不上 / DB 挂 / 隧道 down)→ 非 0(systemd 标 failed,
@@ -17,13 +17,20 @@
 # `sudo systemctl restart nous-engine-cloudflared` 自愈(类比 vLLM 看门狗,但针对隧道)。
 # 只在「后端活、唯独隧道死」时动手 —— 后端本身挂了重启隧道没用,不碰。需 sudoers
 # drop-in 授权 heygo 无密码重启该服务(infra/security/nous-engine-healthprobe.sudoers)。
-# NOUS_TUNNEL_AUTOHEAL=0 可关自愈,只巡检+日志。
+# NOUS_TUNNEL_AUTOHEAL=0 可关自愈,只巡检+日志。PUBLIC_BASE 为空时自愈同样不触发
+# (隧道退役场景:否则会每 ~4 分钟 restart 一个已 mask、注定失败的服务)。
 #
 # 手动单跑:infra/monitoring/nous-healthprobe.sh
 set -uo pipefail
 
 LOCAL_BASE="${NOUS_LOCAL_URL:-http://127.0.0.1:8000}"
-PUBLIC_BASE="${NOUS_PUBLIC_URL:-https://api.iocrazy.com}"
+# 公网隧道探针开关(2026-07-23):api.iocrazy.com 隧道已退役 —— 凭证 cert.pem 丢失,
+# cloudflared 起不来(`error parsing tunnel ID: Error locating origin cert`),
+# nous-engine-cloudflared 已 mask。留空 = 跳过第 3 项探针**与隧道自愈**。
+# 若不留空,自愈逻辑会每 ~4 分钟 restart 一个注定失败的服务,和 mask 对着干刷日志。
+# 将来恢复隧道:重新 `cloudflared tunnel login` 拿 cert.pem,再设
+# NOUS_PUBLIC_URL=https://<host> 即可原样启用探针 + 自愈,本脚本无需再改。
+PUBLIC_BASE="${NOUS_PUBLIC_URL-}"
 TIMEOUT="${NOUS_PROBE_TIMEOUT:-10}"
 STATE_FILE="${XDG_RUNTIME_DIR:-/tmp}/nous-healthprobe.state"
 AUTOHEAL="${NOUS_TUNNEL_AUTOHEAL:-1}"       # 1=探到隧道僵尸自动 restart cloudflared
@@ -76,11 +83,15 @@ print("\n".join(out))
   fi
 fi
 
-# --- 3. 公网隧道存活 ---
-pub_code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$PUBLIC_BASE/health" 2>/dev/null || echo 000)"
-# 530 = cloudflare 隧道 down(origin 不可达);000 = 连不上。2xx/3xx/4xx 都算隧道通。
-if [[ "$pub_code" == "000" || "$pub_code" == "530" || "$pub_code" == "502" ]]; then
-  alerts+=("public-tunnel-down(<public>/health=$pub_code)")
+# --- 3. 公网隧道存活(仅当 PUBLIC_BASE 非空)---
+# skip = 未配置公网地址,该项不参与 alerts / 自愈 / 退出码。
+pub_code="skip"
+if [[ -n "$PUBLIC_BASE" ]]; then
+  pub_code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$PUBLIC_BASE/health" 2>/dev/null || echo 000)"
+  # 530 = cloudflare 隧道 down(origin 不可达);000 = 连不上。2xx/3xx/4xx 都算隧道通。
+  if [[ "$pub_code" == "000" || "$pub_code" == "530" || "$pub_code" == "502" ]]; then
+    alerts+=("public-tunnel-down(<public>/health=$pub_code)")
+  fi
 fi
 
 # --- 连续计数(状态文件:<硬故障streak> <隧道僵尸streak> <ts>)---
@@ -92,6 +103,7 @@ prev_hard=0; prev_tunnel=0
 
 # 「隧道僵尸」专项 streak:后端本机健康 但 公网 530/502/000 = restart cloudflared 才有意义
 # (后端也挂了 → 是别的问题,重启隧道无用,不碰)。
+# pub_code="skip"(未配置公网地址)时恒为 0 —— 不触发自愈。
 tunnel_zombie=0
 if [[ "$live_code" == "200" && ( "$pub_code" == "000" || "$pub_code" == "502" || "$pub_code" == "530" ) ]]; then
   tunnel_zombie=1
@@ -123,5 +135,9 @@ if (( ${#warns[@]} > 0 )); then
   echo "[WARN]  $(ts) 后端活但有降级 — $(IFS='; '; echo "${warns[*]}")"
   exit 0
 fi
-echo "[OK]    $(ts) backend+tunnel healthy (local=$live_code public=$pub_code)"
+if [[ "$pub_code" == "skip" ]]; then
+  echo "[OK]    $(ts) backend healthy (local=$live_code; 隧道探针未启用)"
+else
+  echo "[OK]    $(ts) backend+tunnel healthy (local=$live_code public=$pub_code)"
+fi
 exit 0
