@@ -16,12 +16,12 @@ TARGET=/etc/systemd/system
 ENGINECTL_DST=/usr/local/bin/enginectl
 
 # 长驻服务(cloudflared 单独处理 —— 缺二进制/凭证时优雅跳过,不中止安装)。
-SERVICES=(nous-engine-backend.service nous-engine-status.service nous-engine-aligner.service)
+SERVICES=(nous-engine-backend.service nous-engine-status.service)
 TIMERS=(nous-engine-healthprobe.timer nous-engine-dbbackup.timer)
 TARGETS=(nous-engine.target)
 SUDOERS=(nous-engine-healthprobe nous-engine-deploy)
 # 全部拷进 /etc/systemd/system(含 cloudflared、oneshot probe/dbbackup、target)。
-UNIT_FILES=(nous-engine-backend.service nous-engine-cloudflared.service nous-engine-status.service nous-engine-aligner.service \
+UNIT_FILES=(nous-engine-backend.service nous-engine-cloudflared.service nous-engine-status.service \
             nous-engine-healthprobe.service nous-engine-healthprobe.timer nous-engine-dbbackup.service nous-engine-dbbackup.timer nous-engine.target)
 
 LOCAL_URL="${NOUS_LOCAL_URL:-http://127.0.0.1:8000}"

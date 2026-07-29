@@ -1,8 +1,13 @@
 # nous-aligner — ForcedAligner 时间戳微服务
 
 > ⚠️ **已退役(2026-07-20,spec `2026-07-20-moss-asr-sglang-serving`)**:时间戳/说话人
-> 分离已由 MOSS-Transcribe-Diarize 微服务(`infra/moss-asr/`)内建接管,本服务待一个
-> release 周期后删除。停用:`sudo systemctl disable --now nous-aligner`。
+> 分离已由 MOSS-Transcribe-Diarize 微服务(`infra/moss-asr/`)内建接管。
+>
+> **2026-07-28 起 systemd 接线已全部拆除** —— `nous-engine-aligner.service` 单元已删,
+> `nous-engine.target` / `install.sh` / `enginectl` / `bootstrap.sh` 均不再引用它。
+> 本目录源码暂留归档(不参与 bootstrap,不建 venv),下面的部署说明**仅供历史参考**。
+> 退役前它一直 active,在 3090 上白占 2GB 显存 —— 原因是 unit 虽 `disable` 了,
+> `nous-engine.target` 的 `Wants=` 仍会在开机时把它拉起来。
 
 ASR 时间戳(词/字级 start/end)的独立微服务。spec
 `docs/superpowers/specs/2026-06-21-asr-context-lid-timestamps-design.md`(Arc B)。

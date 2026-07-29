@@ -4,14 +4,14 @@
 # 设计:docs/superpowers/specs/2026-06-23-fresh-format-bootstrap-design.md
 #
 # 它**不取代** infra/systemd/install.sh,而是在它之前补齐前置依赖(原生 PG /
-# Python·Node 依赖 / admin secret / cloudflared 凭证 / aligner venv / prod 检出),
+# Python·Node 依赖 / admin secret / cloudflared 凭证 / prod 检出),
 # 最后调它。复用现有脚本,自己只做编排 + 体检。
 #
 # 阶段(每段幂等,已就位即跳过):
 #   preflight  OS/盘/驱动/CLI 体检(只读)
 #   db         原生 pg17 + role/库 + (可选)从备份 restore
 #   secrets    .env admin secret + cloudflared 凭证(缺则报缺指源,不伪造)
-#   deps       后端 uv sync --extra inference + aligner venv
+#   deps       后端 uv sync --extra inference
 #   build      前端 npm ci + npm run build
 #   checkout   (可选)派生 sibling 检出 + .nous-production 标记
 #   services   调 install.sh(装单元+enginectl+sudoers+enable)+ healthz 自检
@@ -186,9 +186,9 @@ check_secrets() {
   fi
 }
 
-# ── deps:后端 venv(含 vllm)+ aligner venv ───────────────────────────────
+# ── deps:后端 venv(含 vllm)────────────────────────────────────────────
 check_deps() {
-  section "deps — 后端 venv(inference)+ aligner venv"
+  section "deps — 后端 venv(inference)"
 
   local bpy="$BACKEND/.venv/bin/python"
   if [[ -x "$bpy" ]]; then
@@ -198,16 +198,7 @@ check_deps() {
     miss "无后端 venv($BACKEND/.venv)" "cd backend && uv sync --extra inference"
   fi
 
-  # aligner venv 按检出走;systemd nous-engine-aligner 实际指向 prod 检出那份 → 优先认 prod。
-  local apy="$SCRIPT_DIR/aligner/.venv/bin/python" where="本检出"
-  if [[ ! -x "$apy" && -x "$PROD_CHECKOUT/infra/aligner/.venv/bin/python" ]]; then
-    apy="$PROD_CHECKOUT/infra/aligner/.venv/bin/python"; where="prod 检出"
-  fi
-  if [[ -x "$apy" ]]; then
-    if "$apy" -c 'import qwen_asr' 2>/dev/null; then ok "aligner venv 有 qwen_asr($where)"; else miss "aligner venv 缺 qwen_asr($where)" "./infra/aligner/setup.sh"; fi
-  else
-    miss "无 aligner venv(本检出/prod 检出均无)" "在目标检出跑 ./infra/aligner/setup.sh"
-  fi
+  # aligner venv 不再检查 —— ForcedAligner 微服务已退役(见 do_deps 注释)。
 }
 
 # ── build:前端依赖 + dist ───────────────────────────────────────────────
@@ -232,7 +223,7 @@ check_checkout() {
 # ── services:systemd 单元 + 健康 ──────────────────────────────────────
 check_services() {
   section "services — systemd 单元 + 健康"
-  local svc; for svc in nous-engine-backend nous-engine-cloudflared nous-engine-status nous-engine-aligner; do
+  local svc; for svc in nous-engine-backend nous-engine-cloudflared nous-engine-status; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then ok "$svc active"; else miss "$svc 未运行" "sudo ./infra/systemd/install.sh && sudo systemctl start $svc"; fi
   done
   local tmr; for tmr in nous-engine-healthprobe.timer nous-engine-dbbackup.timer; do
@@ -328,7 +319,7 @@ do_db() {
 }
 
 do_deps() {
-  section "deps — 后端 venv(inference)+ aligner venv"
+  section "deps — 后端 venv(inference)"
   [[ ${EUID} -eq 0 && -z "${SUDO_USER:-}" ]] && die "deps 不要以纯 root 跑(venv 会落 root 所有);用普通用户或 sudo(带 SUDO_USER)"
   local bpy="$BACKEND/.venv/bin/python"
   if [[ -x "$bpy" ]] && "$bpy" -c 'import vllm' 2>/dev/null; then
@@ -338,14 +329,8 @@ do_deps() {
     as_user "cd '$BACKEND' && uv sync --extra inference" || die "uv sync 失败"
     ok "后端依赖就位"
   fi
-  local apy="$SCRIPT_DIR/aligner/.venv/bin/python"
-  if [[ -x "$apy" ]] && "$apy" -c 'import qwen_asr' 2>/dev/null; then
-    ok "aligner venv 已就位 — 跳过"
-  else
-    log "建 aligner venv(infra/aligner/setup.sh)"
-    as_user "'$SCRIPT_DIR/aligner/setup.sh'" || die "aligner setup 失败"
-    ok "aligner venv 就位"
-  fi
+  # aligner venv 不再建 —— ForcedAligner 微服务已退役(MOSS 内建时间戳/说话人分离),
+  # systemd 单元已删。infra/aligner/ 源码暂留归档,不参与 bootstrap。
 }
 
 # dist 是否比最新源文件新(借 deploy 的时间戳思路,避免无谓重 build)。

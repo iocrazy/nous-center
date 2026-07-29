@@ -26,7 +26,8 @@ ExecStart=/media/heygo/program/projects-code/repos/nous-engine/infra/moss-asr/st
 # (被压一把模型就 fullchip-reset 僵死、拖黑整机,见 infra/gpu/README.md)。裸 cuda:0 在
 # PCI_BUS_ID 排序下随槽位变可能命中 Pro 6000 → 不可靠;UUID 绑定永远是这张 3090。start_serve.sh
 # 里也 export 了同一 UUID(直接跑脚本时生效),这里再声明一份保证 systemd 路径同样钉死。
-# 注意:与 nous-engine-aligner 钉的那张 3090(GPU-78dcdbeb…)是两张不同的卡。
+# 注意:本机有两张 3090,这里钉的是 GPU-2fd7c91c…;另一张是 GPU-78dcdbeb…
+#(已退役的 nous-engine-aligner 曾钉那张)。
 Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
 Environment=CUDA_VISIBLE_DEVICES=GPU-2fd7c91c-af39-7b02-66b9-988331ce3bd7
 Environment=NOUS_MOSS_ASR_PORT=8003

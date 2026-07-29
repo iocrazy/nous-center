@@ -92,7 +92,7 @@ systemd 单元指向**专用 prod 检出** `…/nous-prod`(detached,deploy 独�
 
 ```bash
 ./infra/bootstrap.sh --check                       # 应全 OK
-systemctl is-active nous-engine-backend nous-engine-cloudflared nous-engine-status nous-engine-aligner
+systemctl is-active nous-engine-backend nous-engine-cloudflared nous-engine-status
 curl -s --noproxy '*' https://api.iocrazy.com/healthz   # {"status":"ok"}
 enginectl status                                     # 全栈一览
 ```
