@@ -1085,6 +1085,13 @@ async def delete_engine(
 
     md.invalidate_all_caches()
 
+    # 残留扫描跑在删除前 → models.d/<key>.yaml 会把自己扫进去,但它刚被删掉。
+    # 剔除它,别让报告指向一个已不存在的文件。
+    code_refs = md.drop_refs_to(
+        pre["code_refs"],
+        pre["registry_cleanup"]["models_d_yaml"] if cleaned["models_d_yaml"] else None,
+    )
+
     logger.warning(
         "engine deleted: name=%s path=%s freed=%dB registry=%s disk_errors=%d",
         name, target.path, freed, cleaned, len(disk_errors),
@@ -1096,7 +1103,7 @@ async def delete_engine(
         "freed_bytes": freed,
         "disk_errors": disk_errors,
         "registry_cleaned": cleaned,
-        "code_refs": pre["code_refs"],
+        "code_refs": code_refs,
         "code_refs_truncated": pre["code_refs_truncated"],
         "code_refs_error": pre["code_refs_error"],
     }

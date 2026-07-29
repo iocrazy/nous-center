@@ -309,6 +309,31 @@ def scan_code_refs(
     return {"refs": refs[:limit], "truncated": truncated, "scan_error": error}
 
 
+def drop_refs_to(refs: list[dict], path: str | None) -> list[dict]:
+    """从残留引用里剔除指向 `path` 的条目。
+
+    残留扫描跑在删除**之前**(避免为一次删除跑两遍 git grep),所以
+    `models.d/<key>.yaml` 会把自己扫进去 —— 而它紧接着就被删了。不剔除的话报告会让
+    用户去清一个已经不存在的文件。`refs` 里的 file 可能是仓库相对路径(git grep)也可能
+    是绝对路径,统一解析后比对。
+    """
+    if not path:
+        return refs
+    target = Path(path).resolve()
+    root = _repo_root()
+    out: list[dict] = []
+    for r in refs:
+        f = Path(r.get("file", ""))
+        full = f if f.is_absolute() else root / f
+        try:
+            if full.resolve() == target:
+                continue
+        except OSError:  # pragma: no cover — 解析不了就当它不是被删的那个
+            pass
+        out.append(r)
+    return out
+
+
 def _repo_root() -> Path:
     # src/services/model_deleter.py → backend/src/services → backend → 仓库根
     return Path(__file__).resolve().parents[3]

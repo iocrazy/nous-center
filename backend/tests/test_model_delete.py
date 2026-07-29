@@ -713,3 +713,36 @@ async def test_delete_single_component_file_skips_registry_cleanup(
         "model_metadata": False,
         "runtime_overrides": 0,
     }
+
+
+async def test_delete_drops_the_just_deleted_yaml_from_code_refs(
+    delete_client, monkeypatch
+):
+    """残留引用扫描在删除前跑,会把 models.d/<key>.yaml 自己算进去 —— 但那个文件
+    紧接着就被删了。报给用户会让人去清一个已经不存在的文件。必须过滤掉。"""
+    client, models_root, models_d, *_ = delete_client
+    _make_model_dir(models_root, "llm/Doomed")
+    yaml_file = models_d / "doomed.yaml"
+    yaml_file.write_text("id: doomed\n")
+    _patch_scan(monkeypatch, {"doomed": {"local_path": "llm/Doomed", "type": "llm"}})
+
+    from src.services import model_deleter as md
+
+    monkeypatch.setattr(
+        md,
+        "scan_code_refs",
+        lambda *a, **kw: {
+            "refs": [
+                {"file": str(yaml_file), "line": 1, "text": "id: doomed"},
+                {"file": "src/api/routes/services.py", "line": 377, "text": "doomed"},
+            ],
+            "truncated": False,
+            "scan_error": None,
+        },
+    )
+
+    resp = await client.post("/api/v1/engines/delete", json={"name": "doomed"})
+
+    assert resp.status_code == 200, resp.text
+    files = [r["file"] for r in resp.json()["code_refs"]]
+    assert files == ["src/api/routes/services.py"]
