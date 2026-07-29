@@ -17,6 +17,9 @@ from src.services.model_metadata_service import (
     _format_size,
 )
 from src.api.websocket import ws_manager
+# 模块整体导入(而非 from-import 具名):删除路由里的函数在测试中按模块属性打桩,
+# 早绑定会拿到打补丁前的旧引用。
+from src.services import model_deleter as md
 
 # 持后台 fire-and-forget task 的强引用,防止 asyncio 中途 GC 掉(round4 #8/#9 修过同类)。
 # add_done_callback(discard) 完成即自动移除。
@@ -948,3 +951,152 @@ async def scheduler_status(request: Request):
     """Return current model manager status."""
     model_mgr = request.app.state.model_manager
     return model_mgr.get_status()
+
+
+# ── 物理删除(spec 2026-07-28-model-physical-delete)──────────────────────
+#
+# 两步式:先 /delete/preflight 拿「将删什么、将释放多少、谁在挡」,前端据此渲染确认框;
+# 再 /delete 真删。**执行端点服务端重跑一遍预检**,不信任前端除 force 外的任何输入。
+#
+# 用 POST 而非 DELETE /{name}:组件条目名形如
+# `component:diffusion_models:/abs/path/x.safetensors`,含 `/`,做不了 path 参数。
+# 与既有 /component/unload、/seedvr2/unload 的 body 风格一致。
+
+
+async def _delete_preflight(name: str, request: Request, session: AsyncSession) -> dict:
+    """删除前的全量体检。抛 DeleteError → 路由转 HTTPException。"""
+    configs = scan_models()
+    target = md.resolve_target(name, configs)
+    md.assert_safe_target(target)
+
+    # 硬 blocker:还在显存里。整模型问 ModelManager;catalog 条目(超分/组件/LoRA)
+    # 用引擎库自己的 loaded 索引(它们不归 ModelManager 管)。
+    loaded: dict | None = None
+    if target.kind == "model":
+        if _is_engine_loaded(name, request):
+            loaded = {"status": "loaded", "gpu": _get_loaded_gpu(name, request)}
+        elif _loading_states.get(name, {}).get("status") == "loading":
+            loaded = {"status": "loading", "gpu": None}
+    else:
+        from src.services.engine_catalog import catalog_extra_engines
+        entry = next(
+            (e for e in catalog_extra_engines(request.app.state, None) if e.name == name),
+            None,
+        )
+        if entry is not None and entry.status in ("loaded", "loading"):
+            loaded = {"status": entry.status, "gpu": entry.loaded_gpu}
+
+    services = (
+        await md.find_referencing_services(session, target.engine_key)
+        if target.engine_key
+        else []
+    )
+
+    yaml_path = None
+    meta_row = False
+    override_rows = 0
+    if target.engine_key:
+        candidate = md.models_d_dir() / f"{target.engine_key}.yaml"
+        yaml_path = str(candidate) if candidate.is_file() else None
+        meta_row, override_rows = await md.count_registry_rows(session, target.engine_key)
+
+    terms = [target.engine_key, target.local_path, target.path.name]
+    code = md.scan_code_refs([t for t in terms if t])
+
+    return {
+        "name": name,
+        "kind": target.kind,
+        "target_path": str(target.path),
+        "is_dir": target.is_dir,
+        "size_bytes": md.path_size_bytes(target.path),
+        "blockers": {"loaded": loaded, "services": services},
+        "registry_cleanup": {
+            "models_d_yaml": yaml_path,
+            "model_metadata": meta_row,
+            "runtime_overrides": override_rows,
+        },
+        "code_refs": code["refs"],
+        "code_refs_truncated": code["truncated"],
+        "code_refs_error": code["scan_error"],
+        "_target": target,
+    }
+
+
+@router.post("/delete/preflight", dependencies=[Depends(require_admin)])
+async def delete_preflight(
+    request: Request,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """删除前体检:目标路径 / 将释放空间 / 阻断项 / 注册表清理清单 / 源码残留引用。"""
+    name = (body or {}).get("name")
+    if not name:
+        raise HTTPException(400, "name 必填")
+    try:
+        out = await _delete_preflight(name, request, session)
+    except md.DeleteError as e:
+        raise HTTPException(e.status_code, e.detail) from e
+    out.pop("_target", None)
+    return out
+
+
+@router.post("/delete", dependencies=[Depends(require_admin)])
+async def delete_engine(
+    request: Request,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """物理删除:rm -rf 磁盘 → 清注册表 → 清缓存 → 回残留源码引用报告。不可撤销。"""
+    name = (body or {}).get("name")
+    if not name:
+        raise HTTPException(400, "name 必填")
+    force = bool((body or {}).get("force"))
+
+    try:
+        pre = await _delete_preflight(name, request, session)
+    except md.DeleteError as e:
+        raise HTTPException(e.status_code, e.detail) from e
+
+    if pre["blockers"]["loaded"]:
+        raise HTTPException(
+            409, f"{name} 正在显存中({pre['blockers']['loaded']['status']}),请先卸载再删除"
+        )
+    if pre["blockers"]["services"] and not force:
+        names = ", ".join(s["name"] for s in pre["blockers"]["services"])
+        raise HTTPException(
+            409, f"{name} 被这些服务引用: {names}。确认后加 force=true 强制删除"
+        )
+
+    target = pre["_target"]
+    freed, disk_errors = md.delete_disk(target)
+
+    cleaned = {"models_d_yaml": False, "model_metadata": False, "runtime_overrides": 0}
+    if target.engine_key:
+        try:
+            cleaned["models_d_yaml"] = md.delete_models_d_yaml(target.engine_key)
+        except md.DeleteError:
+            logger.exception("delete: models.d yaml 清理失败 key=%s", target.engine_key)
+        db_out = await md.clean_registry_db(session, target.engine_key)
+        cleaned["model_metadata"] = db_out["model_metadata"]
+        cleaned["runtime_overrides"] = db_out["runtime_overrides"]
+        mgr = _get_model_manager(request)
+        if mgr is not None and getattr(mgr, "_registry", None) is not None:
+            mgr._registry.reload()
+
+    md.invalidate_all_caches()
+
+    logger.warning(
+        "engine deleted: name=%s path=%s freed=%dB registry=%s disk_errors=%d",
+        name, target.path, freed, cleaned, len(disk_errors),
+    )
+    return {
+        "deleted": True,
+        "name": name,
+        "target_path": str(target.path),
+        "freed_bytes": freed,
+        "disk_errors": disk_errors,
+        "registry_cleaned": cleaned,
+        "code_refs": pre["code_refs"],
+        "code_refs_truncated": pre["code_refs_truncated"],
+        "code_refs_error": pre["code_refs_error"],
+    }

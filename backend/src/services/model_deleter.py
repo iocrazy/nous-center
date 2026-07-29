@@ -170,6 +170,91 @@ def delete_models_d_yaml(engine_key: str, models_d: Path | None = None) -> bool:
     return True
 
 
+async def count_registry_rows(session, engine_key: str) -> tuple[bool, int]:
+    """预检用的只读版本:(有无 model_metadata 行, model_runtime_overrides 行数)。"""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from src.models.model_metadata import ModelMetadata  # noqa: PLC0415
+    from src.models.model_runtime_override import ModelRuntimeOverride  # noqa: PLC0415
+
+    has_meta = (
+        await session.execute(
+            select(ModelMetadata.id).where(ModelMetadata.engine_key == engine_key)
+        )
+    ).first() is not None
+    n_ov = len(
+        (
+            await session.execute(
+                select(ModelRuntimeOverride.model_id).where(
+                    ModelRuntimeOverride.model_id == engine_key
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return has_meta, n_ov
+
+
+async def clean_registry_db(session, engine_key: str) -> dict:
+    """清 DB 侧注册表:model_metadata 行 + model_runtime_overrides 行。"""
+    from sqlalchemy import delete, select  # noqa: PLC0415
+
+    from src.models.model_metadata import ModelMetadata  # noqa: PLC0415
+    from src.models.model_runtime_override import ModelRuntimeOverride  # noqa: PLC0415
+
+    had_meta = (
+        await session.execute(
+            select(ModelMetadata.id).where(ModelMetadata.engine_key == engine_key)
+        )
+    ).first() is not None
+    if had_meta:
+        await session.execute(
+            delete(ModelMetadata).where(ModelMetadata.engine_key == engine_key)
+        )
+
+    ov_ids = (
+        (
+            await session.execute(
+                select(ModelRuntimeOverride.model_id).where(
+                    ModelRuntimeOverride.model_id == engine_key
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if ov_ids:
+        await session.execute(
+            delete(ModelRuntimeOverride).where(
+                ModelRuntimeOverride.model_id == engine_key
+            )
+        )
+
+    await session.commit()
+    return {"model_metadata": had_meta, "runtime_overrides": len(ov_ids)}
+
+
+async def find_referencing_services(session, engine_key: str) -> list[dict]:
+    """引用该模型的服务实例(source_type='model' 且 source_name=<key>)= 软 blocker。
+
+    删模型不动服务本身,但用户有权在确认框里看到「这几个接入点会指向不存在的模型」。
+    """
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from src.models.service_instance import ServiceInstance  # noqa: PLC0415
+
+    rows = (
+        await session.execute(
+            select(ServiceInstance.id, ServiceInstance.name).where(
+                ServiceInstance.source_type == "model",
+                ServiceInstance.source_name == engine_key,
+            )
+        )
+    ).all()
+    return [{"id": str(r[0]), "name": r[1]} for r in rows]
+
+
 def invalidate_all_caches() -> None:
     """删完清 5 层缓存,否则引擎库最长 30s 内仍显示已删的条目。
 

@@ -406,3 +406,310 @@ def test_invalidate_all_caches_hits_every_scanner_and_response_cache(monkeypatch
     invalidate_all_caches()
 
     assert set(called) == {"scan", "local_scan", "lora", "component", "rc:engines"}
+
+
+# ── 注册表清理:DB 行 ──────────────────────────────────────────────────────
+
+
+async def test_clean_registry_db_removes_metadata_and_override_rows(db_session):
+    from src.models.model_metadata import ModelMetadata
+    from src.models.model_runtime_override import ModelRuntimeOverride
+
+    db_session.add(ModelMetadata(engine_key="doomed", hf_id="org/doomed"))
+    db_session.add(ModelMetadata(engine_key="keeper", hf_id="org/keeper"))
+    db_session.add(ModelRuntimeOverride(model_id="doomed", resident=True, gpu=1))
+    db_session.add(ModelRuntimeOverride(model_id="keeper", resident=True))
+    await db_session.commit()
+
+    from src.services.model_deleter import clean_registry_db
+
+    out = await clean_registry_db(db_session, "doomed")
+
+    assert out == {"model_metadata": True, "runtime_overrides": 1}
+
+    from sqlalchemy import select
+
+    keys = (await db_session.execute(select(ModelMetadata.engine_key))).scalars().all()
+    ids = (
+        (await db_session.execute(select(ModelRuntimeOverride.model_id)))
+        .scalars()
+        .all()
+    )
+    assert keys == ["keeper"]
+    assert ids == ["keeper"]
+
+
+async def test_clean_registry_db_with_no_rows_is_not_an_error(db_session):
+    from src.services.model_deleter import clean_registry_db
+
+    out = await clean_registry_db(db_session, "never_existed")
+
+    assert out == {"model_metadata": False, "runtime_overrides": 0}
+
+
+# ── 服务引用预检 ──────────────────────────────────────────────────────────
+
+
+async def test_find_referencing_services_lists_model_backed_instances(db_session):
+    """source_type='model' 且 source_name=<key> 的服务实例 = 软 blocker。"""
+    from src.models.service_instance import ServiceInstance
+
+    db_session.add(
+        ServiceInstance(name="doomed-api", source_type="model", source_name="doomed")
+    )
+    db_session.add(
+        ServiceInstance(name="other-api", source_type="model", source_name="keeper")
+    )
+    db_session.add(
+        ServiceInstance(name="wf-api", source_type="workflow", source_name="doomed")
+    )
+    await db_session.commit()
+
+    from src.services.model_deleter import find_referencing_services
+
+    refs = await find_referencing_services(db_session, "doomed")
+
+    assert [r["name"] for r in refs] == ["doomed-api"]
+
+
+async def test_find_referencing_services_empty_for_unreferenced_key(db_session):
+    from src.services.model_deleter import find_referencing_services
+
+    assert await find_referencing_services(db_session, "nobody") == []
+
+
+# ── 路由:/api/v1/engines/delete{,/preflight} ──────────────────────────────
+
+
+@pytest.fixture
+async def delete_client(tmp_path, monkeypatch):
+    """带真 DB + 假模型树 + 「什么都没加载」的 model_manager 的 client。
+
+    yields (client, models_root, models_d, session_factory)
+    """
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.api.main import create_app
+    from src.models.database import Base, get_async_session
+
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    models_d = tmp_path / "models.d"
+    models_d.mkdir()
+    _stub_roots(models_root, monkeypatch)
+
+    from src.services import model_deleter as md
+
+    monkeypatch.setattr(md, "models_d_dir", lambda: models_d)
+    # 残留扫描在路由测试里桩掉:它会 git grep 真仓库,与被测行为无关且拖慢测试。
+    monkeypatch.setattr(
+        md, "scan_code_refs", lambda *a, **kw: {"refs": [], "truncated": False, "scan_error": None}
+    )
+
+    db_path = tmp_path / "test.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def override_session():
+        async with session_factory() as session:
+            yield session
+
+    app = create_app()
+    mgr = MagicMock()
+    mgr.is_loaded = MagicMock(return_value=False)
+    mgr._registry = MagicMock()
+    mgr._registry.reload = MagicMock(return_value=0)
+    mgr._registry.specs = {}
+    app.state.model_manager = mgr
+    app.dependency_overrides[get_async_session] = override_session
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c, models_root, models_d, session_factory, mgr
+
+    await engine.dispose()
+
+
+def _patch_scan(monkeypatch, configs: dict):
+    from src.api.routes import engines as engines_route
+
+    monkeypatch.setattr(engines_route, "scan_models", lambda: configs)
+
+
+async def test_preflight_unknown_engine_returns_404(delete_client, monkeypatch):
+    client, *_ = delete_client
+    _patch_scan(monkeypatch, {})
+
+    resp = await client.post("/api/v1/engines/delete/preflight", json={"name": "nope"})
+
+    assert resp.status_code == 404
+    # 必须是「未知引擎条目」而不是路由不存在的 404(app 把 HTTPException 包成
+    # {"error": {"message": ...}} 信封,见 main.py 的 _http handler)
+    assert "nope" in resp.json()["error"]["message"]
+
+
+async def test_preflight_reports_target_size_and_registry_cleanup(
+    delete_client, monkeypatch
+):
+    client, models_root, models_d, _sf, _mgr = delete_client
+    _make_model_dir(models_root, "llm/Doomed")
+    (models_d / "doomed.yaml").write_text("id: doomed\n")
+    _patch_scan(monkeypatch, {"doomed": {"local_path": "llm/Doomed", "type": "llm"}})
+
+    resp = await client.post("/api/v1/engines/delete/preflight", json={"name": "doomed"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["target_path"] == str(models_root / "llm/Doomed")
+    assert body["is_dir"] is True
+    assert body["size_bytes"] >= 1024
+    assert body["registry_cleanup"]["models_d_yaml"].endswith("doomed.yaml")
+    assert body["blockers"]["loaded"] is None
+    assert body["blockers"]["services"] == []
+
+
+async def test_delete_removes_dir_yaml_and_db_rows(delete_client, monkeypatch):
+    client, models_root, models_d, session_factory, _mgr = delete_client
+    d = _make_model_dir(models_root, "llm/Doomed")
+    yaml_file = models_d / "doomed.yaml"
+    yaml_file.write_text("id: doomed\n")
+    _patch_scan(monkeypatch, {"doomed": {"local_path": "llm/Doomed", "type": "llm"}})
+
+    from src.models.model_metadata import ModelMetadata
+    from src.models.model_runtime_override import ModelRuntimeOverride
+
+    async with session_factory() as s:
+        s.add(ModelMetadata(engine_key="doomed", hf_id="org/doomed"))
+        s.add(ModelRuntimeOverride(model_id="doomed", resident=True))
+        await s.commit()
+
+    resp = await client.post("/api/v1/engines/delete", json={"name": "doomed"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] is True
+    assert body["disk_errors"] == []
+    assert body["freed_bytes"] >= 1024
+    assert body["registry_cleaned"] == {
+        "models_d_yaml": True,
+        "model_metadata": True,
+        "runtime_overrides": 1,
+    }
+    assert not d.exists()
+    assert not yaml_file.exists()
+
+    from sqlalchemy import select
+
+    async with session_factory() as s:
+        assert (await s.execute(select(ModelMetadata.id))).first() is None
+        assert (await s.execute(select(ModelRuntimeOverride.model_id))).first() is None
+
+
+async def test_delete_refuses_loaded_model_even_with_force(delete_client, monkeypatch):
+    """已加载 = 硬 blocker,force 不放行,磁盘必须原封不动。"""
+    client, models_root, _md, _sf, mgr = delete_client
+    d = _make_model_dir(models_root, "llm/Doomed")
+    _patch_scan(monkeypatch, {"doomed": {"local_path": "llm/Doomed", "type": "llm"}})
+    mgr.is_loaded = MagicMock(return_value=True)
+
+    resp = await client.post(
+        "/api/v1/engines/delete", json={"name": "doomed", "force": True}
+    )
+
+    assert resp.status_code == 409
+    assert d.exists()
+
+
+async def test_delete_refuses_service_referenced_model_without_force(
+    delete_client, monkeypatch
+):
+    client, models_root, _md, session_factory, _mgr = delete_client
+    d = _make_model_dir(models_root, "llm/Doomed")
+    _patch_scan(monkeypatch, {"doomed": {"local_path": "llm/Doomed", "type": "llm"}})
+
+    from src.models.service_instance import ServiceInstance
+
+    async with session_factory() as s:
+        s.add(
+            ServiceInstance(name="doomed-api", source_type="model", source_name="doomed")
+        )
+        await s.commit()
+
+    resp = await client.post("/api/v1/engines/delete", json={"name": "doomed"})
+
+    assert resp.status_code == 409
+    assert "doomed-api" in resp.text
+    assert d.exists()
+
+
+async def test_delete_with_force_passes_service_gate_and_keeps_the_service(
+    delete_client, monkeypatch
+):
+    client, models_root, _md, session_factory, _mgr = delete_client
+    d = _make_model_dir(models_root, "llm/Doomed")
+    _patch_scan(monkeypatch, {"doomed": {"local_path": "llm/Doomed", "type": "llm"}})
+
+    from src.models.service_instance import ServiceInstance
+
+    async with session_factory() as s:
+        s.add(
+            ServiceInstance(name="doomed-api", source_type="model", source_name="doomed")
+        )
+        await s.commit()
+
+    resp = await client.post(
+        "/api/v1/engines/delete", json={"name": "doomed", "force": True}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert not d.exists()
+
+    from sqlalchemy import select
+
+    async with session_factory() as s:
+        names = (await s.execute(select(ServiceInstance.name))).scalars().all()
+    assert names == ["doomed-api"]  # 服务本身不动
+
+
+async def test_delete_rejects_target_outside_models_root(delete_client, monkeypatch):
+    """component 条目塞外部绝对路径 → 400,外部文件毫发无伤。"""
+    client, models_root, *_ = delete_client
+    victim = models_root.parent / "victim.safetensors"
+    victim.write_bytes(b"important")
+    _patch_scan(monkeypatch, {})
+
+    resp = await client.post(
+        "/api/v1/engines/delete", json={"name": f"component:vae:{victim}"}
+    )
+
+    assert resp.status_code == 400
+    assert victim.exists()
+
+
+async def test_delete_single_component_file_skips_registry_cleanup(
+    delete_client, monkeypatch
+):
+    """组件/LoRA 没有 engine key —— 只删文件 + 清缓存,不碰 models.d / DB。"""
+    client, models_root, _md, *_ = delete_client
+    d = models_root / "image" / "vae"
+    d.mkdir(parents=True)
+    f = d / "ae.safetensors"
+    f.write_bytes(b"x" * 128)
+    _patch_scan(monkeypatch, {})
+
+    resp = await client.post(
+        "/api/v1/engines/delete", json={"name": f"component:vae:{f}"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert not f.exists()
+    assert body["freed_bytes"] == 128
+    assert body["registry_cleaned"] == {
+        "models_d_yaml": False,
+        "model_metadata": False,
+        "runtime_overrides": 0,
+    }
