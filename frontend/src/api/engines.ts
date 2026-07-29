@@ -485,3 +485,96 @@ export function useSetGpu() {
     },
   })
 }
+
+// ── 物理删除(spec 2026-07-28-model-physical-delete)────────────────────────
+// 两步式:先 preflight 拿「将删什么、将释放多少、谁在挡、源码还有哪些残留引用」,
+// 前端据此渲染确认框;再 delete 真删。后端会自己重跑一遍预检,前端这份只用于展示。
+
+export interface CodeRef {
+  file: string
+  line: number
+  text: string
+}
+
+export interface DeletePreflight {
+  name: string
+  kind: string
+  target_path: string
+  is_dir: boolean
+  size_bytes: number
+  blockers: {
+    /** 非 null = 硬阻断(还在显存里),force 也不放行 */
+    loaded: { status: string; gpu: number | null } | null
+    /** 引用该模型的服务实例 —— 软阻断,勾确认后带 force 放行 */
+    services: { id: string; name: string }[]
+  }
+  registry_cleanup: {
+    models_d_yaml: string | null
+    model_metadata: boolean
+    runtime_overrides: number
+  }
+  code_refs: CodeRef[]
+  code_refs_truncated: boolean
+  code_refs_error: string | null
+}
+
+export interface DeleteResult {
+  deleted: boolean
+  name: string
+  target_path: string
+  freed_bytes: number
+  /** 非空 = 磁盘只删掉一部分(权限/占用),如实展示,不静默 */
+  disk_errors: string[]
+  registry_cleaned: {
+    models_d_yaml: boolean
+    model_metadata: boolean
+    runtime_overrides: number
+  }
+  code_refs: CodeRef[]
+  code_refs_truncated: boolean
+  code_refs_error: string | null
+}
+
+export function useDeletePreflight(name: string | null) {
+  return useQuery({
+    queryKey: ['engine-delete-preflight', name],
+    enabled: !!name,
+    // 预检要 du 整个模型目录 + git grep 仓库,别缓存太久也别自动重跑。
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    queryFn: () =>
+      apiFetch<DeletePreflight>('/api/v1/engines/delete/preflight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }),
+  })
+}
+
+export function useDeleteEngine() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, force }: { name: string; force?: boolean }) =>
+      apiFetch<DeleteResult>('/api/v1/engines/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, force: !!force }),
+      }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['engines'] })
+      // 删模型不动服务实体,但服务卡上的「模型状态」徽标会变 —— 一并刷新。
+      qc.invalidateQueries({ queryKey: ['services'] })
+      const gb = data.freed_bytes / 1024 ** 3
+      const freed = gb >= 0.1 ? `${gb.toFixed(1)}GB` : `${Math.round(data.freed_bytes / 1024 ** 2)}MB`
+      if (data.disk_errors.length > 0) {
+        useToastStore.getState().add(
+          `${data.name} 部分删除:${data.disk_errors.length} 项删不掉,已释放 ${freed}`, 'error')
+      } else {
+        useToastStore.getState().add(`已删除 ${data.name}，释放 ${freed}`, 'success')
+      }
+    },
+    onError: (error: Error) => {
+      useToastStore.getState().add(`删除失败: ${error.message}`, 'error')
+    },
+  })
+}

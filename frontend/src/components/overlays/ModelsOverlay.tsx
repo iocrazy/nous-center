@@ -11,6 +11,7 @@ import {
 import { apiFetch } from '../../api/client'
 import { useToastStore } from '../../stores/toast'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
+import DeleteModelDialog from '../models/DeleteModelDialog'
 
 const TYPE_LABELS: Record<string, string> = {
   llm: '语言模型 LLM',
@@ -85,6 +86,8 @@ export default function ModelsOverlay() {
   const [activeTab, setActiveTab] = useState<TabId>('all')
   // 显存预算弹窗目标(vLLM 类引擎),null = 关闭。
   const [budgetTarget, setBudgetTarget] = useState<EngineInfo | null>(null)
+  // 物理删除确认框目标,null = 关闭。
+  const [deleteTarget, setDeleteTarget] = useState<EngineInfo | null>(null)
   // 图像 tab 下的二级子 tab —— 按**文件夹/角色**分:整模型 / 超分 / diffusion_models / clip / vae / loras。
   const [imageBucket, setImageBucket] = useState<string>('all')
   // 跨 tab/桶的名称搜索 —— 在当前可见列表里再按 display_name/name/路径 子串过滤。统一模型管理收尾 PR-3。
@@ -308,10 +311,13 @@ export default function ModelsOverlay() {
           : []),
           ] as MenuItem[]
           : []),
+        { label: '', divider: true },
         {
-          label: '删除',
+          // 物理删除(spec 2026-07-28):rm -rf 磁盘 + 清注册表。5 类条目都可删,
+          // 阻断判定(已加载 / 被服务引用)在确认框里由后端预检给出,不在菜单层猜。
+          label: '删除（物理删除文件）',
           danger: true,
-          disabled: true,
+          onClick: () => setDeleteTarget(ctxMenu.model!),
         },
       ]
     : []
@@ -619,6 +625,10 @@ export default function ModelsOverlay() {
 
       {budgetTarget && (
         <VramBudgetModal engine={budgetTarget} onClose={() => setBudgetTarget(null)} />
+      )}
+
+      {deleteTarget && (
+        <DeleteModelDialog engine={deleteTarget} onClose={() => setDeleteTarget(null)} />
       )}
     </div>
   )
