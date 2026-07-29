@@ -26,7 +26,8 @@ DB 里的元数据/运行时覆盖行,漏一步就留下幽灵条目或幽灵配
 **非目标**
 
 - 不做回收站 / 撤销。用户明确选择直接 rm -rf。
-- 不自动修改源码。残留引用只报不删 —— 线上服务不该自删代码。
+- 不自动修改源码,也不派 agent 改。残留引用只报不删 —— 线上服务不该改自己的仓库。
+  交接靠对话框的「复制清理 prompt」按钮,由用户粘给 coding agent。
 - 不改写 legacy `configs/models.yaml` 的 YAML 结构(该文件目前 `models: []`,
   是空锚点)。若将来它真有条目,命中的条目进残留引用报告,由人工处理。
 - 不动引用该模型的服务实例本身(删模型后服务会指向空模型,由用户自行处置)。
@@ -40,6 +41,7 @@ DB 里的元数据/运行时覆盖行,漏一步就留下幽灵条目或幽灵配
 | 模型正在显存里 | 硬拒,要求先卸载 | 避免 vLLM 子进程 / image runner 还在 mmap 权重文件时删目录导致的半死状态 |
 | 被服务引用 | 阻止,`force=true` 可越过 | 预检列出引用它的服务,用户知情后可强删 |
 | 源码残留 | 删除后出 grep 报告,只报不删 | 源码改动是人的活;运行时端点自删代码不可接受 |
+| 残留交给谁清 | 前端「复制清理 prompt」按钮,人工粘给 coding agent | 后端零额外状态、不落待办文件;生产服务不自己派 agent 改仓库 |
 | 端点形状 | 两步(预检 + 执行) | 确认框需要在删之前显示「将释放 34.9GB / 要删哪个 yaml / 哪些服务引用」;单端点 409 重试拿不到这些 |
 
 ## 架构
@@ -172,6 +174,27 @@ POST /api/v1/engines/delete             body {name, force}     → DeleteResult
 - 结果上限 200 条,超出时截断并在响应里标 `truncated: true`。
 - 扫描失败(git 不可用、超时)不影响删除成败,返回空列表 + 一条 `scan_error` 说明。
 
+### 谁来清理这些残留
+
+**没有任何自动 agent。**后端是生产服务(systemd `nous-engine-backend`),不允许由
+一个 admin HTTP 端点触发去改自己的仓库源码 —— 无论直接改还是派 agent 改。
+
+交接方式:对话框在残留列表旁给一个「复制清理 prompt」按钮,把结果拼成一段现成的
+提示词放进剪贴板,用户粘给 Claude Code(或任意 coding agent)执行。形如:
+
+```
+已从 nous-engine 物理删除模型 `qwen3_6_35b_a3b_fp8`
+(目录 /media/heygo/program/models/nous/llm/Qwen3.6-35B-A3B-FP8,已释放 34.9GB)。
+注册表已清理:configs/models.d/qwen3_6_35b_a3b_fp8.yaml、model_metadata、
+model_runtime_override。
+
+以下源文件仍引用它,请逐个判断并清理(不确定的先报给我,不要盲删):
+- src/api/routes/services.py:377  ...
+- configs/image_arch/flux2/xxx.yaml:12  ...
+```
+
+不落盘、不产生待办文件,后端零额外状态。
+
 ## 前端
 
 - `ModelsOverlay.tsx`:「删除」菜单项去掉 `disabled: true`,`onClick` 打开对话框,
@@ -186,6 +209,11 @@ POST /api/v1/engines/delete             body {name, force}     → DeleteResult
   - `blockers.services` 非空 → 额外一个必勾复选框「我知道这些服务将指向不存在的
     模型」,勾选后映射为请求里的 `force: true`。
   - 删除成功 → toast 报释放空间;`disk_errors` 非空时改为 warning toast。
+  - 残留引用列表旁「复制清理 prompt」按钮(见上节),`navigator.clipboard.writeText`;
+    `code_refs` 为空时不渲染该按钮。剪贴板 API 不可用(非 HTTPS/无权限)时降级为
+    展开一个只读 `<textarea>` 让用户自行全选复制 —— 生产是明文 HTTP 内网访问
+    (见 CLAUDE.md 与 memory「别加 HSTS」),`navigator.clipboard` 在非安全上下文
+    下确实会缺失,这个降级不是可选项。
 - `frontend/src/api/engines.ts`:新增 `useDeletePreflight`(query,按 name 缓存)
   与 `useDeleteEngine`(mutation)。成功后 invalidate `engines` 与 `services` 查询。
 
@@ -221,6 +249,8 @@ POST /api/v1/engines/delete             body {name, force}     → DeleteResult
 - 名字输入不匹配时删除按钮禁用,完全匹配后启用
 - `blockers.loaded` 非空时不渲染删除按钮
 - `blockers.services` 非空时未勾复选框则按钮禁用
+- `code_refs` 非空 → 渲染「复制清理 prompt」按钮,点击后写入剪贴板的文本包含模型名
+  与全部残留条目;`navigator.clipboard` 缺失时改为渲染只读 textarea 降级
 
 ## 实现顺序
 
