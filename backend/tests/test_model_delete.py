@@ -1,0 +1,408 @@
+"""引擎库模型物理删除 —— spec docs/superpowers/specs/2026-07-28-model-physical-delete-design.md
+
+全程 monkeypatch LOCAL_MODELS_PATH 到 tmp_path 造假模型树,**绝不碰真模型盘**。
+"""
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+
+def _stub_roots(tmp_path, monkeypatch, lora_root=None):
+    """把 model_deleter 的 settings 指到 tmp 树。返回 settings mock。"""
+    from src.services import model_deleter as mod
+
+    settings = MagicMock()
+    settings.LOCAL_MODELS_PATH = str(tmp_path)
+    settings.LORA_PATHS = str(lora_root) if lora_root else str(tmp_path / "image" / "loras")
+    monkeypatch.setattr(mod, "get_settings", lambda: settings)
+    return settings
+
+
+def _make_model_dir(base, rel: str):
+    d = base / rel
+    d.mkdir(parents=True)
+    (d / "config.json").write_text('{"model_type": "qwen3"}')
+    (d / "model.safetensors").write_bytes(b"x" * 1024)
+    return d
+
+
+# ── resolve_target ────────────────────────────────────────────────────────
+
+
+def test_resolve_registry_model_points_at_local_path_dir(tmp_path, monkeypatch):
+    """kind=model 的条目 → LOCAL_MODELS_PATH/<local_path> 整目录。"""
+    _make_model_dir(tmp_path, "llm/Qwen3.6-35B-A3B-FP8")
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import resolve_target
+
+    t = resolve_target(
+        "qwen3_6_35b_a3b_fp8",
+        {"qwen3_6_35b_a3b_fp8": {"local_path": "llm/Qwen3.6-35B-A3B-FP8"}},
+    )
+
+    assert t.kind == "model"
+    assert t.is_dir is True
+    assert t.engine_key == "qwen3_6_35b_a3b_fp8"
+    assert t.path == tmp_path / "llm/Qwen3.6-35B-A3B-FP8"
+
+
+def test_resolve_seedvr2_points_at_single_dit_file(tmp_path, monkeypatch):
+    """seedvr2:<filename> → image/SEEDVR2/<filename> 单文件。"""
+    d = tmp_path / "image/SEEDVR2"
+    d.mkdir(parents=True)
+    (d / "seedvr2_ema_7b_fp8.safetensors").write_bytes(b"x" * 512)
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import resolve_target
+
+    t = resolve_target("seedvr2:seedvr2_ema_7b_fp8.safetensors", {})
+
+    assert t.kind == "upscale"
+    assert t.is_dir is False
+    assert t.engine_key is None
+    assert t.path == d / "seedvr2_ema_7b_fp8.safetensors"
+
+
+def test_resolve_component_uses_abs_path_from_name(tmp_path, monkeypatch):
+    """component:<role>:<abs_path> → 该 abs_path 单文件;role=loras 归 kind=lora。"""
+    d = tmp_path / "image/loras"
+    d.mkdir(parents=True)
+    f = d / "some-lora.safetensors"
+    f.write_bytes(b"x" * 256)
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import resolve_target
+
+    t = resolve_target(f"component:loras:{f}", {})
+
+    assert t.kind == "lora"
+    assert t.is_dir is False
+    assert t.path == f
+
+
+def test_resolve_unknown_engine_key_raises_404(tmp_path, monkeypatch):
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import DeleteError, resolve_target
+
+    with pytest.raises(DeleteError) as exc:
+        resolve_target("no_such_model", {})
+
+    assert exc.value.status_code == 404
+
+
+def test_resolve_rejects_dotdot_in_name_before_touching_disk(tmp_path, monkeypatch):
+    """name 里带 .. 直接 400 —— 不进解析,不 stat 磁盘。"""
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import DeleteError, resolve_target
+
+    with pytest.raises(DeleteError) as exc:
+        resolve_target("seedvr2:../../../etc/passwd", {})
+
+    assert exc.value.status_code == 400
+
+
+# ── assert_safe_target ────────────────────────────────────────────────────
+
+
+def test_safe_target_accepts_model_dir_under_models_root(tmp_path, monkeypatch):
+    _make_model_dir(tmp_path, "llm/Qwen3.6-35B-A3B-FP8")
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import Target, assert_safe_target
+
+    assert_safe_target(
+        Target("k", "model", tmp_path / "llm/Qwen3.6-35B-A3B-FP8", True)
+    )  # 不抛即通过
+
+
+def test_safe_target_rejects_path_outside_all_roots(tmp_path, monkeypatch):
+    """component 条目里塞绝对路径 → 落在模型根之外必须 400。"""
+    outside = tmp_path.parent / "outside-victim.safetensors"
+    outside.write_bytes(b"important")
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import DeleteError, Target, assert_safe_target
+
+    with pytest.raises(DeleteError) as exc:
+        assert_safe_target(Target("c", "component", outside, False))
+
+    assert exc.value.status_code == 400
+    assert outside.exists()  # 真实文件毫发无伤
+
+
+def test_safe_target_rejects_models_root_itself(tmp_path, monkeypatch):
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import DeleteError, Target, assert_safe_target
+
+    with pytest.raises(DeleteError) as exc:
+        assert_safe_target(Target("x", "model", tmp_path, True))
+
+    assert exc.value.status_code == 400
+
+
+def test_safe_target_rejects_type_dir_at_depth_one(tmp_path, monkeypatch):
+    """不许删 image/ llm/ speech/ 这类类型目录 —— 相对深度必须 >= 2。"""
+    (tmp_path / "image").mkdir()
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import DeleteError, Target, assert_safe_target
+
+    with pytest.raises(DeleteError) as exc:
+        assert_safe_target(Target("x", "model", tmp_path / "image", True))
+
+    assert exc.value.status_code == 400
+
+
+def test_safe_target_downgrades_symlinked_dir_to_link_only(tmp_path, monkeypatch):
+    """目标是软链 → is_dir 降为 False,后续只 unlink 链接,绝不顺着链接 rmtree。"""
+    real = tmp_path.parent / "real-model-dir"
+    real.mkdir(exist_ok=True)
+    (real / "weights.safetensors").write_bytes(b"x" * 64)
+    link = tmp_path / "llm" / "linked-model"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(real)
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import Target, assert_safe_target
+
+    t = Target("k", "model", link, True)
+    assert_safe_target(t)
+
+    assert t.is_dir is False
+
+
+def test_safe_target_accepts_lora_under_separate_lora_root(tmp_path, monkeypatch):
+    """LORA_PATHS 可以指向 LOCAL_MODELS_PATH 之外的根,该根一并进白名单。"""
+    models = tmp_path / "nous"
+    lora_root = tmp_path / "comfyui" / "models" / "loras"
+    (lora_root / "flux").mkdir(parents=True)
+    f = lora_root / "flux" / "style.safetensors"
+    f.write_bytes(b"x" * 32)
+    models.mkdir()
+    _stub_roots(models, monkeypatch, lora_root=lora_root)
+
+    from src.services.model_deleter import Target, assert_safe_target
+
+    assert_safe_target(Target("c", "lora", f, False))  # 不抛即通过
+
+
+# ── delete_disk ───────────────────────────────────────────────────────────
+
+
+def test_delete_disk_removes_model_dir_and_reports_freed_bytes(tmp_path, monkeypatch):
+    d = _make_model_dir(tmp_path, "llm/Qwen3.6-35B-A3B-FP8")
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import Target, delete_disk
+
+    freed, errors = delete_disk(Target("k", "model", d, True))
+
+    assert not d.exists()
+    assert errors == []
+    assert freed >= 1024
+
+
+def test_delete_disk_removes_single_file(tmp_path, monkeypatch):
+    d = tmp_path / "image/SEEDVR2"
+    d.mkdir(parents=True)
+    f = d / "dit.safetensors"
+    f.write_bytes(b"x" * 700)
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import Target, delete_disk
+
+    freed, errors = delete_disk(Target("s", "upscale", f, False))
+
+    assert not f.exists()
+    assert d.exists()  # 只删文件,不碰所在目录
+    assert errors == []
+    assert freed == 700
+
+
+def test_delete_disk_on_symlink_leaves_real_target_intact(tmp_path, monkeypatch):
+    """软链条目只删链接本身,链接指向的真实目录必须原封不动。"""
+    real = tmp_path.parent / "symlink-victim-dir"
+    real.mkdir(exist_ok=True)
+    (real / "weights.safetensors").write_bytes(b"x" * 64)
+    link = tmp_path / "llm" / "linked-model"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(real)
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import Target, assert_safe_target, delete_disk
+
+    t = Target("k", "model", link, True)
+    assert_safe_target(t)  # 把 is_dir 降为 False
+    _freed, errors = delete_disk(t)
+
+    assert not link.exists() and not link.is_symlink()
+    assert (real / "weights.safetensors").exists()
+    assert errors == []
+
+
+def test_delete_disk_reports_partial_failure_instead_of_raising(tmp_path, monkeypatch):
+    """rmtree 删不动的项进 errors 而不是抛 —— 保证调用方仍能继续做注册表清理。"""
+    d = _make_model_dir(tmp_path, "llm/Locked-Model")
+    locked = d / "locked"
+    locked.mkdir()
+    (locked / "inner.bin").write_bytes(b"x" * 16)
+    locked.chmod(0o500)  # r-x:目录内文件删不掉
+    _stub_roots(tmp_path, monkeypatch)
+
+    from src.services.model_deleter import Target, delete_disk
+
+    try:
+        _freed, errors = delete_disk(Target("k", "model", d, True))
+        assert errors, "删不动的项必须如实报到 errors,不能静默"
+    finally:
+        if locked.exists():
+            locked.chmod(0o700)
+
+
+# ── scan_code_refs ────────────────────────────────────────────────────────
+
+
+def test_scan_code_refs_finds_term_in_git_repo(tmp_path):
+    """git 仓库走 `git grep`,命中带文件/行号/原文。"""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "routes.py").write_text(
+        "CATEGORY = 'x'\nENGINE = 'qwen3_6_35b_a3b_fp8'\n"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+
+    from src.services.model_deleter import scan_code_refs
+
+    out = scan_code_refs(["qwen3_6_35b_a3b_fp8"], repo_root=tmp_path)
+
+    assert out["scan_error"] is None
+    hits = [r for r in out["refs"] if r["file"] == "src/routes.py"]
+    assert hits and hits[0]["line"] == 2
+    assert "qwen3_6_35b_a3b_fp8" in hits[0]["text"]
+
+
+def test_scan_code_refs_falls_back_outside_git(tmp_path):
+    """非 git 目录 → walk fallback 仍能找到引用。"""
+    (tmp_path / "conf").mkdir()
+    (tmp_path / "conf" / "a.yaml").write_text("model: my_retired_model\n")
+
+    from src.services.model_deleter import scan_code_refs
+
+    out = scan_code_refs(["my_retired_model"], repo_root=tmp_path)
+
+    assert out["scan_error"] is None
+    assert any(r["file"] == "conf/a.yaml" for r in out["refs"])
+
+
+def test_scan_code_refs_fallback_skips_vendor_and_binary_dirs(tmp_path):
+    """fallback 必须跳过 .venv/node_modules/dist —— 否则一个词能扫出上万条噪音。"""
+    for junk in (".venv", "node_modules", "dist", "__pycache__"):
+        (tmp_path / junk).mkdir()
+        (tmp_path / junk / "x.py").write_text("my_retired_model\n")
+    (tmp_path / "real.py").write_text("my_retired_model\n")
+
+    from src.services.model_deleter import scan_code_refs
+
+    out = scan_code_refs(["my_retired_model"], repo_root=tmp_path)
+
+    assert [r["file"] for r in out["refs"]] == ["real.py"]
+
+
+def test_scan_code_refs_drops_short_noisy_terms(tmp_path):
+    """长度 < 4 的搜索词丢弃 —— 否则 'vae' 这种词满仓命中。"""
+    (tmp_path / "a.py").write_text("vae = 1\n")
+
+    from src.services.model_deleter import scan_code_refs
+
+    out = scan_code_refs(["vae"], repo_root=tmp_path)
+
+    assert out["refs"] == []
+
+
+def test_scan_code_refs_truncates_at_limit(tmp_path):
+    (tmp_path / "big.py").write_text("my_retired_model\n" * 50)
+
+    from src.services.model_deleter import scan_code_refs
+
+    out = scan_code_refs(["my_retired_model"], repo_root=tmp_path, limit=10)
+
+    assert len(out["refs"]) == 10
+    assert out["truncated"] is True
+
+
+# ── 注册表清理:models.d/<key>.yaml ─────────────────────────────────────────
+
+
+def test_delete_models_d_yaml_removes_the_file(tmp_path):
+    md = tmp_path / "models.d"
+    md.mkdir()
+    f = md / "qwen3_6_35b_a3b_fp8.yaml"
+    f.write_text("id: qwen3_6_35b_a3b_fp8\n")
+
+    from src.services.model_deleter import delete_models_d_yaml
+
+    assert delete_models_d_yaml("qwen3_6_35b_a3b_fp8", models_d=md) is True
+    assert not f.exists()
+
+
+def test_delete_models_d_yaml_absent_is_not_an_error(tmp_path):
+    """自动发现的模型没有 yaml —— 返回 False,不抛。"""
+    md = tmp_path / "models.d"
+    md.mkdir()
+
+    from src.services.model_deleter import delete_models_d_yaml
+
+    assert delete_models_d_yaml("auto_detected_thing", models_d=md) is False
+
+
+def test_delete_models_d_yaml_rejects_key_with_path_separator(tmp_path):
+    """engine key 里带路径分隔符 → 拒绝,别让它逃出 models.d 目录。"""
+    md = tmp_path / "models.d"
+    md.mkdir()
+    victim = tmp_path / "models.yaml"
+    victim.write_text("models: []\n")
+
+    from src.services.model_deleter import DeleteError, delete_models_d_yaml
+
+    with pytest.raises(DeleteError):
+        delete_models_d_yaml("../models", models_d=md)
+
+    assert victim.exists()
+
+
+# ── 缓存失效 ──────────────────────────────────────────────────────────────
+
+
+def test_invalidate_all_caches_hits_every_scanner_and_response_cache(monkeypatch):
+    """删完必须把 5 层缓存全清,否则引擎库 30s 内还显示已删的模型。"""
+    called = []
+
+    import src.api.response_cache as rc
+    import src.services.component_scanner as cs
+    import src.services.lora_scanner as ls
+    import src.services.model_metadata_service as mms
+    import src.services.model_scanner as ms
+
+    monkeypatch.setattr(ms, "invalidate_scan_cache", lambda: called.append("scan"))
+    monkeypatch.setattr(
+        mms, "invalidate_local_scan_cache", lambda: called.append("local_scan")
+    )
+    monkeypatch.setattr(ls, "invalidate_cache", lambda: called.append("lora"))
+    monkeypatch.setattr(
+        cs, "invalidate_component_cache", lambda: called.append("component")
+    )
+    monkeypatch.setattr(rc, "invalidate", lambda prefix: called.append(f"rc:{prefix}"))
+
+    from src.services.model_deleter import invalidate_all_caches
+
+    invalidate_all_caches()
+
+    assert set(called) == {"scan", "local_scan", "lora", "component", "rc:engines"}
