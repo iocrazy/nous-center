@@ -198,7 +198,7 @@ check_deps() {
     miss "无后端 venv($BACKEND/.venv)" "cd backend && uv sync --extra inference"
   fi
 
-  # aligner venv 不再检查 —— ForcedAligner 微服务已退役(见 do_deps 注释)。
+  # 不再检查 aligner venv —— ForcedAligner 微服务已退役并删除(见 do_deps 注释)。
 }
 
 # ── build:前端依赖 + dist ───────────────────────────────────────────────
@@ -329,8 +329,8 @@ do_deps() {
     as_user "cd '$BACKEND' && uv sync --extra inference" || die "uv sync 失败"
     ok "后端依赖就位"
   fi
-  # aligner venv 不再建 —— ForcedAligner 微服务已退役(MOSS 内建时间戳/说话人分离),
-  # systemd 单元已删。infra/aligner/ 源码暂留归档,不参与 bootstrap。
+  # 不再建 aligner venv —— ForcedAligner 微服务已退役(MOSS 内建时间戳/说话人分离);
+  # 2026-07-30 单元、源码、模型、venv 已全部删除,bootstrap 无需再管它。
 }
 
 # dist 是否比最新源文件新(借 deploy 的时间戳思路,避免无谓重 build)。

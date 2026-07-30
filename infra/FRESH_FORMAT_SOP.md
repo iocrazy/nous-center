@@ -72,7 +72,7 @@ git -C "$ROOT/nous-prod" worktree add "$ROOT/nous-engine" master
 | preflight | OS/盘/驱动/CLI 体检(只读) | 任意 |
 | secrets   | `.env`(模板+admin secret)+ 检测 cloudflared 凭证 | root |
 | db        | apt 装 pg17(自动加 PGDG 源)+ 建 role/库 + 可选 `--restore` | root |
-| deps      | 后端 `uv sync --extra inference` + aligner venv | 真实用户(非 root) |
+| deps      | 后端 `uv sync --extra inference` | 真实用户(非 root) |
 | build     | 前端 `npm ci` + `npm run build` | 真实用户 |
 | checkout  | 派生专用 prod worktree + 标记 + `.env` symlink | 真实用户 |
 | services  | `install.sh`(单元+enginectl+sudoers+enable)+ healthz 自检 | root |

@@ -9,11 +9,11 @@ cd "$(dirname "$0")"
 # 配合下面 UUID 钉死后进程内只见这一张卡。
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 # UUID 钉到 index0 的 3090,**绝不落 Pro 6000**:Pro 6000 Blackwell GSP 固件有负载触发崩溃
-# bug(被压一把模型就 fullchip-reset 僵死、拖黑整机,见 infra/gpu/README.md 与 nous-aligner
-# .service 同段注释)。裸 cuda:0 在 PCI_BUS_ID 排序下随槽位变,可能正好命中 Pro 6000 → 不可靠;
-# UUID 绑定不随槽位/index 变,永远是这张 3090。进程内只可见它,故 config 里 device=cuda:0 即指它。
+# bug(被压一把模型就 fullchip-reset 僵死、拖黑整机,见 infra/gpu/README.md)。裸 cuda:0 在
+# PCI_BUS_ID 排序下随槽位变,可能正好命中 Pro 6000 → 不可靠;UUID 绑定不随槽位/index 变,
+# 永远是这张 3090。进程内只可见它,故 config 里 device=cuda:0 即指它。
 # 单机 infra,硬编码 UUID(同本仓库其余绝对路径/UUID 硬编码);换卡需同步改这里。
-# 注意:这张 3090 与 nous-aligner 钉的那张(GPU-78dcdbeb…)是两张不同的 3090。
+# 注意:本机有两张 3090,这里钉的是 GPU-2fd7c91c…,另一张是 GPU-78dcdbeb…(空闲)。
 export CUDA_VISIBLE_DEVICES=GPU-2fd7c91c-af39-7b02-66b9-988331ce3bd7
 
 # sgl-omni 首次冷启会现场 nvcc 编译 sgl-kernel(sm_86 无预编译,如 fused_rope);本机无

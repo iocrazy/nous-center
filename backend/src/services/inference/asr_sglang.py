@@ -11,7 +11,7 @@ _port/pid/is_loaded),但**不是** VLLMAdapter 的克隆,关键差异:
    ModelManager 传进来的 `device` 里的 index;这里**故意忽略 device index**,改用
    yaml `params.gpu_uuid` 钉那张 3090 —— 因为 sgl-omni 子进程内 torch 默认
    FASTEST_FIRST 枚举会把 Pro 6000 排到 cuda:0,裸 index 可能命中 Pro 6000(GSP 固件
-   崩卡拖黑整机,同 aligner unit 理由)。UUID 不随槽位/枚举顺序变。配合
+   崩卡拖黑整机,见 infra/gpu/README.md)。UUID 不随槽位/枚举顺序变。配合
    `CUDA_DEVICE_ORDER=PCI_BUS_ID`,进程内只见这一张卡 = cuda:0(moss_config.yaml 里
    device=cuda:0 即指它)。
 3. env 完整复刻 `infra/moss-asr/start_serve.sh`(CUDA_HOME 指 venv 内 cu13 工具链、

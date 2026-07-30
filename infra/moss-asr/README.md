@@ -18,7 +18,7 @@
 
 MOSS 走 `sglang-omni`(SGLang Omni serving runtime),自带 `torch 2.11+cu130` /
 `transformers 5.6` / `sglang 0.5.12` 一整套,和 backend 的 `vllm 0.22` / 图像 diffusers
-钉是两条互不相干的升级轨。装一起必然打架。所以和 `nous-aligner` 一样:独立进程、独立
+钉是两条互不相干的升级轨。装一起必然打架。所以做成:独立进程、独立
 venv(`infra/moss-asr/.venv`,~9.8GB)、独立端口(8003)、独立 systemd unit,和 backend
 完全隔离。backend 仅在转写时 HTTP 调它;它挂了转写主路返回 503(MOSS 是唯一 ASR 主路,
 **不静默降级**)。
@@ -82,7 +82,7 @@ curl -s -X POST http://127.0.0.1:8003/v1/audio/transcriptions \
 
 `.venv/`、`sglang-omni/`(clone,setup.sh 钉死 commit)、`logs/` 都 gitignore;每检出一份重跑
 `setup.sh`。GPU 钉 index0 3090(UUID `GPU-2fd7c91c-…`,`start_serve.sh` / unit 里硬编码,
-**绝不 Pro 6000**——GSP 固件崩卡,同 aligner 做法);端口 8003(env `NOUS_MOSS_ASR_PORT` 可改)。
+**绝不 Pro 6000**——GSP 固件崩卡,见 `infra/gpu/README.md`);端口 8003(env `NOUS_MOSS_ASR_PORT` 可改)。
 日志走 journald:`journalctl -u nous-moss-asr -f`。
 
 `start_spike_serve.sh` / `moss_spike_config.yaml` / `SPIKE.md` 是 PR-0 spike 遗留,保留在 git

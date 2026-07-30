@@ -16,6 +16,6 @@ vram_mb: 13000
 gpu: 0
 params:
   # 子进程 CUDA_VISIBLE_DEVICES 钉这张 3090 的 UUID —— **绝不 Pro 6000**(GSP 固件负载崩卡
-  # 拖黑整机,同 aligner unit 理由)。UUID 不随槽位/torch FASTEST_FIRST 枚举变;adapter 用它
+  # 拖黑整机,见 infra/gpu/README.md)。UUID 不随槽位/torch FASTEST_FIRST 枚举变;adapter 用它
   # 而非 device index 设 CUDA_VISIBLE_DEVICES(见 asr_sglang.py docstring 差异点 2)。
   gpu_uuid: GPU-2fd7c91c-af39-7b02-66b9-988331ce3bd7
