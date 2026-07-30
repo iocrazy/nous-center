@@ -8,6 +8,10 @@
 > 本目录源码暂留归档(不参与 bootstrap,不建 venv),下面的部署说明**仅供历史参考**。
 > 退役前它一直 active,在 3090 上白占 2GB 显存 —— 原因是 unit 虽 `disable` 了,
 > `nous-engine.target` 的 `Wants=` 仍会在开机时把它拉起来。
+>
+> **2026-07-30:模型与 venv 已物理删除**(共 7.2GB)—— `speech/Qwen3-ForcedAligner-0.6B`
+> (1.8G)与本目录下的 `.venv`(5.4G)都不在盘上了。真要复活得先按下面的步骤重新下模型
+> 并跑 `setup.sh` 重建 venv。
 
 ASR 时间戳(词/字级 start/end)的独立微服务。spec
 `docs/superpowers/specs/2026-06-21-asr-context-lid-timestamps-design.md`(Arc B)。
