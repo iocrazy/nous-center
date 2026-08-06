@@ -375,6 +375,25 @@ class VLLMAdapter(InferenceAdapter):
         else:
             self.is_multimodal = False
 
+        # Tool / function calling. The OpenAI-compat layer injects a Skill tool
+        # into every agent chat (see api/routes/openai_compat.py), so requests
+        # reach vLLM carrying a ``tools`` payload with ``tool_choice: auto``.
+        # vLLM only honours that when launched with --enable-auto-tool-choice
+        # and a matching --tool-call-parser; without them it rejects the whole
+        # request with 400 (silently tolerated by older vLLM, enforced since
+        # the 0.22 line — the cause of every agent chat 400'ing after the
+        # upgrade). ``qwen3_xml`` is the parser for Qwen3.6 (it emits XML
+        # tool calls: <tool_call><function=NAME><parameter=..>..</parameter>
+        # </function></tool_call>) — NOT ``hermes`` (that expects JSON inside
+        # <tool_call> and leaves Qwen3.6's XML as raw text, tool_calls=[]).
+        # Only generative LLMs take these flags: a pooling/embedding server or
+        # an audio/ASR server does not accept them and would fail to launch,
+        # so gate them out.
+        _is_pooling = self._vllm_runner == "pooling"
+        if not auto.get("is_audio") and not _is_pooling:
+            cmd += ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_xml"]
+            logger.info("Enabling tool calling — --enable-auto-tool-choice --tool-call-parser qwen3_xml")
+
         # Set cache directories to persistent storage (avoid re-compilation)
         env = dict(os.environ)
         from src.config import get_settings
