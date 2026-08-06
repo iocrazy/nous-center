@@ -17,6 +17,23 @@ from src.services.rate_limiter import get_rate_limiter
 _DUMMY_HASH = bcrypt.hashpw(b"dummy", bcrypt.gensalt()).decode()
 
 
+def _bcrypt_secret(token: str) -> bytes:
+    """Bytes to hand to bcrypt.checkpw for ``token``.
+
+    bcrypt only ever consumes the first 72 bytes of its input. Until bcrypt
+    4.x this excess was silently truncated; bcrypt >=5.0 raises
+    ``ValueError: password cannot be longer than 72 bytes`` instead. Our
+    stored ``key_hash`` values were created by the old (truncating) bcrypt,
+    so they embed only the first 72 bytes of the key — meaning a key longer
+    than 72 bytes (e.g. the 147-byte instance keys) made EVERY authenticated
+    /v1/* request 500 in this dependency after the bcrypt 5.0 upgrade, while
+    the unauthenticated /health probe stayed green (silent since 2026-07).
+    Truncating here restores the pre-upgrade behaviour and matches how the
+    hash was produced; keys <=72 bytes are unaffected.
+    """
+    return token.encode()[:72]
+
+
 def _key_expired(key: InstanceApiKey) -> bool:
     if key.expires_at is None:
         return False
@@ -65,8 +82,9 @@ async def verify_bearer_token_any(
     )
     keys = result.scalars().all()
 
+    secret = _bcrypt_secret(token)
     for key in keys:
-        if bcrypt.checkpw(token.encode(), key.key_hash.encode()):
+        if bcrypt.checkpw(secret, key.key_hash.encode()):
             if _key_expired(key):
                 raise AuthenticationError(
                     "API key expired", code="api_key_expired",
@@ -75,5 +93,5 @@ async def verify_bearer_token_any(
             return None, key
 
     # Always do one bcrypt round to prevent timing-based probing.
-    bcrypt.checkpw(token.encode(), _DUMMY_HASH.encode())
+    bcrypt.checkpw(secret, _DUMMY_HASH.encode())
     raise HTTPException(401, detail="Invalid API key")
