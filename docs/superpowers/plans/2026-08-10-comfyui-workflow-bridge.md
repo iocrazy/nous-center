@@ -881,7 +881,7 @@ WantedBy=multi-user.target
 
 **Interfaces:** Consumes 全部前置任务。
 
-- [ ] **Step 1: 写 smoke 脚本**(非 CI,真机跑;结构性校验)
+- [x] **Step 1: 写 smoke 脚本**(非 CI,真机跑;结构性校验)
 
 ```python
 """真机 smoke:导入 H3 模板 → 异步 prediction → 校验 mp4 + 音轨。
@@ -904,9 +904,17 @@ import httpx  # 校验用 ffprobe 查音轨:ffprobe -show_streams -select_stream
 
 (实现补全上述流程,全部真代码;admin 端点带 `Authorization: Bearer $ADMIN_TOKEN`。)
 
-- [ ] **Step 2: 文档:CLAUDE.md 小节 + `frontend && npm run build`(生产前端产物)。**
-- [ ] **Step 3: 全量回归:`cd backend && uv run pytest tests/ -q` + `cd frontend && npx vitest run`。**
-- [ ] **Step 4: Commit** — `git commit -m "test(comfy): 真机 smoke 脚本 + 文档收尾"`
+- [x] **Step 2: 文档:CLAUDE.md 小节 + `frontend && npm run build`(生产前端产物)。**
+      (本 worktree 缺 `wasm-pack`,`npm run build` 的 `prebuild` 跑不了——与 Task 8
+      progress.md 记的 pre-existing 环境限制一致,production build 留到主环境做;
+      已在 CLAUDE.md 新小节里记这条坑。)
+- [x] **Step 3: 全量回归:`cd backend && uv run pytest tests/ -q` + `cd frontend && npx vitest run`。**
+      (backend `-m "not e2e"`:1916 passed / 2 failed(`test_image_modular_wiring.py`
+      沙箱无 CUDA,pre-existing,与本任务无关)/ 6 skipped。frontend vitest:313
+      passed / 8 failed(`workspace.test.ts` round3 + `NodePropertyPanel.test.tsx`,
+      zustand persist `setItem` TypeError,`git log` 确认最后改动在 #388,跟本分支
+      无关,pre-existing)。均未修复,超出 Task 14 范围,详见 task-14-report.md。)
+- [x] **Step 4: Commit** — `git commit -m "test(comfy): 真机 smoke 脚本 + 文档收尾"`
 
 ---
 

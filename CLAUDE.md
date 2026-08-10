@@ -72,6 +72,43 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 - `diffusers.modular*` 的 import **只允许在 `image_modular.py`**(`_import_modular()`
   一处)——experimental API 变更时 blast radius 限一文件。
 
+## ComfyUI 桥 (comfy bridge)
+
+- **模板即服务**:`POST /api/v1/comfy-templates {name, workflow}` 同时建
+  `comfy_templates` 表行 + 一个 `ServiceInstance`(`source_type="comfy_template"`,
+  服务名 = 传入的 `name`)。`PUT /api/v1/comfy-templates/{id}/mapping
+  {exposed_params:[{key,label,type,comfy_node_id,comfy_input,...}]}` 定义哪些
+  ComfyUI 节点输入可被参数化。未在 prediction `input` 里出现的 key 用的是
+  **workflow 原值**(注册时冻结的快照),不是 mapping 的 `default` 字段——准备测试
+  workflow 时要把这类字段的原值本身改到想要的值(如把时长压到最短)。
+- **长任务走 respond-async**:`POST /v1/services/{name}/predictions`(注意前缀是
+  `/v1/`,不是 `/api/v1/`)带 `Prefer: respond-async` → 202 `{id,status:"starting"}`,
+  轮询 `GET /v1/predictions/{id}` 到终态(`succeeded|failed|canceled`)。鉴权跟
+  `/api/v1/*` 管理端点是两套:`/v1/*` 一旦带了 `Authorization` header 就走 M:N
+  `InstanceApiKey`(`ADMIN_TOKEN` 在这里不认,401),不带 header 才落到 admin-session
+  cookie 兜底——脚本化调用（无浏览器 cookie）必须先用 admin token 经
+  `POST /api/v1/keys {label, service_ids:[<service 数字 id>]}` 铸一把授权给该
+  service 的 key,再拿它的 `secret` 调 predictions。
+- env 三件套:`NOUS_COMFY_URL`(sidecar 地址,默认 `http://127.0.0.1:8188`)、
+  `NOUS_COMFY_TIMEOUT`(渲染等待上限,默认 14400s)、
+  `NOUS_COMFY_DOWNLOAD_TIMEOUT`(产物下载超时,默认 120s)。
+- sidecar 是独立 systemd 单元 `nous-engine-comfyui`,默认 **disabled**(装机时模板
+  路径 `/opt/comfyui` 多半还没铺,`enginectl restart` 不会强启一个禁用单元——2026-08-10
+  设计修正,见 `infra/systemd/enginectl`)。启用前置:① GSP 缓解脚本已上机
+  (`infra/gpu/setup-gpu-mitigations.sh`,Pro 6000 满载崩卡 bug);② 核对单元里的
+  `CUDA_VISIBLE_DEVICES` 跟目标卡对得上(`infra/systemd/nous-engine-comfyui.service`)。
+  `enginectl status|up|down|restart|logs comfyui` 纳管。
+- 真机 smoke(非 CI,需 sidecar 已跑 + 权重已入 ComfyUI models):
+  `cd backend && uv run python tests/manual/smoke_comfy_h3.py --base http://127.0.0.1:8000
+  --admin-token $ADMIN_TOKEN --workflow /path/to/xxx-api.json --mapping /path/to/mapping.json`
+  ——建模板 → 设 mapping → 铸临时 key → 异步 prediction → 轮询 → 下载 mp4 →
+  `ffprobe` 断言存在 video + audio 流 → 跑完自动清理(临时 key + 模板/服务),
+  `--keep` 保留。
+- 前端联调注意:`npm run build` 实际是 `prebuild`(跑 `wasm:build`,需要
+  `wasm-pack`)+ `tsc -b && vite build`——worktree 里没装 `wasm-pack` 会卡在 prebuild;
+  `tsc -b`(project references 构建)不能拿裸 `npx tsc` 替代,后者不认 composite
+  引用会报一堆假错误。
+
 ## Memory
 
 User's persistent memory lives in `~/.claude/projects/.../memory/MEMORY.md`. Index
