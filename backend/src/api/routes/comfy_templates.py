@@ -11,6 +11,8 @@ Task 6 提供,这里只是把数据形状定下来。`exposed_inputs` 的映射�
 
 from __future__ import annotations
 
+import os
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,9 +27,20 @@ from src.api.response_cache import invalidate
 from src.models.comfy_template import ComfyTemplate
 from src.models.database import get_async_session
 from src.models.service_instance import ServiceInstance
+from src.services.comfy.client import ComfyClient
 from src.services.workflow_snapshot import NAME_RE
 
 router = APIRouter(prefix="/api/v1/comfy-templates", tags=["comfy-templates"])
+health_router = APIRouter(prefix="/api/v1/comfy", tags=["comfy-health"])
+
+# Module-level cache for object_info: (timestamp, data) tuple or None
+_object_info_cache: tuple[float, dict] | None = None
+
+
+def get_client() -> ComfyClient:
+    """Factory function to create a ComfyClient instance.
+    Tests monkeypatch this to inject a mock client."""
+    return ComfyClient()
 
 
 def _validate_name(name: str) -> str:
@@ -287,3 +300,38 @@ async def delete_template(
     await session.delete(tpl)
     await session.commit()
     invalidate("services")
+
+
+# ---------- ComfyUI Health & Object Info Proxy Routes ----------
+
+
+@health_router.get("/health")
+async def comfy_health():
+    """Proxy ComfyUI health status + resolved configuration."""
+    client = get_client()
+    health_result = await client.health()
+    # Merge with configuration info
+    base_url = os.getenv("NOUS_COMFY_URL", "http://127.0.0.1:8188")
+    timeout_s = int(os.getenv("NOUS_COMFY_TIMEOUT", "14400"))
+    health_result["base_url"] = base_url
+    health_result["timeout_s"] = timeout_s
+    return health_result
+
+
+@health_router.get("/object-info")
+async def comfy_object_info():
+    """Proxy ComfyUI object_info with 60s TTL cache."""
+    global _object_info_cache
+    now = time.monotonic()
+
+    # Check cache validity (60s TTL)
+    if _object_info_cache is not None:
+        cached_time, cached_data = _object_info_cache
+        if now - cached_time < 60:
+            return cached_data
+
+    # Cache miss or expired: fetch from client
+    client = get_client()
+    data = await client.object_info()
+    _object_info_cache = (now, data)
+    return data
