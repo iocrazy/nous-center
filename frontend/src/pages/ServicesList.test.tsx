@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import ServicesList from './ServicesList'
 import type { ServiceRow } from '../api/services'
+import { useToastStore } from '../stores/toast'
 
 // Hoisted mock state — vitest moves vi.mock calls to the top, so the
 // module factories below close over these via the getter pattern.
 const navigateSpy = vi.fn()
 const useServicesMock = vi.fn()
+const apiFetchMock = vi.fn()
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -24,8 +26,25 @@ vi.mock('../api/services', async () => {
   }
 })
 
+// ServicesList 的 onImported 处理器自己调 apiFetch(见 api/client) 去按 service_name
+// 查一次 /api/v1/services 拿新建服务的 id ——mock 掉方便控制「找到/找不到」两条分支。
+vi.mock('../api/client', () => ({
+  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
+}))
+
 vi.mock('../components/services/CreateServiceDialog', () => ({
   default: () => null,
+}))
+
+// ImportComfyDialog 本身在专门的 ImportComfyDialog.test.tsx 里覆盖过了(文件解析、
+// 校验、提交)。这里只需要驱动它的 onImported 回调,验证 ServicesList 自己那段
+// 「查表拿 id → 导航 / 找不到就 toast 兜底」逻辑,所以整体替身成一个按钮。
+vi.mock('../components/services/ImportComfyDialog', () => ({
+  default: ({ onImported }: { onImported: (serviceName: string) => void }) => (
+    <button type="button" onClick={() => onImported('minimax-h3-r2v')}>
+      trigger-import
+    </button>
+  ),
 }))
 
 // ModelBadge pulls live engine/component status (useQuery + ws) — stub it so
@@ -66,6 +85,8 @@ function makeService(over: Partial<ServiceRow> = {}): ServiceRow {
 beforeEach(() => {
   navigateSpy.mockReset()
   useServicesMock.mockReset()
+  apiFetchMock.mockReset()
+  useToastStore.setState({ toasts: [] })
 })
 
 describe('ServicesList card click → navigate', () => {
@@ -205,5 +226,39 @@ describe('ServicesList card click → navigate', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /新建服务/ }))
     expect(screen.getByRole('menuitem', { name: /导入 ComfyUI 工作流/ })).toBeInTheDocument()
+  })
+
+  it('导入成功后按 service_name 查 /api/v1/services 找到对应行,navigate 到它的 id', async () => {
+    useServicesMock.mockReturnValue({ data: [], isLoading: false, error: null })
+    apiFetchMock.mockResolvedValue([
+      makeService({ id: '42', name: 'minimax-h3-r2v', source_type: 'comfy_template' }),
+    ])
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByText('trigger-import'))
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/services/42'))
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/services')
+  })
+
+  it('service_name 在刷新出的列表里找不到匹配行时,toast 兜底而不 navigate', async () => {
+    useServicesMock.mockReturnValue({ data: [], isLoading: false, error: null })
+    apiFetchMock.mockResolvedValue([
+      makeService({ id: '9', name: 'someone-else' }), // 没有 minimax-h3-r2v 这行
+    ])
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByText('trigger-import'))
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.message.includes('minimax-h3-r2v'))).toBe(
+        true,
+      ),
+    )
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 })

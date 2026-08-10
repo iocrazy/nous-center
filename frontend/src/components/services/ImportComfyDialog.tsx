@@ -20,13 +20,20 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
   const [name, setName] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const dropRef = useRef<HTMLLabelElement>(null)
   // FileReader in jsdom (and real browsers) resolves asynchronously; a click on
   // 导入 can land before parsing finishes, so submit() awaits this instead of
   // trusting the `workflow` state snapshot at click time.
   const parseRef = useRef<Promise<Record<string, unknown> | null>>(Promise.resolve(null))
+  // Monotonic token so a stale FileReader callback (superseded by picking another
+  // file, or still in flight when the dialog closes/reopens) can't clobber state
+  // that belongs to a newer selection — the closure captures its own token and
+  // compares against the current one before calling any setState.
+  const readTokenRef = useRef(0)
 
   useEffect(() => {
     if (open) return
+    readTokenRef.current += 1
     setFileName('')
     setWorkflow(null)
     setFileError(null)
@@ -39,6 +46,7 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
   if (!open) return null
 
   const handleFile = (file: File) => {
+    const token = (readTokenRef.current += 1)
     setFileName(file.name)
     setWorkflow(null)
     setFileError(null)
@@ -46,7 +54,7 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
     parseRef.current = new Promise((resolve) => {
       const reader = new FileReader()
       reader.onerror = () => {
-        setFileError('读取文件失败')
+        if (readTokenRef.current === token) setFileError('读取文件失败')
         resolve(null)
       }
       reader.onload = () => {
@@ -54,16 +62,16 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
         try {
           parsed = JSON.parse(String(reader.result))
         } catch {
-          setFileError(INVALID_FORMAT_MSG)
+          if (readTokenRef.current === token) setFileError(INVALID_FORMAT_MSG)
           resolve(null)
           return
         }
         if (!isApiFormatWorkflow(parsed)) {
-          setFileError(INVALID_FORMAT_MSG)
+          if (readTokenRef.current === token) setFileError(INVALID_FORMAT_MSG)
           resolve(null)
           return
         }
-        setWorkflow(parsed)
+        if (readTokenRef.current === token) setWorkflow(parsed)
         resolve(parsed)
       }
       reader.readAsText(file)
@@ -72,6 +80,26 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
 
   const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
+    if (file) handleFile(file)
+  }
+
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (dropRef.current) dropRef.current.style.borderColor = 'var(--accent)'
+  }
+
+  const onDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (dropRef.current) dropRef.current.style.borderColor = 'var(--border)'
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (dropRef.current) dropRef.current.style.borderColor = 'var(--border)'
+    const file = e.dataTransfer.files?.[0]
     if (file) handleFile(file)
   }
 
@@ -115,7 +143,13 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
         </div>
 
         <Section label="工作流 JSON（ComfyUI · Export (API)）">
-          <label style={dropZoneStyle}>
+          <label
+            ref={dropRef}
+            style={dropZoneStyle}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+          >
             <Upload size={16} style={{ color: 'var(--muted)', flexShrink: 0 }} />
             <span style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {fileName || '点击选择 API 格式导出的 workflow.json'}
@@ -235,6 +269,7 @@ const dropZoneStyle: React.CSSProperties = {
   padding: '10px 12px',
   fontSize: 12,
   cursor: 'pointer',
+  transition: 'border-color 0.15s',
 }
 
 const inputStyle: React.CSSProperties = {
