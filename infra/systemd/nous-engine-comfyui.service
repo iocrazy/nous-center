@@ -1,0 +1,18 @@
+[Unit]
+Description=nous-engine ComfyUI sidecar
+After=network.target
+
+[Service]
+Type=simple
+User=heygo
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+# 前置:GSP 缓解脚本上机 —— Pro 6000 满载崩卡 bug(infra/gpu/README.md)
+Environment=CUDA_VISIBLE_DEVICES=0
+# ComfyUI 安装目录与 venv:安装时按实际路径改(见 install.sh 输出说明)
+WorkingDirectory=/opt/comfyui
+ExecStart=/opt/comfyui/.venv/bin/python main.py --listen 127.0.0.1 --port 8188
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

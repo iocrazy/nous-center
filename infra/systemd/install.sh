@@ -20,9 +20,9 @@ SERVICES=(nous-engine-backend.service nous-engine-status.service)
 TIMERS=(nous-engine-healthprobe.timer nous-engine-dbbackup.timer)
 TARGETS=(nous-engine.target)
 SUDOERS=(nous-engine-healthprobe nous-engine-deploy)
-# 全部拷进 /etc/systemd/system(含 cloudflared、oneshot probe/dbbackup、target)。
+# 全部拷进 /etc/systemd/system(含 cloudflared、oneshot probe/dbbackup、target、comfyui)。
 UNIT_FILES=(nous-engine-backend.service nous-engine-cloudflared.service nous-engine-status.service \
-            nous-engine-healthprobe.service nous-engine-healthprobe.timer nous-engine-dbbackup.service nous-engine-dbbackup.timer nous-engine.target)
+            nous-engine-healthprobe.service nous-engine-healthprobe.timer nous-engine-dbbackup.service nous-engine-dbbackup.timer nous-engine-comfyui.service nous-engine.target)
 
 LOCAL_URL="${NOUS_LOCAL_URL:-http://127.0.0.1:8000}"
 ZT_URL="${NOUS_ZT_URL:-http://10.0.0.10:8000}"
@@ -76,6 +76,14 @@ case "${1:-install}" in
       warn "cloudflared 二进制/凭证未就位 → 跳过公网隧道(本机 + ZeroTier 不受影响)"
       warn "  以后配好后: sudo systemctl enable --now nous-engine-cloudflared"
     fi
+
+    # ComfyUI sidecar:不默认启用 —— 安装前须核对(见下面说明)。
+    systemctl disable nous-engine-comfyui.service >/dev/null 2>&1 || true
+    warn "nous-engine-comfyui 单元已安装但未启用(安装前置条件检查)"
+    warn "  前置:ComfyUI 安装在 WorkingDirectory + venv + CUDA_VISIBLE_DEVICES 验证"
+    warn "  ① 核对 GPU: nvidia-smi --query-gpu=index,name --format=csv(PCI_BUS_ID 排序)"
+    warn "  ② 编辑 $(realpath "$SCRIPT_DIR/nous-engine-comfyui.service") → 设 WorkingDirectory + CUDA_VISIBLE_DEVICES"
+    warn "  ③ sudo systemctl daemon-reload && sudo systemctl enable --now nous-engine-comfyui"
 
     # ── 3. 定时器 + 总闸 ────────────────────────────────────────────────
     step "启用定时器 + 总闸"
