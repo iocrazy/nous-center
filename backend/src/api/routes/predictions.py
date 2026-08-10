@@ -38,6 +38,28 @@ from src.services.service_schema import build_service_io_schema, validate_servic
 # 放 /api/v1 会被 admin cookie 门拦死 bearer 客户端(真机 smoke 逮到)。
 router = APIRouter(prefix="/v1", tags=["predictions"])
 
+
+async def _auth_predictions(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_async_session),
+) -> tuple[ServiceInstance | None, InstanceApiKey | None]:
+    """Bearer-token auth,带 admin-session 旁路(Task 10:Playground 异步运行态)。
+
+    镜像 `apps.py::_auth_apps_run`:外部 Bearer 客户端走完整 key 校验(优先);Playground
+    对 `comfy_template` 服务走 respond-async 提交/轮询/取消时用的是 admin session cookie,
+    不是 Bearer key —— 原先三端点的 `Authorization: Header(...)` 是必填,FastAPI 会在
+    header 校验阶段就以「Field required」拒绝,同 apps.py 改前的坑。返回 `(None, None)`
+    让下游(`_resolve_service` / get_prediction / cancel_prediction)按 admin 路径跳过
+    grant/限流/IDOR owner 校验(单管理员部署里 admin 隐式对所有 prediction 有权限)。
+    """
+    if authorization:
+        return await verify_bearer_token_any(authorization, session)
+    from src.api.admin_session import request_is_authed  # noqa: PLC0415
+    if request_is_authed(request):
+        return None, None
+    raise HTTPException(401, detail="Missing API key or admin session")
+
 # 同步默认上限(秒):无 Prefer 时阻塞,但封顶避免无限挂(长任务用 respond-async)。
 _SYNC_CAP_SECONDS = 600.0
 
@@ -63,10 +85,23 @@ def _parse_prefer(prefer: str | None) -> tuple[bool, float | None]:
     return False, None
 
 
-async def _resolve_service(session, auth, name: str) -> tuple[ServiceInstance, InstanceApiKey]:
-    """bearer key → 目标服务(URL 的 {name}),校验授权 + active + 限流 + 加载 deferred 列。"""
+async def _resolve_service(
+    session, auth, name: str,
+) -> tuple[ServiceInstance, InstanceApiKey | None]:
+    """bearer key(或 admin session)→ 目标服务(URL 的 {name}),校验 active + 加载 deferred 列。
+
+    admin 路径(`api_key is None`,Task 10 旁路)跳过 grant/限流 —— 与 `apps.py`
+    的 `admin_run` 分支一致:单管理员部署里 admin 隐式对所有服务有权限。
+    """
     instance, api_key = auth
-    if instance is None:  # M:N key:按 URL name 解析授权 + 限流(verify 没做)
+    if api_key is None:  # admin session 旁路:直接按 name 查活跃服务,不涉及任何 key
+        stmt = select(ServiceInstance).where(ServiceInstance.name == name)
+        instance = (await session.execute(stmt)).scalar_one_or_none()
+        if instance is None:
+            raise HTTPException(404, detail="service not found")
+        if instance.status != "active":
+            raise HTTPException(403, detail="service is inactive")
+    elif instance is None:  # M:N key:按 URL name 解析授权 + 限流(verify 没做)
         try:
             instance = await resolve_target_service(session, api_key=api_key, requested_model=name)
         except ModelNotFound as e:
@@ -129,7 +164,7 @@ async def create_prediction(
     request: Request,
     response: Response,
     prefer: str | None = Header(default=None),
-    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_predictions),
     session: AsyncSession = Depends(get_async_session),
 ):
     """跑一个已发布 workflow 服务,返回 Prediction 对象(Cog 形)。
@@ -165,7 +200,10 @@ async def create_prediction(
 
     task = ExecutionTask(
         workflow_id=instance.source_id,
-        api_key_id=api_key.id,  # 归属:by-id 端点据此校验 owner(IDOR 防护)
+        # 归属:by-id 端点据此校验 owner(IDOR 防护)。admin session 旁路(Task 10)无
+        # key 可归属 —— NULL,与 apps.py 的 admin_run 一致(admin 隐式对所有 prediction 有权限,
+        # get/cancel_prediction 对 api_key is None 的调用方跳过 owner 校验)。
+        api_key_id=api_key.id if api_key is not None else None,
         workflow_name=instance.name,
         status="queued",
         nodes_total=len(patched.get("nodes") or []),
@@ -177,11 +215,13 @@ async def create_prediction(
     await session.commit()
     await session.refresh(task)
 
-    # 用量计数(原子自增)。完整配额消费收敛到 PR-5。
-    await session.execute(
-        update(InstanceApiKey).where(InstanceApiKey.id == api_key.id)
-        .values(usage_calls=InstanceApiKey.usage_calls + 1))
-    await session.commit()
+    if api_key is not None:
+        # 用量计数(原子自增)。完整配额消费收敛到 PR-5。admin 路径无 key 可计,跳过
+        # (镜像 apps.py::execute_service 的 admin_run 分支:admin 不耗配额)。
+        await session.execute(
+            update(InstanceApiKey).where(InstanceApiKey.id == api_key.id)
+            .values(usage_calls=InstanceApiKey.usage_calls + 1))
+        await session.commit()
 
     from src.services.workflow_runner import run_workflow_task  # noqa: PLC0415
     runner_client = getattr(request.app.state, "runner_client", None)
@@ -209,16 +249,17 @@ async def create_prediction(
 @router.get("/predictions/{prediction_id}")
 async def get_prediction(
     prediction_id: int,
-    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_predictions),
     session: AsyncSession = Depends(get_async_session),
 ):
     """轮询一个 prediction 的状态/结果。"""
     _, api_key = auth
     task = (await session.execute(
         select(ExecutionTask).where(ExecutionTask.id == prediction_id))).scalar_one_or_none()
-    # IDOR 防护:by-id 只允许创建它的 key 访问;归属不符 / NULL(admin·老行)对 api-key
-    # 调用方一律 404(不泄漏存在性)。
-    if task is None or task.api_key_id != api_key.id:
+    # IDOR 防护:by-id 只允许创建它的 key 访问;归属不符对 api-key 调用方一律 404(不泄漏
+    # 存在性)。admin session 旁路(`api_key is None`,Task 10)跳过 —— admin 对所有
+    # prediction 隐式有权限,与 `/api/v1/tasks/{id}`(admin-only,无 owner 校验)对齐。
+    if task is None or (api_key is not None and task.api_key_id != api_key.id):
         raise HTTPException(404, detail="prediction not found")
     return task_to_prediction(task, service=task.workflow_name)
 
@@ -265,7 +306,7 @@ async def stream_prediction(
 @router.post("/predictions/{prediction_id}/cancel")
 async def cancel_prediction(
     prediction_id: int,
-    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_predictions),
     session: AsyncSession = Depends(get_async_session),
 ):
     """取消一个进行中的 prediction(runner 在节点边界检查 status=cancelled 中止)。
@@ -277,8 +318,9 @@ async def cancel_prediction(
     _, api_key = auth
     task = (await session.execute(
         select(ExecutionTask).where(ExecutionTask.id == prediction_id))).scalar_one_or_none()
-    # IDOR 防护:非 owner(含 NULL·admin·老行)一律 404,防跨租户取消(DoS)。
-    if task is None or task.api_key_id != api_key.id:
+    # IDOR 防护:非 owner 一律 404,防跨租户取消(DoS)。admin session 旁路
+    # (`api_key is None`,Task 10)跳过 —— admin 可取消任意 prediction,同 get_prediction。
+    if task is None or (api_key is not None and task.api_key_id != api_key.id):
         raise HTTPException(404, detail="prediction not found")
     if task.status in ("completed", "failed", "cancelled"):
         return task_to_prediction(task, service=task.workflow_name)
