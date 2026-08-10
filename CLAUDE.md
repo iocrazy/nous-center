@@ -86,14 +86,20 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 - **长任务走 respond-async**:`POST /v1/services/{name}/predictions`(注意前缀是
   `/v1/`,不是 `/api/v1/`)带 `Prefer: respond-async` → 202 `{id,status:"starting"}`,
   轮询 `GET /v1/predictions/{id}` 到终态(`succeeded|failed|canceled`)。鉴权跟
-  `/api/v1/*` 管理端点是两套:`/v1/*` 一旦带了 `Authorization` header 就走 M:N
-  `InstanceApiKey`(`ADMIN_TOKEN` 在这里不认,401),不带 header 才落到 admin-session
-  cookie 兜底——脚本化调用（无浏览器 cookie）必须先用 admin token 经
-  `POST /api/v1/keys {label, service_ids:[<service 数字 id>]}` 铸一把授权给该
-  service 的 key,再拿它的 `secret` 调 predictions。
+  `/api/v1/*` 管理端点是两套:`/v1/*` 带了 `Authorization` header 优先走 M:N
+  `InstanceApiKey` 校验,校验失败(含 `ADMIN_TOKEN` 这种压根不是 InstanceApiKey 的
+  bearer)会退回 admin-session 校验(cookie 或 `Authorization: Bearer $ADMIN_TOKEN`
+  都认)——脚本化调用(无浏览器 cookie)可以直接用 `ADMIN_TOKEN` 当 bearer,也可以
+  先用它经 `POST /api/v1/keys {label, service_ids:[<service 数字 id>]}` 铸一把授权给该
+  service 的 M:N key,再拿它的 `secret` 调 predictions(两条路都通)。
 - env 三件套:`NOUS_COMFY_URL`(sidecar 地址,默认 `http://127.0.0.1:8188`)、
   `NOUS_COMFY_TIMEOUT`(渲染等待上限,默认 14400s)、
   `NOUS_COMFY_DOWNLOAD_TIMEOUT`(产物下载超时,默认 120s)。
+- **渲染串行化 = 单进程部署前提**:桥节点(`comfy_bridge.py`)靠一个模块级
+  `asyncio.Semaphore(1)`(`_SEM`)保证「sidecar 一次只服务一个渲染」,这假设 uvicorn
+  跑无 `--workers`(生产就是这样)。上了多 worker/多进程部署,每个进程各有自己的
+  `_SEM`,互不认识,这条不变式就破了——需要先换成跨进程锁(Postgres advisory lock
+  之类)才能加 `--workers`。
 - sidecar 是独立 systemd 单元 `nous-engine-comfyui`,默认 **disabled**(装机时模板
   路径 `/opt/comfyui` 多半还没铺,`enginectl restart` 不会强启一个禁用单元——2026-08-10
   设计修正,见 `infra/systemd/enginectl`)。启用前置:① GSP 缓解脚本已上机
