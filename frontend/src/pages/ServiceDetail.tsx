@@ -28,6 +28,7 @@ import {
 } from '../api/services'
 import WorkflowAppEditor, { type AppEditorValue } from '../components/workflow/WorkflowAppEditor'
 import type { EditorNodeLike } from '../components/workflow/appEditorSchema'
+import ComfyTemplateEditor from '../components/services/ComfyTemplateEditor'
 import { useServiceModelStatus, MODEL_STATE_VIS, MODEL_ROLE_LABEL } from '../api/serviceModels'
 import {
   useApiKeys,
@@ -456,7 +457,15 @@ function AppTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInputs?: R
           <SegBtn active={m === 'edit'} onClick={() => setMode('edit')} icon={<SlidersHorizontal size={13} />} label="编辑暴露字段" />
         </div>
       )}
-      {m === 'edit' ? <AppEditorTab svc={svc} /> : <PlaygroundTab svc={svc} initialInputs={initialInputs} />}
+      {m === 'edit' ? (
+        svc.source_type === 'comfy_template' && svc.source_id ? (
+          <ComfyTemplateEditor templateId={svc.source_id} />
+        ) : (
+          <AppEditorTab svc={svc} />
+        )
+      ) : (
+        <PlaygroundTab svc={svc} initialInputs={initialInputs} />
+      )}
     </div>
   )
 }
