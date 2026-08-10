@@ -28,7 +28,7 @@ from src.api.response_cache import invalidate
 from src.models.comfy_template import ComfyTemplate
 from src.models.database import get_async_session
 from src.models.service_instance import ServiceInstance
-from src.services.comfy.client import ComfyClient
+from src.services.comfy.client import get_comfy_client as get_client
 from src.services.workflow_snapshot import NAME_RE
 
 router = APIRouter(prefix="/api/v1/comfy-templates", tags=["comfy-templates"])
@@ -36,12 +36,6 @@ health_router = APIRouter(prefix="/api/v1/comfy", tags=["comfy-health"])
 
 # Module-level cache for object_info: (timestamp, data) tuple or None
 _object_info_cache: tuple[float, dict] | None = None
-
-
-def get_client() -> ComfyClient:
-    """Factory function to create a ComfyClient instance.
-    Tests monkeypatch this to inject a mock client."""
-    return ComfyClient()
 
 
 def _validate_name(name: str) -> str:
@@ -134,29 +128,52 @@ def _mapping_to_exposed_input(m: ExposedParamMapping) -> dict:
         "input_name": m.key,
         "type": m.type,
         "default": m.default,
-        "min": m.min,
-        "max": m.max,
-        "step": m.step,
-        "options": m.options,
+        # I3 fix:min/max/step/options/random 嵌套进 `constraints`,不再是顶层平铺键——
+        # 这是前端 SchemaDrivenForm.classifyField / isRandomizable(见 SchemaDrivenForm.tsx:
+        # 34-61)以及 service_schema.py::_input_property 实际读取的形状(都读
+        # `param.constraints.{min,max,step,enum,random}`,不读顶层)。旧的平铺写法两边都
+        # 读不到——Playground 数字字段永远渲不成 slider,随机种子按钮也出不来。
+        "constraints": _numeric_constraints(m),
         "required": m.required,
-        "random": m.random,
         "comfy_node_id": m.comfy_node_id,
         "comfy_input": m.comfy_input,
     }
 
 
+def _numeric_constraints(m: ExposedParamMapping) -> dict[str, Any]:
+    c: dict[str, Any] = {}
+    if m.min is not None:
+        c["min"] = m.min
+    if m.max is not None:
+        c["max"] = m.max
+    if m.step is not None:
+        c["step"] = m.step
+    if m.options:
+        c["enum"] = m.options
+    if m.random:
+        c["random"] = m.random
+    return c
+
+
 def _exposed_input_to_param(item: dict) -> dict:
+    """exposed_inputs 存储项 → 编辑器吃的平铺 `ComfyExposedParam` 形(min/max/step/
+    options/random 从 `constraints` 里读出来摊平)。兼容 I3 修复前写入的旧行——那些行
+    没有 `constraints` 键,直接退回顶层同名字段(迁移期防止已保存映射的 min/max 消失)。
+    """
+    c = item.get("constraints")
+    if not isinstance(c, dict):
+        c = {}
     return {
         "key": item.get("key"),
         "label": item.get("label", ""),
         "type": item.get("type", "string"),
         "default": item.get("default"),
-        "min": item.get("min"),
-        "max": item.get("max"),
-        "step": item.get("step"),
-        "options": item.get("options"),
+        "min": c.get("min", item.get("min")),
+        "max": c.get("max", item.get("max")),
+        "step": c.get("step", item.get("step")),
+        "options": c.get("enum", item.get("options")),
         "required": item.get("required", True),
-        "random": item.get("random", False),
+        "random": c.get("random", item.get("random", False)),
         "comfy_node_id": item.get("comfy_node_id"),
         "comfy_input": item.get("comfy_input"),
     }
@@ -206,6 +223,17 @@ async def create_template(
         meter_dim="calls",
         workflow_snapshot=_bridge_snapshot(tpl.id),
         exposed_inputs=[],
+        # I1 fix:不种 exposed_outputs,`/v1/services/{name}/schema` 的 output_schema
+        # 就是空 {}——SchemaDrivenOutput 在 Playground 里没有任何 declared output 可渲染,
+        # 只能整坨 dump 原始 JSON,video player 出不来。桥快照(_bridge_snapshot)固定的
+        # 终端节点是 id="out" 的 video_output,它把桥节点输出原样透传(见 comfy_bridge.py
+        # VideoOutputNode),桥节点的返回形状固定是 {items,video_url,thumbnails,seed}——
+        # 这里种的 node_id/input_name 必须精确对上那个形状,SchemaDrivenOutput.pluck()
+        # 才能按 (node_id, input_name) 取到 video_url。
+        exposed_outputs=[{
+            "key": "video_url", "node_id": "out", "input_name": "video_url",
+            "type": "video", "label": "视频",
+        }],
     )
     session.add(svc)
     # round4-style TOCTOU guard (see services.py quick_provision): the precheck

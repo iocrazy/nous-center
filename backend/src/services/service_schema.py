@@ -90,6 +90,20 @@ def _input_property(exposed: dict, widget: dict | None) -> dict:
         # 无 widget / 文本类:回退 ExposedParam.type。
         t = str(exposed.get("type") or "string").lower()
         prop["type"] = _EXPOSED_TYPE.get(t, "string")
+    # I3 fix:exposed_input 自带的 `constraints`(comfy_templates.py 桥映射写入的
+    # min/max/step/enum/random,见 _mapping_to_exposed_input)—— 独立于上面的 node.yaml
+    # widget 分支:桥节点 class_type 是 "comfyui_workflow",从来没有 widgets 定义,
+    # widget 分支永远走不到,min/max/enum 不接进这里就丢了。constraints 存在时覆盖/
+    # 补齐(不是二选一——widget 分支给的 type 仍然生效,这里只加 enum/minimum/maximum)。
+    constraints = exposed.get("constraints")
+    if isinstance(constraints, dict):
+        enum = constraints.get("enum")
+        if enum:
+            prop["enum"] = enum
+        if constraints.get("min") is not None:
+            prop["minimum"] = constraints["min"]
+        if constraints.get("max") is not None:
+            prop["maximum"] = constraints["max"]
     # default:exposed 优先,其次 widget。
     default = exposed.get("default")
     if default is None and widget is not None:

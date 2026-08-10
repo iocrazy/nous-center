@@ -120,6 +120,23 @@ describe('ComfyTemplateEditor', () => {
     ])
   })
 
+  it('C2/I1:选「图片/文件(上传)」类型 → putMapping payload 里 type=image 原样送出', async () => {
+    render(<ComfyTemplateEditor templateId="7" />)
+    fireEvent.click(await screen.findByText('KSampler #2'))
+    const stepsRow = (await screen.findByText('steps')).closest('[data-input-row]') as HTMLElement
+    fireEvent.click(within(stepsRow).getByRole('checkbox', { name: /暴露/ }))
+    fireEvent.change(within(stepsRow).getByRole('combobox'), { target: { value: 'image' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存配置/ }))
+    await waitFor(() => expect(api.putMapping).toHaveBeenCalled())
+    // .at(-1), not [0]: mocks aren't cleared between tests in this file (no
+    // clearMocks in vitest config), and an earlier test also calls putMapping
+    // — calls[0] would silently grab that other test's payload instead of ours.
+    const [, params] = vi.mocked(api.putMapping).mock.calls.at(-1)!
+    expect(params).toEqual([
+      expect.objectContaining({ key: 'steps', type: 'image' }),
+    ])
+  })
+
   it('sidecar 离线 → 降级提示', async () => {
     vi.mocked(api.getComfyHealth).mockResolvedValue({
       online: false, queue_depth: 0, version: '', base_url: 'http://x', timeout_s: 30,

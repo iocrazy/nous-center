@@ -45,11 +45,17 @@ interface FieldMeta {
 }
 
 const NUMERIC_TYPES = new Set(['integer', 'number'])
+// C2/I1 fix: 'image' 让这个字段在 Playground 渲染成文件选择器(值以 data URI 形式提交,
+// 见 SchemaDrivenForm.tsx classifyField 认的 file|image|audio|video|binary 类型集合)。
+// 后端 comfy_bridge.py 的上传触发条件同步放宽到接受这个词汇(见 _UPLOAD_TYPES)——挑
+// "image" 而不是更宽泛的字面量 "media",是因为 classifyField 只认前者,选后者的话字段
+// 会被误判成普通字符串输入,渲不出文件选择器。
 const TYPE_OPTIONS: Array<{ v: string; label: string }> = [
   { v: 'string', label: '文本' },
   { v: 'integer', label: '整数' },
   { v: 'number', label: '小数' },
   { v: 'boolean', label: '开关' },
+  { v: 'image', label: '图片/文件(上传)' },
 ]
 
 function classInputDecl(
