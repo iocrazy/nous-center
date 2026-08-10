@@ -46,12 +46,16 @@ export function collectWorkflowImages(): string[] {
 export interface LightboxItem {
   url: string
   meta?: LightboxMeta
+  /** 产物类型;缺省 'image'(向后兼容 —— 画布节点/旧调用都只给 url+meta)。
+   *  Task 11:comfy bridge 视频产物用 'video',灯箱渲染 <video> 而非可缩放 <img>。 */
+  kind?: 'image' | 'video'
 }
 
 interface LightboxState {
   open: boolean
   images: string[]
   metas: (LightboxMeta | undefined)[]
+  kinds: ('image' | 'video' | undefined)[]
   index: number
   /** 从某张图 url 打开:自动收集同工作流全部图并定位;meta 给被点的那张。 */
   openFromUrl: (url: string, meta?: LightboxMeta) => void
@@ -66,6 +70,7 @@ export const useLightboxStore = create<LightboxState>((set, get) => ({
   open: false,
   images: [],
   metas: [],
+  kinds: [],
   index: 0,
   openFromUrl: (url, meta) => {
     const all = collectWorkflowImages()
@@ -73,12 +78,13 @@ export const useLightboxStore = create<LightboxState>((set, get) => ({
     let index = all.indexOf(url)
     if (index < 0) { images = [url]; index = 0 }
     const metas = images.map((u) => (u === url ? meta : undefined))
-    set({ open: true, images, metas, index })
+    set({ open: true, images, metas, kinds: images.map(() => undefined), index })
   },
   openItems: (items, index) => set({
     open: true,
     images: items.map((it) => it.url),
     metas: items.map((it) => it.meta),
+    kinds: items.map((it) => it.kind),
     index: Math.max(0, Math.min(index, items.length - 1)),
   }),
   close: () => set({ open: false }),
