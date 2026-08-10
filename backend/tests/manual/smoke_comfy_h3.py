@@ -6,9 +6,11 @@ GSP 缓解脚本已上机(infra/gpu/setup-gpu-mitigations.sh)。跑法:
       --base http://127.0.0.1:8000 --admin-token $ADMIN_TOKEN \
       --workflow /path/to/minimax-h3-t2v-api.json --mapping /path/to/mapping.json
 workflow 取自 ComfyUI 模板库(Workflow → Export (API));mapping 为
-exposed_params JSON(至少暴露 prompt 与时长,时长压到最短以省时——把这两个 exposed
-param 对应节点在导出的 workflow JSON 里的原值改到最小,因为未在 prediction input
-里出现的 key 用的是 workflow 的冻结原值,不是 mapping 里的 `default` 字段)。
+exposed_params JSON(至少暴露 prompt 与时长,时长压到最短以省时——本脚本对
+prediction 只发空 `input`,所以要在 exposed_params 里给这两个 key 直接写
+`default`;`comfy_bridge.py::ComfyUIWorkflowNode.invoke` 是 `data.get(key,
+m.get("default"))`,mapping 的 `default` 优先,只有 mapping 也没设
+`default` 时才落回 workflow 的冻结原值)。
 
 鉴权分两段(与 src/api/routes/predictions.py 的鉴权语义对齐 —— ADMIN_TOKEN 只认
 `/api/v1/*` 管理端点;`/v1/services/*/predictions` 走 M:N `InstanceApiKey`,一旦带了
@@ -109,15 +111,24 @@ def mint_key(client: httpx.Client, headers: dict, service_id: int, label: str) -
 
 
 def delete_key(client: httpx.Client, headers: dict, key_id: int) -> None:
-    r = client.delete(f"/api/v1/keys/{key_id}", headers=headers)
-    if r.status_code not in (204, 404):
-        print(f"[smoke_comfy_h3] 警告:删除临时 key 失败 [{r.status_code}]: {r.text}", file=sys.stderr)
+    # cleanup 路径:吞掉一切异常(包括 httpx 传输层的 ConnectError/TimeoutException),
+    # 不然一个清理步骤炸了会连累 finally 里排在它后面的清理步骤(以及 client.close())
+    # 都跑不到——恰好败在它本该防的场景上。
+    try:
+        r = client.delete(f"/api/v1/keys/{key_id}", headers=headers)
+        if r.status_code not in (204, 404):
+            print(f"[smoke_comfy_h3] 警告:删除临时 key 失败 [{r.status_code}]: {r.text}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        print(f"[smoke_comfy_h3] 警告:删除临时 key 时异常: {e}", file=sys.stderr)
 
 
 def delete_template(client: httpx.Client, headers: dict, template_id: int) -> None:
-    r = client.delete(f"/api/v1/comfy-templates/{template_id}", headers=headers)
-    if r.status_code not in (204, 404):
-        print(f"[smoke_comfy_h3] 警告:删除模板失败 [{r.status_code}]: {r.text}", file=sys.stderr)
+    try:
+        r = client.delete(f"/api/v1/comfy-templates/{template_id}", headers=headers)
+        if r.status_code not in (204, 404):
+            print(f"[smoke_comfy_h3] 警告:删除模板失败 [{r.status_code}]: {r.text}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        print(f"[smoke_comfy_h3] 警告:删除模板时异常: {e}", file=sys.stderr)
 
 
 def create_prediction(client: httpx.Client, secret: str, service_name: str) -> str:
@@ -250,7 +261,10 @@ def main() -> None:
                 delete_template(client, headers, template_id)
         else:
             print(f"[smoke_comfy_h3] --keep:保留 template_id={template_id} key_id={key_id}")
-        client.close()
+        try:
+            client.close()
+        except Exception as e:  # noqa: BLE001
+            print(f"[smoke_comfy_h3] 警告:关闭 client 时异常: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

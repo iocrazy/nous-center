@@ -78,9 +78,11 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   `comfy_templates` 表行 + 一个 `ServiceInstance`(`source_type="comfy_template"`,
   服务名 = 传入的 `name`)。`PUT /api/v1/comfy-templates/{id}/mapping
   {exposed_params:[{key,label,type,comfy_node_id,comfy_input,...}]}` 定义哪些
-  ComfyUI 节点输入可被参数化。未在 prediction `input` 里出现的 key 用的是
-  **workflow 原值**(注册时冻结的快照),不是 mapping 的 `default` 字段——准备测试
-  workflow 时要把这类字段的原值本身改到想要的值(如把时长压到最短)。
+  ComfyUI 节点输入可被参数化。`comfy_bridge.py::ComfyUIWorkflowNode.invoke` 取值是
+  `data.get(key, m.get("default"))`——prediction `input` 里显式给的值优先,没给才落
+  mapping 的 `default`;**只有 mapping 也没设 `default` 时才用 workflow 原值**(注册时
+  冻结的快照)。想让某个 key 在不传 input 时也走某个值(如把时长压到最短),直接在
+  exposed_params 里给它写 `default`,不必去改 workflow 导出文件本身。
 - **长任务走 respond-async**:`POST /v1/services/{name}/predictions`(注意前缀是
   `/v1/`,不是 `/api/v1/`)带 `Prefer: respond-async` → 202 `{id,status:"starting"}`,
   轮询 `GET /v1/predictions/{id}` 到终态(`succeeded|failed|canceled`)。鉴权跟
