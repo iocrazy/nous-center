@@ -16,12 +16,16 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+_TIMEOUT_SECONDS = 60
+
+
 async def extract_first_frame(video_path: Path) -> bytes | None:
     """Return the first frame of `video_path` as PNG bytes, or None.
 
-    Never raises: missing ffmpeg binary (FileNotFoundError) or a non-zero
-    ffmpeg exit code (corrupt/unreadable input, unsupported codec, etc.)
-    both degrade to None so gallery rendering never breaks on a bad video.
+    Never raises: missing/unreadable ffmpeg binary (OSError — FileNotFoundError,
+    PermissionError, ...), a hung/slow-to-decode input (timeout), or a non-zero
+    ffmpeg exit code (corrupt/unreadable input, unsupported codec, etc.) all
+    degrade to None so gallery rendering never breaks on a bad video.
     """
     with tempfile.TemporaryDirectory(prefix="nous-thumb-") as tmp_dir:
         out_path = Path(tmp_dir) / "frame.png"
@@ -32,9 +36,24 @@ async def extract_first_frame(video_path: Path) -> bytes | None:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            returncode = await proc.wait()
-        except FileNotFoundError:
-            logger.warning("extract_first_frame: ffmpeg not found on PATH")
+        except OSError:
+            # FileNotFoundError (no ffmpeg on PATH) is the common case, but
+            # PermissionError etc. are equally "can't run ffmpeg" — same
+            # degrade-to-None contract, not a partial one (round8 lesson,
+            # see node_packages.py install_package_git's timeout comment for
+            # the sibling subprocess-hygiene fix this mirrors).
+            logger.warning("extract_first_frame: failed to spawn ffmpeg")
+            return None
+
+        try:
+            returncode = await asyncio.wait_for(proc.wait(), timeout=_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning(
+                "extract_first_frame: ffmpeg timed out (>%ds) for %s",
+                _TIMEOUT_SECONDS, video_path,
+            )
             return None
 
         if returncode != 0:

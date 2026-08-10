@@ -399,6 +399,25 @@ def test_reap_orphans_prunes_empty_date_dirs(storage_tmp):
     assert not bucket.exists()
 
 
+def test_reap_orphans_collects_expired_media_files(storage_tmp):
+    """write_media (mp4/wav write_image alias, comfy-bridge) outputs are
+    reapable exactly like images — expired media must not leak disk forever
+    just because reap_orphans only recognized image extensions."""
+    import os as _os
+    from src.services.image_output_storage import reap_orphans, write_media
+
+    mp4 = write_media(b"\x00fakemp4", ext="mp4", ttl_seconds=60)
+    wav = write_media(b"RIFFfakewav", ext="wav", ttl_seconds=60)
+    two_days = time.time() - 2 * 24 * 3600
+    _os.utime(mp4["path"], (two_days, two_days))
+    _os.utime(wav["path"], (two_days, two_days))
+
+    summary = reap_orphans(older_than_seconds=24 * 3600)
+    assert summary["deleted"] == 2
+    assert not mp4["path"].exists()
+    assert not wav["path"].exists()
+
+
 def test_reap_orphans_skips_non_image_files(storage_tmp):
     """Stray .md / .log files alongside don't get touched even if old."""
     import os as _os
