@@ -85,6 +85,17 @@ async def test_invoke_patches_uploads_and_returns_video(fake):
 
 
 @pytest.mark.asyncio
+async def test_optional_param_absent_keeps_template_default(fake):
+    """可选参数(non-required)未出现在 data 且映射无 default → 不写 None 进图,
+    提交的 graph 保留模板原始占位值(comfy_bridge.py 的有意行为,见行内注释)。"""
+    node = get_node_class("comfyui_workflow")()
+    data = {"template_id": 1, "prompt": "hello"}  # 没给 "ref"
+    await node.invoke(data, {})
+    assert fake.submitted["78"]["inputs"]["image"] == TEMPLATE_GRAPH["78"]["inputs"]["image"]
+    assert not fake.uploaded  # media 分支从未触发(没有 data URI 可上传)
+
+
+@pytest.mark.asyncio
 async def test_missing_required_raises(fake):
     node = get_node_class("comfyui_workflow")()
     with pytest.raises(ValueError, match="prompt"):

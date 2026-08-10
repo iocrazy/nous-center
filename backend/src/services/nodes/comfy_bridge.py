@@ -110,6 +110,12 @@ class ComfyUIWorkflowNode:
             if m.get("required") and (value is None or value == ""):
                 raise ValueError(f"缺少必填参数:{key}")
 
+            # Intentional: an optional param the caller didn't supply (and
+            # with no mapping default) stays untouched rather than patching
+            # `None` into the graph — the template's own placeholder value
+            # (e.g. a LoadImage node's baked-in default filename) is what
+            # ComfyUI should see; writing `None` would corrupt that node's
+            # input type instead of "no override".
             if value is None:
                 continue
 
@@ -142,7 +148,9 @@ class ComfyUIWorkflowNode:
                     video_url = stored["url"]
                 with tempfile.TemporaryDirectory(prefix="nous-bridge-vid-") as tmp_dir:
                     vid_path = Path(tmp_dir) / f"src.{ext}"
-                    vid_path.write_bytes(raw_bytes)
+                    # Off the event loop — this can be a full video's worth of
+                    # bytes (same rationale as the write_media wrapper above).
+                    await asyncio.to_thread(vid_path.write_bytes, raw_bytes)
                     frame = await extract_first_frame(vid_path)
                 if frame is not None:
                     thumb = await write_media(frame, ext="png")
