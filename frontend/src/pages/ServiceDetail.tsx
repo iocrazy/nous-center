@@ -948,6 +948,7 @@ type AsrSegment = { start: number; end: number; speaker: string | null; text: st
 
 /** 秒(float,后端契约 spec §3)→ 时:分:秒 时间轴标签。<1h 用 `mm:ss`,≥1h 用 `h:mm:ss`。
  *  分/秒始终两位;小时不补零。非有限/负值视为 0。 */
+// eslint-disable-next-line react-refresh/only-export-components -- 测试消费的纯函数,与组件同文件(拆文件不值当)
 export function formatHms(seconds: number): string {
   const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0
   const h = Math.floor(total / 3600)
@@ -1222,6 +1223,7 @@ function AsrDocsTab({ svc }: { svc: ServiceDetailT }) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- 测试消费的纯函数,与组件同文件(拆文件不值当)
 export function buildAsrCurl(serviceName: string, verbose: boolean): string {
   return [
     `curl -X POST 'https://YOUR_HOST/v1/audio/transcriptions' \\`,
