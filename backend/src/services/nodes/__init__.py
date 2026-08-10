@@ -6,4 +6,4 @@ registry.get_node_class.
 """
 
 # Eagerly import node modules so @register decorators run.
-from . import audio, llm, logic, text_io  # noqa: F401
+from . import audio, comfy_bridge, llm, logic, text_io  # noqa: F401
