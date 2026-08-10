@@ -21,6 +21,16 @@ vi.mock('../../api/nodes', () => ({
   useTogglePackage: () => ({ mutateAsync: vi.fn(), isPending: false, variables: undefined }),
 }))
 
+vi.mock('../../api/comfyTemplates', () => ({
+  getComfyHealth: vi.fn().mockResolvedValue({
+    online: true,
+    queue_depth: 0,
+    version: '0.4.12',
+    base_url: 'http://localhost:8188',
+    timeout_s: 120,
+  }),
+}))
+
 function withQuery(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
@@ -59,6 +69,12 @@ describe('SettingsOverlay sub-nav (m16 alignment)', () => {
     fireEvent.click(screen.getByText('引擎默认'))
     expect(screen.getByText('本地模型目录')).toBeTruthy()
     expect(screen.getByText('TTS GPU')).toBeTruthy()
+  })
+
+  it('switches to ComfyUI 桥 sub-page', () => {
+    render(withQuery(<SettingsOverlay />))
+    fireEvent.click(screen.getByText('ComfyUI 桥'))
+    expect(screen.getByText('ComfyUI 工作流编排 - 网络连接与队列状态')).toBeTruthy()
   })
 
   it('placeholder sub-pages render the "敬请期待" hint', () => {
