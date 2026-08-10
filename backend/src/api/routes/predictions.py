@@ -132,11 +132,18 @@ async def create_prediction(
     auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """跑一个已发布 workflow 服务,返回 Prediction 对象(Cog 形)。"""
+    """跑一个已发布 workflow 服务,返回 Prediction 对象(Cog 形)。
+
+    Task 7:`comfy_template`(ComfyUI workflow bridge,见 comfy_templates.py)也走这条统一入口
+    ——design spec 2026-08-10 §「提交」明确画的就是这条路径。它的 workflow_snapshot 是固定桥
+    快照(list 形,单 `comfyui_workflow` 节点 + `video_output` 节点),下面的
+    apply_inputs_to_snapshot/snapshot_to_executor_form 对 list 形 snapshot 已经是透传+按
+    node_id 注入,天然兼容,不需要专门分支。
+    """
     instance, api_key = await _resolve_service(session, auth, name)
     if instance.source_type == "model":
         raise HTTPException(400, detail="model(LLM)服务请用 /v1/chat/completions")
-    if instance.source_type != "workflow":
+    if instance.source_type not in ("workflow", "comfy_template"):
         raise HTTPException(400, detail=f"source_type {instance.source_type!r} 暂不支持 predictions")
 
     snapshot = instance.workflow_snapshot or {}
@@ -261,7 +268,12 @@ async def cancel_prediction(
     auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """取消一个进行中的 prediction(runner 在节点边界检查 status=cancelled 中止)。"""
+    """取消一个进行中的 prediction(runner 在节点边界检查 status=cancelled 中止)。
+
+    comfy_template 服务的桥节点(Task 6)不经 runner_clients 广播那套 abort —— 它是串行
+    跑在这个进程里、正堵在 `ComfyClient.wait()` 上,唯一能真正打断当前渲染的是转发
+    ComfyUI 的 `/interrupt`(串行语义下"中断当前"即"中断本任务",局限见 spec §12)。
+    """
     _, api_key = auth
     task = (await session.execute(
         select(ExecutionTask).where(ExecutionTask.id == prediction_id))).scalar_one_or_none()
@@ -270,6 +282,19 @@ async def cancel_prediction(
         raise HTTPException(404, detail="prediction not found")
     if task.status in ("completed", "failed", "cancelled"):
         return task_to_prediction(task, service=task.workflow_name)
+    if task.status == "running":
+        svc = (await session.execute(
+            select(ServiceInstance).where(ServiceInstance.name == task.workflow_name)
+        )).scalar_one_or_none()
+        if svc is not None and svc.source_type == "comfy_template":
+            from src.api.routes.comfy_templates import get_client  # noqa: PLC0415
+            try:
+                await get_client().interrupt()
+            except Exception as e:  # noqa: BLE001 — sidecar 掉线不该挡住 DB 落 cancelled
+                import logging  # noqa: PLC0415
+                logging.getLogger(__name__).warning(
+                    "cancel_prediction: comfy interrupt failed for task %s: %s",
+                    prediction_id, e)
     await session.execute(
         update(ExecutionTask).where(ExecutionTask.id == prediction_id)
         .values(status="cancelled", cancel_reason="client cancel"))
