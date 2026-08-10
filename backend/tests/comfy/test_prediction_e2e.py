@@ -189,6 +189,85 @@ async def test_cancel_forwards_interrupt_and_reaches_cancelled(client, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_cancel_does_not_clobber_a_completion_that_races_the_interrupt(client, monkeypatch):
+    """code review Important(TOCTOU):cancel_prediction 里 `await interrupt()` 生产上
+    最长 5s 真实 HTTP 往返——这个窗口内后台渲染完全可能已经跑完并把 completed+result
+    落库。旧实现取消处理器结尾无条件 `UPDATE status='cancelled'`,会把这个已经成功的
+    终态硬翻回 cancelled 且丢 output(task_to_prediction 只在 succeeded 时给 output)。
+
+    这里让 FakeClient.interrupt() 在被 await 期间放行卡住的 wait()、并轮询等后台
+    run_workflow_task 真把 completed 落库后才返回——精确复现"interrupt 窗口内渲染
+    赢下竞态"这个时序,而不是赌 sleep 时长。cancel 响应 + DB 最终态都必须如实是
+    completed/succeeded,不能是被 cancel 路径覆盖出来的 cancelled。
+    """
+    from src.models.execution_task import ExecutionTask
+
+    wait_gate = asyncio.Event()
+
+    class _RaceFakeClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.interrupt_calls = 0
+            self.task_id: int | None = None  # 拿到 pid 后由测试回填
+
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+            await wait_gate.wait()
+            return await super().wait(prompt_id, timeout_s=timeout_s, interval_s=interval_s)
+
+        async def interrupt(self) -> None:
+            self.interrupt_calls += 1
+            wait_gate.set()  # 放行后台的 wait(),让它继续跑完 executor 并 commit
+            sf = get_session_factory()
+            deadline = asyncio.get_event_loop().time() + 2.0
+            while asyncio.get_event_loop().time() < deadline:
+                async with sf() as s:
+                    t = await s.get(ExecutionTask, self.task_id)
+                if t is not None and t.status == "completed":
+                    return
+                await asyncio.sleep(0.005)
+            raise AssertionError("后台渲染没能在 interrupt 窗口内落 completed(测试装置问题)")
+
+    fc = _RaceFakeClient()
+    monkeypatch.setattr(nb, "get_client", lambda: fc)
+    monkeypatch.setattr(comfy_templates_route, "get_client", lambda: fc)
+    _patch_no_thumbnail(monkeypatch)
+
+    raw_key = await _make_service_and_key(client, "e2e-cancel-race")
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    r = await client.post(
+        "/v1/services/e2e-cancel-race/predictions", json={"input": {"prompt": "hi"}},
+        headers={**headers, "Prefer": "respond-async"})
+    assert r.status_code == 202, r.text
+    pid = r.json()["id"]
+    fc.task_id = int(pid)
+
+    deadline = asyncio.get_event_loop().time() + 5.0
+    status = None
+    while asyncio.get_event_loop().time() < deadline:
+        status = (await client.get(f"/v1/predictions/{pid}", headers=headers)).json()["status"]
+        if status == "processing":
+            break
+        await asyncio.sleep(0.02)
+    assert status == "processing", f"prediction 未在超时前进入 running(last={status})"
+
+    cancel_resp = await client.post(f"/v1/predictions/{pid}/cancel", headers=headers)
+    assert cancel_resp.status_code == 200, cancel_resp.text
+    assert fc.interrupt_calls == 1
+
+    # 竞态赢家是「渲染先完成」——cancel 的响应必须如实反映 succeeded + output,不能报
+    # cancelled 丢 output。
+    body = cancel_resp.json()
+    assert body["status"] == "succeeded", body
+    assert body["output"] is not None and "mp4" in str(body["output"]), body
+
+    # DB 落态同样必须是 completed,不是被 cancel 路径的 UPDATE 翻写成 cancelled。
+    async with get_session_factory()() as s:
+        t = await s.get(ExecutionTask, int(pid))
+        assert t.status == "completed", t.status
+
+
+@pytest.mark.asyncio
 async def test_cancel_on_non_comfy_service_skips_interrupt(client, monkeypatch):
     """非 comfy_template 服务(普通 workflow 服务)cancel 时不该去碰 comfy get_client——
     回归守护:cancel_prediction 的新分支必须按 ServiceInstance.source_type 精确判断,

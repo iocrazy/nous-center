@@ -295,9 +295,17 @@ async def cancel_prediction(
                 logging.getLogger(__name__).warning(
                     "cancel_prediction: comfy interrupt failed for task %s: %s",
                     prediction_id, e)
+    # TOCTOU 守护(镜像 workflow_runner.py run_workflow_task 反方向的 cancel-race guard):
+    # 上面 `await interrupt()`(生产里最长 5s 真实 HTTP 往返)期间,后台渲染完全可能已经
+    # 跑完并把 completed+result 落库 —— 这里若无条件 UPDATE status='cancelled',会把一个
+    # 已经成功的终态硬翻回 cancelled 且丢 output(task_to_prediction 只在 succeeded 时给
+    # output),终态错报。条件 UPDATE 只在仍是 queued/running 时才真的落 cancelled,否则
+    # 0 行生效,下面 refresh 拿到的就是渲染赢下竞态后的真实终态。
     await session.execute(
-        update(ExecutionTask).where(ExecutionTask.id == prediction_id)
-        .values(status="cancelled", cancel_reason="client cancel"))
+        update(ExecutionTask).where(
+            ExecutionTask.id == prediction_id,
+            ExecutionTask.status.in_(("queued", "running")),
+        ).values(status="cancelled", cancel_reason="client cancel"))
     await session.commit()
     await session.refresh(task)
     return task_to_prediction(task, service=task.workflow_name)
