@@ -6,7 +6,11 @@ export interface AsyncRunStateProps {
   predictionId: string
   /** succeeded 终态触发一次,带上 prediction.output(供调用方直接喂给 SchemaDrivenOutput)。 */
   onDone: (output: Record<string, unknown> | null) => void
-  /** 用户点「取消」且 cancelPrediction 请求已结束(无论成败)后触发一次。 */
+  /** failed 终态触发一次,带上 prediction.error —— 调用方靠这个回调解锁(复位 running/
+   *  submit 按钮),不只是靠 onDone;否则 failed 会永久锁死 Playground(无路径复位)。 */
+  onError: (message: string) => void
+  /** canceled 终态触发一次 —— 不管是本组件「取消」按钮触发,还是轮询探测到的外部取消
+   *  (另一个客户端 / 管理操作取消了同一个 prediction),调用方都要解锁。 */
   onCancel: () => void
 }
 
@@ -41,13 +45,31 @@ function tickElapsed(sinceIso: string | null, now: number): string {
 }
 
 /** Playground 异步运行态(comfy_template respond-async 服务):2s 轮询 prediction 状态,
- * 渲染分段进度 + 取消按钮;终态 succeeded 把 output 交给调用方渲染,failed 展示 error 文案。 */
-export default function AsyncRunState({ predictionId, onDone, onCancel }: AsyncRunStateProps) {
+ * 渲染分段进度 + 取消按钮;三个终态各走各的回调结算一次(succeeded→onDone,failed→onError,
+ * canceled→onCancel),不管终态是轮询探测到的还是本组件「取消」按钮请求直接返回的 —— 调用方
+ * 靠这些回调解锁自己的 running 态,任何终态都不能只停在本组件内部没个出口(会永久锁死)。 */
+export default function AsyncRunState({ predictionId, onDone, onError, onCancel }: AsyncRunStateProps) {
   const [prediction, setPrediction] = useState<Prediction | null>(null)
   const [pollError, setPollError] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const [now, setNow] = useState(() => Date.now())
-  const doneCalledRef = useRef(false)
+  // 三个终态回调只该二选一地各触发一次——不管是轮询循环发现的,还是 cancel 请求直接
+  // 返回的(二者可能对同一个 prediction 竞态命中,只认第一个)。
+  const settledRef = useRef(false)
+
+  const settle = (pred: Prediction) => {
+    if (settledRef.current) return
+    if (pred.status === 'succeeded') {
+      settledRef.current = true
+      onDone(pred.output)
+    } else if (pred.status === 'failed') {
+      settledRef.current = true
+      onError(pred.error ?? '未知错误')
+    } else if (pred.status === 'canceled') {
+      settledRef.current = true
+      onCancel()
+    }
+  }
 
   useEffect(() => {
     let alive = true
@@ -61,10 +83,7 @@ export default function AsyncRunState({ predictionId, onDone, onCancel }: AsyncR
         setPrediction(pred)
         if (TERMINAL.has(pred.status)) {
           if (timer) clearInterval(timer)
-          if (pred.status === 'succeeded' && !doneCalledRef.current) {
-            doneCalledRef.current = true
-            onDone(pred.output)
-          }
+          settle(pred)
         }
       } catch (e) {
         // 轮询偶发网络抖动:留住上一帧,不中断轮询,下一轮重试。
@@ -78,7 +97,7 @@ export default function AsyncRunState({ predictionId, onDone, onCancel }: AsyncR
       alive = false
       if (timer) clearInterval(timer)
     }
-    // predictionId 变化才重开一轮轮询;onDone 由调用方每次渲染新建也不该重触发。
+    // predictionId 变化才重开一轮轮询;回调由调用方每次渲染新建也不该重触发。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [predictionId])
 
@@ -92,12 +111,16 @@ export default function AsyncRunState({ predictionId, onDone, onCancel }: AsyncR
   const handleCancel = async () => {
     setCancelling(true)
     try {
-      await cancelPrediction(predictionId)
+      // 后端 cancel_prediction 有 TOCTOU 守护:interrupt 等待窗口内渲染可能已经跑完,
+      // 这时返回的是 succeeded+output,不是 cancelled —— 照实结算(settle 按 pred.status
+      // 分派),不能无条件当成「已取消」把刚拿到的结果丢掉。
+      const pred = await cancelPrediction(predictionId)
+      setPrediction(pred)
+      if (TERMINAL.has(pred.status)) settle(pred)
     } catch (e) {
       setPollError((e as Error).message ?? String(e))
     } finally {
       setCancelling(false)
-      onCancel()
     }
   }
 

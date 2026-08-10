@@ -491,7 +491,9 @@ function SegBtn({ active, onClick, icon, label }: { active: boolean; onClick: ()
   )
 }
 
-function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInputs?: Record<string, unknown> }) {
+// exported for tests: comfy_template respond-async 集成回归(Task 10 review 修复)需要
+// 直接渲染这层——不依赖 react-query/react-router 的 ServiceDetailPage 外壳。
+export function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInputs?: Record<string, unknown> }) {
   const [result, setResult] = useState<Record<string, unknown> | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -715,6 +717,16 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
                 onDone={(output) => {
                   setResult(output)
                   setStatus('completed')
+                  setLatencyMs(Math.round(performance.now() - startRef.current))
+                  setRunning(false)
+                  setAsyncPredictionId(null)
+                }}
+                onError={(message) => {
+                  // 与同步路径的 catch 分支对称:落 error/failed,交给下面
+                  // (!asyncPredictionId 后)SchemaDrivenOutput 的 error prop 渲染,
+                  // 而不是让 AsyncRunState 内部一直卡着——否则 failed 永久锁死提交按钮。
+                  setError(message)
+                  setStatus('failed')
                   setLatencyMs(Math.round(performance.now() - startRef.current))
                   setRunning(false)
                   setAsyncPredictionId(null)

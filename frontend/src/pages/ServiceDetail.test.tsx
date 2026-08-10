@@ -1,6 +1,15 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { formatHms, AsrSegments, buildAsrCurl } from './ServiceDetail'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, act } from '@testing-library/react'
+import { formatHms, AsrSegments, buildAsrCurl, PlaygroundTab } from './ServiceDetail'
+import type { ServiceDetail as ServiceDetailT } from '../api/services'
+import * as predictionsApi from '../api/predictions'
+import type { Prediction } from '../api/predictions'
+
+vi.mock('../api/predictions', () => ({
+  createPredictionAsync: vi.fn(),
+  getPrediction: vi.fn(),
+  cancelPrediction: vi.fn(),
+}))
 
 describe('buildAsrCurl', () => {
   it('默认格式:multipart /v1/audio/transcriptions + timestamps=true(平台增强段)', () => {
@@ -114,5 +123,115 @@ describe('AsrSegments', () => {
     render(<AsrSegments segments={allNull} requested={true} />)
     expect(screen.getByText('2 段')).toBeInTheDocument()
     expect(screen.queryByText(/位说话人/)).not.toBeInTheDocument()
+  })
+})
+
+// Task 10 review 修复(Critical):comfy_template 服务走 respond-async 提交后,PlaygroundTab
+// 的 running/asyncPredictionId 全靠 AsyncRunState 的 onDone/onError/onCancel 回调复位——
+// 之前只接了 onDone/onCancel,failed 终态没有出口,running 永久 true、提交按钮永久禁用。
+// 这里直接渲染 PlaygroundTab(不经 react-query/react-router 的 ServiceDetailPage 外壳,
+// 那层跟这个 bug 无关,只会让测试更重),走真实的 submit → createPredictionAsync →
+// AsyncRunState 轮询 → 回调收尾这条完整生产路径。
+describe('PlaygroundTab · comfy_template respond-async 集成', () => {
+  function comfyService(overrides: Partial<ServiceDetailT> = {}): ServiceDetailT {
+    return {
+      id: 'svc-1',
+      name: 'comfy-svc',
+      type: 'app',
+      status: 'active',
+      source_type: 'comfy_template',
+      source_id: '7',
+      source_name: 'tpl',
+      category: 'image',
+      meter_dim: null,
+      workflow_id: null,
+      workflow_name: null,
+      snapshot_hash: null,
+      snapshot_schema_version: 1,
+      version: 1,
+      models: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      workflow_snapshot: { nodes: [{ id: '138', type: 'T' }], edges: [] },
+      exposed_inputs: [],
+      exposed_outputs: [],
+      ...overrides,
+    }
+  }
+
+  function predictionFixture(overrides: Partial<Prediction>): Prediction {
+    return {
+      id: '42',
+      service: 'comfy-svc',
+      status: 'starting',
+      input: {},
+      output: null,
+      error: null,
+      progress: { nodes_done: 0, nodes_total: 1 },
+      metrics: {},
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+      ...overrides,
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.clearAllMocks()
+  })
+
+  it('完整周期 提交→轮询→succeeded:output 走 SchemaDrivenOutput,按钮复位可再次运行', async () => {
+    vi.mocked(predictionsApi.createPredictionAsync).mockResolvedValue(predictionFixture({}))
+    vi.mocked(predictionsApi.getPrediction)
+      .mockResolvedValueOnce(predictionFixture({ status: 'processing' }))
+      .mockResolvedValueOnce(predictionFixture({
+        status: 'succeeded',
+        output: { outputs: { '92': { video_url: '/race-cat.mp4' } } },
+      }))
+
+    render(<PlaygroundTab svc={comfyService()} />)
+
+    fireEvent.click(screen.getByText(/▶ 运行/))
+    await act(async () => { await Promise.resolve() })
+    expect(predictionsApi.createPredictionAsync).toHaveBeenCalledWith('comfy-svc', {})
+    // 提交中:按钮禁用(running=true),不能重复点。
+    expect(screen.getByText(/运行中…/)).toBeDisabled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+
+    // succeeded → onDone 把 output 塞进既有 SchemaDrivenOutput 渲染路径(exposed_outputs=[]
+    // 时兜底转储原始 JSON,断言原文出现即证明走的是同一条渲染代码,不是另起一套展示)。
+    expect(screen.getByText(/race-cat\.mp4/)).toBeInTheDocument()
+    // 按钮解锁,可以再次提交 —— 不是被永久锁死的「运行中…」。
+    const runBtn = screen.getByText('▶ 运行')
+    expect(runBtn).not.toBeDisabled()
+  })
+
+  it('完整周期 提交→轮询→failed:展示 error 文案,按钮解锁(回归 Critical:之前会永久锁死)', async () => {
+    vi.mocked(predictionsApi.createPredictionAsync).mockResolvedValue(predictionFixture({}))
+    // 首次轮询就拿到 failed(边界:提交即失败)—— mockResolvedValue(非 Once)让每次调用都
+    // 立即落终态,精确复现「onError 是唯一出口」这条路径,不依赖多轮 timer 推进。
+    vi.mocked(predictionsApi.getPrediction).mockResolvedValue(
+      predictionFixture({ status: 'failed', error: 'ComfyUI 节点 92 崩了' }),
+    )
+
+    render(<PlaygroundTab svc={comfyService()} />)
+
+    fireEvent.click(screen.getByText(/▶ 运行/))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await Promise.resolve() })
+
+    // error 文案展示(经 onError → setError/setStatus('failed') → 复用同步路径的
+    // SchemaDrivenOutput error 渲染)。
+    expect(screen.getByText('ComfyUI 节点 92 崩了')).toBeInTheDocument()
+    // Critical 回归点:按钮必须解锁,不能停在「运行中…」再也点不动。
+    const runBtn = screen.getByText('▶ 运行')
+    expect(runBtn).not.toBeDisabled()
   })
 })
