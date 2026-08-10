@@ -113,10 +113,43 @@ async def test_cancel_prediction_without_bearer_uses_admin_session(client, monke
             break
         await asyncio.sleep(0.02)
     assert status == "processing", f"prediction 未在超时前进入 running(last={status})"
+    # C1 fix:cancel_prediction 现在按 comfy_bridge.get_running_task_id() 精确匹配才转发
+    # interrupt——ExecutionTask.status 在节点真正拿到渲染信号量*之前*就已经是 "running"
+    # 了,轮询 DB 状态不能证明节点已经到那一步。直接轮询真实条件(确定性,不猜调度轮次)。
+    deadline2 = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline2:
+        if nb.get_running_task_id() == int(pid):
+            break
+        await asyncio.sleep(0.005)
+    else:
+        raise AssertionError(f"渲染信号量没能在超时前被 task {pid} 持有")
 
     cancel_resp = await client.post(f"/v1/predictions/{pid}/cancel")
     assert cancel_resp.status_code == 200, cancel_resp.text
     assert cancel_resp.json()["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_create_prediction_falls_back_to_admin_session_when_bearer_invalid(client, monkeypatch):
+    """I5 fix:`_auth_predictions` 收到一个 `Authorization` header,但它不是任何已注册
+    `InstanceApiKey`(典型场景是 CLI `ADMIN_TOKEN` bearer——它压根不是 M:N key)时,
+    `verify_bearer_token_any` 会抛 401。修复前这个异常直接甩出去,ADMIN_TOKEN 永远够
+    不到 predictions 端点;修复后应退回 `request_is_authed` 再判一次。
+
+    注:conftest 强制 `ADMIN_PASSWORD=""` ⇒ `is_login_required()`==False ⇒
+    `request_is_authed` 对任何请求恒真——这里没法真正验证 ADMIN_TOKEN 的值本身被比对
+    上了,只能验证"bearer 校验失败时会走 fallback 而不是硬 401"这条路径确实被触发
+    (旧代码在这个请求上会 401,新代码走 fallback 落到 202)。"""
+    fc = FakeClient()
+    monkeypatch.setattr(nb, "get_client", lambda: fc)
+    _patch_no_thumbnail(monkeypatch)
+
+    await _make_service(client, "admin-token-fallback")
+
+    r = await client.post(
+        "/v1/services/admin-token-fallback/predictions", json={"input": {"prompt": "hi"}},
+        headers={"Authorization": "Bearer sk-not-a-real-instance-key", "Prefer": "respond-async"})
+    assert r.status_code == 202, r.text
 
 
 @pytest.mark.asyncio

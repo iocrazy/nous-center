@@ -12,6 +12,7 @@ import base64
 import pytest
 
 import src.services.nodes.comfy_bridge as nb
+from src.services.comfy.client import ComfyError
 from src.services.nodes.registry import get_node_class
 
 PNG1PX = base64.b64decode(
@@ -116,6 +117,68 @@ async def test_random_param_generates_seed(monkeypatch, fake):
     assert isinstance(out["seed"], int)
     assert 0 <= out["seed"] < 2 ** 32
     assert fake.submitted["1"]["inputs"]["seed"] == out["seed"]
+
+
+@pytest.mark.asyncio
+async def test_empty_outputs_raises_instead_of_silent_success(monkeypatch, fake):
+    """C1 fix:collect_outputs 找不到任何可识别产物(典型是渲染被中断在写产物之前)
+    时,节点必须显式报错而不是返回一个「成功」的空信封。"""
+    async def _wait_no_outputs(prompt_id, *, timeout_s, interval_s=2.0):
+        return {"outputs": {}}
+    monkeypatch.setattr(fake, "wait", _wait_no_outputs)
+    node = get_node_class("comfyui_workflow")()
+    with pytest.raises(ComfyError, match="未产出任何产物"):
+        await node.invoke({"template_id": 1, "prompt": "hello"}, {})
+
+
+@pytest.mark.asyncio
+async def test_stale_mapping_node_logs_warning_and_skips(monkeypatch, fake, caplog):
+    """Promoted minor ①:映射指向的节点已不在 graph 里(重新上传后未同步映射)时,
+    渲染不该静默丢参数——记一条带 template id + key 的 warning。"""
+    async def fake_load_template_stale(tid):
+        return (
+            {"92": {"class_type": "SaveVideo", "inputs": {}}},  # 138 节点已不存在
+            [{"key": "prompt", "type": "string", "comfy_node_id": "138",
+              "comfy_input": "value", "required": False}],
+        )
+    monkeypatch.setattr(nb, "load_template", fake_load_template_stale)
+    node = get_node_class("comfyui_workflow")()
+    with caplog.at_level("WARNING"):
+        out = await node.invoke({"template_id": 42, "prompt": "hello"}, {})
+    assert out["video_url"] == "/files/x.mp4"
+    warnings = [r for r in caplog.records if "comfy_bridge" in r.name]
+    assert any("42" in r.message and "prompt" in r.message for r in warnings)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_skips_render_before_submit(client, monkeypatch, fake):
+    """C1 fix:桥节点在拿到渲染信号量、真正 submit 给 ComfyUI 前,复查一次 DB —— 如果
+    这个 ExecutionTask 已经被标记 cancelled(排队等信号量期间被取消),直接报错跳过
+    渲染,绝不该"取消了的任务照样悄悄跑完"。"""
+    from sqlalchemy import select
+
+    from src.models.database import get_session_factory
+    from src.models.execution_task import ExecutionTask
+
+    session_factory = get_session_factory()
+    async with session_factory() as s:
+        task = ExecutionTask(workflow_name="x", status="cancelled")
+        s.add(task)
+        await s.commit()
+        await s.refresh(task)
+        task_id = task.id
+
+    node = get_node_class("comfyui_workflow")()
+    with pytest.raises(ComfyError, match="已取消"):
+        await node.invoke({"template_id": 1, "prompt": "hello", "_task_id": task_id}, {})
+    assert fake.submitted is None  # never reached client.submit()
+
+    # sanity: row really is what we set up (guards against a fixture typo silently
+    # making this test pass for the wrong reason)
+    async with session_factory() as s:
+        t = (await s.execute(select(ExecutionTask).where(ExecutionTask.id == task_id))
+             ).scalar_one()
+        assert t.status == "cancelled"
 
 
 @pytest.mark.asyncio

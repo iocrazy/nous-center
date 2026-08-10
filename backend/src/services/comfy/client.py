@@ -103,3 +103,25 @@ class ComfyClient:
             await self._client.post("/interrupt", timeout=5)
         except httpx.HTTPError:
             pass  # 尽力而为:sidecar 掉线时取消不应抛错
+
+
+# I4 fix:进程级懒单例——`comfy_bridge.py` / `comfy_templates.py` 此前各自的
+# `get_client()` 都是「每次调用现建一个 ComfyClient」,每建一个就新开一个
+# httpx.AsyncClient(+ 连接池),旧的从不关闭,纯泄漏。改成单进程共享一个实例。
+# 两个模块各自 `from ... import get_comfy_client as get_client` 保留各自的
+# `get_client` 名字(测试按模块 monkeypatch.setattr(mod, "get_client", ...) 的
+# 惯例不变——patch 的是各自模块命名空间里的这个名字,互不影响)。
+_singleton: ComfyClient | None = None
+
+
+def get_comfy_client() -> ComfyClient:
+    global _singleton
+    if _singleton is None:
+        _singleton = ComfyClient()
+    return _singleton
+
+
+def reset_comfy_client() -> None:
+    """测试/重配置用:丢弃缓存的单例,下次 get_comfy_client() 重新构造。"""
+    global _singleton
+    _singleton = None

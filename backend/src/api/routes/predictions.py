@@ -52,10 +52,22 @@ async def _auth_predictions(
     header 校验阶段就以「Field required」拒绝,同 apps.py 改前的坑。返回 `(None, None)`
     让下游(`_resolve_service` / get_prediction / cancel_prediction)按 admin 路径跳过
     grant/限流/IDOR owner 校验(单管理员部署里 admin 隐式对所有 prediction 有权限)。
+
+    I5 fix:`Authorization` header 存在但不是任何已注册 `InstanceApiKey`(典型场景——
+    CLI `ADMIN_TOKEN` bearer,它根本不是 M:N key)时,`verify_bearer_token_any` 会抛
+    401。旧代码在这里直接把异常甩出去,`ADMIN_TOKEN` 永远够不到 predictions 端点。
+    现在 bearer 校验失败就退回 `request_is_authed`(它自己会看 `Authorization` header
+    里的 `ADMIN_TOKEN` bearer,见 admin_session.py::admin_token_matches),校验通过
+    仍走 `(None, None)` admin 旁路——IDOR 语义不变。
     """
-    if authorization:
-        return await verify_bearer_token_any(authorization, session)
     from src.api.admin_session import request_is_authed  # noqa: PLC0415
+    if authorization:
+        try:
+            return await verify_bearer_token_any(authorization, session)
+        except HTTPException:
+            if request_is_authed(request):
+                return None, None
+            raise
     if request_is_authed(request):
         return None, None
     raise HTTPException(401, detail="Missing API key or admin session")
@@ -314,6 +326,15 @@ async def cancel_prediction(
     comfy_template 服务的桥节点(Task 6)不经 runner_clients 广播那套 abort —— 它是串行
     跑在这个进程里、正堵在 `ComfyClient.wait()` 上,唯一能真正打断当前渲染的是转发
     ComfyUI 的 `/interrupt`(串行语义下"中断当前"即"中断本任务",局限见 spec §12)。
+
+    C1 fix:一个 comfy_template 服务的 render 信号量(`comfy_bridge._SEM`)是**进程级
+    单例**,不是每个 prediction 一把——排在信号量后面等待的其它 comfy_template
+    prediction 的 DB 状态也是 "running"(workflow_runner 在拿到信号量之前就已经把
+    status 落 running 了)。旧代码只要 status=="running" 就无条件转发 `/interrupt`,
+    会把**当前真正在 ComfyUI 上跑的那个不相干任务**打断,取消 B 却误杀 A 在渲染的图。
+    现在只在被取消的 prediction_id 确实是 `comfy_bridge` 当前持有信号量的那个任务时
+    才转发 —— 排在后面的任务靠桥节点自己在拿到信号量后的 cancel-race 复查跳过渲染
+    (comfy_bridge.py::_task_is_cancelled),不需要也不该经这条 interrupt 路径。
     """
     _, api_key = auth
     task = (await session.execute(
@@ -329,14 +350,16 @@ async def cancel_prediction(
             select(ServiceInstance).where(ServiceInstance.name == task.workflow_name)
         )).scalar_one_or_none()
         if svc is not None and svc.source_type == "comfy_template":
-            from src.api.routes.comfy_templates import get_client  # noqa: PLC0415
-            try:
-                await get_client().interrupt()
-            except Exception as e:  # noqa: BLE001 — sidecar 掉线不该挡住 DB 落 cancelled
-                import logging  # noqa: PLC0415
-                logging.getLogger(__name__).warning(
-                    "cancel_prediction: comfy interrupt failed for task %s: %s",
-                    prediction_id, e)
+            from src.services.nodes.comfy_bridge import get_running_task_id  # noqa: PLC0415
+            if get_running_task_id() == prediction_id:
+                from src.api.routes.comfy_templates import get_client  # noqa: PLC0415
+                try:
+                    await get_client().interrupt()
+                except Exception as e:  # noqa: BLE001 — sidecar 掉线不该挡住 DB 落 cancelled
+                    import logging  # noqa: PLC0415
+                    logging.getLogger(__name__).warning(
+                        "cancel_prediction: comfy interrupt failed for task %s: %s",
+                        prediction_id, e)
     # TOCTOU 守护(镜像 workflow_runner.py run_workflow_task 反方向的 cancel-race guard):
     # 上面 `await interrupt()`(生产里最长 5s 真实 HTTP 往返)期间,后台渲染完全可能已经
     # 跑完并把 completed+result 落库 —— 这里若无条件 UPDATE status='cancelled',会把一个

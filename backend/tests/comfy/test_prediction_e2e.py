@@ -77,6 +77,46 @@ async def _poll_prediction(client, pid, headers, timeout: float = 5.0) -> dict:
     raise AssertionError(f"prediction {pid} 未在 {timeout}s 内到终态,last={body}")
 
 
+def _assert_video_output_shape(output: dict) -> None:
+    """Upgrade of the old loose `"mp4" in str(output)` check (reviewer
+    recommendation): asserts the actual envelope shape —
+    `output["outputs"]["out"]` (the bridge snapshot's terminal `video_output`
+    node, see comfy_templates.py::_bridge_snapshot) carries a non-empty
+    `video_url` AND an `items` list whose entries carry both `url` and `kind`
+    (not just "some string containing mp4 somewhere in the whole payload").
+    """
+    out = (output or {}).get("outputs", {}).get("out", {})
+    assert out.get("video_url"), output
+    assert ".mp4" in out["video_url"], output
+    items = out.get("items")
+    assert items, output
+    for item in items:
+        assert item.get("url"), item
+        assert item.get("kind"), item
+    assert items[0]["kind"] == "video"
+    assert items[0]["url"] == out["video_url"]
+
+
+async def _wait_running_task_id(task_id: int, timeout: float = 5.0) -> None:
+    """C1 fix follow-up: `cancel_prediction` now forwards `/interrupt` only when
+    the cancelled prediction_id matches `comfy_bridge.get_running_task_id()`
+    (see predictions.py) — but `ExecutionTask.status` flips to "running" in
+    `workflow_runner.run_workflow_task` *before* the bridge node ever reaches
+    `async with _SEM:` and sets that module global. Polling until DB status ==
+    "processing" is therefore not by itself proof the node has acquired the
+    semaphore yet. Poll the actual condition directly (deterministic — no
+    guessing at scheduling-turn counts) before asserting on interrupt-
+    forwarding behavior."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if nb.get_running_task_id() == task_id:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(
+        f"comfy_bridge 的渲染信号量没能在 {timeout}s 内被 task {task_id} 持有"
+        f"(last get_running_task_id()={nb.get_running_task_id()!r})")
+
+
 def _patch_no_thumbnail(monkeypatch) -> None:
     """跳过真 ffmpeg——FakeClient.download() 吐的不是合法 mp4 字节,extract_first_frame
     会静默 fail(设计如此,不影响本文件断言),但真去 spawn 一个进程没必要拖慢测试。"""
@@ -102,7 +142,7 @@ async def test_async_prediction_completes_with_video(client, monkeypatch):
 
     final = await _poll_prediction(client, pid, headers)
     assert final["status"] == "succeeded", final
-    assert "mp4" in str(final["output"])
+    _assert_video_output_shape(final["output"])
 
 
 @pytest.mark.asyncio
@@ -121,7 +161,7 @@ async def test_predictions_sync_mode_also_returns_video(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "succeeded", body
-    assert "mp4" in str(body["output"])
+    _assert_video_output_shape(body["output"])
 
 
 class _InterruptFakeClient(FakeClient):
@@ -175,6 +215,7 @@ async def test_cancel_forwards_interrupt_and_reaches_cancelled(client, monkeypat
             break
         await asyncio.sleep(0.02)
     assert status == "processing", f"prediction 未在超时前进入 running(last={status})"
+    await _wait_running_task_id(int(pid))  # see docstring — C1 fix needs the node past `async with _SEM:`
 
     cancel_resp = await client.post(f"/v1/predictions/{pid}/cancel", headers=headers)
     assert cancel_resp.status_code == 200, cancel_resp.text
@@ -250,6 +291,7 @@ async def test_cancel_does_not_clobber_a_completion_that_races_the_interrupt(cli
             break
         await asyncio.sleep(0.02)
     assert status == "processing", f"prediction 未在超时前进入 running(last={status})"
+    await _wait_running_task_id(int(pid))  # see docstring — C1 fix needs the node past `async with _SEM:`
 
     cancel_resp = await client.post(f"/v1/predictions/{pid}/cancel", headers=headers)
     assert cancel_resp.status_code == 200, cancel_resp.text
@@ -317,6 +359,132 @@ async def test_cancel_on_non_comfy_service_skips_interrupt(client, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "canceled"
     assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_outputs_marks_task_failed(client, monkeypatch):
+    """C1 fix companion:ComfyUI 返回了 history 但没有一个可识别产物(渲染被中断在
+    写产物之前是最常见成因)→ 桥节点报错,task 必须落 failed(不是悄悄 succeeded 却
+    没有任何输出)。"""
+    class _EmptyOutputsFakeClient(FakeClient):
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+            return {"outputs": {}}
+
+    fc = _EmptyOutputsFakeClient()
+    monkeypatch.setattr(nb, "get_client", lambda: fc)
+    _patch_no_thumbnail(monkeypatch)
+
+    raw_key = await _make_service_and_key(client, "e2e-empty-outputs")
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    r = await client.post(
+        "/v1/services/e2e-empty-outputs/predictions", json={"input": {"prompt": "hi"}},
+        headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "failed", body
+    assert "未产出" in (body["error"] or ""), body
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_behind_semaphore_does_not_interrupt_other_render(client, monkeypatch):
+    """C1 fix — 核心场景:comfy_bridge._SEM 是进程级单例,不是每 prediction 一把。两个
+    comfy_template prediction(A、B)先后提交,A 先抢到信号量正在渲染(卡在 wait()),
+    B 排在信号量后面等待——此时 B 的 ExecutionTask.status 也已经是 "running"(
+    workflow_runner 在拿到信号量*之前*就把 status 落 running 了)。
+
+    - 取消 B:不该打断 A 正在跑的渲染(fc.interrupt_calls 仍是 0),B 必须在拿到信号量
+      后经 cancel-race 复查直接终态 cancelled,从未调用 client.submit()。
+    - 取消 A:此时 A 才是真正持有信号量、卡在 ComfyUI 上的任务,cancel 必须转发
+      interrupt(fc.interrupt_calls 变 1)。
+    """
+    render_gate = asyncio.Event()
+
+    class _TwoTaskFakeClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.interrupt_calls = 0
+            self.submitted_graphs: list[dict] = []
+            self.first_submitted = asyncio.Event()
+
+        async def submit(self, graph):
+            self.submitted_graphs.append(graph)
+            self.first_submitted.set()
+            return f"p{len(self.submitted_graphs)}"
+
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+            await render_gate.wait()
+            return {"outputs": {"92": {"images": [
+                {"filename": "out.mp4", "subfolder": "", "type": "output"}]}}}
+
+        async def interrupt(self) -> None:
+            self.interrupt_calls += 1
+
+    fc = _TwoTaskFakeClient()
+    monkeypatch.setattr(nb, "get_client", lambda: fc)
+    monkeypatch.setattr(comfy_templates_route, "get_client", lambda: fc)
+    _patch_no_thumbnail(monkeypatch)
+
+    raw_key_a = await _make_service_and_key(client, "e2e-2task-a")
+    raw_key_b = await _make_service_and_key(client, "e2e-2task-b")
+    headers_a = {"Authorization": f"Bearer {raw_key_a}"}
+    headers_b = {"Authorization": f"Bearer {raw_key_b}"}
+
+    # A: submit → acquires the module-level semaphore, calls submit(), then blocks
+    # in wait() on render_gate. Wait for fc.first_submitted so we know A truly
+    # holds the semaphore before starting B (deterministic, not a sleep-and-hope).
+    ra = await client.post(
+        "/v1/services/e2e-2task-a/predictions", json={"input": {"prompt": "a"}},
+        headers={**headers_a, "Prefer": "respond-async"})
+    assert ra.status_code == 202, ra.text
+    pid_a = ra.json()["id"]
+    await asyncio.wait_for(fc.first_submitted.wait(), timeout=5.0)
+
+    # B: submitted while A holds the semaphore — B's node.invoke() will reach
+    # `async with _SEM:` and block there (never calls client.submit()).
+    rb = await client.post(
+        "/v1/services/e2e-2task-b/predictions", json={"input": {"prompt": "b"}},
+        headers={**headers_b, "Prefer": "respond-async"})
+    assert rb.status_code == 202, rb.text
+    pid_b = rb.json()["id"]
+    deadline = asyncio.get_event_loop().time() + 5.0
+    status_b = None
+    while asyncio.get_event_loop().time() < deadline:
+        status_b = (await client.get(f"/v1/predictions/{pid_b}", headers=headers_b)).json()["status"]
+        if status_b == "processing":
+            break
+        await asyncio.sleep(0.02)
+    assert status_b == "processing", f"B 未在超时前进入 running(last={status_b})"
+    # No extra wait needed here: A already provably holds the semaphore (we
+    # waited for fc.first_submitted above, which only fires after A sets
+    # `_running_task_id`), so `get_running_task_id() == pid_b` can never be
+    # true right now regardless of how far B's own coroutine has progressed —
+    # the interrupt-skip assertion below doesn't race on B's scheduling at all.
+
+    # Cancel B first — must NOT touch A's render.
+    cancel_b = await client.post(f"/v1/predictions/{pid_b}/cancel", headers=headers_b)
+    assert cancel_b.status_code == 200, cancel_b.text
+    assert cancel_b.json()["status"] == "canceled"
+    assert fc.interrupt_calls == 0, "取消排队中的 B 不该打断 A 正在跑的渲染"
+
+    # Cancel A next — A is the one actually holding the semaphore right now.
+    cancel_a = await client.post(f"/v1/predictions/{pid_a}/cancel", headers=headers_a)
+    assert cancel_a.status_code == 200, cancel_a.text
+    assert cancel_a.json()["status"] == "canceled"
+    assert fc.interrupt_calls == 1, "取消真正持有信号量的 A 必须转发 interrupt"
+
+    # Release A's render — this lets A's run_workflow_task honor the cancel it
+    # already has (see existing single-task cancel-race test), and releases the
+    # semaphore so B's queued invoke() finally proceeds: it must find its own
+    # ExecutionTask already cancelled and raise *before* ever calling submit().
+    render_gate.set()
+
+    final_a = await _poll_prediction(client, pid_a, headers_a)
+    assert final_a["status"] == "canceled", final_a
+
+    final_b = await _poll_prediction(client, pid_b, headers_b)
+    assert final_b["status"] == "canceled", final_b
+    assert len(fc.submitted_graphs) == 1, "B 必须从未调用 submit()——只有 A 的图被提交过"
 
 
 def test_task_to_dict_surfaces_video_thumbnails_and_url():
