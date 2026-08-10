@@ -15,6 +15,7 @@ import os
 import time
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
@@ -332,6 +333,12 @@ async def comfy_object_info():
 
     # Cache miss or expired: fetch from client
     client = get_client()
-    data = await client.object_info()
+    try:
+        data = await client.object_info()
+    except (httpx.HTTPError, ValueError) as e:
+        raise HTTPException(
+            502,
+            detail=f"ComfyUI sidecar 不可达或返回无效响应:{str(e)[:100]}"
+        )
     _object_info_cache = (now, data)
     return data

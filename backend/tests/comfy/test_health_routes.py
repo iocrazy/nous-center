@@ -1,4 +1,5 @@
 import pytest
+import httpx
 import src.api.routes.comfy_templates as ct_mod
 
 
@@ -28,3 +29,14 @@ async def test_object_info_cached(client, monkeypatch):
     await client.get("/api/v1/comfy/object-info")
     await client.get("/api/v1/comfy/object-info")
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_object_info_sidecar_unreachable(client, monkeypatch):
+    class FailingClient(FakeClient):
+        async def object_info(self):
+            raise httpx.ConnectError("sidecar down")
+    monkeypatch.setattr(ct_mod, "get_client", lambda: FailingClient())
+    ct_mod._object_info_cache = None
+    r = await client.get("/api/v1/comfy/object-info")
+    assert r.status_code == 502
