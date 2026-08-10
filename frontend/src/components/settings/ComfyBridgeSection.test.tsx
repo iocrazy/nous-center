@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ComfyBridgeSection from './ComfyBridgeSection'
@@ -14,6 +14,9 @@ function withQuery(ui: React.ReactNode) {
 }
 
 describe('ComfyBridgeSection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
   it('shows online status with queue depth and version', async () => {
     vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
       online: true,
@@ -115,6 +118,26 @@ describe('ComfyBridgeSection', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/超时 1h/)).toBeTruthy()
+    })
+  })
+
+  it('preserves decimal hours for non-integer values (e.g., 5400s → 1.5h)', async () => {
+    vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
+      online: true,
+      queue_depth: 0,
+      version: '0.4.12',
+      base_url: 'http://localhost:8188',
+      timeout_s: 5400,
+    })
+
+    render(
+      withQuery(
+        <ComfyBridgeSection />
+      )
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/超时 1\.5h/)).toBeTruthy()
     })
   })
 })

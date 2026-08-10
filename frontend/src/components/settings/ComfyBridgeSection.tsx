@@ -1,33 +1,22 @@
-import { useEffect, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
-import { getComfyHealth, type ComfyHealth } from '../../api/comfyTemplates'
+import { useQuery } from '@tanstack/react-query'
+import { getComfyHealth } from '../../api/comfyTemplates'
 
 export default function ComfyBridgeSection() {
-  const [health, setHealth] = useState<ComfyHealth | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const fetchHealth = async () => {
-      try {
-        const result = await getComfyHealth()
-        setHealth(result)
-        setError(null)
-      } catch (err) {
-        setError('无法获取状态')
-        setHealth(null)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchHealth()
-  }, [])
+  const { data: health, isLoading, isError } = useQuery({
+    queryKey: ['comfy-health'],
+    queryFn: getComfyHealth,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
 
   const formatTimeout = (seconds: number): string => {
     if (seconds >= 3600) {
-      const hours = Math.round(seconds / 3600)
-      return `${hours}h`
+      const hours = seconds / 3600
+      if (Number.isInteger(hours)) {
+        return `${hours}h`
+      }
+      return `${hours.toFixed(1)}h`
     }
     return `${seconds}s`
   }
@@ -43,7 +32,7 @@ export default function ComfyBridgeSection() {
         </div>
       </div>
 
-      {loading && (
+      {isLoading && (
         <div
           style={{
             padding: 16,
@@ -56,7 +45,7 @@ export default function ComfyBridgeSection() {
         </div>
       )}
 
-      {error && (
+      {isError && (
         <div
           style={{
             marginTop: 18,
@@ -72,11 +61,11 @@ export default function ComfyBridgeSection() {
           }}
         >
           <AlertCircle size={14} style={{ flexShrink: 0 }} />
-          {error}
+          无法获取状态
         </div>
       )}
 
-      {health && !error && (
+      {health && !isError && (
         <>
           <div
             style={{
