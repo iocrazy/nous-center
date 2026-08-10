@@ -83,10 +83,12 @@ export default function HistoryOverlay() {
     }
   }
 
-  // 全画廊扁平图集(跨 task 多图)+ 每 task 首图的全局索引(点卡片定位)。
-  const { gallery, startIndex } = useMemo(() => {
+  // 全画廊扁平图集(跨 task 多图)+ 每 task 首图的全局索引(点卡片定位)+ 每 task 检出的
+  // 视频 url(Card 判 isVideo/占位缩略同一份数据,免得渲染时再调一遍 findVideoUrl)。
+  const { gallery, startIndex, videoUrlByTaskId } = useMemo(() => {
     const g: LightboxItem[] = []
     const start = new Map<string | number, number>()
+    const videoMap = new Map<string | number, string>()
     for (const t of items) {
       start.set(t.id, g.length)
       const meta = taskMeta(t)
@@ -94,12 +96,13 @@ export default function HistoryOverlay() {
       if (videoUrl) {
         // 视频任务:灯箱条目是视频 url(不是 PNG 首帧缩略),kind='video' 让 Lightbox
         // 切到 <video> 分支;卡片缩略图仍走 output_thumbnails[0](见下方 Card 调用)。
+        videoMap.set(t.id, videoUrl)
         g.push({ url: videoUrl, meta, kind: 'video' })
       } else {
         for (const url of t.output_thumbnails ?? []) g.push({ url, meta })
       }
     }
-    return { gallery: g, startIndex: start }
+    return { gallery: g, startIndex: start, videoUrlByTaskId: videoMap }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, services])
 
@@ -140,12 +143,18 @@ export default function HistoryOverlay() {
           >
             {items.map((t) => {
               const thumb = t.output_thumbnails![0]
+              const videoUrl = videoUrlByTaskId.get(t.id)
+              const isVideo = !!videoUrl
+              // ffmpeg 缺省/抽帧失败(thumbnail.py extract_first_frame → None)时
+              // output_thumbnails[0] 退化成 video_url 本身(见 _image_urls)—— 这种情况没有
+              // 独立 PNG 缩略,不能拿视频文件当 <img src> 渲染(碎图),Card 走占位图标分支。
+              const hasDistinctThumb = !isVideo || thumb !== videoUrl
               return (
                 <Card
                   key={t.id}
                   task={t}
-                  thumb={thumb}
-                  isVideo={!!findVideoUrl(t.result)}
+                  thumb={hasDistinctThumb ? thumb : undefined}
+                  isVideo={isVideo}
                   canRerun={canRerun(t)}
                   onOpen={() => openItems(gallery, startIndex.get(t.id) ?? 0)}
                   onRerun={() => rerun(t)}
@@ -166,7 +175,8 @@ function Card({
   task, thumb, isVideo, canRerun, onOpen, onRerun, onDelete,
 }: {
   task: ExecutionTask
-  thumb: string
+  /** 缺省 → 无独立 PNG 缩略(ffmpeg 缺省/抽帧失败),渲染占位视频图标而非 <img>。 */
+  thumb: string | undefined
   isVideo: boolean
   canRerun: boolean
   onOpen: () => void
@@ -185,24 +195,39 @@ function Card({
       }}
     >
       <div style={{ position: 'relative', aspectRatio: '1 / 1', background: 'var(--bg)', cursor: 'zoom-in' }} onClick={onOpen}>
-        <img src={thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        {thumb ? (
+          <img src={thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        ) : (
+          <div
+            role="img"
+            aria-label="视频"
+            style={{
+              width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'var(--card, var(--bg-accent))',
+            }}
+          >
+            <Play size={30} color="var(--muted)" />
+          </div>
+        )}
         {isVideo && (
           <>
-            <span
-              role="img"
-              aria-label="视频"
-              style={{
-                position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                pointerEvents: 'none',
-              }}
-            >
-              <span style={{
-                width: 40, height: 40, borderRadius: '50%', background: 'rgba(0,0,0,0.55)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <Play size={18} color="#fff" fill="#fff" />
+            {thumb && (
+              <span
+                role="img"
+                aria-label="视频"
+                style={{
+                  position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  pointerEvents: 'none',
+                }}
+              >
+                <span style={{
+                  width: 40, height: 40, borderRadius: '50%', background: 'rgba(0,0,0,0.55)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Play size={18} color="#fff" fill="#fff" />
+                </span>
               </span>
-            </span>
+            )}
             <span style={{
               position: 'absolute', bottom: 6, left: 6, fontSize: 10, padding: '1px 6px',
               borderRadius: 8, background: 'rgba(0,0,0,0.6)', color: '#fff',
