@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Activity,
@@ -40,6 +40,8 @@ import {
 import CreateApiKeyDialog from '../components/api-keys/CreateApiKeyDialog'
 import SchemaDrivenForm from '../components/playground/SchemaDrivenForm'
 import SchemaDrivenOutput from '../components/playground/SchemaDrivenOutput'
+import AsyncRunState from '../components/playground/AsyncRunState'
+import { createPredictionAsync } from '../api/predictions'
 import { useTasksByWorkflow, type ExecutionTask } from '../api/tasks'
 import { apiFetch } from '../api/client'
 import { confirmDialog } from '../stores/confirm'
@@ -495,6 +497,12 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const [status, setStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle')
+  // comfy_template 服务(ComfyUI 工作流桥)跑异步态(Task 10):非 null 时 submit 走
+  // respond-async(createPredictionAsync),输出区渲染 AsyncRunState 轮询而非直接展示结果。
+  const [asyncPredictionId, setAsyncPredictionId] = useState<string | null>(null)
+  // submit() 里记一次 start,供同步路径 finally 和异步路径的 onDone(收尾时刻不同、
+  // 跨渲染)共用同一个耗时基准。
+  const startRef = useRef(0)
   // ASR(语音识别):音频进文本出,走 multipart /v1/audio/transcriptions —— 没有 exposed_inputs
   // 表单可填,改成传音频文件(2026-06-21:用户反馈 ASR 服务没法在 Playground 测)。
   const isAsr = svc.category === 'asr'
@@ -527,7 +535,24 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
     setResult(null)
     setLatencyMs(null)
     setStatus('running')
-    const start = performance.now()
+    startRef.current = performance.now()
+
+    // comfy_template:respond-async 提交,后续状态/输出全交给 AsyncRunState 轮询
+    // (onDone/onCancel 收尾,见下方渲染)——不落这条同步 try/catch/finally,running
+    // 要一直保持到 AsyncRunState 收尾,不能在这里提前 setRunning(false)。
+    if (svc.source_type === 'comfy_template') {
+      try {
+        const prediction = await createPredictionAsync(svc.name, values)
+        setAsyncPredictionId(prediction.id)
+      } catch (e) {
+        setError((e as Error).message ?? String(e))
+        setStatus('failed')
+        setLatencyMs(Math.round(performance.now() - startRef.current))
+        setRunning(false)
+      }
+      return
+    }
+
     try {
       let data: Record<string, unknown>
       if (isAsr) {
@@ -560,12 +585,12 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
       }
       setResult(data)
       setStatus('completed')
-      setLatencyMs(Math.round(performance.now() - start))
+      setLatencyMs(Math.round(performance.now() - startRef.current))
     } catch (e) {
       const msg = (e as Error).message ?? String(e)
       setError(msg)
       setStatus('failed')
-      setLatencyMs(Math.round(performance.now() - start))
+      setLatencyMs(Math.round(performance.now() - startRef.current))
     } finally {
       setRunning(false)
     }
@@ -683,44 +708,65 @@ function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInp
           flexDirection: 'column',
         }}>
           <SectionHeader title="输出" />
-          <div style={{ padding: '16px 18px' }}>
-            {status === 'running' && !result && !error && (
-              <div style={{
-                color: 'var(--muted)', fontSize: 12, padding: '40px 16px',
-                textAlign: 'center',
-              }}>
-                运行中…
-              </div>
-            )}
-            {isAsr ? (
-              error ? (
-                <div style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</div>
-              ) : result && typeof result.text === 'string' ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {typeof result.language === 'string' && result.language && (
-                    <span style={{
-                      alignSelf: 'flex-start', fontSize: 10, padding: '2px 8px', borderRadius: 10,
-                      background: 'rgba(14,165,233,0.15)', color: 'rgb(14,165,233)',
-                    }}>
-                      检测语种 · {result.language as string}
-                    </span>
-                  )}
-                  <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                    {result.text as string}
-                  </div>
-                  <AsrSegments segments={result.segments} requested={asrTimestamps} />
-                </div>
-              ) : null
-            ) : (
-              <SchemaDrivenOutput
-                outputs={svc.exposed_outputs}
-                result={result}
-                error={error}
+          <div style={{ padding: asyncPredictionId ? 0 : '16px 18px' }}>
+            {asyncPredictionId ? (
+              <AsyncRunState
+                predictionId={asyncPredictionId}
+                onDone={(output) => {
+                  setResult(output)
+                  setStatus('completed')
+                  setLatencyMs(Math.round(performance.now() - startRef.current))
+                  setRunning(false)
+                  setAsyncPredictionId(null)
+                }}
+                onCancel={() => {
+                  setStatus('idle')
+                  setRunning(false)
+                  setAsyncPredictionId(null)
+                }}
               />
+            ) : (
+              <>
+                {status === 'running' && !result && !error && (
+                  <div style={{
+                    color: 'var(--muted)', fontSize: 12, padding: '40px 16px',
+                    textAlign: 'center',
+                  }}>
+                    运行中…
+                  </div>
+                )}
+                {isAsr ? (
+                  error ? (
+                    <div style={{ color: 'var(--danger, #ef4444)', fontSize: 13 }}>{error}</div>
+                  ) : result && typeof result.text === 'string' ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {typeof result.language === 'string' && result.language && (
+                        <span style={{
+                          alignSelf: 'flex-start', fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                          background: 'rgba(14,165,233,0.15)', color: 'rgb(14,165,233)',
+                        }}>
+                          检测语种 · {result.language as string}
+                        </span>
+                      )}
+                      <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                        {result.text as string}
+                      </div>
+                      <AsrSegments segments={result.segments} requested={asrTimestamps} />
+                    </div>
+                  ) : null
+                ) : (
+                  <SchemaDrivenOutput
+                    outputs={svc.exposed_outputs}
+                    result={result}
+                    error={error}
+                  />
+                )}
+              </>
             )}
           </div>
-          {/* Stage 3: Status footer */}
-          {status !== 'idle' && (
+          {/* Stage 3: Status footer(asyncPredictionId 活跃时 AsyncRunState 自带进度/状态展示,
+              不再重复叠一份「运行中」footer)。 */}
+          {status !== 'idle' && !asyncPredictionId && (
             <StatusFooter status={status} latencyMs={latencyMs} result={result} />
           )}
         </section>
