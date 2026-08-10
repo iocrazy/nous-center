@@ -16,6 +16,7 @@ work), HMAC second (still required for non-admin URLs).
 """
 from __future__ import annotations
 
+import mimetypes
 import re
 
 from fastapi import APIRouter, Request
@@ -30,7 +31,10 @@ router = APIRouter(tags=["image-files"])
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{32}$")
-_EXT_WHITELIST = {"png", "jpg", "jpeg", "webp"}
+# image/* plus the comfy-bridge media types (mp4/wav produced by write_media,
+# see image_output_storage.py) — route is shared, not image-only despite the
+# /files/images/ URL prefix (prefix kept as-is; renaming is a bigger change).
+_EXT_WHITELIST = {"png", "jpg", "jpeg", "webp", "mp4", "wav"}
 
 
 class _UrlExpiredError(NousError):
@@ -43,12 +47,12 @@ class _UrlInvalidError(NousError):
     http_status = 403
 
 
-_MIME_BY_EXT = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-}
+def _mime_for_ext(ext: str) -> str:
+    """`mimetypes.guess_type` covers image/video/audio alike (png/jpg/webp/
+    mp4/wav all resolve correctly on stdlib's built-in table); the fallback
+    only matters for an ext that somehow slipped past _EXT_WHITELIST."""
+    guessed, _ = mimetypes.guess_type(f"x.{ext}")
+    return guessed or "application/octet-stream"
 
 
 @router.get("/files/images/{date}/{uuid_filename}")
@@ -110,7 +114,7 @@ async def get_image(
 
     return FileResponse(
         path=str(path),
-        media_type=_MIME_BY_EXT[ext],
+        media_type=_mime_for_ext(ext),
         headers={"Cache-Control": cache_header},
     )
 

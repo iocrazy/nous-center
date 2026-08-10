@@ -206,3 +206,9 @@ def reap_orphans(*, older_than_seconds: int, keep_uuids: set[str] | None = None)
             summary["errors"], older_than_seconds,
         )
     return summary
+
+
+# write_image is ext-agnostic already (caller-supplied ext, no image-specific
+# encoding/validation inside) — comfy bridge (Task 6) reuses it verbatim to
+# persist mp4/wav workflow outputs under the same signed-URL scheme.
+write_media = write_image

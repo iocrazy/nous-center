@@ -301,6 +301,22 @@ async def test_image_route_404_when_signed_but_file_missing(
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_image_route_serves_mp4_with_video_content_type(
+    storage_tmp, with_signing_secret, client
+):
+    """comfy bridge (Task 5/6) 用 write_media(=write_image) 存 mp4;路由的
+    ext 白名单 + Content-Type 推导必须覆盖 image 之外的媒体类型,不能写死
+    image/*(见 image_files.py:_mime_for_ext)。"""
+    from src.services.image_output_storage import write_media
+
+    rec = write_media(b"\x00fakemp4bytes", ext="mp4", ttl_seconds=600)
+    resp = await client.get(rec["url"])
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "video/mp4"
+    assert resp.content == b"\x00fakemp4bytes"
+
+
 # 注:write_image 的 secret→签名 URL / 无 secret→url=None 不变式由上面
 # test_write_image_no_secret_yields_null_url + test_write_image_with_secret_signs_url
 # 直接覆盖。收敛后 image_generate 节点已删(图像走细粒度图 + runner write_image),
