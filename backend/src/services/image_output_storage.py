@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config import get_settings
+from src.services.comfy.outputs import SERVABLE_EXTS
 
 logger = logging.getLogger(__name__)
 
@@ -172,14 +173,11 @@ def reap_orphans(*, older_than_seconds: int, keep_uuids: set[str] | None = None)
 
     cutoff = time.time() - max(60, int(older_than_seconds))
     # image kinds + the comfy-bridge media kinds (write_media, spec §6: "保留/
-    # 清理策略与 image 现状一致") — mirrors _KIND_BY_EXT's video/audio sets in
-    # services/comfy/outputs.py so anything the bridge can produce is also
-    # reapable, not just the mp4/wav write_media currently exercises.
-    allowed_ext = {
-        ".png", ".jpg", ".jpeg", ".webp",
-        ".mp4", ".webm", ".mov", ".mkv",
-        ".wav", ".mp3", ".flac", ".ogg",
-    }
+    # 清理策略与 image 现状一致") — I2 fix: single-sourced from
+    # services/comfy/outputs.py's SERVABLE_EXTS (same table image_files.py's
+    # route whitelist derives from) so anything the bridge can produce/serve
+    # is also reapable, not a separately hand-maintained list.
+    allowed_ext = {f".{ext}" for ext in SERVABLE_EXTS}
 
     for date_dir in sorted(root.iterdir()):
         if not date_dir.is_dir():

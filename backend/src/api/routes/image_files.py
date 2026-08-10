@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 
 from src.api.admin_session import request_is_authed
 from src.errors import NotFoundError, NousError
+from src.services.comfy.outputs import SERVABLE_EXTS as _EXT_WHITELIST
 from src.services.image_output_storage import resolve_path, verify_token
 
 router = APIRouter(tags=["image-files"])
@@ -31,10 +32,11 @@ router = APIRouter(tags=["image-files"])
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{32}$")
-# image/* plus the comfy-bridge media types (mp4/wav produced by write_media,
-# see image_output_storage.py) — route is shared, not image-only despite the
-# /files/images/ URL prefix (prefix kept as-is; renaming is a bigger change).
-_EXT_WHITELIST = {"png", "jpg", "jpeg", "webp", "mp4", "wav"}
+# image/* plus every comfy-bridge media type write_media can produce (mp4/webm/
+# mov/mkv/wav/mp3/flac/ogg/gif — see image_output_storage.py) — route is shared,
+# not image-only despite the /files/images/ URL prefix (prefix kept as-is;
+# renaming is a bigger change). I2 fix: single-sourced from comfy/outputs.py
+# instead of a hand-rolled list that had drifted (was missing gif/webm/etc).
 
 
 class _UrlExpiredError(NousError):

@@ -3,12 +3,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-_KIND_BY_EXT = {
+# I2 fix:single source of truth for ext → kind. `image_files.py` (serving
+# whitelist) and `image_output_storage.py` (reap allowed_ext) both import
+# `SERVABLE_EXTS` derived below instead of keeping their own hand-rolled
+# lists — those had drifted out of sync (route whitelist was missing
+# gif/webm/mov/mkv/mp3/flac/ogg even though the reaper already handled them).
+KIND_BY_EXT = {
     "png": "image", "jpg": "image", "jpeg": "image", "webp": "image", "gif": "image",
     "mp4": "video", "webm": "video", "mov": "video", "mkv": "video",
     "wav": "audio", "mp3": "audio", "flac": "audio", "ogg": "audio",
     "txt": "text", "json": "text", "srt": "text",
 }
+# Extensions servable via the signed-URL /files/images route + reapable by the
+# orphan reaper — every image/video/audio kind (not "text": txt/json/srt are
+# never written there today and aren't meant to be served as static binaries).
+SERVABLE_EXTS: frozenset[str] = frozenset(
+    ext for ext, kind in KIND_BY_EXT.items() if kind != "text")
 _PREVIEW_HINTS = ("previewimage", "comparer", "imagecompare")
 
 
@@ -24,7 +34,7 @@ class OutputItem:
 
 def classify_ext(filename: str) -> str:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    return _KIND_BY_EXT.get(ext, "file")
+    return KIND_BY_EXT.get(ext, "file")
 
 
 def _is_preview(class_type: str) -> bool:
