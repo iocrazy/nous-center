@@ -174,4 +174,36 @@ describe('ServicesList card click → navigate', () => {
     expect(screen.getByText('qwen3-5-api')).toBeInTheDocument()
     expect(screen.queryByText('ltx-drama')).not.toBeInTheDocument()
   })
+
+  it('source_type=comfy_template 的服务显示「桥」徽标,且可用「ComfyUI 桥」tab 单独筛出', () => {
+    useServicesMock.mockReturnValue({
+      data: [
+        makeService({ id: '1', name: 'minimax-h3-r2v', source_type: 'comfy_template', category: 'image' }),
+        makeService({ id: '2', name: 'qwen3-5-api', source_type: 'workflow', category: 'llm' }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('桥')).toBeInTheDocument()
+    const bridgeTab = screen.getByRole('button', { name: /ComfyUI 桥\s*1/ })
+    fireEvent.click(bridgeTab)
+    expect(screen.getByText('minimax-h3-r2v')).toBeInTheDocument()
+    expect(screen.queryByText('qwen3-5-api')).not.toBeInTheDocument()
+  })
+
+  it('「新建服务」菜单里有「导入 ComfyUI 工作流」入口', () => {
+    useServicesMock.mockReturnValue({ data: [], isLoading: false, error: null })
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /新建服务/ }))
+    expect(screen.getByRole('menuitem', { name: /导入 ComfyUI 工作流/ })).toBeInTheDocument()
+  })
 })
