@@ -77,6 +77,20 @@ function ZoomableImage({ src, onNatural }: { src: string; onNatural?: (w: number
   )
 }
 
+/** 视频产物(Task 11:comfy bridge 视频节点)。不缩放/平移,原生 controls 播放。 */
+function VideoView({ src }: { src: string }) {
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <video
+        controls
+        autoPlay
+        src={src}
+        style={{ maxWidth: '92vw', maxHeight: '92vh' }}
+      />
+    </div>
+  )
+}
+
 /** 前后对比:back 底图定尺寸,front 叠加按滑块 clip;拖拽分隔线。 */
 function CompareView({ front, back }: { front: string; back: string }) {
   const [pos, setPos] = useState(50)
@@ -186,6 +200,7 @@ export default function Lightbox() {
   const open = useLightboxStore((s) => s.open)
   const images = useLightboxStore((s) => s.images)
   const metas = useLightboxStore((s) => s.metas)
+  const kinds = useLightboxStore((s) => s.kinds)
   const index = useLightboxStore((s) => s.index)
   const close = useLightboxStore((s) => s.close)
   const next = useLightboxStore((s) => s.next)
@@ -207,11 +222,14 @@ export default function Lightbox() {
   if (!open || !images.length) return null
   const url = images[index]
   const meta = metas[index]
+  const kind = kinds[index] ?? 'image'
+  const isVideo = kind === 'video'
   const multi = images.length > 1
   // 显式 compareBase(输入/源图,如编辑/超分流)优先于多图「与上一张」。有它时单图
   // 也能对比(对齐 IC 的「生成图 vs 输入图」);两者都无则对比按钮不出现。
+  // 视频产物不支持缩放/对比(Task 11)。
   const explicitBase = meta?.compareBase && meta.compareBase !== url ? meta.compareBase : undefined
-  const canCompare = !!explicitBase || multi
+  const canCompare = !isVideo && (!!explicitBase || multi)
   const compareBase = explicitBase ?? (multi ? images[index === 0 ? 1 : index - 1] : url)
   const showCompare = compare && canCompare
 
@@ -251,10 +269,12 @@ export default function Lightbox() {
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'zoom-out',
       }}
     >
-      {/* key=index → 切图 remount,缩放/平移自动复位;对比模式换成 CompareView */}
-      {showCompare
-        ? <CompareView key={`cmp-${index}`} front={url} back={compareBase} />
-        : <ZoomableImage key={index} src={url} onNatural={(w, h) => setNatural({ w, h })} />}
+      {/* key=index → 切图 remount,缩放/平移自动复位;对比模式换成 CompareView;视频走独立分支 */}
+      {isVideo
+        ? <VideoView key={index} src={url} />
+        : showCompare
+          ? <CompareView key={`cmp-${index}`} front={url} back={compareBase} />
+          : <ZoomableImage key={index} src={url} onNatural={(w, h) => setNatural({ w, h })} />}
 
       <button
         type="button"

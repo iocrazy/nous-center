@@ -6,6 +6,7 @@ import {
   Database,
   DownloadCloud,
   Gauge,
+  GitBranch,
   Info,
   Package,
   Palette,
@@ -17,6 +18,7 @@ import { useServerSettings, useUpdateServerSettings } from '../../api/settings'
 import { useSettingsStore, type SettingsState } from '../../stores/settings'
 import NodePackagesPanel from '../settings/NodePackagesPanel'
 import SecurityPanel from '../settings/SecurityPanel'
+import ComfyBridgeSection from '../settings/ComfyBridgeSection'
 
 // m16 v3 mockup 对齐：3 个 sub-nav 分组共 10 项
 //   通用：账号 / 外观 / 通知
@@ -37,6 +39,7 @@ type Section =
   | 'engine-defaults'
   | 'packages'
   | 'limits'
+  | 'comfy-bridge'
   | 'database'
   | 'backup'
   | 'developer'
@@ -63,6 +66,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'engine-defaults', label: '引擎默认', icon: Zap },
       { id: 'packages', label: 'Workflow 节点包', icon: Package },
       { id: 'limits', label: '限流与配额', icon: Gauge },
+      { id: 'comfy-bridge', label: 'ComfyUI 桥', icon: GitBranch },
     ],
   },
   {
@@ -174,6 +178,8 @@ function Body({ section }: { section: Section }) {
       return <NodePackagesPanel />
     case 'limits':
       return <PlaceholderPanel title="限流与配额" desc="全局速率限制、单 key 默认配额规则。后续接通。" />
+    case 'comfy-bridge':
+      return <ComfyBridgeSection />
     case 'database':
       return <DatabasePanel />
     case 'backup':

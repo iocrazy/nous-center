@@ -1,0 +1,229 @@
+"""ComfyUI workflow bridge nodes (Task 6).
+
+`comfyui_workflow` is the single inline node every 模板即服务 bridge snapshot
+runs through (see `src.api.routes.comfy_templates._bridge_snapshot`): it loads
+the raw ComfyUI API-format graph + the service's `exposed_inputs` mapping,
+patches user-supplied values into the graph (uploading `media`-typed data
+URIs, rolling `random`-marked seeds), submits + waits on the ComfyUI sidecar
+serialized through a module-level semaphore (sidecar 显存独占 — one render at
+a time), then persists every collected output via `write_media` and returns a
+stable envelope. `video_output` is the terminal sink node mirroring
+`image.py`'s `image_output` (原样透传).
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+import os
+import secrets
+import tempfile
+from copy import deepcopy
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import undefer
+
+from src.models.comfy_template import ComfyTemplate
+from src.models.database import get_session_factory
+from src.models.execution_task import ExecutionTask
+from src.models.service_instance import ServiceInstance
+from src.services.comfy.client import ComfyError
+from src.services.comfy.client import get_comfy_client as get_client
+from src.services.comfy.outputs import collect_outputs
+from src.services.comfy.thumbnail import extract_first_frame
+from src.services.image_output_storage import write_image as _write_media_sync
+from src.services.nodes.registry import register
+
+logger = logging.getLogger(__name__)
+
+# Sidecar 显存独占:一次只能有一个渲染在跑(submit+wait 串行化,download/storage 不占)。
+# 这条串行化假设**单进程部署**——uvicorn 跑无 `--workers`(生产就是这样,见
+# infra/systemd/nous-engine-backend.service)。多 worker/多进程部署下每个进程各有
+# 自己的 `_SEM`,不再互斥,需要改成跨进程锁(Postgres advisory lock / Redis 等)才能保住
+# "sidecar 一次只服务一个渲染"这条不变式。
+_SEM = asyncio.Semaphore(1)
+
+# 当前持有 `_SEM`、正在渲染的 ExecutionTask id(None = 空闲)。cancel_prediction
+# (predictions.py)据此判断:被取消的 prediction 是不是"真的卡在 ComfyUI 渲染上"——
+# 只有是,才转发 `/interrupt`;排在它后面等信号量的任务不该被这个 interrupt 误伤
+# (那是别的渲染,C1 fix)。用访问器读,不直接碰 module global(见 get_running_task_id)。
+_running_task_id: str | int | None = None
+
+
+def get_running_task_id() -> str | int | None:
+    """当前占用渲染信号量的 ExecutionTask id,空闲时 None。"""
+    return _running_task_id
+
+
+async def _task_is_cancelled(task_id: str | int) -> bool:
+    """渲染前的 cancel-race 复查:任务在排队等信号量期间可能已被用户取消
+    ——拿到信号量后、真正 submit 给 ComfyUI 前再查一次 DB 状态,避免"取消了
+    的任务照样悄悄跑完"(C1 fix)。"""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        task = await session.get(ExecutionTask, int(task_id))
+        return task is not None and task.status == "cancelled"
+
+
+async def write_media(data: bytes, *, ext: str, ttl_seconds: int = 86400) -> dict:
+    """Async wrapper around the sync `image_output_storage.write_image` — disk
+    I/O runs off the event loop via a thread so the render-serial semaphore
+    above isn't held while we write files."""
+    return await asyncio.to_thread(_write_media_sync, data, ext=ext, ttl_seconds=ttl_seconds)
+
+
+async def load_template(template_id) -> tuple[dict, list[dict]]:
+    """Load `(workflow_json, exposed_inputs)` for a comfy_templates row.
+
+    exposed_inputs live on the paired ServiceInstance (source_type=
+    "comfy_template", source_id=template_id) — same linkage the route layer
+    uses in `comfy_templates._get_template_and_service`.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        tpl = await session.get(ComfyTemplate, int(template_id))
+        if tpl is None:
+            raise ValueError(f"模板不存在:{template_id}")
+        stmt = (
+            select(ServiceInstance)
+            .options(undefer(ServiceInstance.exposed_inputs))
+            .where(ServiceInstance.source_type == "comfy_template")
+            .where(ServiceInstance.source_id == tpl.id)
+        )
+        svc = (await session.execute(stmt)).scalar_one_or_none()
+        exposed = list(svc.exposed_inputs or []) if svc is not None else []
+        return dict(tpl.workflow_json or {}), exposed
+
+
+def _decode_data_uri(value: str) -> tuple[bytes, str, str]:
+    """`data:image/png;base64,...` → (raw bytes, ext, mime)。"""
+    header, _, b64data = value.partition(",")
+    mime = header[len("data:"):].split(";")[0] or "image/png"
+    ext = mime.rsplit("/", 1)[-1] or "png"
+    return base64.b64decode(b64data), ext, mime
+
+
+# C2/I1 fix:mapping type 词汇统一——ComfyTemplateEditor.tsx 的 TYPE_OPTIONS 现在能选
+# "image"(SchemaDrivenForm.classifyField 认的 file|image|audio|video|binary 集合之一,
+# 让 Playground 渲染文件选择器),旧代码这里只认字面量 "media" 一种,导致编辑器选出来的
+# 类型永远走不到上传分支(data URI 原样当字符串塞进图,ComfyUI 侧炸)。任意一个"这是待
+# 上传素材"型都触发同一条上传逻辑。
+_UPLOAD_TYPES = frozenset({"media", "image", "file", "audio", "video"})
+
+
+@register("comfyui_workflow")
+class ComfyUIWorkflowNode:
+    """Bridge node: patch exposed params into the ComfyUI graph, run it on
+    the sidecar, persist outputs. See module docstring for the full flow."""
+
+    async def invoke(self, data: dict, inputs: dict) -> dict:
+        template_id = data.get("template_id")
+        # workflow_executor._execute_inline_node injects this (same seam as
+        # `_node_id`) — the ExecutionTask id this invocation is running under,
+        # None for the DB-less unit tests that call invoke() directly.
+        task_id = data.get("_task_id")
+        graph_template, exposed_params = await load_template(template_id)
+        graph = deepcopy(graph_template)
+        client = get_client()
+        seed = None
+
+        for m in exposed_params:
+            key = m["key"]
+            value = data.get(key, m.get("default"))
+            node_id = str(m.get("comfy_node_id"))
+            input_name = m.get("comfy_input")
+
+            if m.get("type") in _UPLOAD_TYPES and isinstance(value, str) and value.startswith("data:"):
+                raw, ext, mime = _decode_data_uri(value)
+                filename = f"{secrets.token_hex(8)}.{ext}"
+                value = await client.upload_image(filename, raw, mime)
+
+            if m.get("random") and (value is None or value == ""):
+                value = secrets.randbelow(2 ** 32)
+                seed = value
+
+            if m.get("required") and (value is None or value == ""):
+                raise ValueError(f"缺少必填参数:{key}")
+
+            # Intentional: an optional param the caller didn't supply (and
+            # with no mapping default) stays untouched rather than patching
+            # `None` into the graph — the template's own placeholder value
+            # (e.g. a LoadImage node's baked-in default filename) is what
+            # ComfyUI should see; writing `None` would corrupt that node's
+            # input type instead of "no override".
+            if value is None:
+                continue
+
+            node = graph.get(node_id)
+            if node is not None:
+                node.setdefault("inputs", {})[input_name] = value
+            else:
+                # 映射指向的节点已不在 graph 里(重新上传工作流后没同步映射 ——
+                # reupload_template 的 stale-key 检测本该先标红,但保险起见渲染时
+                # 也不该静默丢掉这个参数)。
+                logger.warning(
+                    "comfy_bridge: template=%s 的映射 key=%r 指向节点 %r,"
+                    "但该节点不在当前 graph 中(工作流重新上传后映射未更新?),已跳过该参数",
+                    template_id, key, node_id,
+                )
+
+        global _running_task_id
+        async with _SEM:
+            _running_task_id = task_id
+            try:
+                # cancel-race 复查(C1):本任务可能在排队等信号量期间被取消
+                # ——真正 submit 给 ComfyUI 前再查一次 DB,取消了就不渲染。
+                if task_id is not None and await _task_is_cancelled(task_id):
+                    raise ComfyError("任务已取消,渲染跳过")
+                prompt_id = await client.submit(graph)
+                timeout_s = float(os.getenv("NOUS_COMFY_TIMEOUT", "14400"))
+                history = await client.wait(prompt_id, timeout_s=timeout_s)
+            finally:
+                _running_task_id = None
+
+        outputs = collect_outputs(history, graph)
+        items: list[dict] = []
+        video_url: str | None = None
+        thumbnails: list[str] = []
+
+        for o in outputs:
+            raw_bytes = await client.download(
+                {"filename": o.filename, "subfolder": o.subfolder, "type": o.file_type})
+            ext = o.filename.rsplit(".", 1)[-1].lower() if "." in o.filename else "bin"
+            stored = await write_media(raw_bytes, ext=ext)
+            items.append({
+                "url": stored["url"], "kind": o.kind, "filename": o.filename,
+                "node_id": o.node_id, "class_type": o.class_type,
+            })
+
+            if o.kind == "video":
+                if video_url is None:
+                    video_url = stored["url"]
+                with tempfile.TemporaryDirectory(prefix="nous-bridge-vid-") as tmp_dir:
+                    vid_path = Path(tmp_dir) / f"src.{ext}"
+                    # Off the event loop — this can be a full video's worth of
+                    # bytes (same rationale as the write_media wrapper above).
+                    await asyncio.to_thread(vid_path.write_bytes, raw_bytes)
+                    frame = await extract_first_frame(vid_path)
+                if frame is not None:
+                    thumb = await write_media(frame, ext="png")
+                    thumbnails.append(thumb["url"])
+
+        if not items:
+            # ComfyUI 返回了 history 但没有一个可识别产物 —— 典型是渲染被中断
+            # (interrupt 打断在 collect_outputs 认得的输出节点写产物之前)。之前
+            # 这里会直接返回一个"成功"的空信封,task 落 completed 但用户拿不到
+            # 任何东西——静默失败。改成显式报错,让 workflow_runner 落 failed
+            # (除非 DB 已经是 cancelled,那种情况上面的 except 分支会 honor 取消)。
+            raise ComfyError("ComfyUI 未产出任何产物(可能被中断)")
+
+        return {"items": items, "video_url": video_url, "thumbnails": thumbnails, "seed": seed}
+
+
+@register("video_output")
+class VideoOutputNode:
+    """Terminal sink — 原样透传上游产物(image_output 的 video 对应版)。"""
+
+    async def invoke(self, data: dict, inputs: dict) -> dict:
+        return inputs.get("outputs") or inputs

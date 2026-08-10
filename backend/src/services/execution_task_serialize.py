@@ -24,18 +24,37 @@ def _iter_node_outputs(result: object):
 
 
 def _image_urls(result: object, limit: int = 8) -> list[str]:
-    """抽出 result 里所有 image_url(签名 URL),供任务卡缩略图 + 历史画廊用
-    (spec 2026-06-09 run-history PR-B)。最多 limit 张。"""
+    """抽出 result 里所有产物签名 URL,供任务卡缩略图 + 历史画廊用
+    (spec 2026-06-09 run-history PR-B)。最多 limit 张。
+
+    Task 7:comfy bridge 节点(comfy_bridge.py ComfyUIWorkflowNode)的产物形状不是单个
+    `image_url`,而是 `thumbnails`(ffmpeg 首帧缩略列表)/ `video_url`(原片)/
+    `items[].url`(全量产物,含视频)。这三者都经 `write_media` 落进跟图片同一个
+    image_output_storage 目录,受同一个 orphan reaper 管(main.py
+    image_orphan_reap_loop → collect_referenced_image_uuids → 本函数)——不在这里
+    被识别出来,24h 后就会被当无引用 orphan 误删,即便任务历史仍在引用(丢产物 bug,
+    不只是显示 bug)。"""
     urls: list[str] = []
+    seen: set[str] = set()
+
+    def _add(u: object) -> None:
+        if isinstance(u, str) and u and u not in seen:
+            seen.add(u)
+            urls.append(u)
+
     for v in _iter_node_outputs(result):
         if not isinstance(v, dict):
             continue
-        u = v.get("image_url")
-        if isinstance(u, str) and u:
-            urls.append(u)
-            if len(urls) >= limit:
-                break
-    return urls
+        _add(v.get("image_url"))
+        for t in (v.get("thumbnails") or []):
+            _add(t)
+        _add(v.get("video_url"))
+        for item in (v.get("items") or []):
+            if isinstance(item, dict):
+                _add(item.get("url"))
+        if len(urls) >= limit:
+            break
+    return urls[:limit]
 
 
 def _uuid_from_image_url(url: str) -> str | None:

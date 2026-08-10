@@ -12,7 +12,7 @@ function scaleOf(transform: string): number {
 
 describe('Lightbox zoom/pan wiring', () => {
   beforeEach(() => {
-    act(() => useLightboxStore.setState({ open: false, images: [], metas: [], index: 0 }))
+    act(() => useLightboxStore.setState({ open: false, images: [], metas: [], kinds: [], index: 0 }))
   })
 
   it('renders meta panel (prompt + fields + rerun) when meta present', () => {
@@ -120,5 +120,27 @@ describe('Lightbox zoom/pan wiring', () => {
     const img = screen.getByAltText('preview') as HTMLImageElement
     fireEvent.wheel(img.parentElement!, { deltaY: 300, clientX: 700, clientY: 450 })
     expect(scaleOf(img.style.transform)).toBeCloseTo(1)
+  })
+
+  it('kind video 渲染 <video> 标签(不是可缩放 img),不显示对比按钮', () => {
+    const VIDEO_URL = 'http://x/clip.mp4'
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({
+      open: true, images: [VIDEO_URL], kinds: ['video'], metas: [undefined], index: 0,
+    }))
+    const video = document.querySelector('video')
+    expect(video).toBeTruthy()
+    expect(video?.getAttribute('src')).toBe(VIDEO_URL)
+    expect(video?.hasAttribute('controls')).toBe(true)
+    expect(video?.hasAttribute('autoplay')).toBe(true)
+    expect(screen.queryByAltText('preview')).toBeNull()
+    expect(screen.queryByTitle(/前后对比/)).toBeNull()
+  })
+
+  it('image 条目回归:kind 缺省仍走原 <img> 缩放分支', () => {
+    render(<Lightbox />)
+    act(() => useLightboxStore.setState({ open: true, images: [URL1], metas: [undefined], index: 0 }))
+    expect(screen.getByAltText('preview')).toBeTruthy()
+    expect(document.querySelector('video')).toBeNull()
   })
 })

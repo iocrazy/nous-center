@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config import get_settings
+from src.services.comfy.outputs import SERVABLE_EXTS
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ def reap_orphans(*, older_than_seconds: int, keep_uuids: set[str] | None = None)
     run-history — gallery persistence). `keep_uuids=None` → pure age reaper
     (old behavior, back-compat for callers without DB context).
 
-    Returns {scanned, deleted, kept, dirs_pruned, errors}. Skips non-image ext.
+    Returns {scanned, deleted, kept, dirs_pruned, errors}. Skips unrecognized ext.
     """
     root = _outputs_root()
     summary = {"scanned": 0, "deleted": 0, "kept": 0, "dirs_pruned": 0, "errors": 0}
@@ -171,7 +172,12 @@ def reap_orphans(*, older_than_seconds: int, keep_uuids: set[str] | None = None)
         return summary
 
     cutoff = time.time() - max(60, int(older_than_seconds))
-    allowed_ext = {".png", ".jpg", ".jpeg", ".webp"}
+    # image kinds + the comfy-bridge media kinds (write_media, spec §6: "保留/
+    # 清理策略与 image 现状一致") — I2 fix: single-sourced from
+    # services/comfy/outputs.py's SERVABLE_EXTS (same table image_files.py's
+    # route whitelist derives from) so anything the bridge can produce/serve
+    # is also reapable, not a separately hand-maintained list.
+    allowed_ext = {f".{ext}" for ext in SERVABLE_EXTS}
 
     for date_dir in sorted(root.iterdir()):
         if not date_dir.is_dir():
@@ -206,3 +212,9 @@ def reap_orphans(*, older_than_seconds: int, keep_uuids: set[str] | None = None)
             summary["errors"], older_than_seconds,
         )
     return summary
+
+
+# write_image is ext-agnostic already (caller-supplied ext, no image-specific
+# encoding/validation inside) — comfy bridge (Task 6) reuses it verbatim to
+# persist mp4/wav workflow outputs under the same signed-URL scheme.
+write_media = write_image

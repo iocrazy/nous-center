@@ -38,6 +38,40 @@ from src.services.service_schema import build_service_io_schema, validate_servic
 # 放 /api/v1 会被 admin cookie 门拦死 bearer 客户端(真机 smoke 逮到)。
 router = APIRouter(prefix="/v1", tags=["predictions"])
 
+
+async def _auth_predictions(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_async_session),
+) -> tuple[ServiceInstance | None, InstanceApiKey | None]:
+    """Bearer-token auth,带 admin-session 旁路(Task 10:Playground 异步运行态)。
+
+    镜像 `apps.py::_auth_apps_run`:外部 Bearer 客户端走完整 key 校验(优先);Playground
+    对 `comfy_template` 服务走 respond-async 提交/轮询/取消时用的是 admin session cookie,
+    不是 Bearer key —— 原先三端点的 `Authorization: Header(...)` 是必填,FastAPI 会在
+    header 校验阶段就以「Field required」拒绝,同 apps.py 改前的坑。返回 `(None, None)`
+    让下游(`_resolve_service` / get_prediction / cancel_prediction)按 admin 路径跳过
+    grant/限流/IDOR owner 校验(单管理员部署里 admin 隐式对所有 prediction 有权限)。
+
+    I5 fix:`Authorization` header 存在但不是任何已注册 `InstanceApiKey`(典型场景——
+    CLI `ADMIN_TOKEN` bearer,它根本不是 M:N key)时,`verify_bearer_token_any` 会抛
+    401。旧代码在这里直接把异常甩出去,`ADMIN_TOKEN` 永远够不到 predictions 端点。
+    现在 bearer 校验失败就退回 `request_is_authed`(它自己会看 `Authorization` header
+    里的 `ADMIN_TOKEN` bearer,见 admin_session.py::admin_token_matches),校验通过
+    仍走 `(None, None)` admin 旁路——IDOR 语义不变。
+    """
+    from src.api.admin_session import request_is_authed  # noqa: PLC0415
+    if authorization:
+        try:
+            return await verify_bearer_token_any(authorization, session)
+        except HTTPException:
+            if request_is_authed(request):
+                return None, None
+            raise
+    if request_is_authed(request):
+        return None, None
+    raise HTTPException(401, detail="Missing API key or admin session")
+
 # 同步默认上限(秒):无 Prefer 时阻塞,但封顶避免无限挂(长任务用 respond-async)。
 _SYNC_CAP_SECONDS = 600.0
 
@@ -63,10 +97,23 @@ def _parse_prefer(prefer: str | None) -> tuple[bool, float | None]:
     return False, None
 
 
-async def _resolve_service(session, auth, name: str) -> tuple[ServiceInstance, InstanceApiKey]:
-    """bearer key → 目标服务(URL 的 {name}),校验授权 + active + 限流 + 加载 deferred 列。"""
+async def _resolve_service(
+    session, auth, name: str,
+) -> tuple[ServiceInstance, InstanceApiKey | None]:
+    """bearer key(或 admin session)→ 目标服务(URL 的 {name}),校验 active + 加载 deferred 列。
+
+    admin 路径(`api_key is None`,Task 10 旁路)跳过 grant/限流 —— 与 `apps.py`
+    的 `admin_run` 分支一致:单管理员部署里 admin 隐式对所有服务有权限。
+    """
     instance, api_key = auth
-    if instance is None:  # M:N key:按 URL name 解析授权 + 限流(verify 没做)
+    if api_key is None:  # admin session 旁路:直接按 name 查活跃服务,不涉及任何 key
+        stmt = select(ServiceInstance).where(ServiceInstance.name == name)
+        instance = (await session.execute(stmt)).scalar_one_or_none()
+        if instance is None:
+            raise HTTPException(404, detail="service not found")
+        if instance.status != "active":
+            raise HTTPException(403, detail="service is inactive")
+    elif instance is None:  # M:N key:按 URL name 解析授权 + 限流(verify 没做)
         try:
             instance = await resolve_target_service(session, api_key=api_key, requested_model=name)
         except ModelNotFound as e:
@@ -129,14 +176,21 @@ async def create_prediction(
     request: Request,
     response: Response,
     prefer: str | None = Header(default=None),
-    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_predictions),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """跑一个已发布 workflow 服务,返回 Prediction 对象(Cog 形)。"""
+    """跑一个已发布 workflow 服务,返回 Prediction 对象(Cog 形)。
+
+    Task 7:`comfy_template`(ComfyUI workflow bridge,见 comfy_templates.py)也走这条统一入口
+    ——design spec 2026-08-10 §「提交」明确画的就是这条路径。它的 workflow_snapshot 是固定桥
+    快照(list 形,单 `comfyui_workflow` 节点 + `video_output` 节点),下面的
+    apply_inputs_to_snapshot/snapshot_to_executor_form 对 list 形 snapshot 已经是透传+按
+    node_id 注入,天然兼容,不需要专门分支。
+    """
     instance, api_key = await _resolve_service(session, auth, name)
     if instance.source_type == "model":
         raise HTTPException(400, detail="model(LLM)服务请用 /v1/chat/completions")
-    if instance.source_type != "workflow":
+    if instance.source_type not in ("workflow", "comfy_template"):
         raise HTTPException(400, detail=f"source_type {instance.source_type!r} 暂不支持 predictions")
 
     snapshot = instance.workflow_snapshot or {}
@@ -158,7 +212,10 @@ async def create_prediction(
 
     task = ExecutionTask(
         workflow_id=instance.source_id,
-        api_key_id=api_key.id,  # 归属:by-id 端点据此校验 owner(IDOR 防护)
+        # 归属:by-id 端点据此校验 owner(IDOR 防护)。admin session 旁路(Task 10)无
+        # key 可归属 —— NULL,与 apps.py 的 admin_run 一致(admin 隐式对所有 prediction 有权限,
+        # get/cancel_prediction 对 api_key is None 的调用方跳过 owner 校验)。
+        api_key_id=api_key.id if api_key is not None else None,
         workflow_name=instance.name,
         status="queued",
         nodes_total=len(patched.get("nodes") or []),
@@ -170,11 +227,13 @@ async def create_prediction(
     await session.commit()
     await session.refresh(task)
 
-    # 用量计数(原子自增)。完整配额消费收敛到 PR-5。
-    await session.execute(
-        update(InstanceApiKey).where(InstanceApiKey.id == api_key.id)
-        .values(usage_calls=InstanceApiKey.usage_calls + 1))
-    await session.commit()
+    if api_key is not None:
+        # 用量计数(原子自增)。完整配额消费收敛到 PR-5。admin 路径无 key 可计,跳过
+        # (镜像 apps.py::execute_service 的 admin_run 分支:admin 不耗配额)。
+        await session.execute(
+            update(InstanceApiKey).where(InstanceApiKey.id == api_key.id)
+            .values(usage_calls=InstanceApiKey.usage_calls + 1))
+        await session.commit()
 
     from src.services.workflow_runner import run_workflow_task  # noqa: PLC0415
     runner_client = getattr(request.app.state, "runner_client", None)
@@ -202,16 +261,17 @@ async def create_prediction(
 @router.get("/predictions/{prediction_id}")
 async def get_prediction(
     prediction_id: int,
-    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_predictions),
     session: AsyncSession = Depends(get_async_session),
 ):
     """轮询一个 prediction 的状态/结果。"""
     _, api_key = auth
     task = (await session.execute(
         select(ExecutionTask).where(ExecutionTask.id == prediction_id))).scalar_one_or_none()
-    # IDOR 防护:by-id 只允许创建它的 key 访问;归属不符 / NULL(admin·老行)对 api-key
-    # 调用方一律 404(不泄漏存在性)。
-    if task is None or task.api_key_id != api_key.id:
+    # IDOR 防护:by-id 只允许创建它的 key 访问;归属不符对 api-key 调用方一律 404(不泄漏
+    # 存在性)。admin session 旁路(`api_key is None`,Task 10)跳过 —— admin 对所有
+    # prediction 隐式有权限,与 `/api/v1/tasks/{id}`(admin-only,无 owner 校验)对齐。
+    if task is None or (api_key is not None and task.api_key_id != api_key.id):
         raise HTTPException(404, detail="prediction not found")
     return task_to_prediction(task, service=task.workflow_name)
 
@@ -258,21 +318,59 @@ async def stream_prediction(
 @router.post("/predictions/{prediction_id}/cancel")
 async def cancel_prediction(
     prediction_id: int,
-    auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
+    auth: tuple[ServiceInstance | None, InstanceApiKey | None] = Depends(_auth_predictions),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """取消一个进行中的 prediction(runner 在节点边界检查 status=cancelled 中止)。"""
+    """取消一个进行中的 prediction(runner 在节点边界检查 status=cancelled 中止)。
+
+    comfy_template 服务的桥节点(Task 6)不经 runner_clients 广播那套 abort —— 它是串行
+    跑在这个进程里、正堵在 `ComfyClient.wait()` 上,唯一能真正打断当前渲染的是转发
+    ComfyUI 的 `/interrupt`(串行语义下"中断当前"即"中断本任务",局限见 spec §12)。
+
+    C1 fix:一个 comfy_template 服务的 render 信号量(`comfy_bridge._SEM`)是**进程级
+    单例**,不是每个 prediction 一把——排在信号量后面等待的其它 comfy_template
+    prediction 的 DB 状态也是 "running"(workflow_runner 在拿到信号量之前就已经把
+    status 落 running 了)。旧代码只要 status=="running" 就无条件转发 `/interrupt`,
+    会把**当前真正在 ComfyUI 上跑的那个不相干任务**打断,取消 B 却误杀 A 在渲染的图。
+    现在只在被取消的 prediction_id 确实是 `comfy_bridge` 当前持有信号量的那个任务时
+    才转发 —— 排在后面的任务靠桥节点自己在拿到信号量后的 cancel-race 复查跳过渲染
+    (comfy_bridge.py::_task_is_cancelled),不需要也不该经这条 interrupt 路径。
+    """
     _, api_key = auth
     task = (await session.execute(
         select(ExecutionTask).where(ExecutionTask.id == prediction_id))).scalar_one_or_none()
-    # IDOR 防护:非 owner(含 NULL·admin·老行)一律 404,防跨租户取消(DoS)。
-    if task is None or task.api_key_id != api_key.id:
+    # IDOR 防护:非 owner 一律 404,防跨租户取消(DoS)。admin session 旁路
+    # (`api_key is None`,Task 10)跳过 —— admin 可取消任意 prediction,同 get_prediction。
+    if task is None or (api_key is not None and task.api_key_id != api_key.id):
         raise HTTPException(404, detail="prediction not found")
     if task.status in ("completed", "failed", "cancelled"):
         return task_to_prediction(task, service=task.workflow_name)
+    if task.status == "running":
+        svc = (await session.execute(
+            select(ServiceInstance).where(ServiceInstance.name == task.workflow_name)
+        )).scalar_one_or_none()
+        if svc is not None and svc.source_type == "comfy_template":
+            from src.services.nodes.comfy_bridge import get_running_task_id  # noqa: PLC0415
+            if get_running_task_id() == prediction_id:
+                from src.api.routes.comfy_templates import get_client  # noqa: PLC0415
+                try:
+                    await get_client().interrupt()
+                except Exception as e:  # noqa: BLE001 — sidecar 掉线不该挡住 DB 落 cancelled
+                    import logging  # noqa: PLC0415
+                    logging.getLogger(__name__).warning(
+                        "cancel_prediction: comfy interrupt failed for task %s: %s",
+                        prediction_id, e)
+    # TOCTOU 守护(镜像 workflow_runner.py run_workflow_task 反方向的 cancel-race guard):
+    # 上面 `await interrupt()`(生产里最长 5s 真实 HTTP 往返)期间,后台渲染完全可能已经
+    # 跑完并把 completed+result 落库 —— 这里若无条件 UPDATE status='cancelled',会把一个
+    # 已经成功的终态硬翻回 cancelled 且丢 output(task_to_prediction 只在 succeeded 时给
+    # output),终态错报。条件 UPDATE 只在仍是 queued/running 时才真的落 cancelled,否则
+    # 0 行生效,下面 refresh 拿到的就是渲染赢下竞态后的真实终态。
     await session.execute(
-        update(ExecutionTask).where(ExecutionTask.id == prediction_id)
-        .values(status="cancelled", cancel_reason="client cancel"))
+        update(ExecutionTask).where(
+            ExecutionTask.id == prediction_id,
+            ExecutionTask.status.in_(("queued", "running")),
+        ).values(status="cancelled", cancel_reason="client cancel"))
     await session.commit()
     await session.refresh(task)
     return task_to_prediction(task, service=task.workflow_name)

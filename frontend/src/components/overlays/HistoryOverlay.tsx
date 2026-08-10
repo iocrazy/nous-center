@@ -3,7 +3,7 @@
 // (复用 PR-A:按 workflow_id 找服务跳 Playground 回填 input_json)/「删除」;点图开共享灯箱
 // (缩放/平移 + 元信息面板:prompt/参数/时长/重跑;spec 2026-06-10)。
 import { useMemo, useState } from 'react'
-import { X, RefreshCw, Trash2 } from 'lucide-react'
+import { X, RefreshCw, Trash2, Play } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { usePanelStore } from '../../stores/panel'
 import { confirmDialog } from '../../stores/confirm'
@@ -23,6 +23,31 @@ export default function HistoryOverlay() {
     () => (tasks ?? []).filter((t) => (t.output_thumbnails?.length ?? 0) > 0),
     [tasks],
   )
+
+  // 视频产物检测(Task 11):comfy bridge 节点 result 形状是 `{outputs:{node_id:envelope}}`
+  // (或旧 fake 测试的 flat `{node_id:envelope}`),envelope 带 video_url 或
+  // items[].kind==='video'(见 execution_task_serialize.py _iter_node_outputs/_image_urls)。
+  // 卡片缩略图仍走 output_thumbnails[0](ffmpeg 首帧 PNG),灯箱条目则要换成这个视频 url。
+  const findVideoUrl = (result: unknown): string | undefined => {
+    if (!result || typeof result !== 'object') return undefined
+    const r = result as Record<string, unknown>
+    const outputsField = r.outputs
+    const nodeOutputs = outputsField && typeof outputsField === 'object'
+      ? Object.values(outputsField as Record<string, unknown>)
+      : Object.values(r)
+    for (const v of nodeOutputs) {
+      if (!v || typeof v !== 'object') continue
+      const vv = v as Record<string, unknown>
+      if (typeof vv.video_url === 'string' && vv.video_url) return vv.video_url
+      for (const item of (Array.isArray(vv.items) ? vv.items : [])) {
+        if (item && typeof item === 'object') {
+          const it = item as Record<string, unknown>
+          if (it.kind === 'video' && typeof it.url === 'string' && it.url) return it.url
+        }
+      }
+    }
+    return undefined
+  }
 
   const canRerun = (t: ExecutionTask) =>
     !!services?.find((s) => !!s.workflow_id && s.workflow_id === t.workflow_id)
@@ -58,16 +83,26 @@ export default function HistoryOverlay() {
     }
   }
 
-  // 全画廊扁平图集(跨 task 多图)+ 每 task 首图的全局索引(点卡片定位)。
-  const { gallery, startIndex } = useMemo(() => {
+  // 全画廊扁平图集(跨 task 多图)+ 每 task 首图的全局索引(点卡片定位)+ 每 task 检出的
+  // 视频 url(Card 判 isVideo/占位缩略同一份数据,免得渲染时再调一遍 findVideoUrl)。
+  const { gallery, startIndex, videoUrlByTaskId } = useMemo(() => {
     const g: LightboxItem[] = []
     const start = new Map<string | number, number>()
+    const videoMap = new Map<string | number, string>()
     for (const t of items) {
       start.set(t.id, g.length)
       const meta = taskMeta(t)
-      for (const url of t.output_thumbnails ?? []) g.push({ url, meta })
+      const videoUrl = findVideoUrl(t.result)
+      if (videoUrl) {
+        // 视频任务:灯箱条目是视频 url(不是 PNG 首帧缩略),kind='video' 让 Lightbox
+        // 切到 <video> 分支;卡片缩略图仍走 output_thumbnails[0](见下方 Card 调用)。
+        videoMap.set(t.id, videoUrl)
+        g.push({ url: videoUrl, meta, kind: 'video' })
+      } else {
+        for (const url of t.output_thumbnails ?? []) g.push({ url, meta })
+      }
     }
-    return { gallery: g, startIndex: start }
+    return { gallery: g, startIndex: start, videoUrlByTaskId: videoMap }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, services])
 
@@ -78,7 +113,7 @@ export default function HistoryOverlay() {
         className="shrink-0 flex items-center gap-3"
         style={{ padding: '12px 18px', borderBottom: '1px solid var(--border)' }}
       >
-        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>历史出图</span>
+        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>历史生成</span>
         <span style={{ fontSize: 11, color: 'var(--muted)' }}>{items.length} 张</span>
         <button
           type="button"
@@ -108,11 +143,18 @@ export default function HistoryOverlay() {
           >
             {items.map((t) => {
               const thumb = t.output_thumbnails![0]
+              const videoUrl = videoUrlByTaskId.get(t.id)
+              const isVideo = !!videoUrl
+              // ffmpeg 缺省/抽帧失败(thumbnail.py extract_first_frame → None)时
+              // output_thumbnails[0] 退化成 video_url 本身(见 _image_urls)—— 这种情况没有
+              // 独立 PNG 缩略,不能拿视频文件当 <img src> 渲染(碎图),Card 走占位图标分支。
+              const hasDistinctThumb = !isVideo || thumb !== videoUrl
               return (
                 <Card
                   key={t.id}
                   task={t}
-                  thumb={thumb}
+                  thumb={hasDistinctThumb ? thumb : undefined}
+                  isVideo={isVideo}
                   canRerun={canRerun(t)}
                   onOpen={() => openItems(gallery, startIndex.get(t.id) ?? 0)}
                   onRerun={() => rerun(t)}
@@ -130,10 +172,12 @@ export default function HistoryOverlay() {
 }
 
 function Card({
-  task, thumb, canRerun, onOpen, onRerun, onDelete,
+  task, thumb, isVideo, canRerun, onOpen, onRerun, onDelete,
 }: {
   task: ExecutionTask
-  thumb: string
+  /** 缺省 → 无独立 PNG 缩略(ffmpeg 缺省/抽帧失败),渲染占位视频图标而非 <img>。 */
+  thumb: string | undefined
+  isVideo: boolean
   canRerun: boolean
   onOpen: () => void
   onRerun: () => void
@@ -151,7 +195,47 @@ function Card({
       }}
     >
       <div style={{ position: 'relative', aspectRatio: '1 / 1', background: 'var(--bg)', cursor: 'zoom-in' }} onClick={onOpen}>
-        <img src={thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        {thumb ? (
+          <img src={thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        ) : (
+          <div
+            role="img"
+            aria-label="视频"
+            style={{
+              width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'var(--card, var(--bg-accent))',
+            }}
+          >
+            <Play size={30} color="var(--muted)" />
+          </div>
+        )}
+        {isVideo && (
+          <>
+            {thumb && (
+              <span
+                role="img"
+                aria-label="视频"
+                style={{
+                  position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  pointerEvents: 'none',
+                }}
+              >
+                <span style={{
+                  width: 40, height: 40, borderRadius: '50%', background: 'rgba(0,0,0,0.55)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Play size={18} color="#fff" fill="#fff" />
+                </span>
+              </span>
+            )}
+            <span style={{
+              position: 'absolute', bottom: 6, left: 6, fontSize: 10, padding: '1px 6px',
+              borderRadius: 8, background: 'rgba(0,0,0,0.6)', color: '#fff',
+            }}>
+              {task.workflow_name || '视频'}
+            </span>
+          </>
+        )}
         {(task.output_thumbnails?.length ?? 0) > 1 && (
           <span style={{
             position: 'absolute', top: 6, right: 6, fontSize: 10, padding: '1px 6px',

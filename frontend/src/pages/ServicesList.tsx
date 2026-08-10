@@ -7,6 +7,7 @@ import {
   Cpu,
   Image as ImageIcon,
   Images,
+  Link2,
   MoreHorizontal,
   Plus,
   Search,
@@ -21,11 +22,13 @@ import {
   type ServiceRow,
 } from '../api/services'
 import CreateServiceDialog from '../components/services/CreateServiceDialog'
+import ImportComfyDialog from '../components/services/ImportComfyDialog'
+import { apiFetch } from '../api/client'
 import { useToastStore } from '../stores/toast'
 import { useServiceModelStatus, MODEL_STATE_VIS } from '../api/serviceModels'
 import { confirmDialog } from '../stores/confirm'
 
-type FilterTab = 'all' | ServiceCategory
+type FilterTab = 'all' | ServiceCategory | 'comfy_bridge'
 
 const TAB_DEFS: { id: FilterTab; label: string }[] = [
   { id: 'all', label: '全部' },
@@ -38,6 +41,9 @@ const TAB_DEFS: { id: FilterTab; label: string }[] = [
   // 子 tab 计数和与全部对不上(真机:全部 4 但 LLM1+TTS0+VL0+其他2=3)。
   { id: 'image', label: '图像' },
   { id: 'app', label: '其他' },
+  // ComfyUI 桥导入的服务(source_type='comfy_template')横跨各 category,单独给一个
+  // 筛选 tab,不进 buildCounts 的 category 桶(避免和上面几个重复计数)。
+  { id: 'comfy_bridge', label: 'ComfyUI 桥' },
 ]
 
 export interface ServicesListProps {
@@ -52,10 +58,15 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
   const [tab, setTab] = useState<FilterTab>('all')
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const del = useDeleteService()
   const toast = useToastStore((s) => s.add)
 
   const counts = useMemo(() => buildCounts(services ?? []), [services])
+  const comfyBridgeCount = useMemo(
+    () => (services ?? []).filter((s) => s.source_type === 'comfy_template').length,
+    [services],
+  )
   const filtered = useMemo(
     () => filter(services ?? [], tab, search),
     [services, tab, search],
@@ -122,6 +133,7 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
             <NewServiceMenu
               onQuickProvision={() => setCreateOpen(true)}
               onPublishFromWorkflow={() => navigate('/workflows')}
+              onImportComfy={() => setImportOpen(true)}
             />
           </div>
         </div>
@@ -129,7 +141,12 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
         {/* tabs */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 14 }}>
           {TAB_DEFS.map((t) => {
-            const n = t.id === 'all' ? services?.length ?? 0 : counts[t.id] ?? 0
+            const n =
+              t.id === 'all'
+                ? services?.length ?? 0
+                : t.id === 'comfy_bridge'
+                  ? comfyBridgeCount
+                  : counts[t.id] ?? 0
             const active = tab === t.id
             return (
               <button
@@ -185,6 +202,29 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
           onClose={() => setCreateOpen(false)}
           onCreated={(id) => goDetail(id)}
         />
+        <ImportComfyDialog
+          open={importOpen}
+          onClose={() => setImportOpen(false)}
+          onImported={async (serviceName) => {
+            setImportOpen(false)
+            // POST /comfy-templates 只回模板自己的 id,不带新建 ServiceInstance 的
+            // id(services.name===service_name 是由后端唯一性校验保证的不变量,见
+            // comfy_templates.py create_template)。GET /services 列表按 name 找一次
+            // 拿 svc.id 是目前唯一能跳详情页的办法;拿到后 goDetail 触发的路由切换会
+            // 让服务详情页自己的 useService 去 fetch,不需要在这里手动碰 query cache。
+            try {
+              const rows = await apiFetch<ServiceRow[]>('/api/v1/services')
+              const row = rows.find((r) => r.name === serviceName)
+              if (row) {
+                goDetail(row.id)
+                return
+              }
+            } catch {
+              /* fall through to toast below */
+            }
+            toast(`已导入 ${serviceName},请在列表中打开查看`, 'success')
+          }}
+        />
       </div>
     </div>
   )
@@ -195,9 +235,11 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
 function NewServiceMenu({
   onQuickProvision,
   onPublishFromWorkflow,
+  onImportComfy,
 }: {
   onQuickProvision: () => void
   onPublishFromWorkflow: () => void
+  onImportComfy: () => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -264,6 +306,15 @@ function NewServiceMenu({
             onClick={() => {
               setOpen(false)
               onPublishFromWorkflow()
+            }}
+          />
+          <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+          <MenuItem
+            title="导入 ComfyUI 工作流"
+            desc="上传 Export (API) 导出的 workflow.json · 生成一条「桥」服务"
+            onClick={() => {
+              setOpen(false)
+              onImportComfy()
             }}
           />
         </div>
@@ -479,6 +530,7 @@ function ServiceCard({
 
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <CategoryTag category={effectiveCategory(svc)} />
+          {svc.source_type === 'comfy_template' && <ComfyBridgeBadge />}
           <SourceTag
             sourceType={svc.source_type}
             workflowId={svc.workflow_id}
@@ -592,25 +644,50 @@ function CategoryTag({ category }: { category: ServiceCategory | null }) {
   )
 }
 
+function ComfyBridgeBadge() {
+  return (
+    <span
+      title="通过 ComfyUI 桥导入的工作流服务"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 3,
+        fontSize: 10,
+        padding: '1px 7px',
+        borderRadius: 10,
+        background: 'rgba(99,102,241,0.12)',
+        color: 'var(--accent)',
+        border: '1px solid var(--accent)',
+      }}
+    >
+      <Link2 size={9} />
+      桥
+    </span>
+  )
+}
+
 function SourceTag({
   sourceType,
   workflowId,
   workflowName,
   onOpenWorkflow,
 }: {
-  sourceType: 'workflow' | 'preset' | 'model'
+  sourceType: 'workflow' | 'preset' | 'model' | 'comfy_template'
   workflowId?: string | null
   workflowName?: string | null
   onOpenWorkflow?: (workflowId: string) => void
 }) {
   const isWorkflow = sourceType === 'workflow'
   // 显示 workflow 来源的具体名字 + 短 ID（trivial:xxx 的快速开通命名能让人
-  // 一眼看出是真实工作流还是 quick-provision 自动生成的）。
+  // 一眼看出是真实工作流还是 quick-provision 自动生成的）。comfy_template 已经有
+  // 独立的 ComfyBridgeBadge「桥」在旁边标了,这里给个中性描述即可。
   const label = isWorkflow
     ? workflowName
       ? `来自 ${workflowName}${workflowId ? ` #${shortId(workflowId)}` : ''}`
       : '来自 Workflow'
-    : '快速开通'
+    : sourceType === 'comfy_template'
+      ? 'ComfyUI 导入'
+      : '快速开通'
   // workflow 来源 + 有 id → 可点击跳到对应 workflow 编辑器。卡片主体是个 <button>,
   // 嵌套 <a> 是非法 DOM,所以用 span + stopPropagation(拦掉卡片自身的 onOpen)。
   const clickable = isWorkflow && !!workflowId && !!onOpenWorkflow
@@ -747,7 +824,11 @@ function buildCounts(rows: ServiceRow[]): Record<ServiceCategory, number> {
 function filter(rows: ServiceRow[], tab: FilterTab, search: string): ServiceRow[] {
   const q = search.trim().toLowerCase()
   return rows.filter((r) => {
-    if (tab !== 'all' && effectiveCategory(r) !== tab) return false
+    if (tab === 'comfy_bridge') {
+      if (r.source_type !== 'comfy_template') return false
+    } else if (tab !== 'all' && effectiveCategory(r) !== tab) {
+      return false
+    }
     if (q && !r.name.toLowerCase().includes(q)) return false
     return true
   })

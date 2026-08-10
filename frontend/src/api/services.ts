@@ -35,7 +35,7 @@ export interface ServiceRow {
   name: string
   type: string
   status: ServiceStatus
-  source_type: 'workflow' | 'preset' | 'model'
+  source_type: 'workflow' | 'preset' | 'model' | 'comfy_template'
   source_id: string | null
   source_name: string | null
   category: ServiceCategory | null

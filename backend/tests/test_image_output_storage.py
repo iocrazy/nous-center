@@ -301,6 +301,52 @@ async def test_image_route_404_when_signed_but_file_missing(
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_image_route_serves_mp4_with_video_content_type(
+    storage_tmp, with_signing_secret, client
+):
+    """comfy bridge (Task 5/6) 用 write_media(=write_image) 存 mp4;路由的
+    ext 白名单 + Content-Type 推导必须覆盖 image 之外的媒体类型,不能写死
+    image/*(见 image_files.py:_mime_for_ext)。"""
+    from src.services.image_output_storage import write_media
+
+    rec = write_media(b"\x00fakemp4bytes", ext="mp4", ttl_seconds=600)
+    resp = await client.get(rec["url"])
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "video/mp4"
+    assert resp.content == b"\x00fakemp4bytes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("ext", "content_type"), [("gif", "image/gif"), ("webm", "video/webm")])
+async def test_image_route_serves_gif_and_webm(storage_tmp, with_signing_secret, client, ext, content_type):
+    """I2 fix:_EXT_WHITELIST 现在从 services/comfy/outputs.py 的 SERVABLE_EXTS 单一
+    来源派生——之前是手写列表,只有 png/jpg/jpeg/webp/mp4/wav,漏了 gif/webm/mov/mkv/
+    mp3/flac/ogg(comfy 桥能产出的其它媒体类型经这条路由一律 403)。"""
+    from src.services.image_output_storage import write_media
+
+    rec = write_media(b"\x00fakebytes", ext=ext, ttl_seconds=600)
+    resp = await client.get(rec["url"])
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == content_type
+    assert resp.content == b"\x00fakebytes"
+
+
+def test_reap_orphans_collects_webm(storage_tmp):
+    """I2 fix companion:reap 的 allowed_ext 同样从 SERVABLE_EXTS 派生——webm 是 reap
+    早就手写覆盖的一个 ext,这里只是确认它仍然被派生后的集合覆盖(单一来源没有回归)。"""
+    import os as _os
+    from src.services.image_output_storage import reap_orphans, write_media
+
+    webm = write_media(b"\x00fakewebm", ext="webm", ttl_seconds=60)
+    two_days = time.time() - 2 * 24 * 3600
+    _os.utime(webm["path"], (two_days, two_days))
+
+    summary = reap_orphans(older_than_seconds=24 * 3600)
+    assert summary["deleted"] == 1
+    assert not webm["path"].exists()
+
+
 # 注:write_image 的 secret→签名 URL / 无 secret→url=None 不变式由上面
 # test_write_image_no_secret_yields_null_url + test_write_image_with_secret_signs_url
 # 直接覆盖。收敛后 image_generate 节点已删(图像走细粒度图 + runner write_image),
@@ -381,6 +427,25 @@ def test_reap_orphans_prunes_empty_date_dirs(storage_tmp):
     assert summary["deleted"] == 1
     assert summary["dirs_pruned"] == 1
     assert not bucket.exists()
+
+
+def test_reap_orphans_collects_expired_media_files(storage_tmp):
+    """write_media (mp4/wav write_image alias, comfy-bridge) outputs are
+    reapable exactly like images — expired media must not leak disk forever
+    just because reap_orphans only recognized image extensions."""
+    import os as _os
+    from src.services.image_output_storage import reap_orphans, write_media
+
+    mp4 = write_media(b"\x00fakemp4", ext="mp4", ttl_seconds=60)
+    wav = write_media(b"RIFFfakewav", ext="wav", ttl_seconds=60)
+    two_days = time.time() - 2 * 24 * 3600
+    _os.utime(mp4["path"], (two_days, two_days))
+    _os.utime(wav["path"], (two_days, two_days))
+
+    summary = reap_orphans(older_than_seconds=24 * 3600)
+    assert summary["deleted"] == 2
+    assert not mp4["path"].exists()
+    assert not wav["path"].exists()
 
 
 def test_reap_orphans_skips_non_image_files(storage_tmp):

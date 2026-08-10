@@ -573,6 +573,11 @@ class WorkflowExecutor:
         node_type = node["type"]
         data = dict(node.get("data", {}))
         data["_node_id"] = node["id"]
+        # comfy_bridge.py's ComfyUIWorkflowNode reads this to check-in with the
+        # ExecutionTask row before rendering (cancel-race guard, C1 fix) and to
+        # report which task currently holds the sidecar render semaphore —
+        # same injection pattern as `_node_id` above, just one more key.
+        data["_task_id"] = self._task_id
 
         node_cls = get_node_class(node_type)
         if node_cls is None:
