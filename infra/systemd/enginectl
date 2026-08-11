@@ -77,7 +77,7 @@ cmd_status() {
     printf '  %-22s %s\n' "$u" "$mark"
   done
   printf '\n监听端口:\n'
-  ss -ltn 2>/dev/null | awk 'NR>1 {print $4}' | grep -E ':(8000|8001|5432)$' | sort -u | sed 's/^/  /' || true
+  ss -ltn 2>/dev/null | awk 'NR>1 {print $4}' | grep -E ':(8000|8001|5432|8888)$' | sort -u | sed 's/^/  /' || true
   printf '\nZeroTier 内网访问:\n'
   # 后端 bind 0.0.0.0 → ZeroTier 网卡(10.0.0.10)同样可达。探一下 /healthz 确认内网入口活着。
   zt_code="$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://10.0.0.10:8000/healthz 2>/dev/null || echo 000)"
@@ -85,6 +85,15 @@ cmd_status() {
     printf '  http://10.0.0.10:8000  %s\n' "$(c_grn 'HTTP 200')"
   else
     printf '  http://10.0.0.10:8000  %s %s\n' "$(c_red "HTTP ${zt_code}")" "$(c_dim '(ZeroTier 未连/未分配 10.0.0.10?)')"
+  fi
+  # ComfyUI sidecar(桥):直探 /queue 拿队列深度;未启用/没起时给暗色提示不刷红。
+  printf '\nComfyUI 桥:\n'
+  cq="$(curl -s -m 4 --noproxy '*' http://127.0.0.1:8888/queue 2>/dev/null || true)"
+  if [ -n "$cq" ]; then
+    depth="$(printf '%s' "$cq" | grep -o '"queue_\(running\|pending\)": *\[[^]]*\]' | grep -c 'prompt' || true)"
+    printf '  http://127.0.0.1:8888  %s %s\n' "$(c_grn '在线')" "$(c_dim "队列 ${depth:-0}")"
+  else
+    printf '  http://127.0.0.1:8888  %s\n' "$(c_dim '离线(单元未启用或未启动)')"
   fi
   printf '\n公网隧道:\n'
   code="$(curl -s -m 6 -o /dev/null -w '%{http_code}' https://api.iocrazy.com/api/v1/engines 2>/dev/null || echo 000)"
