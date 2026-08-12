@@ -461,7 +461,7 @@ function AppTab({ svc, initialInputs }: { svc: ServiceDetailT; initialInputs?: R
       )}
       {m === 'edit' ? (
         svc.source_type === 'comfy_template' && svc.source_id ? (
-          <ComfyTemplateEditor templateId={svc.source_id} />
+          <ComfyTemplateEditor templateId={svc.source_id} serviceId={svc.id} />
         ) : (
           <AppEditorTab svc={svc} />
         )

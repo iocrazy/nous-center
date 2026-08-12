@@ -9,6 +9,7 @@
 //      原始 inputs(节点引用连线 [nodeId,slot] 不算可配置字段,过滤掉)。
 //   4) 弹窗与下方字段汇总表共享同一份 exposedParams state,保存走 putMapping。
 import { useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Upload, X } from 'lucide-react'
 import {
   getComfyHealth,
@@ -29,6 +30,10 @@ export type ExposedParamDraft = ComfyExposedParam
 
 export interface ComfyTemplateEditorProps {
   templateId: string | number
+  /** 承载该模板的服务 id(有就传)——保存后用来 invalidate 该服务详情的 react-query
+   *  缓存,否则「运行」分段的 Playground 表单还显示旧 exposed_inputs(见 services.ts
+   *  useService 的 queryKey ['service', id])。 */
+  serviceId?: string | number
 }
 
 interface RawInputRow {
@@ -117,8 +122,9 @@ function isApiFormatWorkflow(parsed: unknown): parsed is ComfyWorkflow {
   )
 }
 
-export default function ComfyTemplateEditor({ templateId }: ComfyTemplateEditorProps) {
+export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemplateEditorProps) {
   const idStr = String(templateId)
+  const qc = useQueryClient()
   const [detail, setDetail] = useState<ComfyTemplateDetail | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [health, setHealth] = useState<ComfyHealth | null>(null)
@@ -233,6 +239,10 @@ export default function ComfyTemplateEditor({ templateId }: ComfyTemplateEditorP
     try {
       await putMapping(idStr, exposedParams)
       setSaved(true)
+      // 保存改的是对外 exposed_inputs schema — invalidate 服务详情缓存,否则「运行」
+      // 分段的 Playground 表单还是切 tab 前的旧字段(services.ts useService/useServices)。
+      qc.invalidateQueries({ queryKey: ['services'] })
+      if (serviceId != null) qc.invalidateQueries({ queryKey: ['service', String(serviceId)] })
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e))
     } finally {

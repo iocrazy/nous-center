@@ -1,7 +1,21 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import ComfyTemplateEditor from './ComfyTemplateEditor'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import ComfyTemplateEditor, { type ComfyTemplateEditorProps } from './ComfyTemplateEditor'
 import * as api from '../../api/comfyTemplates'
+
+// ComfyTemplateEditor 保存后要 qc.invalidateQueries(...)(见组件内注释),所以现在需要
+// 一个真实 QueryClientProvider 才能渲染 —— 复用 ComponentSelectWidget.test.tsx 的 wrap() 写法。
+function renderEditor(props: ComfyTemplateEditorProps) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const spy = vi.spyOn(qc, 'invalidateQueries')
+  const result = render(
+    <QueryClientProvider client={qc}>
+      <ComfyTemplateEditor {...props} />
+    </QueryClientProvider>,
+  )
+  return { ...result, qc, invalidateSpy: spy }
+}
 
 // React Flow rendering is exercised separately (comfyGraphLayout unit tests + real
 // usage precedent in WorkflowAppEditor); mock the graph child here so editor tests
@@ -62,13 +76,13 @@ beforeEach(() => {
 
 describe('ComfyTemplateEditor', () => {
   it('渲染每个节点一张卡', async () => {
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     expect(await screen.findByText('LoadImage #1')).toBeInTheDocument()
     expect(screen.getByText('KSampler #2')).toBeInTheDocument()
   })
 
   it('点卡片开弹窗,列出该节点原始 inputs(跳过节点引用连线)', async () => {
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     fireEvent.click(await screen.findByText('KSampler #2'))
     expect(await screen.findByText('steps')).toBeInTheDocument()
     expect(screen.getByText('seed')).toBeInTheDocument()
@@ -76,7 +90,7 @@ describe('ComfyTemplateEditor', () => {
   })
 
   it('弹窗内勾选暴露 → 汇总表出现该行', async () => {
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     fireEvent.click(await screen.findByText('KSampler #2'))
     const stepsRow = (await screen.findByText('steps')).closest('[data-input-row]') as HTMLElement
     fireEvent.click(within(stepsRow).getByRole('checkbox', { name: /暴露/ }))
@@ -85,7 +99,7 @@ describe('ComfyTemplateEditor', () => {
   })
 
   it('object_info 预填数值类型 min/max(未勾选也先展示,勾选后才可编辑)', async () => {
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     fireEvent.click(await screen.findByText('KSampler #2'))
     const stepsRow = (await screen.findByText('steps')).closest('[data-input-row]') as HTMLElement
     expect(within(stepsRow).getByDisplayValue('1')).toBeInTheDocument() // min
@@ -93,14 +107,14 @@ describe('ComfyTemplateEditor', () => {
   })
 
   it('seed 类整数出「随机」勾选', async () => {
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     fireEvent.click(await screen.findByText('KSampler #2'))
     const seedRow = (await screen.findByText('seed')).closest('[data-input-row]') as HTMLElement
     expect(within(seedRow).getByRole('checkbox', { name: /随机/ })).toBeInTheDocument()
   })
 
   it('保存调用 putMapping,payload 形状正确(comfy_node_id/comfy_input)', async () => {
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     fireEvent.click(await screen.findByText('KSampler #2'))
     const stepsRow = (await screen.findByText('steps')).closest('[data-input-row]') as HTMLElement
     fireEvent.click(within(stepsRow).getByRole('checkbox', { name: /暴露/ }))
@@ -120,8 +134,19 @@ describe('ComfyTemplateEditor', () => {
     ])
   })
 
+  it('保存成功后 invalidate 服务详情 + 服务列表缓存,切「运行」才能看到新字段', async () => {
+    const { invalidateSpy } = renderEditor({ templateId: '7', serviceId: 'svc-42' })
+    fireEvent.click(await screen.findByText('KSampler #2'))
+    const stepsRow = (await screen.findByText('steps')).closest('[data-input-row]') as HTMLElement
+    fireEvent.click(within(stepsRow).getByRole('checkbox', { name: /暴露/ }))
+    fireEvent.click(screen.getByRole('button', { name: /保存配置/ }))
+    await waitFor(() => expect(api.putMapping).toHaveBeenCalled())
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['services'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['service', 'svc-42'] })
+  })
+
   it('C2/I1:选「图片/文件(上传)」类型 → putMapping payload 里 type=image 原样送出', async () => {
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     fireEvent.click(await screen.findByText('KSampler #2'))
     const stepsRow = (await screen.findByText('steps')).closest('[data-input-row]') as HTMLElement
     fireEvent.click(within(stepsRow).getByRole('checkbox', { name: /暴露/ }))
@@ -141,7 +166,7 @@ describe('ComfyTemplateEditor', () => {
     vi.mocked(api.getComfyHealth).mockResolvedValue({
       online: false, queue_depth: 0, version: '', base_url: 'http://x', timeout_s: 30,
     })
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     expect(await screen.findByText(/离线/)).toBeInTheDocument()
   })
 
@@ -149,7 +174,7 @@ describe('ComfyTemplateEditor', () => {
     vi.mocked(api.getComfyTemplate).mockResolvedValue(baseDetail([
       { key: 'steps', label: '步数', type: 'integer', comfy_node_id: '2', comfy_input: 'steps', min: 1, max: 150 },
     ]))
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     await screen.findByTestId('exposed-summary-table')
     expect(screen.getByTestId('exposed-row-steps')).toBeInTheDocument()
   })
@@ -159,7 +184,7 @@ describe('ComfyTemplateEditor', () => {
       { key: 'gone', label: 'gone', type: 'string', comfy_node_id: '99', comfy_input: 'x' },
     ]))
     vi.mocked(api.reuploadComfyTemplate).mockResolvedValue({ stale_keys: ['gone'] })
-    render(<ComfyTemplateEditor templateId="7" />)
+    renderEditor({ templateId: '7' })
     await screen.findByTestId('exposed-summary-table')
     expect(screen.getByTestId('exposed-row-gone')).toHaveAttribute('data-stale', 'false')
 
