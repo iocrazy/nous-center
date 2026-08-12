@@ -11,6 +11,7 @@ Task 6 提供,这里只是把数据形状定下来。`exposed_inputs` 的映射�
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
@@ -369,18 +370,45 @@ async def comfy_health():
     return health_result
 
 
+def _used_of(devices: list[dict]) -> int:
+    return sum(d.get("vram_used", 0) or 0 for d in devices)
+
+
+# 释放后的轮询节奏(测试 monkeypatch 成 0 免得空等 6s)。
+_FREE_POLL_ROUNDS = 12
+_FREE_POLL_INTERVAL = 0.5
+
+
 @health_router.post("/free", dependencies=[Depends(require_admin)])
 async def comfy_free():
-    """释放 ComfyUI 侧缓存模型占用的显存(POST /free,unload_models+free_memory)。"""
+    """释放 ComfyUI 侧缓存模型占用的显存(POST /free,unload_models+free_memory)。
+
+    ComfyUI 的 /free **是异步的**:server.py 只 `prompt_queue.set_flag(...)`,真正的
+    `unload_all_models()` 要等 main.py 的 worker 被 `not_empty.notify()` 唤醒后才跑
+    (实测 64.3G → 43.8G 用了几秒)。所以调完立刻拍 system_stats 必然还是旧值,按钮
+    看着像没生效。这里轮询到显存真降下来(或 6s 超时)再返回快照,`settled` 告诉前端
+    这份数字是否已经落定。
+    """
     client = get_client()
     try:
+        before = _used_of(_devices_from_stats(await client.system_stats()))
         await client.free()
     except ComfyError as e:
         raise HTTPException(e.status_code, detail=e.message)
     except httpx.HTTPError as e:
         raise HTTPException(502, detail=f"ComfyUI sidecar 不可达:{str(e)[:100]}")
-    stats = await client.system_stats()
-    return {"ok": True, "devices": _devices_from_stats(stats)}
+
+    devices: list[dict] = []
+    settled = False
+    for _ in range(_FREE_POLL_ROUNDS):  # 默认 12 × 0.5s = 6s 上限
+        await asyncio.sleep(_FREE_POLL_INTERVAL)
+        devices = _devices_from_stats(await client.system_stats())
+        # 归还 >1GB 才算落定 —— 显存读数本身有百 MB 级抖动(同卡其它进程)。
+        if before - _used_of(devices) > 1_000_000_000:
+            settled = True
+            break
+    return {"ok": True, "settled": settled, "freed_bytes": max(0, before - _used_of(devices)),
+            "devices": devices}
 
 
 @health_router.get("/object-info")

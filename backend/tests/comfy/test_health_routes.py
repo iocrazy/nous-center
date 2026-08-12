@@ -65,12 +65,41 @@ async def test_free_calls_client_and_returns_snapshot(client, monkeypatch):
         async def free(self):
             calls["n"] += 1
     monkeypatch.setattr(ct_mod, "get_client", lambda: Counting())
+    monkeypatch.setattr(ct_mod, "_FREE_POLL_INTERVAL", 0)  # 显存不降时别空等 6s
     r = await client.post("/api/v1/comfy/free")
     assert r.status_code == 200
     assert calls["n"] == 1
     body = r.json()
     assert body["ok"] is True
     assert body["devices"][0]["vram_used"] == 102_000_000_000 - 37_700_000_000
+    # 显存没降 → settled False,前端据此提示"释放已触发,可能仍在进行"
+    assert body["settled"] is False
+
+
+@pytest.mark.asyncio
+async def test_free_waits_for_async_unload_to_land(client, monkeypatch):
+    """ComfyUI 的 /free 只设 flag,真卸载晚几秒才发生(实测 64.3G→43.8G)。
+    路由要轮询到显存真降下来再返回,否则按钮看着像没生效。"""
+    state = {"round": 0}
+
+    class Lagging(FakeClient):
+        async def free(self):
+            return None
+
+        async def system_stats(self):
+            # 第 3 次查询才反映卸载完成(模拟 worker 被唤醒后的延迟)
+            state["round"] += 1
+            free_b = 37_700_000_000 if state["round"] < 3 else 81_000_000_000
+            return {"devices": [{"name": "cuda:0 Test GPU", "type": "cuda", "index": 0,
+                                 "vram_total": 102_000_000_000, "vram_free": free_b,
+                                 "torch_vram_total": 0}]}
+
+    monkeypatch.setattr(ct_mod, "get_client", lambda: Lagging())
+    monkeypatch.setattr(ct_mod, "_FREE_POLL_INTERVAL", 0)
+    body = (await client.post("/api/v1/comfy/free")).json()
+    assert body["settled"] is True
+    assert body["freed_bytes"] > 1_000_000_000
+    assert body["devices"][0]["vram_used"] == 102_000_000_000 - 81_000_000_000
 
 
 @pytest.mark.asyncio

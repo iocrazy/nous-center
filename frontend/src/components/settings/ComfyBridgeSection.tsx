@@ -63,6 +63,7 @@ export default function ComfyBridgeSection() {
   const queryClient = useQueryClient()
   const [freeing, setFreeing] = useState(false)
   const [freeError, setFreeError] = useState<string | null>(null)
+  const [freeNote, setFreeNote] = useState<string | null>(null)
 
   const { data: health, isLoading, isError } = useQuery({
     queryKey: ['comfy-health'],
@@ -85,9 +86,15 @@ export default function ComfyBridgeSection() {
   const handleFree = async () => {
     setFreeing(true)
     setFreeError(null)
+    setFreeNote(null)
     try {
-      await freeComfyVram()
+      const res = await freeComfyVram()
       await queryClient.invalidateQueries({ queryKey: ['comfy-health'] })
+      // ComfyUI 的 /free 异步:后端已等到显存真降(settled)或 6s 超时。超时不是失败,
+      // 是"还在卸载",照实说,别让用户以为按钮坏了。
+      setFreeNote(res.settled
+        ? `已释放 ${formatGB(res.freed_bytes)}`
+        : '释放已触发,ComfyUI 仍在卸载 —— 稍后刷新查看')
     } catch (e) {
       setFreeError(e instanceof Error ? e.message : '释放显存失败')
     } finally {
@@ -265,6 +272,11 @@ export default function ComfyBridgeSection() {
                 {freeError && (
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--accent)' }}>
                     {freeError}
+                  </div>
+                )}
+                {!freeError && freeNote && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
+                    {freeNote}
                   </div>
                 )}
               </div>

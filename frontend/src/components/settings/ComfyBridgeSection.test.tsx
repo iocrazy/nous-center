@@ -187,6 +187,8 @@ describe('ComfyBridgeSection', () => {
     })
     vi.mocked(comfyTemplates.freeComfyVram).mockResolvedValue({
       ok: true,
+      settled: true,
+      freed_bytes: 20_500_000_000,
       devices: [{ ...DEVICE, vram_free: 100_000_000_000, vram_used: 2_000_000_000 }],
     })
 
@@ -200,6 +202,32 @@ describe('ComfyBridgeSection', () => {
       // getComfyHealth: once on mount, once after the invalidated refetch
       expect(comfyTemplates.getComfyHealth).toHaveBeenCalledTimes(2)
     })
+    // 落定时报出实际归还量,而不是让用户自己比对数字
+    expect(await screen.findByText(/已释放 20\.5GB/)).toBeInTheDocument()
+  })
+
+  it('unsettled release says it is still unloading, not that it failed', async () => {
+    // ComfyUI 的 /free 只设 flag,卸载晚几秒才发生;后端 6s 轮询没等到就 settled=false。
+    // 这不是失败 —— UI 必须照实说"仍在进行",否则用户以为按钮坏了。
+    vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
+      online: true,
+      queue_depth: 0,
+      version: '0.4.12',
+      base_url: 'http://localhost:8188',
+      timeout_s: 120,
+      devices: [DEVICE],
+    })
+    vi.mocked(comfyTemplates.freeComfyVram).mockResolvedValue({
+      ok: true,
+      settled: false,
+      freed_bytes: 0,
+      devices: [DEVICE],
+    })
+
+    render(withQuery(<ComfyBridgeSection />))
+    fireEvent.click(await screen.findByText('释放显存'))
+
+    expect(await screen.findByText(/仍在卸载/)).toBeInTheDocument()
   })
 
   it('hides devices and release button when offline', async () => {

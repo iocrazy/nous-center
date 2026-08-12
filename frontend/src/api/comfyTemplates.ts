@@ -61,6 +61,11 @@ export interface ComfyHealth {
 
 export interface FreeComfyVramResult {
   ok: boolean
+  /** 显存是否已真降下来。ComfyUI 的 /free 是异步的(只设 flag,worker 唤醒后才卸载),
+   *  后端轮询至多 6s;超时仍未降则 false —— 此时 UI 该说"已触发,可能仍在进行"。 */
+  settled: boolean
+  /** 本次实际归还的字节数(未落定时为 0)。 */
+  freed_bytes: number
   devices: ComfyDevice[]
 }
 
