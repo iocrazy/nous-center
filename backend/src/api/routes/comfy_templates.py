@@ -377,6 +377,8 @@ def _used_of(devices: list[dict]) -> int:
 # 释放后的轮询节奏(测试 monkeypatch 成 0 免得空等 6s)。
 _FREE_POLL_ROUNDS = 12
 _FREE_POLL_INTERVAL = 0.5
+# 低于此占用视为"没模型可卸"(实测空载 ComfyUI 仍占 ~1.6G 的 torch/CUDA 上下文)。
+_FREE_NOOP_THRESHOLD = 2_000_000_000
 
 
 @health_router.post("/free", dependencies=[Depends(require_admin)])
@@ -397,6 +399,11 @@ async def comfy_free():
         raise HTTPException(e.status_code, detail=e.message)
     except httpx.HTTPError as e:
         raise HTTPException(502, detail=f"ComfyUI sidecar 不可达:{str(e)[:100]}")
+
+    # 本来就没占多少(只剩 torch 上下文)→ 无可释放,直接落定,别让 UI 说"仍在卸载"。
+    if before <= _FREE_NOOP_THRESHOLD:
+        return {"ok": True, "settled": True, "freed_bytes": 0,
+                "devices": _devices_from_stats(await client.system_stats())}
 
     devices: list[dict] = []
     settled = False

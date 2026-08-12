@@ -137,3 +137,22 @@ async def test_object_info_sidecar_unreachable(client, monkeypatch):
     ct_mod._object_info_cache = None
     r = await client.get("/api/v1/comfy/object-info")
     assert r.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_free_noop_when_nothing_resident(client, monkeypatch):
+    """空载时(只剩 ~1.6G torch 上下文)点释放:落定且归还 0,UI 说"没有可释放的",
+    不能报"仍在卸载"误导用户(实机验证发现)。"""
+    class Idle(FakeClient):
+        async def free(self):
+            return None
+
+        async def system_stats(self):
+            return {"devices": [{"name": "cuda:0 Test GPU", "type": "cuda", "index": 0,
+                                 "vram_total": 102_000_000_000,
+                                 "vram_free": 100_400_000_000, "torch_vram_total": 0}]}
+
+    monkeypatch.setattr(ct_mod, "get_client", lambda: Idle())
+    monkeypatch.setattr(ct_mod, "_FREE_POLL_INTERVAL", 0)
+    body = (await client.post("/api/v1/comfy/free")).json()
+    assert body["settled"] is True and body["freed_bytes"] == 0
