@@ -25,6 +25,7 @@ import { paramKey, type ExposedParam } from '../../api/services'
 import { Field, defaultFor } from '../playground/SchemaDrivenForm'
 import { isComfyNodeRef, layoutComfyGraph, type ComfyWorkflow } from './comfyGraphLayout'
 import { placePopover } from './popoverPlacement'
+import { findInvalidModelRefs, type ModelRefIssue } from './workflowModelCheck'
 import ComfyTemplateGraph from './ComfyTemplateGraph'
 
 /** 弹窗/汇总表共享的单行草稿。与后端 mapping 契约(comfy_node_id/comfy_input)同形 —
@@ -134,6 +135,10 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
   const [objectInfo, setObjectInfo] = useState<Record<string, unknown> | null>(null)
   const [exposedParams, setExposedParams] = useState<ExposedParamDraft[]>([])
   const [staleKeys, setStaleKeys] = useState<string[]>([])
+  // 事故背景见 workflowModelCheck.ts 头注:导入的工作流可能带着别的机器冻结下来的模型
+  // 文件名/路径,本机根本没有。初始加载和重新上传后都跑一遍,让「哪些节点卡引用了本机
+  // 不存在的模型」在图上直接看得见,不用等真跑一次才在 ComfyUI 侧炸出 `Value not in list`。
+  const [modelIssues, setModelIssues] = useState<ModelRefIssue[]>([])
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null)
   // 点击节点时记录的 xyflow 包裹 DOM(见 ComfyTemplateGraph 的 onNodeClick)——popover 定位
   // (placePopover)靠它的 getBoundingClientRect() 算贴靠位置,不用另外查 DOM。
@@ -150,6 +155,7 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
     setLoadError(null)
     setExposedParams([])
     setStaleKeys([])
+    setModelIssues([])
     setActiveNodeId(null)
     setActiveNodeEl(null)
     Promise.all([
@@ -163,6 +169,7 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
         setExposedParams(tpl.exposed_params ?? [])
         setHealth(h)
         setObjectInfo(info)
+        setModelIssues(findInvalidModelRefs(tpl.workflow_json as ComfyWorkflow, info))
       })
       .catch((e) => {
         if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e))
@@ -181,9 +188,15 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
     for (const p of exposedParams) m.set(p.comfy_node_id, (m.get(p.comfy_node_id) ?? 0) + 1)
     return m
   }, [exposedParams])
+  const modelIssueNodeIds = useMemo(() => new Set(modelIssues.map((i) => i.nodeId)), [modelIssues])
   const graphNodes = useMemo(
-    () => layout.nodes.map((n) => ({ ...n, usedCount: usedCountByNode.get(n.id) ?? 0 })),
-    [layout.nodes, usedCountByNode],
+    () =>
+      layout.nodes.map((n) => ({
+        ...n,
+        usedCount: usedCountByNode.get(n.id) ?? 0,
+        invalidModel: modelIssueNodeIds.has(n.id),
+      })),
+    [layout.nodes, usedCountByNode, modelIssueNodeIds],
   )
 
   const rawRowsFor = (nodeId: string): RawInputRow[] => {
@@ -316,6 +329,7 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
         const res = await reuploadComfyTemplate(idStr, parsed)
         setDetail((d) => (d ? { ...d, workflow_json: parsed } : d))
         setStaleKeys(res.stale_keys)
+        setModelIssues(findInvalidModelRefs(parsed, objectInfo))
       } catch (e) {
         setUploadError(e instanceof Error ? e.message : String(e))
       }

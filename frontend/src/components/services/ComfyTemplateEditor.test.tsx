@@ -21,10 +21,21 @@ function renderEditor(props: ComfyTemplateEditorProps) {
 // usage precedent in WorkflowAppEditor); mock the graph child here so editor tests
 // stay fast/robust in jsdom and focus on popover/table/save logic (per task brief).
 vi.mock('./ComfyTemplateGraph', () => ({
-  default: ({ nodes, onNodeClick }: { nodes: Array<{ id: string; class_type: string }>; onNodeClick: (id: string) => void }) => (
+  default: ({
+    nodes,
+    onNodeClick,
+  }: {
+    nodes: Array<{ id: string; class_type: string; invalidModel?: boolean }>
+    onNodeClick: (id: string) => void
+  }) => (
     <div data-testid="graph-mock">
       {nodes.map((n) => (
-        <button key={n.id} type="button" onClick={() => onNodeClick(n.id)}>
+        <button
+          key={n.id}
+          type="button"
+          onClick={() => onNodeClick(n.id)}
+          data-invalid-model={n.invalidModel ? 'true' : 'false'}
+        >
           {n.class_type} #{n.id}
         </button>
       ))}
@@ -193,6 +204,35 @@ describe('ComfyTemplateEditor', () => {
     await waitFor(() => expect(api.reuploadComfyTemplate).toHaveBeenCalledWith('7', WORKFLOW))
     await waitFor(() => {
       expect(screen.getByTestId('exposed-row-gone')).toHaveAttribute('data-stale', 'true')
+    })
+  })
+
+  // 事故背景见 workflowModelCheck.ts 头注:导入的工作流可能带着别的机器冻结下来的模型
+  // 文件名,本机取值表里没有 —— 节点卡要在图上直接标出来,不用等真跑一次才炸。
+  it('模型引用不在 object_info 取值表里 → 节点卡标记 invalidModel(初始加载即计算)', async () => {
+    vi.mocked(api.getObjectInfo).mockResolvedValue({
+      LoadImage: { input: { required: { image: [['a.png', 'b.png']] } } },
+    })
+    renderEditor({ templateId: '7' })
+    const btn = (await screen.findByText('LoadImage #1')).closest('button')!
+    expect(btn).toHaveAttribute('data-invalid-model', 'true')
+    // 值在取值表里的节点不受影响
+    expect(screen.getByText('KSampler #2').closest('button')).toHaveAttribute('data-invalid-model', 'false')
+  })
+
+  it('重新上传修正后的工作流 → invalidModel 标记按新内容重新计算(清掉)', async () => {
+    vi.mocked(api.getObjectInfo).mockResolvedValue({
+      LoadImage: { input: { required: { image: [['a.png', 'b.png']] } } },
+    })
+    renderEditor({ templateId: '7' })
+    expect((await screen.findByText('LoadImage #1')).closest('button')).toHaveAttribute('data-invalid-model', 'true')
+
+    const fixedWorkflow = { ...WORKFLOW, '1': { class_type: 'LoadImage', inputs: { image: 'a.png' } } }
+    const file = new File([JSON.stringify(fixedWorkflow)], 'wf.json', { type: 'application/json' })
+    fireEvent.change(screen.getByTestId('comfy-reupload-input'), { target: { files: [file] } })
+    await waitFor(() => expect(api.reuploadComfyTemplate).toHaveBeenCalledWith('7', fixedWorkflow))
+    await waitFor(() => {
+      expect(screen.getByText('LoadImage #1').closest('button')).toHaveAttribute('data-invalid-model', 'false')
     })
   })
 })

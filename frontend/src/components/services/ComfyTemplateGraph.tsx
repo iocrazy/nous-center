@@ -16,18 +16,26 @@ import type { ComfyLayoutEdge, ComfyLayoutNode } from './comfyGraphLayout'
 
 const USED_COLOR = 'var(--accent-2)'
 const ACTIVE_COLOR = 'var(--accent)'
+// 同 ExposedSummaryTable 的 stale 行用的红色语义(var(--error, #ef4444))——「本机不存在
+// 的模型引用」跟「指向已消失节点的映射」是同一类问题(工作流里冻结了别处的状态,本机
+// 兑不了现),复用同一套错误配色,不另起一个新视觉语言。
+const ERROR_COLOR = 'var(--error, #ef4444)'
 
 interface ComfyCardData {
   classType: string
   nodeId: string
   usedCount: number
   active: boolean
+  /** 该节点有原始输入的值是 combo/enum 但不在 object_info 取值表里(见
+   *  workflowModelCheck.ts)——多半是导入了别的机器冻结下来的模型文件名/路径。 */
+  invalidModel?: boolean
   [key: string]: unknown
 }
 
 function ComfyNodeCardImpl({ data }: { data: ComfyCardData }) {
   const used = data.usedCount > 0
-  const ringColor = data.active ? ACTIVE_COLOR : used ? USED_COLOR : null
+  const invalidModel = !!data.invalidModel
+  const ringColor = data.active ? ACTIVE_COLOR : invalidModel ? ERROR_COLOR : used ? USED_COLOR : null
   return (
     <div
       title="点击配置该节点的暴露字段"
@@ -39,9 +47,11 @@ function ComfyNodeCardImpl({ data }: { data: ComfyCardData }) {
         overflow: 'hidden',
         boxShadow: data.active
           ? `var(--shadow-md), 0 0 0 2px ${ACTIVE_COLOR}`
-          : used
-            ? `var(--shadow-md), 0 0 0 1px ${USED_COLOR}`
-            : 'var(--shadow-md)',
+          : invalidModel
+            ? `var(--shadow-md), 0 0 0 1px ${ERROR_COLOR}`
+            : used
+              ? `var(--shadow-md), 0 0 0 1px ${USED_COLOR}`
+              : 'var(--shadow-md)',
         fontSize: 12,
         cursor: 'pointer',
       }}
@@ -64,7 +74,17 @@ function ComfyNodeCardImpl({ data }: { data: ComfyCardData }) {
         padding: '7px 10px', borderTop: '1px solid var(--border)', color: 'var(--muted)',
       }}>
         <code style={{ fontFamily: 'var(--mono, monospace)', fontSize: 10.5 }}>#{data.nodeId}</code>
-        {used ? (
+        {invalidModel ? (
+          <span
+            title="有原始字段的值不在本机模型库里，点开检查/修正"
+            style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+              background: 'color-mix(in srgb, ' + ERROR_COLOR + ' 16%, transparent)', color: ERROR_COLOR,
+            }}
+          >
+            模型引用无效
+          </span>
+        ) : used ? (
           <span style={{
             fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
             background: 'color-mix(in srgb, ' + USED_COLOR + ' 16%, transparent)', color: USED_COLOR,
@@ -83,7 +103,7 @@ const ComfyNodeCard = memo(ComfyNodeCardImpl)
 const nodeTypes = { comfyNode: ComfyNodeCard }
 
 export interface ComfyTemplateGraphProps {
-  nodes: ComfyLayoutNode[]
+  nodes: Array<ComfyLayoutNode & { invalidModel?: boolean }>
   edges: ComfyLayoutEdge[]
   activeNodeId: string | null
   /** nodeEl = 该节点在 xyflow 里的包裹 DOM(.react-flow__node),供上层算弹窗贴靠位置。 */
@@ -97,7 +117,13 @@ export default function ComfyTemplateGraph({ nodes, edges, activeNodeId, onNodeC
         id: n.id,
         type: 'comfyNode',
         position: { x: n.x, y: n.y },
-        data: { classType: n.class_type, nodeId: n.id, usedCount: n.usedCount, active: n.id === activeNodeId },
+        data: {
+          classType: n.class_type,
+          nodeId: n.id,
+          usedCount: n.usedCount,
+          active: n.id === activeNodeId,
+          invalidModel: n.invalidModel,
+        },
       })),
     [nodes, activeNodeId],
   )

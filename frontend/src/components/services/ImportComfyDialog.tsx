@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Upload, X } from 'lucide-react'
-import { createComfyTemplate } from '../../api/comfyTemplates'
+import { createComfyTemplate, getObjectInfo } from '../../api/comfyTemplates'
 import { NAME_RE } from '../../api/services'
+import type { ComfyWorkflow } from './comfyGraphLayout'
+import { applyModelFixes, findInvalidModelRefs, issueKey, type ModelRefFix, type ModelRefIssue } from './workflowModelCheck'
 
 export interface ImportComfyDialogProps {
   open: boolean
@@ -15,21 +17,37 @@ const INVALID_FORMAT_MSG =
 
 export default function ImportComfyDialog({ open, onClose, onImported }: ImportComfyDialogProps) {
   const [fileName, setFileName] = useState('')
-  const [workflow, setWorkflow] = useState<Record<string, unknown> | null>(null)
+  const [workflow, setWorkflow] = useState<ComfyWorkflow | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // 模型名自愈(见 workflowModelCheck.ts 头注 incident):提交前先拿 object_info 比对
+  // combo/enum 字段,有不合法引用就先停在「review」步给用户挑正确值,不直接把坏 JSON
+  // 送给后端(ComfyUI 执行时才报错,只能靠 shell 改 JSON,这就是要防的事故)。
+  const [checkingModels, setCheckingModels] = useState(false)
+  const [modelIssues, setModelIssues] = useState<ModelRefIssue[]>([])
+  const [choices, setChoices] = useState<Record<string, string>>({})
+  const [reviewMode, setReviewMode] = useState(false)
+  const [modelCheckWarning, setModelCheckWarning] = useState<string | null>(null)
   const dropRef = useRef<HTMLLabelElement>(null)
   // FileReader in jsdom (and real browsers) resolves asynchronously; a click on
   // 导入 can land before parsing finishes, so submit() awaits this instead of
   // trusting the `workflow` state snapshot at click time.
-  const parseRef = useRef<Promise<Record<string, unknown> | null>>(Promise.resolve(null))
+  const parseRef = useRef<Promise<ComfyWorkflow | null>>(Promise.resolve(null))
   // Monotonic token so a stale FileReader callback (superseded by picking another
   // file, or still in flight when the dialog closes/reopens) can't clobber state
   // that belongs to a newer selection — the closure captures its own token and
   // compares against the current one before calling any setState.
   const readTokenRef = useRef(0)
+
+  const resetModelCheck = () => {
+    setCheckingModels(false)
+    setModelIssues([])
+    setChoices({})
+    setReviewMode(false)
+    setModelCheckWarning(null)
+  }
 
   useEffect(() => {
     if (open) return
@@ -40,6 +58,7 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
     setName('')
     setSubmitting(false)
     setSubmitError(null)
+    resetModelCheck()
     parseRef.current = Promise.resolve(null)
   }, [open])
 
@@ -51,6 +70,7 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
     setWorkflow(null)
     setFileError(null)
     setSubmitError(null)
+    resetModelCheck()
     parseRef.current = new Promise((resolve) => {
       const reader = new FileReader()
       reader.onerror = () => {
@@ -105,18 +125,11 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
 
   const nameValid = NAME_RE.test(name)
 
-  const submit = async () => {
-    if (submitting) return
-    const wf = workflow ?? (await parseRef.current)
-    if (!wf) {
-      setSubmitError('请先选择合法的 ComfyUI API 格式工作流文件')
-      return
-    }
-    if (!nameValid) return
+  const doImport = async (finalWorkflow: Record<string, unknown>) => {
     setSubmitting(true)
     setSubmitError(null)
     try {
-      const res = await createComfyTemplate(name, wf)
+      const res = await createComfyTemplate(name, finalWorkflow)
       onImported(res.service_name)
       onClose()
     } catch (e) {
@@ -126,12 +139,67 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
     }
   }
 
+  // 提交前先拿 object_info 比对模型名(见 workflowModelCheck.ts 头注的事故背景)。有不
+  // 合法引用 → 切进 review 步等用户挑值,不直接放行;sidecar 离线(getObjectInfo 失败)
+  // → 跳过校验,提示一句,照常导入,不能因为校验本身不可用就把导入功能一起挡住。
+  const submit = async () => {
+    if (submitting || checkingModels) return
+    const wf = workflow ?? (await parseRef.current)
+    if (!wf) {
+      setSubmitError('请先选择合法的 ComfyUI API 格式工作流文件')
+      return
+    }
+    if (!nameValid) return
+
+    setCheckingModels(true)
+    try {
+      const info = await getObjectInfo()
+      const issues = findInvalidModelRefs(wf, info)
+      setCheckingModels(false)
+      if (issues.length > 0) {
+        setModelIssues(issues)
+        const init: Record<string, string> = {}
+        for (const iss of issues) if (iss.suggestion) init[issueKey(iss)] = iss.suggestion
+        setChoices(init)
+        setModelCheckWarning(null)
+        setReviewMode(true)
+        return
+      }
+      setModelCheckWarning(null)
+    } catch {
+      setCheckingModels(false)
+      setModelCheckWarning('sidecar 离线，已跳过模型名校验')
+    }
+    await doImport(wf)
+  }
+
+  const confirmReview = async () => {
+    if (submitting) return
+    const wf = workflow ?? (await parseRef.current)
+    if (!wf) return
+    const fixes: ModelRefFix[] = modelIssues
+      .map((iss) => ({ nodeId: iss.nodeId, inputName: iss.inputName, value: choices[issueKey(iss)] }))
+      .filter((f): f is ModelRefFix => !!f.value)
+    await doImport(applyModelFixes(wf, fixes))
+  }
+
+  const acceptAllSuggestions = () => {
+    setChoices((prev) => {
+      const next = { ...prev }
+      for (const iss of modelIssues) if (iss.suggestion) next[issueKey(iss)] = iss.suggestion
+      return next
+    })
+  }
+
+  const hasSuggestions = modelIssues.some((iss) => !!iss.suggestion)
+  const reviewIncomplete = modelIssues.some((iss) => !choices[issueKey(iss)])
+
   return (
     <div onClick={onClose} style={overlayStyle}>
-      <div onClick={(e) => e.stopPropagation()} style={modalStyle}>
+      <div onClick={(e) => e.stopPropagation()} style={reviewMode ? { ...modalStyle, width: 560 } : modalStyle}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
           <h2 style={{ flex: 1, fontSize: 16, fontWeight: 600, color: 'var(--text)' }}>
-            导入 ComfyUI 工作流
+            {reviewMode ? '模型引用有问题，先修正' : '导入 ComfyUI 工作流'}
           </h2>
           <button
             onClick={onClose}
@@ -142,64 +210,136 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
           </button>
         </div>
 
-        <Section label="工作流 JSON（ComfyUI · Export (API)）">
-          <label
-            ref={dropRef}
-            style={dropZoneStyle}
-            onDragOver={onDragOver}
-            onDragLeave={onDragLeave}
-            onDrop={onDrop}
-          >
-            <Upload size={16} style={{ color: 'var(--muted)', flexShrink: 0 }} />
-            <span style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {fileName || '点击选择 API 格式导出的 workflow.json'}
-            </span>
-            <input
-              data-testid="comfy-file-input"
-              type="file"
-              accept=".json,application/json"
-              onChange={onFileInputChange}
-              style={{ display: 'none' }}
-            />
-          </label>
-          {fileError && <ErrorText>{fileError}</ErrorText>}
-          {workflow && !fileError && (
-            <div style={{ fontSize: 11, color: 'var(--accent-2, #22c55e)', marginTop: 6 }}>
-              已解析 {Object.keys(workflow).length} 个节点
+        {reviewMode ? (
+          <>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
+              以下 {modelIssues.length} 个字段的值不在本机模型库里(可能是别的机器导出的路径/文件名)，
+              为每个选一个本机存在的值再导入。
             </div>
-          )}
-        </Section>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: '52vh', overflow: 'auto' }}>
+              {modelIssues.map((iss) => {
+                const key = issueKey(iss)
+                return (
+                  <div key={key} data-testid={`model-issue-${key}`} style={issueRowStyle}>
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
+                      <code style={{ fontFamily: 'var(--mono, monospace)' }}>{iss.classType}</code> #{iss.nodeId} ·{' '}
+                      {iss.inputName}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--error, #ef4444)', marginBottom: 6, wordBreak: 'break-all' }}>
+                      当前值不存在: "{iss.value}"
+                    </div>
+                    <select
+                      aria-label={`选择 ${iss.inputName} 的正确值`}
+                      value={choices[key] ?? ''}
+                      onChange={(e) => setChoices((prev) => ({ ...prev, [key]: e.target.value }))}
+                      style={inputStyle}
+                    >
+                      <option value="" disabled>
+                        请选择…
+                      </option>
+                      {iss.options.map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                          {o === iss.suggestion ? '（建议）' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )
+              })}
+            </div>
 
-        <Section label="服务名称 (对外 endpoint key)">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value.trim())}
-            placeholder="服务名，例如：minimax-h3-r2v"
-            style={inputStyle}
-          />
-          {name && !nameValid && (
-            <ErrorText>
-              必须匹配 {NAME_RE.source}（小写字母开头，只允许 a-z 0-9 -，2-63 字符）
-            </ErrorText>
-          )}
-        </Section>
+            {submitError && <ErrorText>{submitError}</ErrorText>}
 
-        {submitError && <ErrorText>{submitError}</ErrorText>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => setReviewMode(false)} type="button" style={btnGhost}>
+                  返回
+                </button>
+                {hasSuggestions && (
+                  <button onClick={acceptAllSuggestions} type="button" style={btnGhost}>
+                    全部采用建议
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={confirmReview}
+                disabled={submitting || reviewIncomplete}
+                type="button"
+                style={btnPrimary(!submitting && !reviewIncomplete)}
+              >
+                {submitting ? '导入中…' : '确认修正并导入'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <Section label="工作流 JSON（ComfyUI · Export (API)）">
+              <label
+                ref={dropRef}
+                style={dropZoneStyle}
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onDrop={onDrop}
+              >
+                <Upload size={16} style={{ color: 'var(--muted)', flexShrink: 0 }} />
+                <span style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {fileName || '点击选择 API 格式导出的 workflow.json'}
+                </span>
+                <input
+                  data-testid="comfy-file-input"
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={onFileInputChange}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              {fileError && <ErrorText>{fileError}</ErrorText>}
+              {workflow && !fileError && (
+                <div style={{ fontSize: 11, color: 'var(--accent-2, #22c55e)', marginTop: 6 }}>
+                  已解析 {Object.keys(workflow).length} 个节点
+                </div>
+              )}
+              {modelCheckWarning && <ErrorText>{modelCheckWarning}</ErrorText>}
+            </Section>
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
-          <button onClick={onClose} type="button" style={btnGhost}>
-            取消
-          </button>
-          <button onClick={submit} disabled={submitting} type="button" style={btnPrimary(!submitting)}>
-            {submitting ? '导入中…' : '导入'}
-          </button>
-        </div>
+            <Section label="服务名称 (对外 endpoint key)">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value.trim())}
+                placeholder="服务名，例如：minimax-h3-r2v"
+                style={inputStyle}
+              />
+              {name && !nameValid && (
+                <ErrorText>
+                  必须匹配 {NAME_RE.source}（小写字母开头，只允许 a-z 0-9 -，2-63 字符）
+                </ErrorText>
+              )}
+            </Section>
+
+            {submitError && <ErrorText>{submitError}</ErrorText>}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button onClick={onClose} type="button" style={btnGhost}>
+                取消
+              </button>
+              <button
+                onClick={submit}
+                disabled={submitting || checkingModels}
+                type="button"
+                style={btnPrimary(!submitting && !checkingModels)}
+              >
+                {checkingModels ? '校验模型引用…' : submitting ? '导入中…' : '导入'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
 }
 
-function isApiFormatWorkflow(parsed: unknown): parsed is Record<string, unknown> {
+function isApiFormatWorkflow(parsed: unknown): parsed is ComfyWorkflow {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
   const values = Object.values(parsed as Record<string, unknown>)
   if (values.length === 0) return false
@@ -280,6 +420,13 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 4,
   padding: '7px 9px',
   fontSize: 12,
+}
+
+const issueRowStyle: React.CSSProperties = {
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  padding: 10,
+  background: 'var(--bg)',
 }
 
 const btnGhost: React.CSSProperties = {
