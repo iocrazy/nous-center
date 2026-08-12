@@ -96,7 +96,7 @@ def _resolve_path(relative: str) -> Path:
 # fail-soft —— 文件缺失/坏时退回内置默认(与 model_roots.yaml 同值),绝不让缺配置崩启动。
 MODEL_ROOTS_YAML_PATH = _BACKEND_DIR / "configs" / "model_roots.yaml"
 _MODEL_ROOTS_DEFAULT = {
-    "models": {"local": "nous", "loras": "comfyui/models/loras", "outputs": "nous/outputs"},
+    "models": {"local": "nous", "loras": "nous/media/loras", "outputs": "nous/outputs"},
     "repos": {"cosyvoice": "CosyVoice", "indextts": "index-tts"},
 }
 

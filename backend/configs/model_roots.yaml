@@ -7,7 +7,7 @@
 # (本文件管「根在哪」;model_paths.yaml 管「root 下 role→glob」,两层独立。)
 models:                          # 相对 MODELS_ROOT
   local:   nous                  # → LOCAL_MODELS_PATH / NAS_MODELS_PATH
-  loras:   comfyui/models/loras  # → LORA_PATHS
+  loras:   nous/media/loras      # → LORA_PATHS
   outputs: nous/outputs          # → NAS_OUTPUTS_PATH
 repos:                           # 相对 REPOS_ROOT
   cosyvoice: CosyVoice           # → COSYVOICE_REPO_PATH

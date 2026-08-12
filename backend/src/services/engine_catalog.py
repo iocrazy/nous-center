@@ -93,7 +93,7 @@ def seedvr2_catalog_entries(app_state: Any) -> list[EngineInfo]:
             vram_gb=round((m.get("size_mb") or 0) / 1024, 1),
             resident=False,
             has_adapter=True,  # by-key 可独立加载
-            local_path=f"image/SEEDVR2/{m['filename']}",
+            local_path=f"media/SEEDVR2/{m['filename']}",
             local_exists=True,
             auto_detected=True,
             loaded_gpu=int(match["gpu_index"]) if match and match.get("gpu_index") is not None else None,

@@ -24,26 +24,21 @@ def invalidate_scan_cache() -> None:
     _SCAN_CACHE["base"] = None
 
 
-# V1' P0 reorganized image/ into ComfyUI-style subdirs. `diffusers/` holds
-# full-layout model dirs (depth 3); the others hold single-file components
-# (.safetensors / .gguf) that are NOT auto-detectable models on their own
-# and should be enumerated by V1' Lane C component-node executors, not here.
-_IMAGE_MODEL_SUBDIRS = {"diffusers"}
-_IMAGE_COMPONENT_SUBDIRS = {"diffusion_models", "text_encoders", "vae"}
+# `diffusers/` contains complete model directories. Component buckets contain
+# individual weights and are enumerated by component-node executors.
+_MEDIA_MODEL_SUBDIRS = {"diffusers"}
 
 
 def _iter_candidate_model_dirs(type_dir: Path):
     """Yield (model_dir, local_path) pairs for one type/ tree.
 
-    LLM/TTS/VL stay depth-2 (`<type>/<model>`). Image is depth-3 under the
-    `diffusers/` sub-bucket since V1' P0, and we explicitly skip the
-    component sub-buckets so their single-file weights aren't surfaced as
-    bogus "models" in /engines (the V1' Lane C component nodes will list
-    those separately).
+    LLM/TTS/VL stay depth-2 (`<type>/<model>`). Complete media models are
+    depth-3 under `diffusers/`. Component buckets are skipped because their
+    individual weights are listed by component-node executors.
     """
-    if type_dir.name == "image":
+    if type_dir.name == "media":
         for sub in sorted(type_dir.iterdir()):
-            if not sub.is_dir() or sub.name not in _IMAGE_MODEL_SUBDIRS:
+            if not sub.is_dir() or sub.name not in _MEDIA_MODEL_SUBDIRS:
                 continue
             for model_dir in sorted(sub.iterdir()):
                 if model_dir.is_dir():
@@ -69,7 +64,7 @@ def scan_models() -> dict[str, dict[str, Any]]:
 
     Auto-detects:
     - LLM: has config.json with "model_type" field
-    - Image (diffusers): has model_index.json (under `image/diffusers/<X>/`)
+    - Image (diffusers): has model_index.json (under `media/diffusers/<X>/`)
     - TTS: matched by models.yaml only (no auto-detect)
 
     Returns merged dict: models.yaml configs + auto-detected models.

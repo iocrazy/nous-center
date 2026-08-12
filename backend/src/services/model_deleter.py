@@ -47,9 +47,8 @@ def _models_root() -> Path:
 def allowed_roots() -> list[Path]:
     """可删范围的白名单根。
 
-    LOCAL_MODELS_PATH 之外还要带上 LORA_PATHS —— 默认它派生自
-    `<MODELS_ROOT>/comfyui/models/loras`,**在模型根之外**,只认一个根会把合法的
-    LoRA 删除误判成越界。LORA_PATHS 可逗号分隔多个。
+    LORA_PATHS 可显式配置到 LOCAL_MODELS_PATH 之外，也可逗号分隔多个目录，
+    因此每个配置根都需要参与边界检查。
     """
     roots = [_models_root()]
     raw = getattr(get_settings(), "LORA_PATHS", "") or ""
@@ -89,7 +88,7 @@ def assert_safe_target(target: Target) -> None:
     if candidate == root:
         raise DeleteError(400, f"拒绝删除模型根本身: {candidate}")
 
-    # 目录必须在根下至少两层 —— 挡住 image/ llm/ speech/ 这类类型目录。单文件不受此限
+    # 目录必须在根下至少两层，避免删除 media/、llm/、speech/ 等类型目录。
     # (文件永远不是类型目录),否则独立 LoRA 根下的一层文件会被误拒。
     rel_parts = candidate.relative_to(root).parts
     if target.is_dir and len(rel_parts) < 2:
@@ -411,7 +410,7 @@ def resolve_target(name: str, configs: dict) -> Target:
         return Target(
             name=name,
             kind="upscale",
-            path=_models_root() / "image" / "SEEDVR2" / filename,
+            path=_models_root() / "media" / "SEEDVR2" / filename,
             is_dir=False,
         )
 

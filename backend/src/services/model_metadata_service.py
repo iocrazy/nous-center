@@ -228,12 +228,8 @@ def _scan_local_models_uncached() -> set[str]:
     Layout:
       llm/<MODEL>                          — depth 2
       tts/<MODEL>                          — depth 2
-      image/<MODEL>/                       — depth 2, full diffusers layout
-                                             (recognized by model_index.json
-                                              at the top level)
-      image/<sub>/<MODEL>                  — depth 3, ComfyUI-style component
-                                             buckets (diffusion_models/, vae/,
-                                             text_encoders/, ...)
+      media/<sub>/<MODEL>                  — depth 3, diffusers models and
+                                             component buckets
     """
     settings = get_settings()
     base = Path(settings.LOCAL_MODELS_PATH)
@@ -243,11 +239,6 @@ def _scan_local_models_uncached() -> set[str]:
     for type_dir in base.iterdir():
         if not type_dir.is_dir():
             continue
-        # Image is the only category with mixed-depth contents: a full
-        # diffusers-layout dir sits at depth 2 (recognized by
-        # model_index.json), while ComfyUI-style component buckets
-        # (diffusion_models/<MODEL>, vae/<MODEL>, ...) sit at depth 3.
-        # Pick depth based on the marker file.
         if type_dir.name == "text":
             # text/ 树按用途分桶(embedding/…)—— 模型在 depth-3:text/<bucket>/<model>
             # (2026-06-12 embedding 接入,与 model_scanner._iter_candidate_model_dirs 同口径)。
@@ -258,20 +249,13 @@ def _scan_local_models_uncached() -> set[str]:
                     if model_dir.is_dir():
                         found.add(f"{type_dir.name}/{sub.name}/{model_dir.name}")
             continue
-        if type_dir.name == "image":
+        if type_dir.name == "media":
             for child in type_dir.iterdir():
                 if not child.is_dir():
                     continue
-                if (child / "model_index.json").exists():
-                    # Depth-2 diffusers full layout (ERNIE-Image style)
-                    found.add(f"{type_dir.name}/{child.name}")
-                else:
-                    # Depth-3 component bucket: walk one extra level
-                    for component_dir in child.iterdir():
-                        if component_dir.is_dir():
-                            found.add(
-                                f"{type_dir.name}/{child.name}/{component_dir.name}"
-                            )
+                for model_dir in child.iterdir():
+                    if model_dir.is_dir():
+                        found.add(f"{type_dir.name}/{child.name}/{model_dir.name}")
             continue
         for model_dir in type_dir.iterdir():
             if model_dir.is_dir():

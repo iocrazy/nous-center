@@ -548,7 +548,7 @@ async def _node_executor(state: _RunnerState, ch: PipeChannel) -> None:
             components = getattr(req, "components", None)
             if node.node_type == "upscale":
                 # SeedVR2 不是三组件模型(DiT+VAE 整套自带)—— 走 by-key 装载。model_dir
-                # 默认 NAS_MODELS_PATH/image/SEEDVR2;dit/vae 缺省 DEFAULT(NumZ 白名单,缺则 HF 下)。
+                # 默认 NAS_MODELS_PATH/media/SEEDVR2;dit/vae 缺省 DEFAULT(NumZ 白名单,缺则 HF 下)。
                 # 三节点(PR-2):上游 seedvr2_load_dit/seedvr2_load_vae 产配置 dict,经 inputs.dit/inputs.vae
                 # 进来(device/blockswap/tiling)。向后兼容:没连 loader → 空配置 → 默认;旧单节点工作流
                 # 的 inputs.dit_model(字符串)兜底成 dit_config.model。

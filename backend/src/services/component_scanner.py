@@ -108,13 +108,13 @@ def scan_components(role: str, *, force_refresh: bool = False) -> list[dict[str,
 
 
 def _scan_checkpoints(base: Path) -> list[dict[str, Any]]:
-    """整模型(HF-layout)目录扫描:`image/diffusers/<model>/`(含 model_index.json)。
+    """整模型(HF-layout)目录扫描:`media/diffusers/<model>/`(含 model_index.json)。
 
     与单文件组件角色不同 —— entry 是**目录**(整模型),Load Checkpoint 据此一把出
     MODEL+CLIP+VAE。对齐 ComfyUI DiffusersLoader(扫 diffusers/ 目录)。
     """
     entries: list[dict[str, Any]] = []
-    diffusers_root = base / "image" / "diffusers"
+    diffusers_root = base / "media" / "diffusers"
     if not diffusers_root.is_dir():
         return entries
     for d in sorted(diffusers_root.iterdir()):

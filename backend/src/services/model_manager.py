@@ -46,7 +46,7 @@ def _modular_repo_from_components(resolved: dict) -> str:
         return ref
     raise ValueError(
         f"modular 引擎需 HF-layout repo;组件均为单文件且找不到架构 {arch!r} 的参考整模型"
-        f"(在 image/diffusers/ 放一个对应整模型作 config 参考)。"
+        f"(在 media/diffusers/ 放一个对应整模型作 config 参考)。"
     )
 
 
@@ -60,7 +60,7 @@ def _reference_repo_for_arch(arch: str) -> str | None:
     """架构 → 配置目录(单文件装配:借它的 tokenizer + 各组件 config)。
 
     **PR-B 起优先返回仓内 bundle**(`backend/configs/image_arch/<arch>/`,几 MB)——
-    用户库可不再放参考整模型(18GB)即能跑同架构单文件。Fallback 扫 LOCAL_MODELS_PATH/image/diffusers/
+    用户库可不再放参考整模型(18GB)即能跑同架构单文件。Fallback 扫 LOCAL_MODELS_PATH/media/diffusers/
     保留向后兼容(老用户仍能用)。
 
     支持架构:flux2(已 bundle)。新增 arch 经 PR-C 的 ImageArchSpec 注册表 + 在 configs/ 加 bundle 一并接入。
@@ -79,8 +79,8 @@ def _reference_repo_for_arch(arch: str) -> str | None:
     if (bundled / "transformer" / "config.json").is_file():
         return str(bundled)
 
-    # 2. Fallback:扫 LOCAL_MODELS_PATH/image/diffusers/*/model_index.json(向后兼容)
-    base = Path(get_settings().LOCAL_MODELS_PATH) / "image" / "diffusers"
+    # Fallback: scan complete Diffusers models for a matching architecture.
+    base = Path(get_settings().LOCAL_MODELS_PATH) / "media" / "diffusers"
     if not base.is_dir():
         return None
     # hint 子串匹配 model_index._class_name(小写)。z-image 的 _class_name=ZImagePipeline(无连字符)

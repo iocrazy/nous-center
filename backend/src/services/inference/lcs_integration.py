@@ -47,7 +47,7 @@ def _vae_fingerprint(vae: Any) -> str:
 
 def _cache_dir() -> Path:
     from src.config import get_settings  # noqa: PLC0415
-    d = Path(get_settings().LOCAL_MODELS_PATH) / "image" / "lcs_cache"
+    d = Path(get_settings().LOCAL_MODELS_PATH) / "media" / "lcs_cache"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

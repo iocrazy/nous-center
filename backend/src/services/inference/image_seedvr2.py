@@ -60,7 +60,7 @@ def seedvr2_dit_models_with_disk_status(model_dir: str | None = None) -> list[di
     """SEEDVR2_DIT_MODELS + 每个是否已在磁盘(present)+ 大小。给 UI 下拉「混合」展示:
     盘上有的标已就绪,白名单其余标可下载(选了 NumZ 从 HF 自动下)。
 
-    model_dir 缺省 = NAS_MODELS_PATH/image/SEEDVR2(与 runner get_or_load_seedvr2_adapter 一致)。
+    model_dir 缺省 = NAS_MODELS_PATH/media/SEEDVR2(与 runner get_or_load_seedvr2_adapter 一致)。
     """
     import os  # noqa: PLC0415
 

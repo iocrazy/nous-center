@@ -6,28 +6,18 @@
 #
 # base_path is NOT in this file — it's read from settings.LOCAL_MODELS_PATH.
 
-# 角色 → glob(对齐 ComfyUI folder_paths)。两类模型分开(用户设计 2026-05-25):
-#   组件单文件角色(diffusion_models/clip/vae/loras)—— 只扫各自单文件夹,递归 **
-#     覆盖子目录(如 diffusion_models/flux/)。**不扫 diffusers/ 整模型的子组件**。
-#   "checkpoint" 角色 —— 整模型(HF-layout diffusers/<model>/ 目录,scanner 特判目录扫描,
-#     非 glob;含 model_index.json 的目录)。Load Checkpoint 用,出 MODEL+CLIP+VAE。
-# 文件夹名对齐 ComfyUI:diffusion_models(+unet 旧别名)、text_encoders(+clip)、vae、loras。
-# checkpoints/ 弃用。
+# 角色 → glob(对齐 ComfyUI folder_paths)。组件单文件递归扫描各自目录，
+# diffusers 整模型由 checkpoint 角色按目录扫描。
 roles:
   diffusion_models:
-    - image/diffusion_models/**/*.safetensors   # DiT 单文件(comfy 量化/原生本体)
-    - image/diffusion_models/**/*.gguf
-    - image/unet/**/*.safetensors               # ComfyUI 旧文件夹别名
-    - image/unet/**/*.gguf
+    - media/diffusion_models/**/*.safetensors   # DiT 单文件(comfy 量化/原生本体)
+    - media/diffusion_models/**/*.gguf
   clip:
-    - image/text_encoders/**/*.safetensors
-    - image/text_encoders/**/*.gguf             # GGUF 文本编码器(CLIPLoaderGGUF 等价,如 Z-Image-Engineer)
-    - image/clip/**/*.safetensors               # ComfyUI clip 文件夹别名
-    - image/clip/**/*.gguf
+    - media/text_encoders/**/*.safetensors
+    - media/text_encoders/**/*.gguf             # GGUF 文本编码器(CLIPLoaderGGUF 等价,如 Z-Image-Engineer)
   vae:
-    - image/vae/**/*.safetensors
+    - media/vae/**/*.safetensors
   loras:
-    - image/loras/**/*.safetensors
-  # checkpoint:整模型目录扫描在 component_scanner 特判(diffusers/<model>/),非 glob;
-  # 这里留空 patterns(scanner 用 _scan_checkpoints 处理)。
+    - media/loras/**/*.safetensors
+  # 整模型目录由 component_scanner 扫描 diffusers/<model>/。
   checkpoint: []
