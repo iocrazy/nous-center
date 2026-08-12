@@ -62,6 +62,23 @@ class ComfyClient:
     async def object_info(self) -> dict:
         return (await self._client.get("/object_info", timeout=15)).json()
 
+    async def system_stats(self) -> dict:
+        """VRAM/设备快照,同 health() 降级——瞬断不应打断健康面板渲染。"""
+        try:
+            return (await self._client.get("/system_stats", timeout=3)).json()
+        except (httpx.HTTPError, ValueError):
+            return {}
+
+    async def free(self, *, unload_models: bool = True, free_memory: bool = True) -> None:
+        """用户触发的显存释放——失败必须冒泡(不像 health/system_stats 静默降级)。"""
+        r = await self._client.post(
+            "/free",
+            json={"unload_models": unload_models, "free_memory": free_memory},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            raise ComfyError(f"释放显存失败(HTTP {r.status_code})")
+
     async def upload_image(self, filename: str, content: bytes, mime: str = "image/png") -> str:
         r = await self._client.post(
             "/upload/image", files={"image": (filename, content, mime)}, timeout=60)

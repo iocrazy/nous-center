@@ -28,6 +28,7 @@ from src.api.response_cache import invalidate
 from src.models.comfy_template import ComfyTemplate
 from src.models.database import get_async_session
 from src.models.service_instance import ServiceInstance
+from src.services.comfy.client import ComfyError
 from src.services.comfy.client import get_comfy_client as get_client
 from src.services.workflow_snapshot import NAME_RE
 
@@ -334,9 +335,27 @@ async def delete_template(
 # ---------- ComfyUI Health & Object Info Proxy Routes ----------
 
 
+def _devices_from_stats(stats: dict) -> list[dict]:
+    """system_stats() 的 devices 数组 → 前端要的精简形状(原始字节,前端自己格式化)。"""
+    out = []
+    for d in stats.get("devices") or []:
+        vram_total = d.get("vram_total", 0) or 0
+        vram_free = d.get("vram_free", 0) or 0
+        out.append({
+            "name": d.get("name", ""),
+            "type": d.get("type", ""),
+            "index": d.get("index"),
+            "vram_total": vram_total,
+            "vram_free": vram_free,
+            "vram_used": vram_total - vram_free,
+            "torch_vram_total": d.get("torch_vram_total", 0) or 0,
+        })
+    return out
+
+
 @health_router.get("/health")
 async def comfy_health():
-    """Proxy ComfyUI health status + resolved configuration."""
+    """Proxy ComfyUI health status + resolved configuration + per-device VRAM."""
     client = get_client()
     health_result = await client.health()
     # Merge with configuration info
@@ -344,7 +363,24 @@ async def comfy_health():
     timeout_s = int(os.getenv("NOUS_COMFY_TIMEOUT", "14400"))
     health_result["base_url"] = base_url
     health_result["timeout_s"] = timeout_s
+    health_result["devices"] = (
+        _devices_from_stats(await client.system_stats()) if health_result.get("online") else []
+    )
     return health_result
+
+
+@health_router.post("/free", dependencies=[Depends(require_admin)])
+async def comfy_free():
+    """释放 ComfyUI 侧缓存模型占用的显存(POST /free,unload_models+free_memory)。"""
+    client = get_client()
+    try:
+        await client.free()
+    except ComfyError as e:
+        raise HTTPException(e.status_code, detail=e.message)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, detail=f"ComfyUI sidecar 不可达:{str(e)[:100]}")
+    stats = await client.system_stats()
+    return {"ok": True, "devices": _devices_from_stats(stats)}
 
 
 @health_router.get("/object-info")

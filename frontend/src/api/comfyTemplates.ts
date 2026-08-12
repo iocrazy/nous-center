@@ -40,12 +40,28 @@ export interface CreateComfyTemplateResult {
   node_count: number
 }
 
+export interface ComfyDevice {
+  name: string
+  type: string
+  index: number
+  vram_total: number
+  vram_free: number
+  vram_used: number
+  torch_vram_total: number
+}
+
 export interface ComfyHealth {
   online: boolean
   queue_depth: number
   version: string
   base_url: string
   timeout_s: number
+  devices?: ComfyDevice[]
+}
+
+export interface FreeComfyVramResult {
+  ok: boolean
+  devices: ComfyDevice[]
 }
 
 // ---------- calls ----------
@@ -94,4 +110,8 @@ export function getComfyHealth(): Promise<ComfyHealth> {
 
 export function getObjectInfo(): Promise<Record<string, unknown>> {
   return apiFetch<Record<string, unknown>>('/api/v1/comfy/object-info')
+}
+
+export function freeComfyVram(): Promise<FreeComfyVramResult> {
+  return apiFetch<FreeComfyVramResult>('/api/v1/comfy/free', { method: 'POST' })
 }

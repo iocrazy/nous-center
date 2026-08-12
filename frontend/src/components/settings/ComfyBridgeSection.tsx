@@ -1,8 +1,69 @@
+import { useState } from 'react'
 import { AlertCircle } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
-import { getComfyHealth } from '../../api/comfyTemplates'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getComfyHealth, freeComfyVram, type ComfyDevice } from '../../api/comfyTemplates'
+
+const GB = 1_000_000_000
+
+function formatGB(bytes: number): string {
+  return `${(bytes / GB).toFixed(1)}GB`
+}
+
+// "cuda:0 NVIDIA RTX PRO 6000 ... : cudaMallocAsync" -> "NVIDIA RTX PRO 6000 ..."
+function formatDeviceName(name: string): string {
+  return name.replace(/^\S+:\d+\s+/, '').replace(/\s*:\s*\S+$/, '')
+}
+
+function barColor(ratio: number): string {
+  if (ratio >= 0.9) return 'var(--accent)'
+  if (ratio >= 0.7) return 'var(--warn)'
+  return 'var(--ok)'
+}
+
+function DeviceRow({ device }: { device: ComfyDevice }) {
+  const ratio = device.vram_total > 0 ? device.vram_used / device.vram_total : 0
+  return (
+    <div style={{ padding: '10px 0', borderTop: '1px solid var(--border)' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 12,
+          color: 'var(--text)',
+          marginBottom: 6,
+        }}
+      >
+        <span>{formatDeviceName(device.name)}</span>
+        <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono, monospace)' }}>
+          {formatGB(device.vram_used)} / {formatGB(device.vram_total)}
+        </span>
+      </div>
+      <div
+        style={{
+          height: 6,
+          borderRadius: 3,
+          background: 'var(--bg)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            height: '100%',
+            width: `${Math.min(100, Math.max(0, ratio * 100))}%`,
+            background: barColor(ratio),
+            transition: 'width 0.3s ease',
+          }}
+        />
+      </div>
+    </div>
+  )
+}
 
 export default function ComfyBridgeSection() {
+  const queryClient = useQueryClient()
+  const [freeing, setFreeing] = useState(false)
+  const [freeError, setFreeError] = useState<string | null>(null)
+
   const { data: health, isLoading, isError } = useQuery({
     queryKey: ['comfy-health'],
     queryFn: getComfyHealth,
@@ -20,6 +81,21 @@ export default function ComfyBridgeSection() {
     }
     return `${seconds}s`
   }
+
+  const handleFree = async () => {
+    setFreeing(true)
+    setFreeError(null)
+    try {
+      await freeComfyVram()
+      await queryClient.invalidateQueries({ queryKey: ['comfy-health'] })
+    } catch (e) {
+      setFreeError(e instanceof Error ? e.message : '释放显存失败')
+    } finally {
+      setFreeing(false)
+    }
+  }
+
+  const devices = health?.devices ?? []
 
   return (
     <div>
@@ -150,6 +226,48 @@ export default function ComfyBridgeSection() {
                   </span>
                 </div>
               </>
+            )}
+
+            {/* GPU VRAM */}
+            {health.online && devices.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    paddingTop: 12,
+                    borderTop: '1px solid var(--border)',
+                  }}
+                >
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>显存占用</span>
+                  <button
+                    onClick={handleFree}
+                    disabled={freeing}
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 500,
+                      padding: '5px 10px',
+                      borderRadius: 4,
+                      border: '1px solid var(--border)',
+                      background: 'var(--bg)',
+                      color: 'var(--text)',
+                      cursor: freeing ? 'default' : 'pointer',
+                      opacity: freeing ? 0.6 : 1,
+                    }}
+                  >
+                    {freeing ? '释放中…' : '释放显存'}
+                  </button>
+                </div>
+                {devices.map((d) => (
+                  <DeviceRow key={`${d.type}:${d.index}`} device={d} />
+                ))}
+                {freeError && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: 'var(--accent)' }}>
+                    {freeError}
+                  </div>
+                )}
+              </div>
             )}
           </div>
 

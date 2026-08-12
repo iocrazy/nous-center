@@ -1,12 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ComfyBridgeSection from './ComfyBridgeSection'
 import * as comfyTemplates from '../../api/comfyTemplates'
 
 vi.mock('../../api/comfyTemplates', () => ({
   getComfyHealth: vi.fn(),
+  freeComfyVram: vi.fn(),
 }))
+
+const DEVICE = {
+  name: 'cuda:0 NVIDIA RTX PRO 6000 Blackwell Workstation Edition : cudaMallocAsync',
+  type: 'cuda',
+  index: 0,
+  vram_total: 102_000_000_000,
+  vram_free: 37_700_000_000,
+  vram_used: 64_300_000_000,
+  torch_vram_total: 60_000_000_000,
+}
 
 function withQuery(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -24,6 +35,7 @@ describe('ComfyBridgeSection', () => {
       version: '0.4.12',
       base_url: 'http://localhost:8188',
       timeout_s: 120,
+      devices: [],
     })
 
     render(
@@ -49,6 +61,7 @@ describe('ComfyBridgeSection', () => {
       version: '',
       base_url: 'http://localhost:8188',
       timeout_s: 120,
+      devices: [],
     })
 
     render(
@@ -86,6 +99,7 @@ describe('ComfyBridgeSection', () => {
       version: '0.4.12',
       base_url: 'http://localhost:8188',
       timeout_s: 60,
+      devices: [],
     })
 
     render(
@@ -108,6 +122,7 @@ describe('ComfyBridgeSection', () => {
       version: '0.4.12',
       base_url: 'http://localhost:8188',
       timeout_s: 3600,
+      devices: [],
     })
 
     render(
@@ -128,6 +143,7 @@ describe('ComfyBridgeSection', () => {
       version: '0.4.12',
       base_url: 'http://localhost:8188',
       timeout_s: 5400,
+      devices: [],
     })
 
     render(
@@ -138,6 +154,90 @@ describe('ComfyBridgeSection', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/超时 1\.5h/)).toBeTruthy()
+    })
+  })
+
+  it('renders device name, used/total VRAM, and a release button', async () => {
+    vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
+      online: true,
+      queue_depth: 0,
+      version: '0.4.12',
+      base_url: 'http://localhost:8188',
+      timeout_s: 120,
+      devices: [DEVICE],
+    })
+
+    render(withQuery(<ComfyBridgeSection />))
+
+    await waitFor(() => {
+      expect(screen.getByText(/NVIDIA RTX PRO 6000/)).toBeTruthy()
+      expect(screen.getByText(/64\.3GB \/ 102\.0GB/)).toBeTruthy()
+      expect(screen.getByText('释放显存')).toBeTruthy()
+    })
+  })
+
+  it('clicking release button calls freeComfyVram and refetches health', async () => {
+    vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
+      online: true,
+      queue_depth: 0,
+      version: '0.4.12',
+      base_url: 'http://localhost:8188',
+      timeout_s: 120,
+      devices: [DEVICE],
+    })
+    vi.mocked(comfyTemplates.freeComfyVram).mockResolvedValue({
+      ok: true,
+      devices: [{ ...DEVICE, vram_free: 100_000_000_000, vram_used: 2_000_000_000 }],
+    })
+
+    render(withQuery(<ComfyBridgeSection />))
+
+    const button = await screen.findByText('释放显存')
+    fireEvent.click(button)
+
+    await waitFor(() => {
+      expect(comfyTemplates.freeComfyVram).toHaveBeenCalledTimes(1)
+      // getComfyHealth: once on mount, once after the invalidated refetch
+      expect(comfyTemplates.getComfyHealth).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('hides devices and release button when offline', async () => {
+    vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
+      online: false,
+      queue_depth: 0,
+      version: '',
+      base_url: 'http://localhost:8188',
+      timeout_s: 120,
+      devices: [],
+    })
+
+    render(withQuery(<ComfyBridgeSection />))
+
+    await waitFor(() => {
+      expect(screen.getByText(/离线/)).toBeTruthy()
+    })
+    expect(screen.queryByText('释放显存')).toBeFalsy()
+  })
+
+  it('shows an inline error when releasing VRAM fails', async () => {
+    vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
+      online: true,
+      queue_depth: 0,
+      version: '0.4.12',
+      base_url: 'http://localhost:8188',
+      timeout_s: 120,
+      devices: [DEVICE],
+    })
+    vi.mocked(comfyTemplates.freeComfyVram).mockRejectedValue(new Error('释放显存失败(HTTP 502)'))
+
+    render(withQuery(<ComfyBridgeSection />))
+
+    const button = await screen.findByText('释放显存')
+    fireEvent.click(button)
+
+    await waitFor(() => {
+      expect(screen.getByText(/释放显存失败/)).toBeTruthy()
     })
   })
 })
