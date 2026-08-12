@@ -71,6 +71,21 @@ describe('SchemaDrivenForm', () => {
     expect(screen.getByRole('option', { name: 'bob' })).toBeInTheDocument()
   })
 
+  it('renders a file upload control (not a select) for type=image even with constraints.enum present', () => {
+    // 回归用例:ComfyUI LoadImage 节点经 /object_info 带出的 enum 是 sidecar 上
+    // 已存在的文件名列表(如服务 minimax-h3-r2v 真实数据),不是可选值域 —— 文件语义
+    // 必须优先于 enum,否则 Playground 渲不出上传控件。
+    setup([
+      {
+        node_id: 'bridge', key: 'image', input_name: 'image', label: 'image', type: 'image',
+        default: '5 (1).jpg', required: true,
+        constraints: { enum: ['5 (1).jpg', 'example.png'] },
+      },
+    ])
+    expect(screen.getByText(/点击或拖入选择文件/)).toBeInTheDocument()
+    expect(screen.queryByText('请选择')).not.toBeInTheDocument()
+  })
+
   it('renders a checkbox for boolean and forwards the typed value on submit', () => {
     const { onSubmit } = setup([
       { node_id: 'in_4', key: 'stream', input_name: 'value', label: '流式', type: 'boolean' },

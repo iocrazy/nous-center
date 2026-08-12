@@ -32,8 +32,15 @@ function num(v: unknown): number | undefined {
 
 function classifyField(p: ExposedParam): FieldKind {
   const constraints = (p.constraints ?? {}) as Record<string, unknown>
-  if (Array.isArray(constraints.enum) && constraints.enum.length > 0) return 'select'
   const t = (p.type ?? 'string').toLowerCase()
+  // 文件类语义优先于 enum:ComfyUI 的 LoadImage 等节点经 /object_info 带出的
+  // enum 是 sidecar 上已存在的文件名列表(如 ["5 (1).jpg","example.png"]),不是
+  // 一个可选值域 —— 桥会把上传的 data URI 传给 sidecar 落盘,不是从这批名字里选一个。
+  // 必须在 enum 判断之前拦掉,否则这类字段会被误判成下拉框,Playground 就没有上传控件。
+  if (t === 'file' || t === 'image' || t === 'audio' || t === 'video' || t === 'binary' || t === 'media') {
+    return 'file'
+  }
+  if (Array.isArray(constraints.enum) && constraints.enum.length > 0) return 'select'
   const numeric = t === 'integer' || t === 'int' || t === 'number' || t === 'float'
   // Numeric field with a bounded range → slider (对齐 Infinite-Canvas / nous
   // 节点的 slider widget,min/max/step 从 ExposedParam.constraints 带出)。
@@ -43,7 +50,6 @@ function classifyField(p: ExposedParam): FieldKind {
   if (t === 'integer' || t === 'int') return 'integer'
   if (t === 'number' || t === 'float') return 'number'
   if (t === 'boolean' || t === 'bool') return 'boolean'
-  if (t === 'file' || t === 'image' || t === 'audio' || t === 'video' || t === 'binary') return 'file'
   // Strings default to multiline. Single-line is opt-in via constraints.format='single_line'
   // — published service inputs are almost always free text (prompts, transcripts,
   // user content) and a single 32-char input is unusable for those.
