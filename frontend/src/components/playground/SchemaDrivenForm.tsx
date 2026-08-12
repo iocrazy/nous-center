@@ -74,7 +74,9 @@ function randomSeed(): number {
   return Math.floor(Date.now() % 2147483647)
 }
 
-function defaultFor(p: ExposedParam): unknown {
+/** exported: ComfyTemplateEditor 的「画布节点预览」左栏复用它算字段初值,不用重复
+ *  一套 default 推断逻辑(该逻辑 defaultFor 就已经跟 classifyField 的字段类型判定绑死)。 */
+export function defaultFor(p: ExposedParam): unknown {
   if (p.default !== undefined && p.default !== null) return p.default
   switch (classifyField(p)) {
     case 'boolean':
@@ -194,7 +196,11 @@ export default function SchemaDrivenForm({
   )
 }
 
-function Field({
+/** exported: 单字段的「标签 + 类型徽章 + 输入控件」——ComfyTemplateEditor 的
+ *  「画布节点预览」左栏(Task 9 UI 返工 Task 3)按同一份 exposedParams 草稿状态实时渲染
+ *  控件,直接复用这个而不是另抄一套 classifyField/FieldInput 分支,保证两处的控件外观和
+ *  行为(如 seed 🎲 随机、file 类型的 dataURI 上传)不会慢慢漂移。 */
+export function Field({
   param,
   value,
   onChange,

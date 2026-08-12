@@ -8,7 +8,7 @@
 //      来自原始 class_type/inputs,不经 DECLARATIVE_NODES)。点卡开弹窗配置该节点的
 //      原始 inputs(节点引用连线 [nodeId,slot] 不算可配置字段,过滤掉)。
 //   4) 弹窗与下方字段汇总表共享同一份 exposedParams state,保存走 putMapping。
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Upload, X } from 'lucide-react'
 import {
@@ -21,7 +21,10 @@ import {
   type ComfyHealth,
   type ComfyTemplateDetail,
 } from '../../api/comfyTemplates'
+import { paramKey, type ExposedParam } from '../../api/services'
+import { Field, defaultFor } from '../playground/SchemaDrivenForm'
 import { isComfyNodeRef, layoutComfyGraph, type ComfyWorkflow } from './comfyGraphLayout'
+import { placePopover } from './popoverPlacement'
 import ComfyTemplateGraph from './ComfyTemplateGraph'
 
 /** 弹窗/汇总表共享的单行草稿。与后端 mapping 契约(comfy_node_id/comfy_input)同形 —
@@ -132,6 +135,10 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
   const [exposedParams, setExposedParams] = useState<ExposedParamDraft[]>([])
   const [staleKeys, setStaleKeys] = useState<string[]>([])
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null)
+  // 点击节点时记录的 xyflow 包裹 DOM(见 ComfyTemplateGraph 的 onNodeClick)——popover 定位
+  // (placePopover)靠它的 getBoundingClientRect() 算贴靠位置,不用另外查 DOM。
+  const [activeNodeEl, setActiveNodeEl] = useState<HTMLElement | null>(null)
+  const graphContainerRef = useRef<HTMLDivElement>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -143,6 +150,8 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
     setLoadError(null)
     setExposedParams([])
     setStaleKeys([])
+    setActiveNodeId(null)
+    setActiveNodeEl(null)
     Promise.all([
       getComfyTemplate(templateId),
       getComfyHealth().catch(() => null),
@@ -232,6 +241,43 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
     setSaved(false)
   }
 
+  const handleNodeClick = (nodeId: string, nodeEl: HTMLElement) => {
+    setActiveNodeId(nodeId)
+    setActiveNodeEl(nodeEl)
+  }
+
+  const closePopover = () => {
+    setActiveNodeId(null)
+    setActiveNodeEl(null)
+  }
+
+  // Task 1(popover 定位):贴节点右侧/翻左/夹边界的算术全在 popoverPlacement.ts(纯函数,
+  // 已单测)—— 这里只读一次 DOM 矩形喂给它。在渲染期间直接读 ref 而不是丢进 effect 再
+  // setState,是因为这只是渲染要用的派生布局值、不回写状态,省一次多余的 re-render;
+  // activeNodeEl 为空(理论上不会发生,兜底)时退化成贴容器左上角,不崩。
+  const POP_W = 380
+  let popLeft = 8
+  let popTop = 8
+  let popMaxHeight = 400
+  if (activeNodeId && graphContainerRef.current) {
+    const containerEl = graphContainerRef.current
+    const containerRect = containerEl.getBoundingClientRect()
+    const nodeRect = activeNodeEl?.getBoundingClientRect() ?? containerRect
+    popMaxHeight = Math.min(containerEl.clientHeight - 40, window.innerHeight * 0.7)
+    const pos = placePopover({
+      nodeRect,
+      containerRect,
+      scrollLeft: containerEl.scrollLeft,
+      scrollTop: containerEl.scrollTop,
+      clientW: containerEl.clientWidth,
+      clientH: containerEl.clientHeight,
+      popW: POP_W,
+      popH: popMaxHeight,
+    })
+    popLeft = pos.left
+    popTop = pos.top
+  }
+
   const save = async () => {
     setSaving(true)
     setSaved(false)
@@ -307,25 +353,43 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
         </button>
       </div>
 
-      <div style={{ height: '58vh', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
-        <ComfyTemplateGraph
-          nodes={graphNodes}
-          edges={layout.edges}
-          activeNodeId={activeNodeId}
-          onNodeClick={setActiveNodeId}
-        />
-        {activeNodeId && activeNode && (
-          <NodeConfigPopover
-            nodeId={activeNodeId}
-            classType={activeNode.class_type}
-            rows={activeRows}
-            exposedByInput={exposedByInput}
-            objectInfo={objectInfo}
-            onToggle={(inputName, rawValue) => toggleExpose(activeNodeId, inputName, rawValue)}
-            onPatch={(inputName, patch) => patchExposed(activeNodeId, inputName, patch)}
-            onClose={() => setActiveNodeId(null)}
+      <div style={{ display: 'flex', gap: 10, height: '58vh', minHeight: 420 }}>
+        <div
+          style={{
+            width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column',
+            border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden',
+            background: 'var(--bg-accent)',
+          }}
+        >
+          <CanvasPreviewPanel exposedParams={exposedParams} />
+        </div>
+
+        <div
+          ref={graphContainerRef}
+          style={{ flex: 1, minWidth: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', position: 'relative' }}
+        >
+          <ComfyTemplateGraph
+            nodes={graphNodes}
+            edges={layout.edges}
+            activeNodeId={activeNodeId}
+            onNodeClick={handleNodeClick}
           />
-        )}
+          {activeNodeId && activeNode && (
+            <NodeConfigPopover
+              nodeId={activeNodeId}
+              classType={activeNode.class_type}
+              rows={activeRows}
+              exposedByInput={exposedByInput}
+              objectInfo={objectInfo}
+              left={popLeft}
+              top={popTop}
+              maxHeight={popMaxHeight}
+              onToggle={(inputName, rawValue) => toggleExpose(activeNodeId, inputName, rawValue)}
+              onPatch={(inputName, patch) => patchExposed(activeNodeId, inputName, patch)}
+              onClose={closePopover}
+            />
+          )}
+        </div>
       </div>
 
       <ExposedSummaryTable params={exposedParams} staleKeys={staleKeys} onRemove={removeExposed} />
@@ -437,13 +501,17 @@ function NumField({
 }
 
 function NodeConfigPopover({
-  nodeId, classType, rows, exposedByInput, objectInfo, onToggle, onPatch, onClose,
+  nodeId, classType, rows, exposedByInput, objectInfo, left, top, maxHeight, onToggle, onPatch, onClose,
 }: {
   nodeId: string
   classType: string
   rows: RawInputRow[]
   exposedByInput: Map<string, ExposedParamDraft>
   objectInfo: Record<string, unknown> | null
+  /** 相对图容器的定位(popoverPlacement.placePopover 算好传入)。 */
+  left: number
+  top: number
+  maxHeight: number
   onToggle: (inputName: string, rawValue: unknown) => void
   onPatch: (inputName: string, patch: Partial<ExposedParamDraft>) => void
   onClose: () => void
@@ -458,14 +526,17 @@ function NodeConfigPopover({
 
   return (
     <>
-      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', zIndex: 20 }} />
+      {/* 点击空白处关闭 —— 透明覆盖层,不再是全屏遮暗背景(对齐 IC:弹窗贴节点旁边,
+          遮暗背景会把它和节点的空间关联感盖掉,读起来更「浮空」而不是「弹窗盖住了页面」)。 */}
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, zIndex: 20 }} />
       <div
         role="dialog"
+        onWheel={(e) => e.stopPropagation()}
         style={{
-          position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
-          width: 420, maxWidth: 'calc(100% - 32px)', maxHeight: 'calc(100% - 48px)',
+          position: 'absolute', left, top,
+          width: 380, maxWidth: 'calc(100% - 16px)', maxHeight,
           display: 'flex', flexDirection: 'column', zIndex: 21,
-          background: 'var(--card)', border: '1px solid var(--border)',
+          background: 'var(--card)', border: '1px solid var(--border-strong, var(--border))',
           borderRadius: 14, boxShadow: 'var(--shadow-lg, 0 12px 40px rgba(0,0,0,0.25))',
           overflow: 'hidden',
         }}
@@ -581,6 +652,85 @@ function NodeConfigPopover({
         </div>
       </div>
     </>
+  )
+}
+
+// ---------- canvas preview panel (Task 3) ----------
+
+/** ExposedParamDraft(= ComfyExposedParam,平铺 min/max/step/options/random/comfy_node_id/
+ *  comfy_input)→ SchemaDrivenForm 的 ExposedParam 形状(nested constraints,node_id/
+ *  input_name)。两边字段语义一一对应,不是巧合:两套 exposed-params 契约本就是同一个
+ *  概念在不同落地点(Comfy 桥 vs 声明式节点)的表示。写一个薄适配器换形状,换来直接复用
+ *  <Field> 渲染逻辑(seed 🎲、file dataURI 上传、slider min/max 等分支都不用抄一遍)。 */
+function toSchemaExposedParam(p: ExposedParamDraft): ExposedParam {
+  const constraints: Record<string, unknown> = {}
+  if (p.min !== undefined) constraints.min = p.min
+  if (p.max !== undefined) constraints.max = p.max
+  if (p.step !== undefined) constraints.step = p.step
+  if (p.options) constraints.enum = p.options
+  if (p.random) constraints.random = true
+  return {
+    key: p.key,
+    input_name: p.comfy_input,
+    node_id: p.comfy_node_id,
+    label: p.label,
+    type: p.type,
+    required: p.required,
+    default: p.default,
+    constraints,
+  }
+}
+
+/** IC 参考实现里的「画布节点预览 · 实时」左栏:按当前 exposedParams 草稿(节点图弹窗里
+ *  勾选/编辑的同一份 state,单一数据源)渲染出跟运行时 Playground 表单同款的控件,让管理员
+ *  在编辑阶段就能看到「暴露出去的字段实际长什么样」。仅预览,不接运行 —— 运行走 Playground
+ *  的「运行」分段,这里放个提示文案说明(需求明确排除:这版不加运行按钮)。 */
+function CanvasPreviewPanel({ exposedParams }: { exposedParams: ExposedParamDraft[] }) {
+  const schemaParams = useMemo(() => exposedParams.map(toSchemaExposedParam), [exposedParams])
+  const [values, setValues] = useState<Record<string, unknown>>({})
+
+  useEffect(() => {
+    setValues((prev) => {
+      const next: Record<string, unknown> = {}
+      for (const p of schemaParams) {
+        const k = paramKey(p)
+        if (!k) continue
+        next[k] = k in prev ? prev[k] : defaultFor(p)
+      }
+      return next
+    })
+  }, [schemaParams])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>画布节点预览 · 实时</div>
+        <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
+          仅预览,不可运行 · 运行请到 Playground「运行」分段
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '14px' }}>
+        {schemaParams.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--muted)', textAlign: 'center', padding: '20px 4px' }}>
+            暂无暴露字段 — 在右侧节点图点节点卡配置
+          </div>
+        ) : (
+          schemaParams.map((p) => {
+            const k = paramKey(p)
+            return (
+              <Field
+                key={k ?? `${p.node_id}.${p.input_name}`}
+                param={p}
+                value={k ? values[k] : undefined}
+                onChange={(v) => {
+                  if (k) setValues((prev) => ({ ...prev, [k]: v }))
+                }}
+              />
+            )
+          })
+        )}
+      </div>
+    </div>
   )
 }
 
