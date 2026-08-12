@@ -109,7 +109,7 @@ async def test_load_rejects_engine_without_adapter(client, monkeypatch):
     monkeypatch.setattr(engines_route, "scan_models", lambda: {
         "ernie_image": {
             "name": "ernie_image", "type": "image", "vram_gb": 35.3,
-            "resident": False, "local_path": "image/diffusers/ERNIE-Image",
+            "resident": False, "local_path": "media/diffusers/ERNIE-Image",
             "auto_detected": True,
             # No adapter — this is the case we're guarding.
         },
@@ -143,7 +143,7 @@ async def test_scan_endpoint_returns_local_available_split(client, monkeypatch):
     monkeypatch.setattr(engines_route, "scan_models", lambda: {
         "a": {"name": "a", "type": "llm", "local_path": "llm/a"},
         "b": {"name": "b", "type": "tts", "local_path": "tts/b"},
-        "c": {"name": "c", "type": "image", "local_path": "image/diffusers/c"},
+        "c": {"name": "c", "type": "image", "local_path": "media/diffusers/c"},
     })
     # 只 a 和 b 实际下载到磁盘了
     monkeypatch.setattr(engines_route, "scan_local_models", lambda: {"llm/a", "tts/b"})

@@ -12,7 +12,7 @@
 | API key | `323433244487847936`(ideogram4-external,sk-ideo-7c…) | `DELETE /api/v1/keys/323433244487847936` |
 | 服务 | `323433243686735872`(ideogram4,image) | `DELETE /api/v1/services/ideogram4` 或置 retired |
 | 工作流 | `323430777943494656`(Ideogram-4 文字海报) | `DELETE /api/v1/workflows/323430777943494656` |
-| 模型 | `image/diffusers/Ideogram-4-bf16/`(53.6G,社区转档 CalamitousFelicitousness) | 确认无引用后删目录 |
+| 模型 | `media/diffusers/Ideogram-4-bf16/`(53.6G,社区转档 CalamitousFelicitousness) | 确认无引用后删目录 |
 | 源素材 | `/media/heygo/Program/models/【83】Ideogram4全自动流程(1)/`(comfy 单文件版,nous 用不上) | 可删(diffusers 不支持其单文件加载) |
 
 代码级能力(通用,不随本复刻卸载):

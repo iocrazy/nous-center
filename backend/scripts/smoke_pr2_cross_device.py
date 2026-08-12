@@ -27,7 +27,7 @@ from src.services.inference.component_spec import ComponentSpec
 from src.services.inference.image_diffusers import DiffusersImageBackend
 
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
-FLUX2_KLEIN_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B"
+FLUX2_KLEIN_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B"
 
 
 async def main() -> int:

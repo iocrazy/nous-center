@@ -13,7 +13,7 @@ LoRA 条 vs 裸 Klein 基模同种子对比,右上 ImageReel 拼标注长图。
 | 服务 | `323306062335709184`(wanwu-qianyi,image) | `DELETE /api/v1/services/wanwu-qianyi` 或置 retired |
 | 服务版工作流 | `323306061140332544`(万物迁移·服务版(单链)) | `DELETE /api/v1/workflows/323306061140332544` |
 | 调试版工作流 | `323110738921000960`(Klein·万物迁移 A/B(LoRA vs 基模)) | `DELETE /api/v1/workflows/323110738921000960` |
-| 模型文件 | `image/loras/Klein-万物迁移.safetensors`(279MB) | 共享资产,确认无他人引用再删 |
+| 模型文件 | `media/loras/Klein-万物迁移.safetensors`(279MB) | 共享资产,确认无他人引用再删 |
 
 代码级能力(通用,不随本复刻卸载):#468 image_ref_join 参考图合并节点、
 #484 细粒度路径 LoRA 应用修复、#485 LoRA adapter 名消毒。

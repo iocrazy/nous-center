@@ -25,7 +25,7 @@
 
 **Files**:`backend/src/services/component_scanner.py` + 测试
 
-- [x] `ROLE_DIRS` 加 `"checkpoint"`;`_scan_checkpoints()` 列 `image/diffusers/*/`(含 model_index.json)目录,quant_type="checkpoint"。
+- [x] `ROLE_DIRS` 加 `"checkpoint"`;`_scan_checkpoints()` 列 `media/diffusers/*/`(含 model_index.json)目录,quant_type="checkpoint"。
 - [x] model_paths.yaml 加 `checkpoint: []`;`_scan_all` 特判 checkpoint → 目录扫描(非 glob)。
 - [x] 测试:`test_scan_checkpoints_lists_only_complete_diffusers_dirs`(有 model_index 才列)。
 

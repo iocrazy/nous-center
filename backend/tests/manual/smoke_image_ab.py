@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 MODEL_ROOT = Path(os.environ.get(
-    "SMOKE_MODEL", "/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B"))
+    "SMOKE_MODEL", "/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B"))
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 DTYPE = os.environ.get("SMOKE_DTYPE", "bfloat16")  # 强制 bf16(对齐 spike,避免 default→fp32 OOM)
 ENGINE = os.environ.get("SMOKE_ENGINE", "modular")  # legacy 已删,只剩 modular

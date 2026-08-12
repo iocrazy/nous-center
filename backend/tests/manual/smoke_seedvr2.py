@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
-MODEL_DIR = os.environ.get("SEEDVR2_MODEL_DIR", "/media/heygo/Program/models/nous/image/SEEDVR2")
+MODEL_DIR = os.environ.get("SEEDVR2_MODEL_DIR", "/media/heygo/Program/models/nous/media/SEEDVR2")
 OUT_DIR = Path(__file__).parent / "_smoke_out"
 # 输入:一张清晰图缩小,验超分细节重建(默认用 scheduler smoke 出的狐狸图)。
 SRC = os.environ.get(

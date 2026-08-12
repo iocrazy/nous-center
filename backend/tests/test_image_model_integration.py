@@ -19,9 +19,9 @@ def test_load_model_configs_derives_local_path_from_transformer(tmp_path, monkey
   type: image
   adapter: src.services.inference.image_diffusers.DiffusersImageBackend
   paths:
-    transformer: image/diffusion_models/flux2/flux2.safetensors
+    transformer: media/diffusion_models/flux2/flux2.safetensors
     text_encoder: ../comfyui/text_encoders/qwen3.safetensors
-    vae: image/vae/flux2-vae.safetensors
+    vae: media/vae/flux2-vae.safetensors
   resident: true
   vram_mb: 24000
 """
@@ -31,7 +31,7 @@ def test_load_model_configs_derives_local_path_from_transformer(tmp_path, monkey
 
     out = cfg_mod.load_model_configs()
     flux = out["flux2-test"]
-    assert flux["local_path"] == "image/diffusion_models/flux2"
+    assert flux["local_path"] == "media/diffusion_models/flux2"
     assert flux["paths"]["transformer"].endswith("flux2.safetensors")
     assert flux["adapter"].endswith("DiffusersImageBackend")
 
@@ -40,8 +40,8 @@ def test_scan_local_models_walks_image_subcategories(tmp_path, monkeypatch):
     """image/{diffusion_models,vae}/<NAME> live at depth 3, not depth 2."""
     base = tmp_path / "models"
     (base / "llm" / "qwen35-35b-a3b").mkdir(parents=True)
-    (base / "image" / "diffusion_models" / "Flux2-Klein-9B-True-V2").mkdir(parents=True)
-    (base / "image" / "vae" / "flux2-vae").mkdir(parents=True)
+    (base / "media" / "diffusion_models" / "Flux2-Klein-9B-True-V2").mkdir(parents=True)
+    (base / "media" / "vae" / "flux2-vae").mkdir(parents=True)
 
     from src.services import model_metadata_service as svc
     from src.config import get_settings as _gs
@@ -53,20 +53,18 @@ def test_scan_local_models_walks_image_subcategories(tmp_path, monkeypatch):
 
     found = svc.scan_local_models()
     assert "llm/qwen35-35b-a3b" in found
-    assert "image/diffusion_models/Flux2-Klein-9B-True-V2" in found
-    assert "image/vae/flux2-vae" in found
+    assert "media/diffusion_models/Flux2-Klein-9B-True-V2" in found
+    assert "media/vae/flux2-vae" in found
 
 
-def test_scan_local_models_emits_diffusers_full_layout_at_depth_2(tmp_path, monkeypatch):
-    """image/<MODEL>/ with model_index.json (ERNIE-Image style) → depth 2.
-    Component-bucket dirs without that marker stay at depth 3."""
+def test_scan_local_models_emits_media_bucket_layout(tmp_path, monkeypatch):
+    """Complete Diffusers models and component models use media bucket paths."""
     base = tmp_path / "models"
-    (base / "image" / "ERNIE-Image").mkdir(parents=True)
-    (base / "image" / "ERNIE-Image" / "model_index.json").write_text(
+    (base / "media" / "diffusers" / "ERNIE-Image").mkdir(parents=True)
+    (base / "media" / "diffusers" / "ERNIE-Image" / "model_index.json").write_text(
         '{"_class_name": "ErnieImagePipeline"}'
     )
-    # also a depth-3 component bucket alongside
-    (base / "image" / "vae" / "flux2-vae").mkdir(parents=True)
+    (base / "media" / "vae" / "flux2-vae").mkdir(parents=True)
 
     from src.services import model_metadata_service as svc
     settings = MagicMock()
@@ -74,8 +72,8 @@ def test_scan_local_models_emits_diffusers_full_layout_at_depth_2(tmp_path, monk
     monkeypatch.setattr(svc, "get_settings", lambda: settings)
 
     found = svc.scan_local_models()
-    assert "image/ERNIE-Image" in found        # depth 2 (full layout)
-    assert "image/vae/flux2-vae" in found      # depth 3 (component bucket)
+    assert "media/diffusers/ERNIE-Image" in found
+    assert "media/vae/flux2-vae" in found
     # MUST NOT also surface ERNIE-Image's transformer / vae as depth-3
     assert "image/ERNIE-Image/transformer" not in found
     assert "image/ERNIE-Image/vae" not in found
@@ -84,8 +82,8 @@ def test_scan_local_models_emits_diffusers_full_layout_at_depth_2(tmp_path, monk
 def test_scan_local_models_skips_image_files(tmp_path, monkeypatch):
     """Files (not dirs) under image/<sub>/ should not contribute entries."""
     base = tmp_path / "models"
-    (base / "image" / "vae").mkdir(parents=True)
-    (base / "image" / "vae" / "stray-file.safetensors").write_bytes(b"x")
+    (base / "media" / "vae").mkdir(parents=True)
+    (base / "media" / "vae" / "stray-file.safetensors").write_bytes(b"x")
 
     from src.services import model_metadata_service as svc
     settings = MagicMock()
@@ -93,7 +91,7 @@ def test_scan_local_models_skips_image_files(tmp_path, monkeypatch):
     monkeypatch.setattr(svc, "get_settings", lambda: settings)
 
     found = svc.scan_local_models()
-    assert "image/vae/stray-file.safetensors" not in found
+    assert "media/vae/stray-file.safetensors" not in found
     assert found == set()  # only dirs count
 
 

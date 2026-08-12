@@ -33,7 +33,7 @@ from pathlib import Path
 
 # Match design doc P7 paths
 DIT_PATH = Path(
-    "/media/heygo/Program/models/nous/image/diffusion_models/"
+    "/media/heygo/Program/models/nous/media/diffusion_models/"
     "Flux2-Klein-9B-True-V2/Flux2-Klein-9B-True-v2-bf16.safetensors"
 )
 ENCODER_PATH = Path(
@@ -41,7 +41,7 @@ ENCODER_PATH = Path(
     "qwen_3_8b_fp8mixed.safetensors"
 )
 VAE_PATH = Path(
-    "/media/heygo/Program/models/nous/image/vae/flux2-vae.safetensors"
+    "/media/heygo/Program/models/nous/media/vae/flux2-vae.safetensors"
 )
 
 

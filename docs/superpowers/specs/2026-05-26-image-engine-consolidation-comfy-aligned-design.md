@@ -27,8 +27,8 @@ true-cfg 修复(已开 PR)坐实了一件更大的事:**nous 图像引擎选错�
 
 | 类别 | 位置 | 标志 | 加载 |
 |---|---|---|---|
-| 原生 diffusers 整模型 | `image/diffusers/<name>/` | 有 `model_index.json` | `Pipeline.from_pretrained(dir)`,**尊重其 config(含 is_distilled)** |
-| ComfyUI 单文件 | `image/diffusion_models/`(+ `text_encoders/`、`vae/`) | 单文件无 config | 自检架构 → 标准 pipeline,`is_distilled=False`(cfg 控制) |
+| 原生 diffusers 整模型 | `media/diffusers/<name>/` | 有 `model_index.json` | `Pipeline.from_pretrained(dir)`,**尊重其 config(含 is_distilled)** |
+| ComfyUI 单文件 | `media/diffusion_models/`(+ `text_encoders/`、`vae/`) | 单文件无 config | 自检架构 → 标准 pipeline,`is_distilled=False`(cfg 控制) |
 
 loader 节点已是两套(`flux2_load_checkpoint` 整模型 / `flux2_load_diffusion_model`+`load_clip`+`load_vae` 单文件)。
 

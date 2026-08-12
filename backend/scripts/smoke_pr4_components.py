@@ -31,7 +31,7 @@ from src.services.inference.component_spec import ComponentSpec
 from src.services.inference.registry import ModelRegistry
 from src.services.model_manager import ModelManager
 
-ROOT = os.path.expandvars("$LOCAL_MODELS_PATH/image/diffusers/Flux2-klein-9B")
+ROOT = os.path.expandvars("$LOCAL_MODELS_PATH/media/diffusers/Flux2-klein-9B")
 PROMPT = "a small grey kitten sitting on a wooden table, soft natural lighting"
 SEED, STEPS, SIZE = 4242, 9, 512
 

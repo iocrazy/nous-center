@@ -20,7 +20,7 @@ from src.services.inference.image_modular import build_bridged_text_encoder  # n
 
 DEV = os.environ.get("SMOKE_DEVICE", "cuda:1")
 REPO = "configs/image_arch/z-image"
-TE = "/media/heygo/Program/models/nous/image/text_encoders"
+TE = "/media/heygo/Program/models/nous/media/text_encoders"
 GGUF = f"{TE}/Qwen3-4b-Z-Image-Engineer-V4-Q8_0.gguf"
 PLAIN = f"{TE}/qwen_3_4b.safetensors"
 

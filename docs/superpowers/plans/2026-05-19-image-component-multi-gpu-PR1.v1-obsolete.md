@@ -70,9 +70,9 @@ from pathlib import Path
 import torch
 
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
-TRANSFORMER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/transformer"
-TEXT_ENCODER_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/text_encoder"
-VAE_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B/vae"
+TRANSFORMER_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B/transformer"
+TEXT_ENCODER_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B/text_encoder"
+VAE_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B/vae"
 
 # Device targets for the test (current hardware: cuda:0=3090, cuda:1=Pro 6000, cuda:2=3090)
 UNET_DEVICE = "cuda:1"   # largest VRAM, holds 18GB transformer
@@ -702,7 +702,7 @@ def load_fp8mixed(spec: ComponentSpec) -> dict[str, torch.Tensor]:
       3. Drop .weight_scale and .comfy_quant marker keys
       4. Return clean state dict ready for caller's load_state_dict
 
-    Reference fixture: /media/heygo/Program/models/nous/image/diffusion_models/
+    Reference fixture: /media/heygo/Program/models/nous/media/diffusion_models/
     Flux2-Klein-9B-True-v2-fp8mixed.safetensors
     """
     target = _dtype_str_to_torch(spec.dtype)
@@ -1343,13 +1343,13 @@ def _load_transformer_module(spec: ComponentSpec):
     # Strategy: locate the matching diffusers HF directory (sibling of the .safetensors
     # file or referenced by convention) and load config from there.
     # For PR-1 scope, we require the safetensors lives under
-    # image/diffusers/<MODEL>/transformer/ so we can find config.json one level up.
+    # media/diffusers/<MODEL>/transformer/ so we can find config.json one level up.
     transformer_dir = Path(spec.file).parent
     if (transformer_dir / "config.json").exists():
         module = Flux2Transformer2DModel.from_config(transformer_dir / "config.json")
         module.load_state_dict(sd, strict=False)
         return module
-    # Fallback: single-file under image/diffusion_models/. Use diffusers'
+    # Fallback: single-file under media/diffusion_models/. Use diffusers'
     # `from_single_file` shim (it understands these flat layouts).
     return Flux2Transformer2DModel.from_single_file(spec.file, torch_dtype=_dtype_to_torch(spec.dtype))
 
@@ -1719,17 +1719,17 @@ async def main() -> int:
     components = {
         "unet": ComponentSpec(
             kind="unet", adapter_arch="flux2",
-            file=str(MODELS_ROOT / "image/diffusers/Flux2-klein-9B/transformer/diffusion_pytorch_model.safetensors"),
+            file=str(MODELS_ROOT / "media/diffusers/Flux2-klein-9B/transformer/diffusion_pytorch_model.safetensors"),
             device="cuda:1", dtype="bfloat16",
         ),
         "clip": ComponentSpec(
             kind="clip", clip_arch="flux2",
-            file=str(MODELS_ROOT / "image/diffusers/Flux2-klein-9B/text_encoder/model.safetensors"),
+            file=str(MODELS_ROOT / "media/diffusers/Flux2-klein-9B/text_encoder/model.safetensors"),
             device="cuda:0", dtype="bfloat16",
         ),
         "vae": ComponentSpec(
             kind="vae",
-            file=str(MODELS_ROOT / "image/diffusers/Flux2-klein-9B/vae/diffusion_pytorch_model.safetensors"),
+            file=str(MODELS_ROOT / "media/diffusers/Flux2-klein-9B/vae/diffusion_pytorch_model.safetensors"),
             device="cuda:2", dtype="bfloat16",
         ),
     }

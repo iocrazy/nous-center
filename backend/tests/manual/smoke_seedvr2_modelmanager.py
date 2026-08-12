@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
-MODEL_DIR = os.environ.get("SEEDVR2_MODEL_DIR", "/media/heygo/Program/models/nous/image/SEEDVR2")
+MODEL_DIR = os.environ.get("SEEDVR2_MODEL_DIR", "/media/heygo/Program/models/nous/media/SEEDVR2")
 OUT_DIR = Path(__file__).parent / "_smoke_out"
 SRC = os.environ.get(
     "SMOKE_SRC",

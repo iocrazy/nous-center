@@ -10,7 +10,7 @@ _node_executor 的真实路径:get_or_load_image_adapter(整模型→单卡)→ 
     # B: bf16 落 Pro 6000(cuda:1)—— 先释放该卡的常驻 vLLM!
     SMOKE_DEVICE=cuda:1 SMOKE_DTYPE=default  uv run python tests/manual/smoke_granular_pr1.py
     # C: A + LoRA 串联
-    SMOKE_DEVICE=cuda:0 SMOKE_DTYPE=fp8_e4m3 SMOKE_LORA=/media/heygo/Program/models/nous/image/loras/klein_9B_Turbo_r128.safetensors \
+    SMOKE_DEVICE=cuda:0 SMOKE_DTYPE=fp8_e4m3 SMOKE_LORA=/media/heygo/Program/models/nous/media/loras/klein_9B_Turbo_r128.safetensors \
         uv run python tests/manual/smoke_granular_pr1.py
 
 环境变量:
@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 MODEL_ROOT = Path(os.environ.get(
     "SMOKE_MODEL",
-    "/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B"))
+    "/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B"))
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:0")
 DTYPE = os.environ.get("SMOKE_DTYPE", "default")
 LORA = os.environ.get("SMOKE_LORA", "").strip()

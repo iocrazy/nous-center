@@ -26,7 +26,7 @@ from pathlib import Path
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-IMG = "/media/heygo/Program/models/nous/image"
+IMG = "/media/heygo/Program/models/nous/media"
 UNET = f"{IMG}/diffusion_models/flux/Flux2-Klein-9B-True-v2-bf16.safetensors"
 CLIP = f"{IMG}/text_encoders/qwen_3_8b_fp8mixed.safetensors"
 VAE = f"{IMG}/vae/flux2-vae.safetensors"

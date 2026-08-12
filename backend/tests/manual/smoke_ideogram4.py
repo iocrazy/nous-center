@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 REPO = os.environ.get(
-    "SMOKE_MODEL", "/media/heygo/Program/models/nous/image/diffusers/Ideogram-4-bf16")
+    "SMOKE_MODEL", "/media/heygo/Program/models/nous/media/diffusers/Ideogram-4-bf16")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 OUT = Path(__file__).parent / "_smoke_out"
 OUT.mkdir(exist_ok=True)

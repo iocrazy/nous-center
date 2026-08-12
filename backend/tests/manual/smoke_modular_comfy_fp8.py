@@ -23,8 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-HF_ROOT = Path("/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B")
-FP8 = "/media/heygo/Program/models/nous/image/diffusion_models/flux/Flux2-Klein-9B-True-v2-fp8mixed.safetensors"
+HF_ROOT = Path("/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B")
+FP8 = "/media/heygo/Program/models/nous/media/diffusion_models/flux/Flux2-Klein-9B-True-v2-fp8mixed.safetensors"
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 OUT_DIR = Path(__file__).parent / "_smoke_out"
 

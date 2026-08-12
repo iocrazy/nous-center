@@ -24,7 +24,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")  # cuda:0/2=3090, cuda:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-REPO = "/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B"
+REPO = "/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B"
 DEVICE = os.environ.get("SPIKE_DEVICE", "cuda:2")  # 约束卡 3090 24GB
 PROMPT = "a photo of a red fox sitting in autumn leaves, sharp focus, detailed"
 OUT_DIR = Path(__file__).parent / "_smoke_out"

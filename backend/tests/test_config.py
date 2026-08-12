@@ -27,7 +27,7 @@ def test_paths_derive_from_roots():
     assert s.LOCAL_MODELS_PATH == "/data/models/nous"
     assert s.NAS_MODELS_PATH == "/data/models/nous"  # NAS 并进本地根
     assert s.NAS_OUTPUTS_PATH == "/data/models/nous/outputs"
-    assert s.LORA_PATHS == "/data/models/comfyui/models/loras"
+    assert s.LORA_PATHS == "/data/models/nous/media/loras"
     assert s.COSYVOICE_REPO_PATH == "/data/repos/CosyVoice"
     assert s.INDEXTTS_REPO_PATH == "/data/repos/index-tts"
 

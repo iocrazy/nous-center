@@ -1,7 +1,7 @@
 """PR-anima-3 真模型 smoke:AnimaTextEncoder 加载 qwen3-0.6b base + encode。
 
 需要:
-  - /media/heygo/Program/models/nous/image/text_encoders/qwen_3_06b_base.safetensors
+  - /media/heygo/Program/models/nous/media/text_encoders/qwen_3_06b_base.safetensors
   - qwen25_tokenizer 配置目录(从 ComfyUI 拷,或下面 SMOKE_QWEN_TOKENIZER 环境变量指定)
   - (可选)t5_tokenizer 配置目录,SMOKE_T5_TOKENIZER 指定;走 t5xxl 桥接路径
 
@@ -23,7 +23,7 @@ from pathlib import Path
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-QWEN_WEIGHTS = "/media/heygo/Program/models/nous/image/text_encoders/qwen_3_06b_base.safetensors"
+QWEN_WEIGHTS = "/media/heygo/Program/models/nous/media/text_encoders/qwen_3_06b_base.safetensors"
 QWEN_TOKENIZER = os.environ.get(
     "SMOKE_QWEN_TOKENIZER",
     "/home/heygo/sites/ComfyUI/comfy/text_encoders/qwen25_tokenizer",

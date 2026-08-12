@@ -9,7 +9,7 @@
 让用户像 ComfyUI 那样**用单文件拼图像流水线**:单文件 transformer(diffusion_models/)+ 单文件
 text encoder(text_encoders/)+ 单文件 vae(vae/),不被迫用 Load Checkpoint 整模型。
 
-用户库 `~/models/nous/image/` 就是 ComfyUI 式拆分:
+用户库 `~/models/nous/media/` 就是 ComfyUI 式拆分:
 - `diffusers/`:整模型(ERNIE-Image、**Flux2-klein-9B**,带全套 config/scheduler/tokenizer)。
 - `diffusion_models/flux|split_files/*.safetensors`:单文件 DiT(含 comfy fp8mixed 等量化)。
 - `text_encoders/qwen_3_8b_fp8mixed.safetensors`:单文件 CLIP。

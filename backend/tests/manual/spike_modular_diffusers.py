@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import torch  # noqa: E402
 
-REPO = "/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B"
-FLUX_DIR = "/media/heygo/Program/models/nous/image/diffusion_models/flux"
+REPO = "/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B"
+FLUX_DIR = "/media/heygo/Program/models/nous/media/diffusion_models/flux"
 GGUF = f"{FLUX_DIR}/Flux2-Klein-9B-True-v2-Q5_K.gguf"
 FP8 = f"{FLUX_DIR}/Flux2-Klein-9B-True-v2-fp8mixed.safetensors"
 DEVICE = "cuda:1"

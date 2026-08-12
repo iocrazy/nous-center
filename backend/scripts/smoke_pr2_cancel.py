@@ -28,7 +28,7 @@ from src.services.inference.component_spec import ComponentSpec
 from src.services.inference.image_diffusers import DiffusersImageBackend
 from src.services.inference.image_sampler import SamplerCancelled
 
-FLUX2_KLEIN_DIR = Path("/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B")
+FLUX2_KLEIN_DIR = Path("/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B")
 
 
 async def main() -> int:

@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-REPO = os.environ.get("SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/image/diffusers/Z-Image-Turbo")
+REPO = os.environ.get("SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/media/diffusers/Z-Image-Turbo")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 PROMPT = "a photo of a red fox in autumn leaves, sharp focus"
 STEPS, SEED = 12, 42

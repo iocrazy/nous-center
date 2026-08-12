@@ -19,10 +19,10 @@ from pathlib import Path
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-ANIMA_WEIGHTS = "/media/heygo/Program/models/nous/image/diffusion_models/anima/anima-base-v1.0.safetensors"
-QWEN_WEIGHTS = "/media/heygo/Program/models/nous/image/text_encoders/qwen_3_06b_base.safetensors"
+ANIMA_WEIGHTS = "/media/heygo/Program/models/nous/media/diffusion_models/anima/anima-base-v1.0.safetensors"
+QWEN_WEIGHTS = "/media/heygo/Program/models/nous/media/text_encoders/qwen_3_06b_base.safetensors"
 QWEN_TOKENIZER = "/home/heygo/sites/ComfyUI/comfy/text_encoders/qwen25_tokenizer"
-VAE_WEIGHTS = "/media/heygo/Program/models/nous/image/vae/qwen_image_vae.safetensors"
+VAE_WEIGHTS = "/media/heygo/Program/models/nous/media/vae/qwen_image_vae.safetensors"
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 OUT_DIR = Path(__file__).parent / "_smoke_out"
 

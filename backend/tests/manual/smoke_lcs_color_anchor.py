@@ -4,7 +4,7 @@
   ① interventions=[lcs_color_anchor intensity=0.8] → 改变出图 + 有效连贯人像。
   ② intensity=0 → 不建闭包 → byte-identical 基线(零回归)。
   ③ intensity=0.8 复现一致(确定性 + 色彩标定缓存命中)。
-色彩标定(512 HSV 样本 PCA)首次跑、缓存 image/lcs_cache/lcsdata_<vae指纹>.safetensors。
+色彩标定(512 HSV 样本 PCA)首次跑、缓存 media/lcs_cache/lcsdata_<vae指纹>.safetensors。
 
 改 image_modular.py 必另跑 smoke_image_ab.py + smoke_zimage_split.py。
 用法:cd backend && SMOKE_DEVICE=cuda:1 uv run python tests/manual/smoke_lcs_color_anchor.py
@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-ROOT = "/media/heygo/Program/models/nous/image"
+ROOT = "/media/heygo/Program/models/nous/media"
 DEV = os.environ.get("SMOKE_DEVICE", "cuda:1")
 UNET = f"{ROOT}/diffusion_models/z_image_turbo_bf16.safetensors"
 ENC = f"{ROOT}/text_encoders/qwen_3_4b.safetensors"

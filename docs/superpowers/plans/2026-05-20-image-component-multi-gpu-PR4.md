@@ -1822,7 +1822,7 @@ git commit -m "test(image): PR-4 — e2e descriptor flow + component L1 cache hi
 
 - [ ] **Step 1: 确认真模型在盘 + 三卡可见**
 
-Run: `cd backend && ls "$LOCAL_MODELS_PATH/image/diffusers/Flux2-klein-9B/"{transformer,text_encoder,vae,scheduler,tokenizer}` (确认 HF layout 完整)
+Run: `cd backend && ls "$LOCAL_MODELS_PATH/media/diffusers/Flux2-klein-9B/"{transformer,text_encoder,vae,scheduler,tokenizer}` (确认 HF layout 完整)
 Run: `nvidia-smi --query-gpu=index,name,memory.free --format=csv`(确认 cuda:0=Pro6000?见 [[user-hardware]] CUDA 索引坑:cuda:1=Pro 6000)
 
 - [ ] **Step 2: 写 standalone smoke 脚本**
@@ -1845,7 +1845,7 @@ from src.services.model_manager import ModelManager
 
 def _spec(kind, sub, dev, file_name, **kw):
     import glob, os
-    base = os.path.expandvars("$LOCAL_MODELS_PATH/image/diffusers/Flux2-klein-9B")
+    base = os.path.expandvars("$LOCAL_MODELS_PATH/media/diffusers/Flux2-klein-9B")
     f = sorted(glob.glob(f"{base}/{sub}/*.safetensors"))[0]
     return ComponentSpec(kind=kind, file=f, device=dev, dtype="bfloat16", **kw)
 

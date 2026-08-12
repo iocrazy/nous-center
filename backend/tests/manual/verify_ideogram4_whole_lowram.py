@@ -16,7 +16,7 @@ import asyncio
 import time
 from pathlib import Path
 
-REPO = os.environ.get("SMOKE_MODEL", "/media/heygo/Program/models/nous/image/diffusers/Ideogram-4-bf16")
+REPO = os.environ.get("SMOKE_MODEL", "/media/heygo/Program/models/nous/media/diffusers/Ideogram-4-bf16")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:2")
 OUT = Path(__file__).parent / "_smoke_out"
 OUT.mkdir(exist_ok=True)

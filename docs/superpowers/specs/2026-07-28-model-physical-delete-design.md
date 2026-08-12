@@ -68,7 +68,7 @@ POST /api/v1/engines/delete             body {name, force}     → DeleteResult
 | kind | name 形态 | 物理目标 |
 |---|---|---|
 | `model` | engine key(如 `qwen3_6_35b_a3b_fp8`) | `LOCAL_MODELS_PATH/<cfg.local_path>` 整目录 |
-| `upscale` | `seedvr2:<filename>` | `LOCAL_MODELS_PATH/image/SEEDVR2/<filename>` 单文件 |
+| `upscale` | `seedvr2:<filename>` | `LOCAL_MODELS_PATH/media/SEEDVR2/<filename>` 单文件 |
 | `component` / `lora` | `component:<role>:<abs_path>` | 该 `abs_path` 单文件 |
 
 `Target` 携带:`path`、`is_dir`、`kind`、`engine_key`(仅 `model` 有)、`local_path`。

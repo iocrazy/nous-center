@@ -43,11 +43,11 @@ def _make_file(root: Path, rel: str, content: bytes = b"\x00" * 64) -> Path:
 
 
 def test_scan_components_globs_role_dirs(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/Flux2-bf16.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/Flux2-fp8mixed.safetensors")
-    _make_file(tmp_path, "image/text_encoders/qwen3.safetensors")
-    _make_file(tmp_path, "image/vae/flux2-vae.safetensors")
-    _make_file(tmp_path, "image/loras/style.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/Flux2-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/Flux2-fp8mixed.safetensors")
+    _make_file(tmp_path, "media/text_encoders/qwen3.safetensors")
+    _make_file(tmp_path, "media/vae/flux2-vae.safetensors")
+    _make_file(tmp_path, "media/loras/style.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     unet = scan_components("diffusion_models", force_refresh=True)
@@ -64,9 +64,9 @@ def test_scan_components_globs_role_dirs(tmp_path, monkeypatch):
 
 def test_scan_components_finds_diffusion_models_subdir(tmp_path, monkeypatch):
     """递归 ** —— diffusion_models 子目录(如 flux/)里的单文件模型也进 unet 下拉。"""
-    _make_file(tmp_path, "image/diffusion_models/flux/Flux2-bf16.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/flux/Flux2-fp8mixed.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/root-level.safetensors")  # 根仍要匹配
+    _make_file(tmp_path, "media/diffusion_models/flux/Flux2-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/flux/Flux2-fp8mixed.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/root-level.safetensors")  # 根仍要匹配
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     names = {e["filename"] for e in scan_components("diffusion_models", force_refresh=True)}
@@ -76,14 +76,14 @@ def test_scan_components_finds_diffusion_models_subdir(tmp_path, monkeypatch):
 def test_diffusers_subcomponents_excluded_from_component_roles(tmp_path, monkeypatch):
     """整模型(diffusers/<model>/{transformer,text_encoder,vae})不该混进单文件组件下拉。
     它们只经 checkpoint 角色整体列出 —— 对齐 ComfyUI 单文件 vs 整模型分离。"""
-    repo = "image/diffusers/Flux2-klein-9B"
+    repo = "media/diffusers/Flux2-klein-9B"
     _make_file(tmp_path, f"{repo}/transformer/diffusion_pytorch_model.safetensors")
     _make_file(tmp_path, f"{repo}/text_encoder/model.safetensors")
     _make_file(tmp_path, f"{repo}/vae/diffusion_pytorch_model.safetensors")
     # 单文件夹各放一个真组件作对照
-    _make_file(tmp_path, "image/diffusion_models/single.safetensors")
-    _make_file(tmp_path, "image/text_encoders/clip.safetensors")
-    _make_file(tmp_path, "image/vae/vae.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/single.safetensors")
+    _make_file(tmp_path, "media/text_encoders/clip.safetensors")
+    _make_file(tmp_path, "media/vae/vae.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     for role, expect in [("diffusion_models", {"single.safetensors"}),
@@ -93,11 +93,11 @@ def test_diffusers_subcomponents_excluded_from_component_roles(tmp_path, monkeyp
 
 
 def test_scan_checkpoints_lists_only_complete_diffusers_dirs(tmp_path, monkeypatch):
-    """checkpoint 角色列 image/diffusers/*/(含 model_index.json 的整模型目录);
+    """checkpoint 角色列 media/diffusers/*/(含 model_index.json 的整模型目录);
     缺 model_index 的散目录不列。"""
-    _make_file(tmp_path, "image/diffusers/Flux2-klein-9B/model_index.json", b"{}")
-    _make_file(tmp_path, "image/diffusers/Flux2-klein-9B/transformer/x.safetensors")
-    _make_file(tmp_path, "image/diffusers/incomplete/transformer/x.safetensors")  # 无 model_index
+    _make_file(tmp_path, "media/diffusers/Flux2-klein-9B/model_index.json", b"{}")
+    _make_file(tmp_path, "media/diffusers/Flux2-klein-9B/transformer/x.safetensors")
+    _make_file(tmp_path, "media/diffusers/incomplete/transformer/x.safetensors")  # 无 model_index
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     entries = scan_components("checkpoint", force_refresh=True)
@@ -108,7 +108,7 @@ def test_scan_checkpoints_lists_only_complete_diffusers_dirs(tmp_path, monkeypat
 
 
 def test_scan_components_entry_shape(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/x-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/x-bf16.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     entry = scan_components("diffusion_models", force_refresh=True)[0]
@@ -118,11 +118,11 @@ def test_scan_components_entry_shape(tmp_path, monkeypatch):
 
 
 def test_quant_type_detection_by_filename(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/M-bf16.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-fp8mixed.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-mxfp8mixed.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-nvfp4mixed.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-Q4_K.gguf")
+    _make_file(tmp_path, "media/diffusion_models/M-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-fp8mixed.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-mxfp8mixed.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-nvfp4mixed.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-Q4_K.gguf")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     by_name = {e["filename"]: e["quant_type"] for e in scan_components("diffusion_models", force_refresh=True)}
@@ -134,12 +134,12 @@ def test_quant_type_detection_by_filename(tmp_path, monkeypatch):
 
 
 def test_scan_components_caches_until_invalidate(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/vae/v1.safetensors")
+    _make_file(tmp_path, "media/vae/v1.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components, invalidate_component_cache
     invalidate_component_cache()
     first = scan_components("vae")
-    _make_file(tmp_path, "image/vae/v2.safetensors")
+    _make_file(tmp_path, "media/vae/v2.safetensors")
     second = scan_components("vae")
     assert {e["filename"] for e in first} == {e["filename"] for e in second}
     invalidate_component_cache()
@@ -148,9 +148,9 @@ def test_scan_components_caches_until_invalidate(tmp_path, monkeypatch):
 
 
 def test_get_component_index_returns_all_roles(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/u.safetensors")
-    _make_file(tmp_path, "image/text_encoders/c.safetensors")
-    _make_file(tmp_path, "image/vae/v.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/u.safetensors")
+    _make_file(tmp_path, "media/text_encoders/c.safetensors")
+    _make_file(tmp_path, "media/vae/v.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import get_component_index
     idx = get_component_index()
@@ -172,11 +172,11 @@ def test_load_model_paths_config_fail_soft_on_malformed(tmp_path, monkeypatch):
 
 def test_selfcheck_report_counts_and_clean(tmp_path, monkeypatch):
     """启动自检:每角色计数,完整整模型无 warning。"""
-    _make_file(tmp_path, "image/diffusion_models/m.safetensors")
-    _make_file(tmp_path, "image/diffusers/Flux2/model_index.json", b"{}")
-    _make_file(tmp_path, "image/diffusers/Flux2/transformer/x.safetensors")
-    _make_file(tmp_path, "image/diffusers/Flux2/text_encoder/y.safetensors")
-    _make_file(tmp_path, "image/diffusers/Flux2/vae/z.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/m.safetensors")
+    _make_file(tmp_path, "media/diffusers/Flux2/model_index.json", b"{}")
+    _make_file(tmp_path, "media/diffusers/Flux2/transformer/x.safetensors")
+    _make_file(tmp_path, "media/diffusers/Flux2/text_encoder/y.safetensors")
+    _make_file(tmp_path, "media/diffusers/Flux2/vae/z.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import selfcheck_report
     rep = selfcheck_report(force_refresh=True)
@@ -187,8 +187,8 @@ def test_selfcheck_report_counts_and_clean(tmp_path, monkeypatch):
 
 def test_selfcheck_report_warns_incomplete_checkpoint(tmp_path, monkeypatch):
     """整模型缺 text_encoder/vae → 一条 warning 指明缺哪些。"""
-    _make_file(tmp_path, "image/diffusers/Broken/model_index.json", b"{}")
-    _make_file(tmp_path, "image/diffusers/Broken/transformer/x.safetensors")  # 缺 text_encoder/vae
+    _make_file(tmp_path, "media/diffusers/Broken/model_index.json", b"{}")
+    _make_file(tmp_path, "media/diffusers/Broken/transformer/x.safetensors")  # 缺 text_encoder/vae
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import selfcheck_report
     rep = selfcheck_report(force_refresh=True)

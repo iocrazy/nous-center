@@ -17,7 +17,7 @@
 
 ### 1.1 Z-Image-Turbo 和 Flux2-Klein 的 latent 空间**物理不兼容**
 
-对照两边 `config.json` 真实数值(`/media/heygo/Program/models/nous/image/diffusers/`):
+对照两边 `config.json` 真实数值(`/media/heygo/Program/models/nous/media/diffusers/`):
 
 | | Z-Image-Turbo | Flux2-Klein |
 |---|---|---|

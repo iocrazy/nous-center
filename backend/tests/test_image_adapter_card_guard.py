@@ -295,7 +295,7 @@ async def test_auto_clip_vae_follow_unet_card(mm, monkeypatch):
 def test_reference_repo_for_arch_matches_class(tmp_path, monkeypatch):
     """PR-B 后:flux2 优先返回仓内 bundle(几 MB);未知架构 fallback 扫 LOCAL_MODELS_PATH。"""
     from src.services import model_manager as mm_mod
-    base = tmp_path / "image" / "diffusers"
+    base = tmp_path / "media" / "diffusers"
     (base / "ERNIE-Image").mkdir(parents=True)
     (base / "ERNIE-Image" / "model_index.json").write_text('{"_class_name": "ErnieImagePipeline"}')
     settings = MagicMock()

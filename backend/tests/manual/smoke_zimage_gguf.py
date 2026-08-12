@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-ROOT = "/media/heygo/Program/models/nous/image"
+ROOT = "/media/heygo/Program/models/nous/media"
 DEV = os.environ.get("SMOKE_DEVICE", "cuda:0")
 UNET = f"{ROOT}/diffusion_models/z_image_turbo_bf16.safetensors"
 GGUF = f"{ROOT}/text_encoders/Qwen3-4b-Z-Image-Engineer-V4-Q8_0.gguf"

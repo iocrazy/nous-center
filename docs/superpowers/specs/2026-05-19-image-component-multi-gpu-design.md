@@ -231,16 +231,16 @@ base_path: ${LOCAL_MODELS_PATH}   # 默认 /media/heygo/Program/models/nous
 
 roles:
   unet:
-    - image/diffusion_models/
-    - image/diffusers/*/transformer/
+    - media/diffusion_models/
+    - media/diffusers/*/transformer/
   clip:
-    - image/text_encoders/
-    - image/diffusers/*/text_encoder/
+    - media/text_encoders/
+    - media/diffusers/*/text_encoder/
   vae:
-    - image/vae/
-    - image/diffusers/*/vae/
+    - media/vae/
+    - media/diffusers/*/vae/
   loras:
-    - image/loras/
+    - media/loras/
 ```
 
 `backend/src/services/component_scanner.py`(新建):

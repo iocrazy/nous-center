@@ -10,7 +10,7 @@ import os
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 import torch
 
-ROOT = "/media/heygo/Program/models/nous/image"
+ROOT = "/media/heygo/Program/models/nous/media"
 REPO = f"{ROOT}/diffusers/Z-Image-Turbo"  # 参考库(tokenizer/scheduler/config)
 DEV = os.environ.get("SMOKE_DEVICE", "cuda:1")
 UNET = f"{ROOT}/diffusion_models/z_image_turbo_bf16.safetensors"

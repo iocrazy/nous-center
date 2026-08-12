@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-REPO = os.environ.get("SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/image/diffusers/Z-Image-Turbo")
+REPO = os.environ.get("SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/media/diffusers/Z-Image-Turbo")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 STRENGTH = float(os.environ.get("SMOKE_STRENGTH", "0.6"))
 STEPS = int(os.environ.get("SMOKE_STEPS", "8"))

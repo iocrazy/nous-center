@@ -26,7 +26,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-REPO = "/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B"
+REPO = "/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B"
 DEVICE = os.environ.get("SPIKE_DEVICE", "cuda:2")  # 一张 3090(约束卡)
 MODE = os.environ.get("SPIKE_MODE", "fp8cast")
 PROMPT = "a photo of a red fox sitting in autumn leaves, sharp focus, detailed"

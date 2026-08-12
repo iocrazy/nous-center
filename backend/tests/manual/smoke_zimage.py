@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 REPO = os.environ.get(
-    "SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/image/diffusers/Z-Image-Turbo")
+    "SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/media/diffusers/Z-Image-Turbo")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 PROMPT = os.environ.get(
     "SMOKE_PROMPT", "a photo of a red fox sitting in autumn leaves, sharp focus, detailed")

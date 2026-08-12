@@ -23,7 +23,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-REPO = Path("/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B")
+REPO = Path("/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")  # PCI_BUS_ID 下 cuda:1 = Pro 6000
 OUT_DIR = Path(__file__).parent / "_smoke_out"
 

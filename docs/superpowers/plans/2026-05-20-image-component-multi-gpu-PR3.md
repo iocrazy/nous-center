@@ -102,18 +102,18 @@ Expected: ImportError.
 
 roles:
   unet:
-    - image/diffusion_models/*.safetensors
-    - image/diffusion_models/*.gguf
-    - image/diffusers/*/transformer/*.safetensors
+    - media/diffusion_models/*.safetensors
+    - media/diffusion_models/*.gguf
+    - media/diffusers/*/transformer/*.safetensors
   clip:
-    - image/text_encoders/*.safetensors
-    - image/diffusers/*/text_encoder/*.safetensors
+    - media/text_encoders/*.safetensors
+    - media/diffusers/*/text_encoder/*.safetensors
   vae:
-    - image/vae/*.safetensors
-    - image/diffusers/*/vae/*.safetensors
+    - media/vae/*.safetensors
+    - media/diffusers/*/vae/*.safetensors
   loras:
-    - image/loras/*.safetensors
-    - image/loras/**/*.safetensors
+    - media/loras/*.safetensors
+    - media/loras/**/*.safetensors
 ```
 
 - [ ] **Step 4: Implement config loader (start `component_scanner.py`)**
@@ -193,11 +193,11 @@ def _make_file(root: Path, rel: str, content: bytes = b"\x00" * 64) -> Path:
 
 def test_scan_components_globs_role_dirs(tmp_path, monkeypatch):
     # Build a fake LOCAL_MODELS_PATH tree
-    _make_file(tmp_path, "image/diffusion_models/Flux2-bf16.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/Flux2-fp8mixed.safetensors")
-    _make_file(tmp_path, "image/text_encoders/qwen3.safetensors")
-    _make_file(tmp_path, "image/vae/flux2-vae.safetensors")
-    _make_file(tmp_path, "image/loras/style.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/Flux2-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/Flux2-fp8mixed.safetensors")
+    _make_file(tmp_path, "media/text_encoders/qwen3.safetensors")
+    _make_file(tmp_path, "media/vae/flux2-vae.safetensors")
+    _make_file(tmp_path, "media/loras/style.safetensors")
 
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
 
@@ -218,7 +218,7 @@ def test_scan_components_globs_role_dirs(tmp_path, monkeypatch):
 
 
 def test_scan_components_entry_shape(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/x-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/x-bf16.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     entry = scan_components("unet", force_refresh=True)[0]
@@ -228,11 +228,11 @@ def test_scan_components_entry_shape(tmp_path, monkeypatch):
 
 
 def test_quant_type_detection_by_filename(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/M-bf16.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-fp8mixed.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-mxfp8mixed.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-nvfp4mixed.safetensors")
-    _make_file(tmp_path, "image/diffusion_models/M-Q4_K.gguf")
+    _make_file(tmp_path, "media/diffusion_models/M-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-fp8mixed.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-mxfp8mixed.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-nvfp4mixed.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/M-Q4_K.gguf")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components
     by_name = {e["filename"]: e["quant_type"] for e in scan_components("unet", force_refresh=True)}
@@ -244,13 +244,13 @@ def test_quant_type_detection_by_filename(tmp_path, monkeypatch):
 
 
 def test_scan_components_caches_until_invalidate(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/vae/v1.safetensors")
+    _make_file(tmp_path, "media/vae/v1.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import scan_components, invalidate_component_cache
 
     first = scan_components("vae")  # populate cache (no force_refresh)
     # Add a new file — should NOT appear until invalidate
-    _make_file(tmp_path, "image/vae/v2.safetensors")
+    _make_file(tmp_path, "media/vae/v2.safetensors")
     second = scan_components("vae")
     assert {e["filename"] for e in first} == {e["filename"] for e in second}  # cached
 
@@ -260,9 +260,9 @@ def test_scan_components_caches_until_invalidate(tmp_path, monkeypatch):
 
 
 def test_get_component_index_returns_all_roles(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/u.safetensors")
-    _make_file(tmp_path, "image/text_encoders/c.safetensors")
-    _make_file(tmp_path, "image/vae/v.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/u.safetensors")
+    _make_file(tmp_path, "media/text_encoders/c.safetensors")
+    _make_file(tmp_path, "media/vae/v.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import get_component_index, invalidate_component_cache
     invalidate_component_cache()
@@ -439,8 +439,8 @@ def _make_file(root: Path, rel: str) -> None:
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/u-bf16.safetensors")
-    _make_file(tmp_path, "image/vae/v.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/u-bf16.safetensors")
+    _make_file(tmp_path, "media/vae/v.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import invalidate_component_cache
     invalidate_component_cache()
@@ -473,7 +473,7 @@ def test_get_components_no_role_returns_all(client):
 
 def test_post_scan_refreshes_index(client, tmp_path):
     # POST scan should re-glob; admin gate is off in tests (conftest ADMIN_PASSWORD="")
-    _make_file(tmp_path, "image/vae/v2-new.safetensors")
+    _make_file(tmp_path, "media/vae/v2-new.safetensors")
     resp = client.post("/api/v1/components/scan")
     assert resp.status_code == 200
     # After rescan, new file appears
@@ -589,7 +589,7 @@ Append to `backend/tests/test_components_routes.py`:
 ```python
 def test_lifespan_warms_component_index(tmp_path, monkeypatch):
     """On app startup, app.state.component_index should be populated."""
-    _make_file(tmp_path, "image/diffusion_models/warm-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/warm-bf16.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import invalidate_component_cache
     invalidate_component_cache()
@@ -681,7 +681,7 @@ for role, entries in idx.items():
 "
 ```
 
-Expected: lists real Flux2 files — unet should show the 6 quant variants (bf16/fp8mixed/mxfp8mixed/nvfp4mixed + GGUFs) under image/diffusion_models/ + the diffusers transformer; clip shows text_encoders; vae shows vae files. This confirms the globs match the real layout.
+Expected: lists real Flux2 files — unet should show the 6 quant variants (bf16/fp8mixed/mxfp8mixed/nvfp4mixed + GGUFs) under media/diffusion_models/ + the diffusers transformer; clip shows text_encoders; vae shows vae files. This confirms the globs match the real layout.
 
 - [ ] **Step 4: Push + PR + merge**
 

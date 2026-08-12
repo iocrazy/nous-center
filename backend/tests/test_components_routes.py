@@ -17,8 +17,8 @@ def _make_file(root: Path, rel: str) -> None:
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    _make_file(tmp_path, "image/diffusion_models/u-bf16.safetensors")
-    _make_file(tmp_path, "image/vae/v.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/u-bf16.safetensors")
+    _make_file(tmp_path, "media/vae/v.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import invalidate_component_cache
     invalidate_component_cache()
@@ -49,7 +49,7 @@ def test_get_components_no_role_returns_all(client):
 
 
 def test_post_scan_refreshes_index(client, tmp_path):
-    _make_file(tmp_path, "image/vae/v2-new.safetensors")
+    _make_file(tmp_path, "media/vae/v2-new.safetensors")
     resp = client.post("/api/v1/components/scan")
     assert resp.status_code == 200
     vae = client.get("/api/v1/components?role=vae").json()["components"]
@@ -58,7 +58,7 @@ def test_post_scan_refreshes_index(client, tmp_path):
 
 def test_lifespan_warms_component_index(tmp_path, monkeypatch):
     """On app startup, app.state.component_index should be populated."""
-    _make_file(tmp_path, "image/diffusion_models/warm-bf16.safetensors")
+    _make_file(tmp_path, "media/diffusion_models/warm-bf16.safetensors")
     monkeypatch.setattr("src.services.component_scanner._base_path", lambda: tmp_path)
     from src.services.component_scanner import invalidate_component_cache
     invalidate_component_cache()

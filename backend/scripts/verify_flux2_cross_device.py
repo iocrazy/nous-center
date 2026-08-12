@@ -24,7 +24,7 @@ from pathlib import Path
 import torch
 
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
-MODEL_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B"
+MODEL_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B"
 TRANSFORMER_DIR = MODEL_DIR / "transformer"
 TEXT_ENCODER_DIR = MODEL_DIR / "text_encoder"
 TOKENIZER_DIR = MODEL_DIR / "tokenizer"

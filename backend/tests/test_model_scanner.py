@@ -1,4 +1,4 @@
-"""V1' P1 — scanner now walks image/diffusers/<X> at depth 3 and intentionally
+"""V1' P1 — scanner now walks media/diffusers/<X> at depth 3 and intentionally
 skips the component sub-buckets (diffusion_models/, text_encoders/, vae/).
 """
 from __future__ import annotations
@@ -30,29 +30,29 @@ def _make_diffusers_dir(base, rel: str, class_name: str = "Flux2Pipeline"):
 
 
 def test_scanner_finds_diffusers_at_image_diffusers_depth3(tmp_path, monkeypatch):
-    """image/diffusers/<X>/ with model_index.json must be auto-detected."""
-    _make_diffusers_dir(tmp_path, "image/diffusers/Flux2-klein-9B")
-    _make_diffusers_dir(tmp_path, "image/diffusers/ERNIE-Image", "ErnieImagePipeline")
+    """media/diffusers/<X>/ with model_index.json must be auto-detected."""
+    _make_diffusers_dir(tmp_path, "media/diffusers/Flux2-klein-9B")
+    _make_diffusers_dir(tmp_path, "media/diffusers/ERNIE-Image", "ErnieImagePipeline")
     _stub_settings_to(tmp_path, monkeypatch)
 
     from src.services.model_scanner import scan_models
     found = scan_models()
 
     paths = {v["local_path"]: v["type"] for v in found.values()}
-    assert paths.get("image/diffusers/Flux2-klein-9B") == "image"
-    assert paths.get("image/diffusers/ERNIE-Image") == "image"
+    assert paths.get("media/diffusers/Flux2-klein-9B") == "image"
+    assert paths.get("media/diffusers/ERNIE-Image") == "image"
 
 
 def test_scanner_skips_image_component_subdirs(tmp_path, monkeypatch):
     """diffusion_models/, text_encoders/, vae/ hold single-file components,
     not models. They must NOT surface as auto-detected entries even though
     they contain .safetensors files."""
-    (tmp_path / "image" / "diffusion_models").mkdir(parents=True)
-    (tmp_path / "image" / "diffusion_models" / "Flux2-Klein-9B-True-v2-fp8mixed.safetensors").write_bytes(b"x")
-    (tmp_path / "image" / "text_encoders").mkdir(parents=True)
-    (tmp_path / "image" / "text_encoders" / "qwen3-8b.safetensors").write_bytes(b"x")
-    (tmp_path / "image" / "vae").mkdir(parents=True)
-    (tmp_path / "image" / "vae" / "flux2-vae.safetensors").write_bytes(b"x")
+    (tmp_path / "media" / "diffusion_models").mkdir(parents=True)
+    (tmp_path / "media" / "diffusion_models" / "Flux2-Klein-9B-True-v2-fp8mixed.safetensors").write_bytes(b"x")
+    (tmp_path / "media" / "text_encoders").mkdir(parents=True)
+    (tmp_path / "media" / "text_encoders" / "qwen3-8b.safetensors").write_bytes(b"x")
+    (tmp_path / "media" / "vae").mkdir(parents=True)
+    (tmp_path / "media" / "vae" / "flux2-vae.safetensors").write_bytes(b"x")
     _stub_settings_to(tmp_path, monkeypatch)
 
     from src.services.model_scanner import scan_models
@@ -60,9 +60,9 @@ def test_scanner_skips_image_component_subdirs(tmp_path, monkeypatch):
 
     for v in found.values():
         lp = v.get("local_path", "")
-        assert not lp.startswith("image/diffusion_models/"), lp
-        assert not lp.startswith("image/text_encoders/"), lp
-        assert not lp.startswith("image/vae/"), lp
+        assert not lp.startswith("media/diffusion_models/"), lp
+        assert not lp.startswith("media/text_encoders/"), lp
+        assert not lp.startswith("media/vae/"), lp
 
 
 def test_scanner_keeps_llm_depth_2(tmp_path, monkeypatch):
@@ -84,7 +84,7 @@ def test_scanner_ignores_non_diffusers_image_subdirs(tmp_path, monkeypatch):
     """A novel image/<foo>/ subdir (not in the known set) is ignored rather
     than treated as a model. Adding a new bucket without updating the
     allowlist should be a deliberate change, not a silent surface."""
-    weird = tmp_path / "image" / "random_other_bucket"
+    weird = tmp_path / "media" / "random_other_bucket"
     weird.mkdir(parents=True)
     (weird / "noise.safetensors").write_bytes(b"x")
     _stub_settings_to(tmp_path, monkeypatch)
@@ -109,7 +109,7 @@ async def test_api_v1_models_endpoint_returns_scanner_output(client, monkeypatch
 
     fake = {
         "b-model": {"name": "b", "type": "llm", "local_path": "llm/b"},
-        "a-model": {"name": "a", "type": "image", "local_path": "image/diffusers/a"},
+        "a-model": {"name": "a", "type": "image", "local_path": "media/diffusers/a"},
     }
     monkeypatch.setattr(models_route, "scan_models", lambda: fake)
 

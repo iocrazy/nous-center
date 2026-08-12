@@ -45,7 +45,7 @@
   diffusers `Flux2Transformer2DModel.from_single_file` 也能传 `config=` 指向 bundle。
 - [ ] `model_manager._modular_repo_from_components` 简化:全单文件 → 返回内置 config 目录;
   HF-layout 整模型 → 原参考库逻辑。
-- [ ] **真模型验**:把 `image/diffusers/Flux2-klein-9B` 临时改名,确认 True-v2 单文件仍能出图
+- [ ] **真模型验**:把 `media/diffusers/Flux2-klein-9B` 临时改名,确认 True-v2 单文件仍能出图
   (证明真砍掉了参考库依赖)。
 - [ ] 单元 + ruff + tsc。
 

@@ -16,7 +16,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 import torch
 from diffusers import ZImagePipeline
 
-REPO = os.environ.get("SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/image/diffusers/Z-Image-Turbo")
+REPO = os.environ.get("SMOKE_ZIMAGE", "/media/heygo/Program/models/nous/media/diffusers/Z-Image-Turbo")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 PROMPT = "a red fox in autumn leaves"
 

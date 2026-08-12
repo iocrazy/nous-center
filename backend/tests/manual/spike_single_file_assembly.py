@@ -24,7 +24,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")  # cuda:1=Pro6000
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-IMG = "/media/heygo/Program/models/nous/image"
+IMG = "/media/heygo/Program/models/nous/media"
 REPO = f"{IMG}/diffusers/Flux2-klein-9B"          # 架构参考整模型(config/scheduler/tokenizer)
 UNET = f"{IMG}/diffusion_models/flux/Flux2-Klein-9B-True-v2-bf16.safetensors"  # 单文件 transformer
 CLIP = f"{IMG}/text_encoders/qwen_3_8b_fp8mixed.safetensors"                   # 单文件 clip(comfy fp8)

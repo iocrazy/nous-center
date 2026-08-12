@@ -42,9 +42,9 @@ def test_repo_derives_from_clip_when_unet_is_comfy_single_file(tmp_path):
 
 def test_single_file_flux2_uses_bundled_config(tmp_path, monkeypatch):
     """**PR-B**:flux2 全单文件 → 仓内 bundled config(backend/configs/image_arch/flux2/),
-    **不再**依赖 LOCAL_MODELS_PATH/image/diffusers/Flux2-klein-9B 参考整模型(18GB)。"""
+    **不再**依赖 LOCAL_MODELS_PATH/media/diffusers/Flux2-klein-9B 参考整模型(18GB)。"""
     from unittest.mock import MagicMock
-    d = tmp_path / "image" / "diffusion_models" / "flux"
+    d = tmp_path / "media" / "diffusion_models" / "flux"
     d.mkdir(parents=True)
     f = d / "Flux2-Klein-9B-True-v2-fp8mixed.safetensors"
     f.write_text("x")
@@ -60,14 +60,14 @@ def test_single_file_flux2_uses_bundled_config(tmp_path, monkeypatch):
 
 
 def test_single_file_unknown_arch_falls_back_to_local_diffusers(tmp_path, monkeypatch):
-    """未知架构(无 bundle)→ fallback 扫 LOCAL_MODELS_PATH/image/diffusers/ 找匹配整模型。
+    """未知架构(无 bundle)→ fallback 扫 LOCAL_MODELS_PATH/media/diffusers/ 找匹配整模型。
     向后兼容老用户。"""
     from unittest.mock import MagicMock
-    d = tmp_path / "image" / "diffusion_models"
+    d = tmp_path / "media" / "diffusion_models"
     d.mkdir(parents=True)
     f = d / "ernie.safetensors"
     f.write_text("x")
-    ref = tmp_path / "image" / "diffusers" / "ERNIE-Image"
+    ref = tmp_path / "media" / "diffusers" / "ERNIE-Image"
     ref.mkdir(parents=True)
     (ref / "model_index.json").write_text('{"_class_name": "ErnieImagePipeline"}')
     settings = MagicMock()
@@ -82,7 +82,7 @@ def test_single_file_unknown_arch_falls_back_to_local_diffusers(tmp_path, monkey
 def test_single_file_unknown_arch_no_bundle_no_local_raises(tmp_path, monkeypatch):
     """未知架构 + 无 bundle + 无 LOCAL_MODELS_PATH 参考 → 清晰报错。"""
     from unittest.mock import MagicMock
-    d = tmp_path / "image" / "diffusion_models"
+    d = tmp_path / "media" / "diffusion_models"
     d.mkdir(parents=True)
     f = d / "x.safetensors"
     f.write_text("x")

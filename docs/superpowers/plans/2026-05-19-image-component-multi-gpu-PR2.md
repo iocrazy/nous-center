@@ -805,7 +805,7 @@ Open `backend/src/services/inference/image_diffusers.py`. Add **inside the `Diff
             parent_dir = Path(spec.file).parent
             try:
                 # Try the "diffusers HF layout" path first — works for plain bf16
-                # safetensors in image/diffusers/<MODEL>/<component>/
+                # safetensors in media/diffusers/<MODEL>/<component>/
                 module = hf_class.from_pretrained(parent_dir, torch_dtype=_torch_dtype_from(spec.dtype))
             except Exception:
                 # Fall back to quant_loaders path — dequant'd state_dict + load
@@ -957,7 +957,7 @@ from pathlib import Path
 import pytest
 
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
-FLUX2_KLEIN_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B"
+FLUX2_KLEIN_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B"
 
 skip_reason = "real Flux2-Klein-9B model required + GPU; gated by NOUS_SSIM_TEST=1"
 pytestmark = pytest.mark.skipif(
@@ -1123,7 +1123,7 @@ from src.services.inference.component_spec import ComponentSpec
 from src.services.inference.image_diffusers import DiffusersImageBackend
 
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
-FLUX2_KLEIN_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B"
+FLUX2_KLEIN_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B"
 
 
 async def main() -> int:
@@ -1212,7 +1212,7 @@ from src.services.inference.component_spec import ComponentSpec
 from src.services.inference.image_diffusers import DiffusersImageBackend
 from src.services.inference.image_sampler import SamplerCancelled
 
-FLUX2_KLEIN_DIR = Path("/media/heygo/Program/models/nous/image/diffusers/Flux2-klein-9B")
+FLUX2_KLEIN_DIR = Path("/media/heygo/Program/models/nous/media/diffusers/Flux2-klein-9B")
 
 
 async def main() -> int:

@@ -21,7 +21,7 @@ from pathlib import Path
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-ANIMA_WEIGHTS = "/media/heygo/Program/models/nous/image/diffusion_models/anima/anima-base-v1.0.safetensors"
+ANIMA_WEIGHTS = "/media/heygo/Program/models/nous/media/diffusion_models/anima/anima-base-v1.0.safetensors"
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 
 

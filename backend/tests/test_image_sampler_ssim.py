@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 MODELS_ROOT = Path("/media/heygo/Program/models/nous")
-FLUX2_KLEIN_DIR = MODELS_ROOT / "image/diffusers/Flux2-klein-9B"
+FLUX2_KLEIN_DIR = MODELS_ROOT / "media/diffusers/Flux2-klein-9B"
 
 skip_reason = "real Flux2-Klein-9B model required + GPU; gated by NOUS_SSIM_TEST=1"
 pytestmark = pytest.mark.skipif(

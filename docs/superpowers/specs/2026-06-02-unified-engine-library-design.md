@@ -10,9 +10,9 @@ loaded 状态叠加(`mgr._models.get(name)`,engines.py:59/68,**按 registry name
 
 | 目录源 | 内容 | 在引擎库? | 现在怎么管 |
 |---|---|---|---|
-| **registry + 自动发现** | models.yaml(LLM/TTS/VL)+ `scan_models` 自动测 `image/diffusers/<整模型>`(model_index.json)+ LLM config.json | ✅ | 引擎库(idle/loaded/on-demand/resident/GPU) |
+| **registry + 自动发现** | models.yaml(LLM/TTS/VL)+ `scan_models` 自动测 `media/diffusers/<整模型>`(model_index.json)+ LLM config.json | ✅ | 引擎库(idle/loaded/on-demand/resident/GPU) |
 | **单文件组件** | `image/{diffusion_models,text_encoders,vae}/*.safetensors` + LoRA | ❌ | 仅节点下拉(component_scanner;model_scanner.py:17 `_IMAGE_COMPONENT_SUBDIRS` **显式 skip**) |
-| **by-key** | SeedVR2(`image/SEEDVR2`,get_or_load_seedvr2_adapter,id=`image:SeedVR2:<hash>`)、anima | ❌ | 仅工作流加载;加载后进 `_models`+`loaded_models_snapshot`(Dashboard #281 聚合能看,引擎库按 name 匹配不上 hash id → 不列) |
+| **by-key** | SeedVR2(`media/SEEDVR2`,get_or_load_seedvr2_adapter,id=`image:SeedVR2:<hash>`)、anima | ❌ | 仅工作流加载;加载后进 `_models`+`loaded_models_snapshot`(Dashboard #281 聚合能看,引擎库按 name 匹配不上 hash id → 不列) |
 
 → 用户痛点:SeedVR2/组件/LoRA **空闲时引擎库完全不可见**,无法统一看「是否常驻显存 / 是否已加载 / 在哪张卡」。
 

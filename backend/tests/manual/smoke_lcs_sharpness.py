@@ -4,7 +4,7 @@
   ① interventions=[lcs_sharpness strength=2] → 出图比基线**更锐**(Laplacian 方差↑)+ 与基线不同 + 有效。
   ② strength=0 → edit_vec=0 → 出图 **byte-identical** 基线(零回归)。
   ③ strength=2 复现一致(确定性 + 标定缓存命中)。
-标定(正弦光栅 PCA,~448 VAE encode)首次跑、缓存到 image/lcs_cache/sharpness_<vae指纹>.safetensors。
+标定(正弦光栅 PCA,~448 VAE encode)首次跑、缓存到 media/lcs_cache/sharpness_<vae指纹>.safetensors。
 
 改 image_modular.py 必另跑 smoke_image_ab.py + smoke_zimage_split.py。
 用法:cd backend && SMOKE_DEVICE=cuda:1 uv run python tests/manual/smoke_lcs_sharpness.py
@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-ROOT = "/media/heygo/Program/models/nous/image"
+ROOT = "/media/heygo/Program/models/nous/media"
 DEV = os.environ.get("SMOKE_DEVICE", "cuda:1")
 UNET = f"{ROOT}/diffusion_models/z_image_turbo_bf16.safetensors"
 ENC = f"{ROOT}/text_encoders/qwen_3_4b.safetensors"

@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 REPO = os.environ.get(
-    "SMOKE_QWEN", "/media/heygo/Program/models/nous/image/diffusers/Qwen-Image-Edit-2511")
+    "SMOKE_QWEN", "/media/heygo/Program/models/nous/media/diffusers/Qwen-Image-Edit-2511")
 DEVICE = os.environ.get("SMOKE_DEVICE", "cuda:1")
 # 输入图:默认用 flux2 edit smoke 的基底狐狸图(若存在),否则需传 SMOKE_INPUT。
 _DEF_IN = Path(__file__).parent / "_smoke_out" / "smoke_flux2_edit_base.png"

@@ -15,7 +15,7 @@ def _stub_roots(tmp_path, monkeypatch, lora_root=None):
 
     settings = MagicMock()
     settings.LOCAL_MODELS_PATH = str(tmp_path)
-    settings.LORA_PATHS = str(lora_root) if lora_root else str(tmp_path / "image" / "loras")
+    settings.LORA_PATHS = str(lora_root) if lora_root else str(tmp_path / "media" / "loras")
     monkeypatch.setattr(mod, "get_settings", lambda: settings)
     return settings
 
@@ -50,8 +50,8 @@ def test_resolve_registry_model_points_at_local_path_dir(tmp_path, monkeypatch):
 
 
 def test_resolve_seedvr2_points_at_single_dit_file(tmp_path, monkeypatch):
-    """seedvr2:<filename> → image/SEEDVR2/<filename> 单文件。"""
-    d = tmp_path / "image/SEEDVR2"
+    """seedvr2:<filename> → media/SEEDVR2/<filename> 单文件。"""
+    d = tmp_path / "media/SEEDVR2"
     d.mkdir(parents=True)
     (d / "seedvr2_ema_7b_fp8.safetensors").write_bytes(b"x" * 512)
     _stub_roots(tmp_path, monkeypatch)
@@ -68,7 +68,7 @@ def test_resolve_seedvr2_points_at_single_dit_file(tmp_path, monkeypatch):
 
 def test_resolve_component_uses_abs_path_from_name(tmp_path, monkeypatch):
     """component:<role>:<abs_path> → 该 abs_path 单文件;role=loras 归 kind=lora。"""
-    d = tmp_path / "image/loras"
+    d = tmp_path / "media/loras"
     d.mkdir(parents=True)
     f = d / "some-lora.safetensors"
     f.write_bytes(b"x" * 256)
@@ -148,13 +148,13 @@ def test_safe_target_rejects_models_root_itself(tmp_path, monkeypatch):
 
 def test_safe_target_rejects_type_dir_at_depth_one(tmp_path, monkeypatch):
     """不许删 image/ llm/ speech/ 这类类型目录 —— 相对深度必须 >= 2。"""
-    (tmp_path / "image").mkdir()
+    (tmp_path / "media").mkdir()
     _stub_roots(tmp_path, monkeypatch)
 
     from src.services.model_deleter import DeleteError, Target, assert_safe_target
 
     with pytest.raises(DeleteError) as exc:
-        assert_safe_target(Target("x", "model", tmp_path / "image", True))
+        assert_safe_target(Target("x", "model", tmp_path / "media", True))
 
     assert exc.value.status_code == 400
 
@@ -209,7 +209,7 @@ def test_delete_disk_removes_model_dir_and_reports_freed_bytes(tmp_path, monkeyp
 
 
 def test_delete_disk_removes_single_file(tmp_path, monkeypatch):
-    d = tmp_path / "image/SEEDVR2"
+    d = tmp_path / "media/SEEDVR2"
     d.mkdir(parents=True)
     f = d / "dit.safetensors"
     f.write_bytes(b"x" * 700)
@@ -694,7 +694,7 @@ async def test_delete_single_component_file_skips_registry_cleanup(
 ):
     """组件/LoRA 没有 engine key —— 只删文件 + 清缓存,不碰 models.d / DB。"""
     client, models_root, _md, *_ = delete_client
-    d = models_root / "image" / "vae"
+    d = models_root / "media" / "vae"
     d.mkdir(parents=True)
     f = d / "ae.safetensors"
     f.write_bytes(b"x" * 128)
