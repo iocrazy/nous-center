@@ -20,7 +20,9 @@ export interface ModelRefIssue {
 export interface ModelRefFix {
   nodeId: string
   inputName: string
-  value: string
+  /** 要写入的**新**值。刻意不叫 `value` —— `ModelRefIssue.value` 是那个**坏**值,
+   *  两者同名反义会让人把坏值原样传回来(实机验证时真踩过一次)。 */
+  newValue: string
 }
 
 /** 一个 combo/enum 输入的声明形如 `[optionsArray, {…}?]` ——第一个元素是数组本身即取值表
@@ -128,7 +130,7 @@ export function applyModelFixes(workflow: ComfyWorkflow, fixes: ModelRefFix[]): 
   for (const fix of fixes) {
     const node = next[fix.nodeId]
     if (!node) continue
-    node.inputs = { ...node.inputs, [fix.inputName]: fix.value }
+    node.inputs = { ...node.inputs, [fix.inputName]: fix.newValue }
   }
   return next
 }

@@ -127,7 +127,7 @@ describe('applyModelFixes', () => {
   it('按 fixes 替换字段值,返回新对象,不改入参', () => {
     const wf = incidentWorkflow()
     const issues = findInvalidModelRefs(wf, OBJECT_INFO)
-    const fixes = issues.map((i) => ({ nodeId: i.nodeId, inputName: i.inputName, value: i.suggestion! }))
+    const fixes = issues.map((i) => ({ nodeId: i.nodeId, inputName: i.inputName, newValue: i.suggestion! }))
     const fixed = applyModelFixes(wf, fixes)
 
     expect(fixed).not.toBe(wf)
@@ -142,7 +142,7 @@ describe('applyModelFixes', () => {
 
   it('引用不存在的 nodeId 静默跳过,不抛异常', () => {
     const wf: ComfyWorkflow = { '1': { class_type: 'VAELoader', inputs: { vae_name: 'x' } } }
-    const fixed = applyModelFixes(wf, [{ nodeId: '999', inputName: 'vae_name', value: 'y' }])
+    const fixed = applyModelFixes(wf, [{ nodeId: '999', inputName: 'vae_name', newValue: 'y' }])
     expect(fixed).toEqual(wf)
   })
 })

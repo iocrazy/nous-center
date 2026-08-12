@@ -178,8 +178,8 @@ export default function ImportComfyDialog({ open, onClose, onImported }: ImportC
     const wf = workflow ?? (await parseRef.current)
     if (!wf) return
     const fixes: ModelRefFix[] = modelIssues
-      .map((iss) => ({ nodeId: iss.nodeId, inputName: iss.inputName, value: choices[issueKey(iss)] }))
-      .filter((f): f is ModelRefFix => !!f.value)
+      .map((iss) => ({ nodeId: iss.nodeId, inputName: iss.inputName, newValue: choices[issueKey(iss)] }))
+      .filter((f): f is ModelRefFix => !!f.newValue)
     await doImport(applyModelFixes(wf, fixes))
   }
 
