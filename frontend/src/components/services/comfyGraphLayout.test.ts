@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { layoutComfyGraph, isComfyNodeRef } from './comfyGraphLayout'
+import { layoutComfyGraph, isComfyNodeRef, COL_WIDTH, ROW_HEIGHT } from './comfyGraphLayout'
 
 const WF = {
   '1': { class_type: 'LoadImage', inputs: { image: 'a.png' } },
@@ -17,12 +17,12 @@ describe('layoutComfyGraph', () => {
     expect(edges).toContainEqual({ source: '2', target: '3' })
   })
 
-  it('x = 深度 * 220, y = 列内序 * 64', () => {
+  it('x = 深度 * COL_WIDTH, y = 列内序 * ROW_HEIGHT', () => {
     const { nodes } = layoutComfyGraph(WF)
     const byId = Object.fromEntries(nodes.map((n) => [n.id, n]))
     expect(byId['1']).toMatchObject({ x: 0, y: 0 })
-    expect(byId['2']).toMatchObject({ x: 220, y: 0 })
-    expect(byId['3']).toMatchObject({ x: 440, y: 0 })
+    expect(byId['2']).toMatchObject({ x: COL_WIDTH, y: 0 })
+    expect(byId['3']).toMatchObject({ x: COL_WIDTH * 2, y: 0 })
   })
 
   it('同列多节点按序排 y', () => {
@@ -32,7 +32,7 @@ describe('layoutComfyGraph', () => {
     }
     const { nodes } = layoutComfyGraph(wf)
     const ys = nodes.map((n) => n.y).sort((x, y) => x - y)
-    expect(ys).toEqual([0, 64])
+    expect(ys).toEqual([0, ROW_HEIGHT])
   })
 
   it('每个节点带 class_type,usedCount 默认 0(由调用方回填)', () => {

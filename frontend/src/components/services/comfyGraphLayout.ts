@@ -1,8 +1,14 @@
 // 通用 ComfyUI 工作流(API 格式)→ React Flow 布局(Task 9,spec §「读图选节点配置」)。
 // 纯逻辑,不碰 React/xyflow —— 渲染层在 ComfyTemplateGraph.tsx。
-// 布局:按拓扑深度分列(x=深度×220),同列内按序排(y=序×64)。边 = inputs 里形如
-// [nodeId, slot] 的引用值(ComfyUI API 格式的连线表示)。usedCount 这里恒为 0,由调用方
-// (ComfyTemplateEditor,按 exposedParams 里 comfy_node_id 计数)回填,布局本身不关心暴露态。
+// 布局:按拓扑深度分列(x=深度×COL_WIDTH),同列内按序排(y=序×ROW_HEIGHT)。边 = inputs
+// 里形如 [nodeId, slot] 的引用值(ComfyUI API 格式的连线表示)。usedCount 这里恒为 0,由
+// 调用方(ComfyTemplateEditor,按 exposedParams 里 comfy_node_id 计数)回填,布局本身不
+// 关心暴露态。
+//
+// 间距对齐 Infinite-Canvas 参考实现(static/js/comfyui-settings.js renderGraph,
+// NODE_W/X_GAP/NODE_H/Y_GAP)的比例(gap ≈ 节点尺寸的 ~28%),按我们卡片实际宽/高
+// (ComfyTemplateGraph.tsx 卡片宽 190、两行内容高约 60)换算 —— 旧的 220/64 几乎不留
+// 缝隙,图挤成一团(用户反馈「太乱」的一部分原因),这里放宽出可读的行列间距。
 
 export interface ComfyWorkflowNode {
   class_type: string
@@ -24,8 +30,8 @@ export interface ComfyLayoutEdge {
   target: string
 }
 
-const COL_WIDTH = 220
-const ROW_HEIGHT = 64
+export const COL_WIDTH = 250
+export const ROW_HEIGHT = 80
 
 /** ComfyUI API 格式里,一个节点引用另一个节点输出的值形如 `[nodeId, slotIndex]`
  *  (nodeId 是字符串、且必须在同一工作流的节点表里,slotIndex 是数字)——用来把它跟
