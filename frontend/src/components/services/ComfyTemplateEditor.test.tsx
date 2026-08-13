@@ -100,13 +100,14 @@ describe('ComfyTemplateEditor', () => {
     expect(screen.queryByText('pixels')).not.toBeInTheDocument()
   })
 
-  it('弹窗内勾选暴露 → 汇总表出现该行', async () => {
+  it('弹窗内勾选暴露 → 左侧画布预览出现该控件', async () => {
     renderEditor({ templateId: '7' })
     fireEvent.click(await screen.findByText('KSampler #2'))
     const stepsRow = (await screen.findByText('steps')).closest('[data-input-row]') as HTMLElement
     fireEvent.click(within(stepsRow).getByRole('checkbox', { name: /暴露/ }))
-    await screen.findByTestId('exposed-summary-table')
-    expect(screen.getByTestId('exposed-row-steps')).toBeInTheDocument()
+    // 汇总表已删(与预览面板重复):勾选后字段直接出现在左侧预览里
+    const preview = await screen.findByTestId('canvas-preview-panel')
+    await waitFor(() => expect(within(preview).getByText('steps')).toBeInTheDocument())
   })
 
   it('object_info 预填数值类型 min/max(未勾选也先展示,勾选后才可编辑)', async () => {
@@ -181,29 +182,29 @@ describe('ComfyTemplateEditor', () => {
     expect(await screen.findByText(/离线/)).toBeInTheDocument()
   })
 
-  it('已保存的 exposed_params 回显进汇总表', async () => {
+  it('已保存的 exposed_params 回显进左侧画布预览', async () => {
     vi.mocked(api.getComfyTemplate).mockResolvedValue(baseDetail([
       { key: 'steps', label: '步数', type: 'integer', comfy_node_id: '2', comfy_input: 'steps', min: 1, max: 150 },
     ]))
     renderEditor({ templateId: '7' })
-    await screen.findByTestId('exposed-summary-table')
-    expect(screen.getByTestId('exposed-row-steps')).toBeInTheDocument()
+    const preview = await screen.findByTestId('canvas-preview-panel')
+    await waitFor(() => expect(within(preview).getByText('步数')).toBeInTheDocument())
   })
 
-  it('上传替换:重新上传工作流后高亮 stale_keys', async () => {
+  it('上传替换:重新上传后失效字段在上传区列出(汇总表删了,这条可见性不能一起丢)', async () => {
     vi.mocked(api.getComfyTemplate).mockResolvedValue(baseDetail([
       { key: 'gone', label: 'gone', type: 'string', comfy_node_id: '99', comfy_input: 'x' },
     ]))
     vi.mocked(api.reuploadComfyTemplate).mockResolvedValue({ stale_keys: ['gone'] })
     renderEditor({ templateId: '7' })
-    await screen.findByTestId('exposed-summary-table')
-    expect(screen.getByTestId('exposed-row-gone')).toHaveAttribute('data-stale', 'false')
+    await screen.findByTestId('comfy-reupload-input')
+    expect(screen.queryByTestId('stale-keys-warning')).not.toBeInTheDocument()
 
     const file = new File([JSON.stringify(WORKFLOW)], 'wf.json', { type: 'application/json' })
     fireEvent.change(screen.getByTestId('comfy-reupload-input'), { target: { files: [file] } })
     await waitFor(() => expect(api.reuploadComfyTemplate).toHaveBeenCalledWith('7', WORKFLOW))
     await waitFor(() => {
-      expect(screen.getByTestId('exposed-row-gone')).toHaveAttribute('data-stale', 'true')
+      expect(screen.getByTestId('stale-keys-warning')).toHaveTextContent('gone')
     })
   })
 

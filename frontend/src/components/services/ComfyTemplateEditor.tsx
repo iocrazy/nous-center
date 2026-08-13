@@ -249,11 +249,6 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
     setSaved(false)
   }
 
-  const removeExposed = (key: string) => {
-    setExposedParams((prev) => prev.filter((p) => p.key !== key))
-    setSaved(false)
-  }
-
   const handleNodeClick = (nodeId: string, nodeEl: HTMLElement) => {
     setActiveNodeId(nodeId)
     setActiveNodeEl(nodeEl)
@@ -347,7 +342,7 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <SidecarStatusLine health={health} />
-      <ReuploadZone onFile={handleReuploadFile} error={uploadError} />
+      <ReuploadZone onFile={handleReuploadFile} error={uploadError} staleKeys={staleKeys} />
 
       <div
         style={{
@@ -406,7 +401,6 @@ export default function ComfyTemplateEditor({ templateId, serviceId }: ComfyTemp
         </div>
       </div>
 
-      <ExposedSummaryTable params={exposedParams} staleKeys={staleKeys} onRemove={removeExposed} />
     </div>
   )
 }
@@ -450,7 +444,13 @@ function Dot({ color }: { color: string }) {
 
 // ---------- reupload zone ----------
 
-function ReuploadZone({ onFile, error }: { onFile: (f: File) => void; error: string | null }) {
+function ReuploadZone({ onFile, error, staleKeys }: {
+  onFile: (f: File) => void
+  error: string | null
+  /** 重新上传后 comfy_node_id/comfy_input 已不存在的字段 key —— 汇总表删掉后,
+   *  这条可见性挪到这里,否则用户不知道哪些映射被新 JSON 打断了。 */
+  staleKeys: string[]
+}) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <label style={dropZoneStyle}>
@@ -471,6 +471,12 @@ function ReuploadZone({ onFile, error }: { onFile: (f: File) => void; error: str
         />
       </label>
       {error && <div style={{ fontSize: 11, color: 'var(--error, #ef4444)' }}>{error}</div>}
+      {staleKeys.length > 0 && (
+        <div data-testid="stale-keys-warning" style={{ fontSize: 11, color: 'var(--error, #ef4444)' }}>
+          {staleKeys.length} 个字段的节点映射已失效(新 JSON 里找不到对应节点/输入):
+          {' '}{staleKeys.join('、')} —— 请在节点卡上重新勾选或取消暴露
+        </div>
+      )}
     </div>
   )
 }
@@ -716,7 +722,7 @@ function CanvasPreviewPanel({ exposedParams }: { exposedParams: ExposedParamDraf
   }, [schemaParams])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div data-testid="canvas-preview-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
         <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>画布节点预览 · 实时</div>
         <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
@@ -748,78 +754,6 @@ function CanvasPreviewPanel({ exposedParams }: { exposedParams: ExposedParamDraf
   )
 }
 
-// ---------- summary table ----------
-
-function ExposedSummaryTable({
-  params, staleKeys, onRemove,
-}: {
-  params: ExposedParamDraft[]
-  staleKeys: string[]
-  onRemove: (key: string) => void
-}) {
-  const staleSet = useMemo(() => new Set(staleKeys), [staleKeys])
-  if (params.length === 0) {
-    return (
-      <div style={{
-        fontSize: 12, color: 'var(--muted)', padding: '10px 14px',
-        border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg-accent)',
-      }}>
-        暂无暴露字段 — 在上方节点图点节点卡配置
-      </div>
-    )
-  }
-  return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', background: 'var(--bg-accent)' }}>
-      <table data-testid="exposed-summary-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-        <thead>
-          <tr style={{ color: 'var(--muted)', fontSize: 11, textAlign: 'left' }}>
-            <th style={th}>key</th>
-            <th style={th}>显示名</th>
-            <th style={th}>type</th>
-            <th style={th}>节点</th>
-            <th style={th}>输入</th>
-            <th style={th} />
-          </tr>
-        </thead>
-        <tbody>
-          {params.map((p) => {
-            const stale = staleSet.has(p.key)
-            return (
-              <tr
-                key={p.key}
-                data-testid={`exposed-row-${p.key}`}
-                data-stale={stale ? 'true' : 'false'}
-                style={{
-                  borderTop: '1px solid var(--border)',
-                  background: stale ? 'rgba(239,68,68,0.1)' : undefined,
-                }}
-              >
-                <td style={td}><code style={{ fontFamily: 'var(--mono, monospace)' }}>{p.key}</code></td>
-                <td style={{ ...td, color: 'var(--muted)' }}>{p.label || '—'}</td>
-                <td style={td}>{p.type}</td>
-                <td style={td}><code style={{ fontFamily: 'var(--mono, monospace)', fontSize: 11 }}>{p.comfy_node_id}</code></td>
-                <td style={td}><code style={{ fontFamily: 'var(--mono, monospace)', fontSize: 11 }}>{p.comfy_input}</code></td>
-                <td style={td}>
-                  <button
-                    type="button" onClick={() => onRemove(p.key)} title="移除暴露"
-                    style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 2 }}
-                  >
-                    <X size={12} />
-                  </button>
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-      {staleKeys.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--error, #ef4444)', padding: '6px 12px', borderTop: '1px solid var(--border)' }}>
-          重新上传后 {staleKeys.length} 个字段指向的节点/输入已不存在(标红行)— 修正或移除后再保存
-        </div>
-      )}
-    </div>
-  )
-}
 
 // ---------- shared bits ----------
 
@@ -835,9 +769,6 @@ const dropZoneStyle: React.CSSProperties = {
   border: '1px dashed var(--border)', borderRadius: 8,
   padding: '10px 12px', fontSize: 12, cursor: 'pointer',
 }
-
-const th = { padding: '6px 10px', fontWeight: 500 } as const
-const td = { padding: '6px 10px', color: 'var(--text)' } as const
 
 function saveBtnStyle(saving: boolean): React.CSSProperties {
   return {
