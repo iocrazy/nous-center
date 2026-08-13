@@ -10,7 +10,7 @@
 // 它上面)透传给上层,ComfyTemplateEditor 拿它的 getBoundingClientRect() 算弹窗贴靠位置
 // (popoverPlacement.ts),不用另外查 DOM。
 import { memo, useMemo } from 'react'
-import { ReactFlow, Background, Controls, type Edge, type Node, type NodeMouseHandler } from '@xyflow/react'
+import { ReactFlow, Background, Controls, Handle, Position, type Edge, type Node, type NodeMouseHandler } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { ComfyLayoutEdge, ComfyLayoutNode } from './comfyGraphLayout'
 
@@ -30,6 +30,20 @@ interface ComfyCardData {
    *  workflowModelCheck.ts)——多半是导入了别的机器冻结下来的模型文件名/路径。 */
   invalidModel?: boolean
   [key: string]: unknown
+}
+
+// 连接点。xyflow 的边是「从 source 节点的 source handle 连到 target 节点的 target
+// handle」——自定义节点里没有 <Handle>,整条边就在渲染前被丢掉(控制台 error#008
+// "Couldn't create edge for source handle id: null"),DOM 里连 .react-flow__edge-path
+// 都不会有。之前三轮「连线看不见」全部是这个原因,不是配色问题(配色只是次要问题,
+// 一并在 --graph-edge 里修了)。
+// 视觉上把 handle 本身藏掉(1px 透明):布局是按拓扑深度从左到右分列的,边从卡片
+// 左/右缘中点出入即可,不需要再画端口圆点跟卡片抢注意力。两个 handle 恒定渲染
+// (不按有无连线条件渲染)—— handle 的增删要配合 useUpdateNodeInternals 才能让
+// xyflow 重新量位置,恒定渲染就没这个坑。
+const HANDLE_STYLE = {
+  width: 1, height: 1, minWidth: 1, minHeight: 1,
+  background: 'transparent', border: 'none', opacity: 0, pointerEvents: 'none' as const,
 }
 
 function ComfyNodeCardImpl({ data }: { data: ComfyCardData }) {
@@ -56,6 +70,8 @@ function ComfyNodeCardImpl({ data }: { data: ComfyCardData }) {
         cursor: 'pointer',
       }}
     >
+      <Handle type="target" position={Position.Left} isConnectable={false} style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Right} isConnectable={false} style={HANDLE_STYLE} />
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px',
         background: 'var(--card-hl)', borderRadius: 'var(--node-radius, 14px) var(--node-radius, 14px) 0 0',
@@ -128,20 +144,29 @@ export default function ComfyTemplateGraph({ nodes, edges, activeNodeId, onNodeC
     [nodes, activeNodeId],
   )
 
-  const rfEdges = useMemo<Edge[]>(
-    () =>
-      edges.map((e, i) => ({
-        id: `e${i}-${e.source}-${e.target}`,
+  const rfEdges = useMemo<Edge[]>(() => {
+    // 同一对节点之间常有多条边(如 CheckpointLoader 同时喂 model 和 clip 给
+    // LoraLoader)。我们的卡片只有一进一出两个 handle,这些边会算出完全重合的路径,
+    // 叠加描边只会让那几根线莫名比别人粗/深。按 source→target 去重。
+    const seen = new Set<string>()
+    const out: Edge[] = []
+    for (const e of edges) {
+      const key = `${e.source}->${e.target}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({
+        id: `e-${e.source}-${e.target}`,
         source: e.source,
         target: e.target,
-        // 边色试过 --border(几乎不可见)→ --border-strong(亮色主题下是 #d4d4d8,
-        // 白底画布上还是看不见,用户第二次反馈)。--muted 两个主题同值 #71717a,
-        // 白底/黑底都拉得开对比;opacity .65 让它是"能看清的背景连线"而不是抢戏。
+        // 颜色走主题 token --graph-edge(theme.css 里按对比度挑的,亮/暗各一套)。
+        // 别再换回 --border / --border-strong / --muted —— 那三个都试过,总有一个
+        // 主题下是隐形的。stroke-linecap: round 让密集交叉的曲线端点不出方角。
         // 边渲染层在 xyflow DOM 里先于节点层,天然在节点后面,不用 z-index。
-        style: { stroke: 'var(--muted)', strokeWidth: 1.6, opacity: 0.65 },
-      })),
-    [edges],
-  )
+        style: { stroke: 'var(--graph-edge)', strokeWidth: 1.8, strokeLinecap: 'round' as const },
+      })
+    }
+    return out
+  }, [edges])
 
   const handleNodeClick: NodeMouseHandler = (e, node) => onNodeClick(node.id, e.currentTarget as HTMLElement)
 

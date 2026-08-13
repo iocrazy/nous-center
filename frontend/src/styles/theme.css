@@ -48,6 +48,13 @@
   /* Infinite-Canvas 风:节点卡圆角 + 画布 dotted 网格点色(暗主题) */
   --node-radius: 14px;
   --grid: rgba(255, 255, 255, 0.06);
+  /* 图连线专用色。别复用 --border/--border-strong/--muted:它们是为「卡片描边」和
+   * 「次要文字」调的,压在画布底色(--bg)上对比度不够,亮/暗两主题至少有一边看不见
+   * (踩过三次)。这两个值是按 WCAG 对比度直接挑的 —— 对 --bg 都在 4.5:1 以上,
+   * 远高于 3:1 的下限,同时明显低于正文 --text(~14:1),保持「连线是背景关系、
+   * 节点卡才是主角」的层级。 */
+  --graph-edge: #79839a;
+  --graph-edge-active: #a8b2c6;
   /* 框选高亮(对齐 Infinite-Canvas 洋红选框) */
   --selection: rgba(236, 72, 153, 0.9);
   --selection-fill: rgba(236, 72, 153, 0.10);
@@ -85,6 +92,9 @@
   /* Infinite-Canvas 风:节点卡圆角 + 画布 dotted 网格点色(亮主题) */
   --node-radius: 14px;
   --grid: rgba(15, 23, 42, 0.10);
+  /* 见暗色主题同名 token 的注释。亮色画布是近白 --bg #fafafa,连线必须往深里走。 */
+  --graph-edge: #64748b;
+  --graph-edge-active: #475569;
   /* 框选高亮(对齐 Infinite-Canvas 洋红选框) */
   --selection: rgba(219, 39, 119, 0.9);
   --selection-fill: rgba(219, 39, 119, 0.08);
