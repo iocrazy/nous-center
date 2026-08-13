@@ -15,7 +15,8 @@ const DEVICE = {
   index: 0,
   vram_total: 102_000_000_000,
   vram_free: 37_700_000_000,
-  vram_used: 64_300_000_000,
+  vram_used: 64_300_000_000,      // 整卡已用(含同卡 vLLM 等别的进程)
+  comfy_used: 60_000_000_000,     // ComfyUI 自占(torch reserved),「释放」能动的只有这块
   torch_vram_total: 60_000_000_000,
 }
 
@@ -228,6 +229,24 @@ describe('ComfyBridgeSection', () => {
     fireEvent.click(await screen.findByText('释放显存'))
 
     expect(await screen.findByText(/仍在卸载/)).toBeInTheDocument()
+  })
+
+  it('区分 ComfyUI 自占与整卡已用,不把别人的占用算在 ComfyUI 头上', async () => {
+    // 实机误导:整卡 43.8G 里 39.3G 是 nous 的 qwen3_6_35b_a3b_fp8,ComfyUI 只占 0.1G。
+    vi.mocked(comfyTemplates.getComfyHealth).mockResolvedValue({
+      online: true,
+      queue_depth: 0,
+      version: '0.31.0',
+      base_url: 'http://localhost:8888',
+      timeout_s: 14400,
+      devices: [{ ...DEVICE, vram_used: 43_800_000_000, comfy_used: 100_000_000 }],
+    })
+
+    render(withQuery(<ComfyBridgeSection />))
+
+    // 两个数都要出现,且 ComfyUI 那个是小的那个
+    expect(await screen.findByText(/ComfyUI 0\.1GB/)).toBeInTheDocument()
+    expect(screen.getByText(/整卡 43\.8GB/)).toBeInTheDocument()
   })
 
   it('hides devices and release button when offline', async () => {

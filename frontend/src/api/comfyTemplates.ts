@@ -46,7 +46,10 @@ export interface ComfyDevice {
   index: number
   vram_total: number
   vram_free: number
+  /** **整卡**已用(vram_total - vram_free)——含同卡其它进程,不是 ComfyUI 占的。 */
   vram_used: number
+  /** **ComfyUI 自占**(torch reserved)——「释放显存」能动的只有这部分。 */
+  comfy_used: number
   torch_vram_total: number
 }
 

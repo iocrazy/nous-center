@@ -20,8 +20,17 @@ function barColor(ratio: number): string {
   return 'var(--ok)'
 }
 
+/** 一张卡两个数,别混:
+ *  - ComfyUI 自占 = torch reserved,「释放显存」能动的就是这部分(高亮段);
+ *  - 整卡已用 = 含同卡其它进程(nous 的 vLLM、桌面),ComfyUI 管不着(暗色段)。
+ *  实机误导过一次:整卡 43.8G 里 39.3G 是 qwen3_6_35b_a3b_fp8,ComfyUI 其实只占 0.1G。 */
 function DeviceRow({ device }: { device: ComfyDevice }) {
-  const ratio = device.vram_total > 0 ? device.vram_used / device.vram_total : 0
+  const total = device.vram_total || 1
+  const comfyPct = Math.min(100, Math.max(0, (device.comfy_used / total) * 100))
+  const othersPct = Math.min(
+    100 - comfyPct,
+    Math.max(0, ((device.vram_used - device.comfy_used) / total) * 100),
+  )
   return (
     <div style={{ padding: '10px 0', borderTop: '1px solid var(--border)' }}>
       <div
@@ -35,25 +44,32 @@ function DeviceRow({ device }: { device: ComfyDevice }) {
       >
         <span>{formatDeviceName(device.name)}</span>
         <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono, monospace)' }}>
-          {formatGB(device.vram_used)} / {formatGB(device.vram_total)}
+          ComfyUI {formatGB(device.comfy_used)} · 整卡 {formatGB(device.vram_used)} / {formatGB(device.vram_total)}
         </span>
       </div>
       <div
-        style={{
-          height: 6,
-          borderRadius: 3,
-          background: 'var(--bg)',
-          overflow: 'hidden',
-        }}
+        style={{ height: 6, borderRadius: 3, background: 'var(--bg)', overflow: 'hidden', display: 'flex' }}
+        title={`ComfyUI 自占 ${formatGB(device.comfy_used)};其它进程 ${formatGB(Math.max(0, device.vram_used - device.comfy_used))}`}
       >
         <div
           style={{
             height: '100%',
-            width: `${Math.min(100, Math.max(0, ratio * 100))}%`,
-            background: barColor(ratio),
+            width: `${comfyPct}%`,
+            background: barColor(device.comfy_used / total),
             transition: 'width 0.3s ease',
           }}
         />
+        <div
+          style={{
+            height: '100%',
+            width: `${othersPct}%`,
+            background: 'var(--border-strong)',
+            transition: 'width 0.3s ease',
+          }}
+        />
+      </div>
+      <div style={{ marginTop: 4, fontSize: 11, color: 'var(--muted)' }}>
+        绿=ComfyUI 自占(可释放) · 灰=同卡其它进程(如 vLLM,ComfyUI 管不着)
       </div>
     </div>
   )

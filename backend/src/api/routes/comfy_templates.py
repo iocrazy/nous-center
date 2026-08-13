@@ -337,7 +337,15 @@ async def delete_template(
 
 
 def _devices_from_stats(stats: dict) -> list[dict]:
-    """system_stats() 的 devices 数组 → 前端要的精简形状(原始字节,前端自己格式化)。"""
+    """system_stats() 的 devices 数组 → 前端要的精简形状(原始字节,前端自己格式化)。
+
+    **两个占用是两回事,别混**(2026-08-12 用户实机抓到的误导):
+      `vram_total - vram_free` = **整卡**已用 —— `torch.cuda.mem_get_info()` 的全局读数,
+        把同卡上别的进程(nous 自己的 vLLM、桌面进程)统统算进去;
+      `torch_vram_total`       = **ComfyUI 自占** —— 它 torch 分配器的
+        `reserved_bytes.all.current`,这才是"释放显存"能动的那部分。
+    实测:整卡已用 43.8G 而 ComfyUI 自占仅 0.1G(那 39.3G 是 qwen3_6_35b_a3b_fp8)。
+    """
     out = []
     for d in stats.get("devices") or []:
         vram_total = d.get("vram_total", 0) or 0
@@ -348,7 +356,8 @@ def _devices_from_stats(stats: dict) -> list[dict]:
             "index": d.get("index"),
             "vram_total": vram_total,
             "vram_free": vram_free,
-            "vram_used": vram_total - vram_free,
+            "vram_used": vram_total - vram_free,          # 整卡已用(含别的进程)
+            "comfy_used": d.get("torch_vram_total", 0) or 0,  # ComfyUI 自占
             "torch_vram_total": d.get("torch_vram_total", 0) or 0,
         })
     return out
@@ -371,14 +380,16 @@ async def comfy_health():
 
 
 def _used_of(devices: list[dict]) -> int:
-    return sum(d.get("vram_used", 0) or 0 for d in devices)
+    """释放判定只看 **ComfyUI 自占**(torch reserved)。用整卡已用会被同卡的 vLLM
+    加载/卸载干扰,把别人的波动误判成"释放成功/失败"。"""
+    return sum(d.get("comfy_used", 0) or 0 for d in devices)
 
 
 # 释放后的轮询节奏(测试 monkeypatch 成 0 免得空等 6s)。
 _FREE_POLL_ROUNDS = 12
 _FREE_POLL_INTERVAL = 0.5
-# 低于此占用视为"没模型可卸"(实测空载 ComfyUI 仍占 ~1.6G 的 torch/CUDA 上下文)。
-_FREE_NOOP_THRESHOLD = 2_000_000_000
+# ComfyUI 自占低于此值视为"没模型可卸"(空载时 torch reserved 只剩几百 MB 上下文)。
+_FREE_NOOP_THRESHOLD = 1_000_000_000
 
 
 @health_router.post("/free", dependencies=[Depends(require_admin)])

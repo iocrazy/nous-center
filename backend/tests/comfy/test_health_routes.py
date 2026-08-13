@@ -43,6 +43,7 @@ async def test_health_includes_devices_with_computed_vram_used(client, monkeypat
         "vram_total": 102_000_000_000,
         "vram_free": 37_700_000_000,
         "vram_used": 102_000_000_000 - 37_700_000_000,
+        "comfy_used": 60_000_000_000,
         "torch_vram_total": 60_000_000_000,
     }]
 
@@ -87,19 +88,21 @@ async def test_free_waits_for_async_unload_to_land(client, monkeypatch):
             return None
 
         async def system_stats(self):
-            # 第 3 次查询才反映卸载完成(模拟 worker 被唤醒后的延迟)
+            # 第 3 次查询才反映卸载完成(模拟 worker 被唤醒后的延迟)。降的是
+            # **torch_vram_total**(ComfyUI 自占)——判定只认这个,不认整卡读数,
+            # 否则同卡 vLLM 的加载/卸载会被误判成"释放成功/失败"。
             state["round"] += 1
-            free_b = 37_700_000_000 if state["round"] < 3 else 81_000_000_000
+            torch_b = 25_000_000_000 if state["round"] < 3 else 200_000_000
             return {"devices": [{"name": "cuda:0 Test GPU", "type": "cuda", "index": 0,
-                                 "vram_total": 102_000_000_000, "vram_free": free_b,
-                                 "torch_vram_total": 0}]}
+                                 "vram_total": 102_000_000_000, "vram_free": 37_700_000_000,
+                                 "torch_vram_total": torch_b}]}
 
     monkeypatch.setattr(ct_mod, "get_client", lambda: Lagging())
     monkeypatch.setattr(ct_mod, "_FREE_POLL_INTERVAL", 0)
     body = (await client.post("/api/v1/comfy/free")).json()
     assert body["settled"] is True
     assert body["freed_bytes"] > 1_000_000_000
-    assert body["devices"][0]["vram_used"] == 102_000_000_000 - 81_000_000_000
+    assert body["devices"][0]["comfy_used"] == 200_000_000
 
 
 @pytest.mark.asyncio
@@ -148,9 +151,10 @@ async def test_free_noop_when_nothing_resident(client, monkeypatch):
             return None
 
         async def system_stats(self):
+            # 整卡被别的进程占着(43.8G),但 ComfyUI 自占只剩 0.1G → 无可释放
             return {"devices": [{"name": "cuda:0 Test GPU", "type": "cuda", "index": 0,
                                  "vram_total": 102_000_000_000,
-                                 "vram_free": 100_400_000_000, "torch_vram_total": 0}]}
+                                 "vram_free": 58_200_000_000, "torch_vram_total": 100_000_000}]}
 
     monkeypatch.setattr(ct_mod, "get_client", lambda: Idle())
     monkeypatch.setattr(ct_mod, "_FREE_POLL_INTERVAL", 0)
