@@ -61,7 +61,7 @@ export default function CodeSnippets({ svc }: Props) {
             outline: 'none',
             border: 'none',
             fontSize: 12,
-            color: 'var(--fg)',
+            color: 'var(--text)',
             fontFamily: 'JetBrains Mono, monospace',
           }}
         />
@@ -87,7 +87,7 @@ export default function CodeSnippets({ svc }: Props) {
             style={{
               padding: '6px 10px',
               fontSize: 12,
-              color: tab === t.id ? 'var(--fg)' : 'var(--muted)',
+              color: tab === t.id ? 'var(--text)' : 'var(--muted)',
               borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
               background: 'transparent',
               cursor: 'pointer',
@@ -121,7 +121,7 @@ export default function CodeSnippets({ svc }: Props) {
           borderRadius: 4,
           background: 'var(--bg)',
           border: '1px solid var(--border)',
-          color: 'var(--fg)',
+          color: 'var(--text)',
           fontSize: 12,
           fontFamily: 'JetBrains Mono, monospace',
           overflow: 'auto',
