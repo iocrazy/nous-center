@@ -102,7 +102,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return (
       <div
         className="min-h-screen flex items-center justify-center text-sm"
-        style={{ background: 'var(--bg)', color: 'var(--text-secondary)' }}
+        style={{ background: 'var(--bg)', color: 'var(--muted)' }}
       >
         加载中…
       </div>
@@ -113,7 +113,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return (
       <div
         className="min-h-screen flex items-center justify-center text-sm"
-        style={{ background: 'var(--bg)', color: 'var(--text-secondary)' }}
+        style={{ background: 'var(--bg)', color: 'var(--muted)' }}
       >
         正在加载节点定义…
       </div>
