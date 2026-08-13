@@ -20,6 +20,8 @@ _EXPOSED_TYPE = {
 }
 # 输出里这些被当作「文件/产物」→ string + format=uri(交付契约 PR-4 落实)。
 _FILE_OUT_TYPES = {"image", "file", "audio", "video", "latent"}
+# 输入里这些是「上传一个文件」,不是从固定清单里选(见 _input_property 的 enum 说明)。
+_FILE_IN_TYPES = {"image", "file", "audio", "video", "binary", "media"}
 
 
 def _node_class_map(snapshot: Any) -> dict[str, str]:
@@ -98,7 +100,11 @@ def _input_property(exposed: dict, widget: dict | None) -> dict:
     constraints = exposed.get("constraints")
     if isinstance(constraints, dict):
         enum = constraints.get("enum")
-        if enum:
+        # 文件类输入的 enum 不是取值域,是 **sidecar 上已有文件的清单**(ComfyUI
+        # object_info 给 LoadImage.image 的就是 input/ 目录列表)。当白名单校验会
+        # 把"上传一个新文件"这件正事判成非法(2026-08-12 实机:上传图片必 400
+        # "must be one of ['5 (1).jpg','example.png']")。文件类一律不写 enum。
+        if enum and str(exposed.get("type") or "").lower() not in _FILE_IN_TYPES:
             prop["enum"] = enum
         if constraints.get("min") is not None:
             prop["minimum"] = constraints["min"]

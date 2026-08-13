@@ -119,6 +119,10 @@ async def _get_template_and_service(
     return tpl, svc
 
 
+# 文件类输入 = 上传文件,不是从清单里选(见 _numeric_constraints / service_schema)。
+_FILE_IN_TYPES = {"image", "file", "audio", "video", "binary", "media"}
+
+
 def _mapping_to_exposed_input(m: ExposedParamMapping) -> dict:
     """展开成 exposed_inputs 存储项:node_id/input_name 固定指向桥节点(供
     apply_inputs_to_snapshot 用),comfy_node_id/comfy_input 保留原 ComfyUI
@@ -150,7 +154,10 @@ def _numeric_constraints(m: ExposedParamMapping) -> dict[str, Any]:
         c["max"] = m.max
     if m.step is not None:
         c["step"] = m.step
-    if m.options:
+    # 文件类字段不存 enum:ComfyUI 给的 options 是 sidecar 已有文件清单(LoadImage.image
+    # → input/ 目录),不是取值域。存下来会让 Playground 渲成下拉框、后端把上传新文件
+    # 判成非法(2026-08-12 实机 400)。治本在这:根本不写进去。
+    if m.options and str(m.type or "").lower() not in _FILE_IN_TYPES:
         c["enum"] = m.options
     if m.random:
         c["random"] = m.random

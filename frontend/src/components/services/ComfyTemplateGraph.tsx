@@ -134,10 +134,11 @@ export default function ComfyTemplateGraph({ nodes, edges, activeNodeId, onNodeC
         id: `e${i}-${e.source}-${e.target}`,
         source: e.source,
         target: e.target,
-        // 之前用 --border(近乎全透明的分隔线色),边基本看不见(用户反馈的一部分)。
-        // 换成 --border-strong 加粗到 1.8,边渲染层在 xyflow 里天然排在节点层前面
-        // (EdgeRenderer 在 DOM 里先于 NodeRenderer),不用额外 z-index 就在节点后面。
-        style: { stroke: 'var(--border-strong)', strokeWidth: 1.8 },
+        // 边色试过 --border(几乎不可见)→ --border-strong(亮色主题下是 #d4d4d8,
+        // 白底画布上还是看不见,用户第二次反馈)。--muted 两个主题同值 #71717a,
+        // 白底/黑底都拉得开对比;opacity .65 让它是"能看清的背景连线"而不是抢戏。
+        // 边渲染层在 xyflow DOM 里先于节点层,天然在节点后面,不用 z-index。
+        style: { stroke: 'var(--muted)', strokeWidth: 1.6, opacity: 0.65 },
       })),
     [edges],
   )

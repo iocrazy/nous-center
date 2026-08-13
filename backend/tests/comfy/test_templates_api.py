@@ -86,3 +86,25 @@ async def test_delete_removes_service(client):
     tid = r.json()["id"]
     assert (await client.delete(f"/api/v1/comfy-templates/{tid}")).status_code == 204
     assert (await client.get("/v1/services/tpl-del/schema")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_file_field_never_gets_enum_whitelist(client):
+    """ComfyUI 给文件型输入的 options 是 **sidecar 已有文件清单**(LoadImage.image →
+    input/ 目录),不是取值域。存成 constraints.enum 会让后端把"上传一张新图"判成非法
+    (2026-08-12 实机:Playground 传 data URI 必 400 must be one of [...])。"""
+    wf = {"137": {"class_type": "LoadImage", "inputs": {"image": "old.jpg"}},
+          "92": {"class_type": "SaveVideo", "inputs": {}}}
+    r = await client.post("/api/v1/comfy-templates", json={"name": "tpl-fileenum", "workflow": wf})
+    tid = r.json()["id"]
+    await client.put(f"/api/v1/comfy-templates/{tid}/mapping", json={"exposed_params": [
+        {"key": "image", "label": "参考图", "type": "image", "required": True,
+         "options": ["old.jpg", "example.png"],   # sidecar 现有文件,不该成为白名单
+         "comfy_node_id": "137", "comfy_input": "image"},
+        {"key": "mode", "label": "模式", "type": "string",
+         "options": ["fast", "quality"],          # 真枚举:仍然保留
+         "comfy_node_id": "137", "comfy_input": "mode"},
+    ]})
+    schema = (await client.get("/v1/services/tpl-fileenum/schema")).json()["input_schema"]["properties"]
+    assert "enum" not in schema["image"], "文件类字段不该带 enum 白名单"
+    assert schema["mode"]["enum"] == ["fast", "quality"], "非文件类的真枚举要保留"
