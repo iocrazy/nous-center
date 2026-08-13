@@ -247,6 +247,14 @@ input[type="number"] {
   to { transform: rotate(360deg); }
 }
 
+/* 延迟淡入:配 `animation: nous-delayed-fade-in <dur> ease-out <delay> both` 使用。
+   fill-mode `both` 让延迟期间保持 opacity:0 —— 秒回的加载态压根不露脸,
+   只有真的慢了才淡入,避免「loading 框闪一下」。 */
+@keyframes nous-delayed-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* Node slider — ElevenLabs style range input */
 .node-slider {
   -webkit-appearance: none;

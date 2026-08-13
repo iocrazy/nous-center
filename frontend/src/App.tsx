@@ -8,7 +8,7 @@ import TaskDetailModal from './components/layout/TaskDetailModal'
 import NodeEditor from './components/nodes/NodeEditor'
 import ToastContainer from './components/common/ToastContainer'
 import ConfirmHost from './components/common/ConfirmHost'
-import { usePanelStore, type OverlayId } from './stores/panel'
+import { usePanelStore, overlayForPath } from './stores/panel'
 import { useWorkspaceStore } from './stores/workspace'
 import { apiFetch } from './api/client'
 import type { WorkflowFull } from './api/workflows'
@@ -18,22 +18,6 @@ import Login from './pages/Login'
 import { loadPluginDefinitions } from './models/nodeRegistry'
 import { useTaskCompletionNotifier } from './hooks/useTaskCompletionNotifier'
 
-const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
-  '/models': 'models',
-  '/services': 'services',
-  '/apps': 'apps',
-  '/agents': 'agents',
-  '/settings': 'settings',
-  '/dashboard': 'dashboard',
-  '/api-keys': 'api-keys-list',
-  '/logs': 'logs',
-  '/node-packages': 'node-packages',
-  '/usage': 'usage',
-  '/studio': 'studio',
-  '/history': 'history',
-  '/status': 'status',
-}
-
 /** Syncs the current URL to the panel store's activeOverlay */
 function RouteSync() {
   const location = useLocation()
@@ -42,36 +26,9 @@ function RouteSync() {
   // useLayoutEffect(非 useEffect):路由→overlay 的映射必须在浏览器**绘制前**完成,
   // 否则首帧 activeOverlay 还是上个值(默认 null)→ 露出底下工作流画布一闪,过后才显示
   // overlay(api-keys/services 等)。layout effect 同步在 paint 前 setState+重渲染,消除闪烁。
+  // 首次挂载时 store 初值已由 overlayForPath(window.location) 种好,这里只负责后续导航。
   useLayoutEffect(() => {
-    // `/workflows/:id` is the canvas editor (no overlay); `/workflows`
-    // (no id) is the v3 m08 list page.
-    if (location.pathname === '/workflows') {
-      if (usePanelStore.getState().activeOverlay !== 'workflows-list') {
-        setOverlay('workflows-list')
-      }
-      return
-    }
-    if (location.pathname.startsWith('/workflows/')) {
-      if (usePanelStore.getState().activeOverlay !== null) setOverlay(null)
-      return
-    }
-    // `/services/:id` lights up the same rail slot as the list and routes
-    // through the dedicated `service-detail` overlay so NodeEditor knows
-    // which view to mount.
-    if (location.pathname.startsWith('/services/')) {
-      if (usePanelStore.getState().activeOverlay !== 'service-detail') {
-        setOverlay('service-detail')
-      }
-      return
-    }
-    // `/api-keys/:id` 同上 — 详情页用独立 overlay slot。
-    if (location.pathname.startsWith('/api-keys/')) {
-      if (usePanelStore.getState().activeOverlay !== 'api-key-detail') {
-        setOverlay('api-key-detail')
-      }
-      return
-    }
-    const overlay = ROUTE_TO_OVERLAY[location.pathname] ?? null
+    const overlay = overlayForPath(location.pathname)
     if (usePanelStore.getState().activeOverlay !== overlay) setOverlay(overlay)
   }, [location.pathname, setOverlay])
 
