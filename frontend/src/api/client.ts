@@ -11,10 +11,19 @@ export function setUnauthorizedHandler(handler: OnUnauthorized) {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // spread 顺序是要害:`...init` 必须在前,headers/credentials 在后。反过来写的话,
+  // 任何自带 headers 的调用方会把默认头整块顶掉 —— createPredictionAsync 只传了
+  // `Prefer` 就丢掉 Content-Type,body 以 text/plain 发出,后端 422。
+  const headers = new Headers(init?.headers)
+  // FormData 的 Content-Type 必须由浏览器自己写(要带 multipart boundary),硬塞 JSON
+  // 会让后端解不出 form 字段。
+  if (!headers.has('Content-Type') && !(init?.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json')
+  }
   const resp = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
-    credentials: 'same-origin',
     ...init,
+    headers,
+    credentials: init?.credentials ?? 'same-origin',
   })
   if (!resp.ok) {
     if (resp.status === 401) onUnauthorized()
