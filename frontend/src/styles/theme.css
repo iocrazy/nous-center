@@ -52,6 +52,11 @@
   --accent-2-subtle: rgba(20, 184, 166, 0.15);
   --ok: #22c55e;
   --warn: #f59e0b;
+  /* 语义红。跟 --ok/--warn/--info/--purple 同一档(全是 Tailwind 500 级),取
+   * red-500。对 --bg 4.89 / --card 4.58,与 --info(5.01)同一量级。历史上调用点
+   * 一直写 `var(--error, #ef4444)` 兜底,取同值 → 定义 token 不改变任何现有观感,
+   * 只是让漏写兜底的地方(LogsOverlay)不再掉色。 */
+  --error: #ef4444;
   --info: #3b82f6;
   --purple: #a855f7;
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
@@ -99,6 +104,10 @@
   --accent-2-subtle: rgba(13, 148, 136, 0.1);
   --ok: #16a34a;
   --warn: #d97706;
+  /* 亮色语义色整档是 Tailwind 600(--ok green-600 / --warn amber-600 /
+   * --info blue-600),红取 red-600:对 --bg 4.63 / --card 4.83,过 AA。
+   * 暗色的 #ef4444(red-500)在亮底上只有 3.61,不能两边共用一个值。 */
+  --error: #dc2626;
   --info: #2563eb;
   --purple: #9333ea;
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);

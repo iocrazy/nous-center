@@ -13,7 +13,7 @@ import { NODE_DEFS } from '../../models/workflow'
 beforeAll(() => {
   DECLARATIVE_NODES['flux2_vae_decode'] = {
     type: 'flux2_vae_decode', label: 'VAE Decode', category: 'image',
-    badge: 'Decoder', badgeColor: 'var(--err)', widgets: [],
+    badge: 'Decoder', badgeColor: 'var(--error)', widgets: [],
   }
   NODE_DEFS['flux2_vae_decode'] = {
     type: 'flux2_vae_decode', label: 'VAE Decode',

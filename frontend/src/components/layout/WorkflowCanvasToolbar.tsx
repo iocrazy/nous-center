@@ -189,9 +189,9 @@ export default function WorkflowCanvasToolbar() {
           title="中止当前运行(对齐 ComfyUI Interrupt)"
           className="px-2.5 py-1 rounded text-xs transition-colors"
           style={{
-            border: '1px solid var(--err, #ef4444)',
+            border: '1px solid var(--error, #ef4444)',
             background: 'transparent',
-            color: 'var(--err, #ef4444)',
+            color: 'var(--error, #ef4444)',
             cursor: cancelTask.isPending ? 'wait' : 'pointer',
             opacity: cancelTask.isPending ? 0.6 : 1,
           }}

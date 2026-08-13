@@ -882,7 +882,7 @@ export default function NodeEditor() {
             type="button"
             onClick={() => { onClick(); close() }}
             className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left"
-            style={{ color: danger ? 'var(--err, #ef4444)' : 'var(--text)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            style={{ color: danger ? 'var(--error, #ef4444)' : 'var(--text)', background: 'transparent', border: 'none', cursor: 'pointer' }}
             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
           >

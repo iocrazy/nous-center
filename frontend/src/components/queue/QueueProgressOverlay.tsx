@@ -312,7 +312,7 @@ function ExpandedView({
             title={queuedCount > 0 ? `清理 ${queuedCount} 个排队任务` : '无排队任务'}
             style={{
               width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: queuedCount > 0 ? 'var(--err, #ef4444)' : 'transparent',
+              background: queuedCount > 0 ? 'var(--error, #ef4444)' : 'transparent',
               color: queuedCount > 0 ? 'white' : 'var(--muted)',
               border: queuedCount > 0 ? 'none' : '1px solid var(--border)',
               borderRadius: 4,
@@ -501,6 +501,6 @@ const iconBtn: React.CSSProperties = {
 
 const btnDanger: React.CSSProperties = {
   width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
-  background: 'var(--err, #ef4444)', border: 'none', color: 'white',
+  background: 'var(--error, #ef4444)', border: 'none', color: 'white',
   borderRadius: 4, cursor: 'pointer',
 }
