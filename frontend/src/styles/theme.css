@@ -29,8 +29,19 @@
   --card-hl: rgba(255, 255, 255, 0.03);
   --text: #e4e4e7;
   --text-strong: #fafafa;
-  --muted: #71717a;
-  --muted-strong: #52525b;
+  /* 次要文字。旧值 #71717a 对 --bg 只有 3.81:1、对 --card 3.57:1 —— 低于 WCAG AA
+   * 的 4.5:1,而这个 token 铺了全站 500+ 处次要文字(含登录/引导/安全面板)。
+   * #8b8b93 沿用 zinc 系的构造(R=G,B 略高),对 --bg 5.45 / --card 5.10 /
+   * --bg-elevated 4.98 全部过 AA,同时对 --text(#e4e4e7)仍有 2.66 的落差,
+   * 「次要文字」的层级没被拉平。--bg-hover(#262a35)上是 4.24 —— hover 是瞬时态,
+   * 未按 AA 卡。别再往亮调:#a1a1aa 能到 7.18,但跟正文就分不出主次了。 */
+  --muted: #8b8b93;
+  /* 三级(比 --muted 更淡):端口点 / 连线 fallback / minimap / 虚线框等装饰件,
+   * 外加少量 9-11px 小标签与空态占位文字。旧值 #52525b 对 --bg 仅 2.38:1,连
+   * 「非文本元素」的 3:1 都不到。接手 --muted 空出来的 zinc-500 → 对 --bg 3.81 /
+   * --card 3.57,过 3:1,且明显低于 --muted 的 5.45,层级保持。注意:那几处拿它当
+   * 小字正文用的地方仍不到 4.5:1,该改的是调用点(换 --muted),不是再提这个 token。 */
+  --muted-strong: #71717a;
   --border: #27272a;
   --border-strong: #3f3f46;
   --accent: #ff5c5c;
@@ -73,8 +84,11 @@
   --card-hl: rgba(0, 0, 0, 0.02);
   --text: #27272a;
   --text-strong: #09090b;
+  /* 亮色 --muted 本来就过 AA(对 --bg 4.63 / --card 4.83),不动。 */
   --muted: #71717a;
-  --muted-strong: #a1a1aa;
+  /* 三级色跟暗色同因整改:旧 #a1a1aa 对 --bg 只有 2.46:1。#8b8b93 → 3.24 / --card
+   * 3.38 / --bg-accent 3.08,过 3:1,仍明显淡于 --muted(4.63)。 */
+  --muted-strong: #8b8b93;
   --border: #e4e4e7;
   --border-strong: #d4d4d8;
   --accent: #dc2626;
