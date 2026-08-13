@@ -59,7 +59,9 @@ export interface ComfyHealth {
   version: string
   base_url: string
   timeout_s: number
-  devices?: ComfyDevice[]
+  /** 后端恒返回此键(sidecar 离线时为 [])——不设 optional,否则漏字段的 mock/调用方
+   *  不会被类型检查逮到(vram-panel 交付时因文件被占用临时放宽,现收紧)。 */
+  devices: ComfyDevice[]
 }
 
 export interface FreeComfyVramResult {

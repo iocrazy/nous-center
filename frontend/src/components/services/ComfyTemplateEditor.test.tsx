@@ -69,7 +69,7 @@ function baseDetail(exposed: api.ComfyExposedParam[] = []): api.ComfyTemplateDet
 beforeEach(() => {
   vi.mocked(api.getComfyTemplate).mockResolvedValue(baseDetail())
   vi.mocked(api.getComfyHealth).mockResolvedValue({
-    online: true, queue_depth: 0, version: '0.3.1', base_url: 'http://x', timeout_s: 30,
+    online: true, queue_depth: 0, version: '0.3.1', base_url: 'http://x', timeout_s: 30, devices: [],
   })
   vi.mocked(api.getObjectInfo).mockResolvedValue({
     KSampler: {
@@ -176,7 +176,7 @@ describe('ComfyTemplateEditor', () => {
 
   it('sidecar 离线 → 降级提示', async () => {
     vi.mocked(api.getComfyHealth).mockResolvedValue({
-      online: false, queue_depth: 0, version: '', base_url: 'http://x', timeout_s: 30,
+      online: false, queue_depth: 0, version: '', base_url: 'http://x', timeout_s: 30, devices: [],
     })
     renderEditor({ templateId: '7' })
     expect(await screen.findByText(/离线/)).toBeInTheDocument()
