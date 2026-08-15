@@ -4,11 +4,13 @@
 #
 #   enginectl up        拉起全栈(DB→后端→隧道→状态)并打印启动自检 banner
 #   enginectl down      停应用栈(后端→隧道随 PartOf;状态/comfyui)。DB(postgresql)保持运行
-#   enginectl restart   重启应用栈(后端/状态;comfyui 仅在 enabled 时)
+#   enginectl restart   重启应用栈(后端/状态;comfyui 仅在 enabled 时)并打印重启报告:
+#                       重启了谁 / 后端多久真的能收请求 / 自检 banner / 常驻模型加载进度 / 栈状态
 #   enginectl status    各 unit active? + 端口 + 公网隧道,一屏
 #   enginectl logs [u]  journalctl -f(u 缺省 backend;可 cloudflared/status/comfyui/postgresql)
 #
 # 启停要 root → 内部用 sudo(会提示密码)。只读的 status/logs 不需要。
+# ENGINECTL_WAIT=秒 覆盖 up/restart 等后端就绪的上限(默认 180)。
 set -euo pipefail
 
 # cloudflared 是 PartOf=nous-engine-backend → 跟随后端启停,不单列。
@@ -20,66 +22,57 @@ APP_UNITS=(nous-engine-backend.service nous-engine-status.service nous-engine-co
 c_dim() { printf '\033[2m%s\033[0m' "$*"; }
 c_grn() { printf '\033[32m%s\033[0m' "$*"; }
 c_red() { printf '\033[31m%s\033[0m' "$*"; }
+c_ylw() { printf '\033[33m%s\033[0m' "$*"; }
 
-_print_banner() {
-  # 从 journal 拉最近一次 backend 启动的自检 banner(纯文本,journald 不带 ANSI)。
-  # 去掉 journal 行前缀(时间/host/uv[pid]:),取最后一段 banner。
-  # 注意:后端自检 banner 里印的字样(NOUS-CENTER)是 backend 源码里的品牌串,归品牌
-  # rebrand(见 MIGRATION-nous-engine.md 可选项),本 infra 包未改。grep 同时匹配新旧两种
-  # 写法,rebrand 前后都能抓到 banner。
-  journalctl -u nous-engine-backend --no-pager -n 400 2>/dev/null \
-    | sed -E 's/^.* (uv|python3?)\[[0-9]+\]: //' \
-    | grep -E -A 12 'NOUS-(CENTER|ENGINE)' | tail -n 13 || true
+# status/restart 报告里逐行列的全栈单元(含不受 up/down 管的 postgresql、随后端启停的
+# cloudflared)—— 操作者关心的是整栈现状,不只是被操作的那几个。
+STACK_UNITS=(postgresql nous-engine-backend nous-engine-cloudflared nous-engine-status nous-engine-comfyui)
+
+# 后端本地就绪探针(与 cmd_status 的 ZeroTier 探测同一个 /healthz,只是走回环)。
+HEALTHZ_URL=http://127.0.0.1:8000/healthz
+HEALTH_URL=http://127.0.0.1:8000/health
+# 等后端「真的能收请求」的上限秒数。默认 180 而不是 60:重启的**停**这一半可能很久 ——
+# backend unit 是 KillMode=mixed + TimeoutStopSec=120,优雅关闭要顺序 unload 每个 vLLM。
+ENGINECTL_WAIT="${ENGINECTL_WAIT:-180}"
+
+_unit_active() { systemctl is-active "$1" 2>/dev/null || true; }
+
+_short_unit() { local u="${1#nous-engine-}"; printf '%s' "${u%.service}"; }
+
+# 单元一行:名字 + 彩色状态 + 暗色备注。状态串带 ANSI 转义 → printf 的 %-Ns 会按字节数
+# 补齐把后面一列撑歪,所以按纯文本长度手工补空格。
+_unit_line() {
+  local u="$1" note="${2:-}" s mark pad
+  s="$(_unit_active "$u")"; s="${s:-unknown}"
+  case "$s" in
+    active) mark="$(c_grn active)" ;;
+    activating|deactivating|reloading) mark="$(c_ylw "$s")" ;;
+    *) mark="$(c_red "$s")" ;;
+  esac
+  if [ -z "$note" ]; then printf '  %-24s %s\n' "$u" "$mark"; return 0; fi
+  pad=$(( 14 - ${#s} )); [ "$pad" -lt 1 ] && pad=1
+  printf '  %-24s %s%*s%s\n' "$u" "$mark" "$pad" '' "$(c_dim "$note")"
 }
 
-cmd_up() {
-  # --no-block:别等 job 完成 —— systemctl restart/start 的阻塞客户端在本机会傻等
-  # job-done 信号不返回(实测挂 48min,但 unit 早已 active、无 pending job)。--no-block
-  # 把 job 入队即返回,我们自己 poll is-active 判就绪,既不挂终端又能等到真起来。
-  sudo systemctl --no-block start nous-engine.target
-  printf 'nous-engine.target 已拉起,等待 backend 自检...\n'
-  for _ in $(seq 1 60); do
-    systemctl is-active --quiet nous-engine-backend && break
-    sleep 1
-  done
-  echo
-  _print_banner
-}
-
-cmd_down() {
-  sudo systemctl --no-block stop "${APP_UNITS[@]}"
-  printf '应用栈停止已触发(后端/隧道/状态)。%s\n' "$(c_dim 'postgresql 仍在运行 — 如需停库: sudo systemctl stop postgresql')"
-}
-
-cmd_restart() {
-  # --no-block:同 cmd_up —— 阻塞 restart 客户端会挂(unit 实际 ~3s 就重启完);入队即返回,
-  # 自己 poll。注意:--no-block 下「停旧→起新」很快但非同步完成,poll is-active 到的可能是
-  # 旧实例没死透那一瞬 → 先 sleep 2 给停止留窗口,再 poll。
-  # comfyui 仅在 enabled 时才纳入 restart —— 禁用的单元 restart = start,会对着
-  # 模板路径 /opt/comfyui 启动失败 → Restart=on-failure 无限循环(2026-08-10 设计修正)。
-  local restart_units=(nous-engine-backend.service nous-engine-status.service)
-  if systemctl is-enabled --quiet nous-engine-comfyui.service 2>/dev/null; then
-    restart_units+=(nous-engine-comfyui.service)
-  fi
-  sudo systemctl --no-block restart "${restart_units[@]}"
-  printf '应用栈重启已触发,等待 backend 自检...\n'
-  sleep 2
-  for _ in $(seq 1 60); do systemctl is-active --quiet nous-engine-backend && break; sleep 1; done
-  echo
-  _print_banner
-}
-
-cmd_status() {
+# 单元表。入参是可选的 "unit=备注" 键值对(restart 用它标注哪些单元是本次动过的)。
+_status_units() {
+  local u kv note
   printf 'nous-engine 栈状态:\n'
-  for u in postgresql nous-engine-backend nous-engine-cloudflared nous-engine-status nous-engine-comfyui; do
-    s="$(systemctl is-active "$u" 2>/dev/null || true)"
-    if [ "$s" = active ]; then mark="$(c_grn active)"; else mark="$(c_red "${s:-unknown}")"; fi
-    printf '  %-22s %s\n' "$u" "$mark"
+  for u in "${STACK_UNITS[@]}"; do
+    note=''
+    for kv in "$@"; do
+      case "$kv" in "$u="*) note="${kv#*=}" ;; esac
+    done
+    _unit_line "$u" "$note"
   done
+}
+
+_status_endpoints() {
   printf '\n监听端口:\n'
   ss -ltn 2>/dev/null | awk 'NR>1 {print $4}' | grep -E ':(8000|8001|5432|8888)$' | sort -u | sed 's/^/  /' || true
   printf '\nZeroTier 内网访问:\n'
   # 后端 bind 0.0.0.0 → ZeroTier 网卡(10.0.0.10)同样可达。探一下 /healthz 确认内网入口活着。
+  local zt_code cq depth code
   zt_code="$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://10.0.0.10:8000/healthz 2>/dev/null || echo 000)"
   if [ "$zt_code" = 200 ]; then
     printf '  http://10.0.0.10:8000  %s\n' "$(c_grn 'HTTP 200')"
@@ -97,11 +90,234 @@ cmd_status() {
   fi
   printf '\n公网隧道:\n'
   code="$(curl -s -m 6 -o /dev/null -w '%{http_code}' https://api.iocrazy.com/api/v1/engines 2>/dev/null || echo 000)"
-  if [ "$code" = 000 ]; then
-    printf '  api.iocrazy.com  %s\n' "$(c_red '不可达')"
+  case "$code" in
+    # 401 是管理门在挡(没带 cookie/bearer)—— 说明隧道通到后端了,正常。
+    200|401) printf '  api.iocrazy.com  %s %s\n' "$(c_grn "HTTP $code")" "$(c_dim '(401=鉴权门,服务正常)')" ;;
+    000)     printf '  api.iocrazy.com  %s\n' "$(c_red '不可达')" ;;
+    # 5xx 多半是 cloudflared 侧的问题(530=隧道没连上源站),别再印「服务正常」误导。
+    *)       printf '  api.iocrazy.com  %s %s\n' "$(c_red "HTTP $code")" "$(c_dim '(隧道异常?enginectl logs cloudflared)')" ;;
+  esac
+}
+
+# 从 journal 拉 backend 启动自检 banner。$1 = journalctl --since 时间戳(可空):给了就只
+# 认这个时间点之后的 banner,避免把**上一次**启动的旧 banner 当成本次重启的结果印出来。
+# 去掉 journal 行前缀(时间/host/uv[pid]:),取最后一段 banner。
+# 注意:后端自检 banner 里印的字样(NOUS-CENTER)是 backend 源码里的品牌串,归品牌
+# rebrand(见 MIGRATION-nous-engine.md 可选项),本 infra 包未改。grep 同时匹配新旧两种
+# 写法,rebrand 前后都能抓到 banner。
+# 抓不到时返回 1 —— 调用方必须给一句「没抓到」的实话,而不是像旧版 `|| true` 那样静默
+# 什么都不印(用户看到的「只有一行提示」就是这么来的)。
+_print_banner() {
+  local since="${1:-}" out
+  if [ -n "$since" ]; then
+    out="$(journalctl -u nous-engine-backend --no-pager -n 400 --since "$since" 2>/dev/null \
+      | sed -E 's/^.* (uv|python3?)\[[0-9]+\]: //' \
+      | grep -E -A 12 'NOUS-(CENTER|ENGINE)' | tail -n 13 || true)"
   else
-    printf '  api.iocrazy.com  HTTP %s %s\n' "$code" "$(c_dim '(401=鉴权门,服务正常)')"
+    out="$(journalctl -u nous-engine-backend --no-pager -n 400 2>/dev/null \
+      | sed -E 's/^.* (uv|python3?)\[[0-9]+\]: //' \
+      | grep -E -A 12 'NOUS-(CENTER|ENGINE)' | tail -n 13 || true)"
   fi
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+_banner_section() {
+  printf '\n后端自检 banner:\n'
+  if ! _print_banner "${1:-}"; then
+    printf '  %s\n' "$(c_dim '未抓到(journal 近 400 行里没有 banner)—— 完整日志: enginectl logs backend')"
+  fi
+}
+
+# /health 里的扁平数字/布尔字段。不引 jq(本脚本至今零 JSON 依赖,ComfyUI 队列那段也是 grep)。
+_jnum()  { printf '%s' "$1" | grep -o "\"$2\":[[:space:]]*[0-9]\+" | head -n1 | grep -o '[0-9]\+$' || true; }
+_jbool() { printf '%s' "$1" | grep -o "\"$2\":[[:space:]]*\(true\|false\)" | head -n1 | grep -o '\(true\|false\)$' || true; }
+
+# 模型加载进度。backend 起来 ≠ 服务可用:常驻模型(MOSS ASR 的 sgl-omni 子进程、vLLM、
+# 图像)是后端起来之后在后台加载的,动辄数分钟。这里只读一次 /health 的 startup 字段
+# 报「加载中」,不做阻塞等待。
+_models_section() {
+  local body loaded total preloading nloaded fails ids
+  body="$(curl -s -m 6 --noproxy '*' "$HEALTH_URL" 2>/dev/null || true)"
+  printf '\n模型加载:\n'
+  if [ -z "$body" ]; then
+    printf '  %s\n' "$(c_dim "/health 取不到(后端刚起或已中断)")"
+    return 0
+  fi
+  loaded="$(_jnum "$body" resident_loaded)"; total="$(_jnum "$body" resident_total)"
+  preloading="$(_jbool "$body" preloading)"; nloaded="$(_jnum "$body" models_loaded)"
+  if [ -z "$total" ]; then
+    printf '  %s\n' "$(c_dim '/health 未报 startup 字段(后端版本较旧?)')"
+  elif [ "$preloading" = true ]; then
+    printf '  常驻模型 %s/%s  %s %s\n' "${loaded:-0}" "$total" "$(c_ylw '加载中')" \
+      "$(c_dim '(MOSS ASR / vLLM 权重加载常需数分钟,后台继续,不阻塞本次重启)')"
+  elif [ "${loaded:-0}" = "$total" ]; then
+    printf '  常驻模型 %s/%s  %s\n' "${loaded:-0}" "$total" "$(c_grn '已就绪')"
+  else
+    printf '  常驻模型 %s/%s  %s\n' "${loaded:-0}" "$total" "$(c_dim '(未在预载 — TTL 卸载或按需加载)')"
+  fi
+  printf '  %s\n' "$(c_dim "当前已加载模型 ${nloaded:-0} 个")"
+  # load_failures 非空 = 有常驻模型预载失败,/health 会同时标 degraded。值是错误串,可能
+  # 含引号/花括号 → 只做 best-effort 提取模型 id,拿不准就让操作者去看日志。
+  fails="$(printf '%s' "$body" | grep -o '"load_failures":[[:space:]]*{[^}]*}' || true)"
+  if [ -n "$fails" ] && ! printf '%s' "$fails" | grep -q '{[[:space:]]*}'; then
+    ids="$(printf '%s' "${fails#*\{}" | grep -o '"[^"]*"[[:space:]]*:' | tr -d '": ' | tr '\n' ' ' || true)"
+    ids="${ids% }"
+    printf '  %s %s\n' "$(c_red "预载失败: ${ids:-见 /health}")" "$(c_dim '→ enginectl logs backend')"
+  fi
+}
+
+# 等后端真的开始收请求。is-active 早于 uvicorn accept 好几秒就翻真,所以两道门都要过:
+#   1) unit 的 ActiveEnterTimestampMonotonic 变了 —— 说明是**新**实例(--no-block 下老实例
+#      正在优雅退出,这期间 is-active 还是 active、:8000 还是老进程在应答,只看 is-active
+#      或只 curl 都会把「旧的还没死」误判成「新的已就绪」);
+#   2) GET /healthz == 200。
+# 结果经全局变量回传:READY(1/0)、READY_SECS(到 200 的秒数)、READY_UNIT_SECS(unit 翻
+# active 的秒数)、READY_CODE(最后一次 HTTP 码)、READY_CRASHLOOP(非空=启动后崩溃被
+# systemd 自动拉起过 N 次)。$1 = 重启前的 monotonic 基线,$2 = 重启前的 NRestarts 基线。
+_wait_backend_ready() {
+  local baseline="${1:-}" nr_base="${2:-}" t0=$SECONDS st mono nr last_tick=0
+  READY=0; READY_SECS=0; READY_UNIT_SECS=''; READY_CODE=000; READY_CRASHLOOP=''
+  while [ $(( SECONDS - t0 )) -lt "$ENGINECTL_WAIT" ]; do
+    st="$(_unit_active nous-engine-backend.service)"
+    if [ "$st" = failed ]; then break; fi
+    # 崩溃环早停:backend 是 Restart=always + RestartSec=15,起来就崩的话 unit 会长期停在
+    # activating(auto-restart),干等满 ENGINECTL_WAIT 毫无意义。NRestarts 只由**自动**重启
+    # 累加、被手动 restart 清零,所以「非 0 且不等于重启前的基线」= 本次启动之后真崩过。
+    # (基线比较是必须的:restart 刚入队、start job 还没跑时读到的仍是重启前的旧计数。)
+    nr="$(systemctl show -p NRestarts --value nous-engine-backend.service 2>/dev/null || true)"
+    if [ -n "$nr" ] && [ "$nr" != 0 ] && [ "$nr" != "$nr_base" ]; then READY_CRASHLOOP="$nr"; break; fi
+    mono="$(systemctl show -p ActiveEnterTimestampMonotonic --value nous-engine-backend.service 2>/dev/null || true)"
+    if [ "$st" = active ] && [ -n "$mono" ] && [ "$mono" != "$baseline" ]; then
+      [ -n "$READY_UNIT_SECS" ] || READY_UNIT_SECS=$(( SECONDS - t0 ))
+      READY_CODE="$(curl -s -m 3 --noproxy '*' -o /dev/null -w '%{http_code}' "$HEALTHZ_URL" 2>/dev/null || echo 000)"
+      if [ "$READY_CODE" = 200 ]; then READY=1; break; fi
+    fi
+    sleep 1
+    # 别让操作者对着空屏幕猜:停旧实例(顺序 unload vLLM)可能要几十秒,每 15s 报一次现状。
+    if [ $(( (SECONDS - t0) / 15 )) -gt "$last_tick" ]; then
+      last_tick=$(( (SECONDS - t0) / 15 ))
+      printf '  %s\n' "$(c_dim "...等待中 $(( SECONDS - t0 ))s — unit=${st:-unknown} /healthz=${READY_CODE}")"
+    fi
+  done
+  READY_SECS=$(( SECONDS - t0 ))
+  [ "$READY" = 1 ]
+}
+
+cmd_up() {
+  local since; since="$(date '+%Y-%m-%d %H:%M:%S')"
+  local baseline nr_base
+  baseline="$(systemctl show -p ActiveEnterTimestampMonotonic --value nous-engine-backend.service 2>/dev/null || true)"
+  nr_base="$(systemctl show -p NRestarts --value nous-engine-backend.service 2>/dev/null || true)"
+  # --no-block:别等 job 完成 —— systemctl restart/start 的阻塞客户端在本机会傻等
+  # job-done 信号不返回(实测挂 48min,但 unit 早已 active、无 pending job)。--no-block
+  # 把 job 入队即返回,我们自己 poll is-active 判就绪,既不挂终端又能等到真起来。
+  sudo systemctl --no-block start nous-engine.target
+  printf 'nous-engine.target 已拉起,等待 backend 就绪(最多 %ss)...\n' "$ENGINECTL_WAIT"
+  if _wait_backend_ready "$baseline" "$nr_base"; then
+    printf '  %s %s\n' "$(c_grn '后端已就绪')" "$(c_dim "GET /healthz 200 · 用时 ${READY_SECS}s")"
+  elif [ -n "$READY_CRASHLOOP" ]; then
+    printf '  %s %s\n' "$(c_red "后端启动后已崩溃 ${READY_CRASHLOOP} 次(systemd 在自动重拉)")" "$(c_dim '不再等 — enginectl logs backend')"
+  else
+    printf '  %s %s\n' "$(c_red '后端未就绪')" "$(c_dim "等了 ${READY_SECS}s,最后 /healthz=${READY_CODE},unit=$(_unit_active nous-engine-backend.service) — enginectl logs backend")"
+  fi
+  _banner_section "$since"
+  if [ "$READY" = 1 ]; then _models_section; fi
+  echo
+  cmd_status
+}
+
+cmd_down() {
+  sudo systemctl --no-block stop "${APP_UNITS[@]}"
+  printf '应用栈停止已触发(后端/隧道/状态)。%s\n' "$(c_dim 'postgresql 仍在运行 — 如需停库: sudo systemctl stop postgresql')"
+}
+
+cmd_restart() {
+  # comfyui 仅在 enabled 时才纳入 restart —— 禁用的单元 restart = start,会对着
+  # 模板路径 /opt/comfyui 启动失败 → Restart=on-failure 无限循环(2026-08-10 设计修正)。
+  local restart_units=(nous-engine-backend.service nous-engine-status.service)
+  local comfy_note='未纳入本次重启 — unit 未 enabled(sudo systemctl enable --now nous-engine-comfyui)'
+  if systemctl is-enabled --quiet nous-engine-comfyui.service 2>/dev/null; then
+    restart_units+=(nous-engine-comfyui.service)
+    comfy_note='本次已重启'
+  fi
+
+  # banner 只认这一刻之后的日志;monotonic / NRestarts 基线用来区分新旧后端实例、识别崩溃环
+  # (见 _wait_backend_ready)。
+  local since baseline nr_base
+  since="$(date '+%Y-%m-%d %H:%M:%S')"
+  baseline="$(systemctl show -p ActiveEnterTimestampMonotonic --value nous-engine-backend.service 2>/dev/null || true)"
+  nr_base="$(systemctl show -p NRestarts --value nous-engine-backend.service 2>/dev/null || true)"
+
+  printf '重启应用栈:\n'
+  local u
+  for u in "${restart_units[@]}"; do printf '  %s\n' "$u"; done
+  if [ "$comfy_note" != '本次已重启' ]; then
+    printf '  %-32s %s\n' nous-engine-comfyui.service "$(c_dim '跳过(unit 未 enabled)')"
+  fi
+  printf '  %-32s %s\n' nous-engine-cloudflared.service "$(c_dim '随后端重启(PartOf=backend)')"
+
+  # --no-block:同 cmd_up —— 阻塞 restart 客户端会挂(unit 实际 ~3s 就重启完);入队即返回,
+  # 自己 poll。注意:--no-block 下「停旧→起新」非同步完成,poll is-active 到的可能是旧实例
+  # 没死透那一瞬 → _wait_backend_ready 靠 monotonic 基线 + /healthz 双门排除这一误判。
+  sudo systemctl --no-block restart "${restart_units[@]}"
+  printf '\n等待 backend 重新就绪(最多 %ss)...\n' "$ENGINECTL_WAIT"
+  if _wait_backend_ready "$baseline" "$nr_base"; then
+    printf '  %s %s\n' "$(c_grn '后端已就绪')" \
+      "$(c_dim "GET /healthz 200 · 用时 ${READY_SECS}s(unit 翻 active 用了 ${READY_UNIT_SECS:-?}s)")"
+  elif [ -n "$READY_CRASHLOOP" ]; then
+    printf '  %s %s\n' "$(c_red "后端启动后已崩溃 ${READY_CRASHLOOP} 次(systemd 在按 RestartSec=15 自动重拉)")" \
+      "$(c_dim '不再等 — enginectl logs backend')"
+  else
+    printf '  %s %s\n' "$(c_red "后端 ${READY_SECS}s 内未就绪")" \
+      "$(c_dim "最后 /healthz=${READY_CODE},unit=$(_unit_active nous-engine-backend.service)")"
+  fi
+
+  # 逐个单元收口:回没回到 active?回来后又自己重启过没有(NRestarts 只由自动重启累加、
+  # 被手动 restart 清零 → 这里的非零基本就是崩溃环)。
+  local bad=() st nr
+  for u in "${restart_units[@]}"; do
+    st="$(_unit_active "$u")"
+    [ "$st" = active ] || bad+=("$u")
+    nr="$(systemctl show -p NRestarts --value "$u" 2>/dev/null || true)"
+    if [ "$st" = active ] && [ -n "$nr" ] && [ "$nr" != 0 ]; then
+      printf '  %s %s\n' "$(c_ylw "$u 起来后又自行重启了 ${nr} 次")" \
+        "$(c_dim "(崩溃循环?enginectl logs $(_short_unit "$u"))")"
+    fi
+  done
+
+  if [ ${#bad[@]} -gt 0 ]; then
+    # 起不来就别再印开机 banner 那套喜报了 —— 直接把各自的日志尾巴摆出来 + 指路。
+    printf '\n%s\n' "$(c_red '✗ 以下单元没回到 active:')"
+    for u in "${bad[@]}"; do
+      printf '  %-32s %s   %s\n' "$u" "$(c_red "$(_unit_active "$u")")" \
+        "$(c_dim "enginectl logs $(_short_unit "$u")  ·  journalctl -u $u -n 100 --no-pager")"
+    done
+    for u in "${bad[@]}"; do
+      printf '\n%s\n' "$(c_dim "$u 最近日志:")"
+      journalctl -u "$u" --no-pager -n 15 2>/dev/null | sed 's/^/  /' || true
+    done
+  else
+    _banner_section "$since"
+  fi
+
+  if [ "$READY" = 1 ]; then _models_section; fi
+
+  # 收尾用 status 的同一份报告(端口/ZeroTier/ComfyUI 桥/隧道),单元表带上本次动作标注,
+  # 免得同样的单元行在一屏里出现两遍格式还不一样。
+  echo
+  # 注意:键要跟 STACK_UNITS 里的写法一致(不带 .service 后缀)。
+  cmd_status \
+    'postgresql=未受本次重启影响' \
+    'nous-engine-backend=本次已重启' \
+    'nous-engine-cloudflared=随后端重启(PartOf)' \
+    'nous-engine-status=本次已重启' \
+    "nous-engine-comfyui=${comfy_note}"
+}
+
+cmd_status() {
+  _status_units "$@"
+  _status_endpoints
 }
 
 cmd_logs() {
