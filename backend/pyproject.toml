@@ -111,7 +111,7 @@ image = [
     "einops>=0.8",
     # SeedVR2 超分引擎(vendored NumZ src,Apache 2.0,见 seedvr2_vendor/)依赖。
     # 无 flash-attn/无自编译 CUDA;flash-attn 可选(回退 SDPA)。PR-1 集成(project_seedvr2_integration)。
-    "torchvision==0.26.0",          # SeedVR2 VAE/图像变换;钉 0.26.0(配 torch 2.11,vllm 0.22 也要这版)
+    "torchvision==0.28.0",          # SeedVR2 VAE/图像变换;钉 0.26.0(配 torch 2.11,vllm 0.22 也要这版)
     "torchaudio==2.11.0",           # TTS(cosyvoice2 等)音频 IO;2026-06-03 全栈 bump 时掉了(回归:
                                     # cosyvoice2 ModuleNotFoundError),钉 2.11.0 配 torch 2.11
     "omegaconf>=2.3.0",             # SeedVR2 config
