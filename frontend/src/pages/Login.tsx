@@ -141,6 +141,8 @@ function PasswordForm({ onBack }: { onBack: () => void }) {
       <input
         type="password"
         autoFocus
+        name="password"
+        autoComplete="current-password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
         placeholder="管理员密码"
@@ -202,6 +204,8 @@ function TotpForm({ onBack }: { onBack: () => void }) {
     <form onSubmit={onSubmit} className="flex flex-col gap-3">
       <input
         autoFocus
+        name="otp"
+        autoComplete="one-time-code"
         inputMode="numeric"
         pattern="[0-9]*"
         maxLength={8}
