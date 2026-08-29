@@ -27,7 +27,9 @@ import ComfyBridgeSection from '../settings/ComfyBridgeSection'
 //   高级：开发者 / 关于
 //
 // 现有 backend-bound "通用" 内容（路径 / GPU / 服务地址）拆到对应子页：
-//   - 引擎默认 = 路径 + GPU
+//   - 引擎默认 = 路径。GPU 归属**不在这里配** —— 每模型覆盖
+//     (model_runtime_overrides 表,引擎库右键)才是真相源,没覆盖则
+//     GPUAllocator.get_best_gpu 按实时空闲显存自动选卡。
 //   - 数据库 = redisUrl + apiBaseUrl
 //   其它子页 placeholder（标注"敬请期待"），结构先齐了再逐步接通。
 
@@ -258,7 +260,7 @@ function EngineDefaultsPanel() {
   return (
     <ServerKVCard
       title="引擎默认"
-      subtitle="引擎仓库路径 + GPU 分配。写入服务端 settings 表"
+      subtitle="引擎仓库路径。写入服务端 settings 表"
       fields={[
         {
           key: 'localModelsPath',
@@ -278,8 +280,6 @@ function EngineDefaultsPanel() {
           label: 'IndexTTS 仓库',
           placeholder: '/path/to/index-tts',
         },
-        { key: 'gpuImage', serverKey: 'gpu_image', label: '图像生成 GPU' },
-        { key: 'gpuTts', serverKey: 'gpu_tts', label: 'TTS GPU' },
       ]}
     />
   )

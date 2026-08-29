@@ -68,7 +68,7 @@ describe('SettingsOverlay sub-nav (m16 alignment)', () => {
     render(withQuery(<SettingsOverlay />))
     fireEvent.click(screen.getByText('引擎默认'))
     expect(screen.getByText('本地模型目录')).toBeTruthy()
-    expect(screen.getByText('TTS GPU')).toBeTruthy()
+    expect(screen.getByText('IndexTTS 仓库')).toBeTruthy()
   })
 
   it('switches to ComfyUI 桥 sub-page', () => {
