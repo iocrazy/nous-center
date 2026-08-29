@@ -1,23 +1,40 @@
-# hardware.yaml — 实际生效的 GPU 拓扑（代码加载此文件，唯一真相源）
+# hardware.yaml — GPU runner 子进程的**拓扑**定义（哪些 group、每个 group 用哪些卡）
+#
+# ⚠️ 这不是"模型装在哪张卡"的真相源，也不是硬绑定。模型放置的优先级是：
+#   1. 每模型 gpu 覆盖 —— Postgres 表 model_runtime_overrides（引擎库右键设，
+#      运行时可改）。设了就用它，这是唯一的"钉死"手段。
+#   2. 没覆盖 → models.yaml 的静态 gpu 字段。
+#   3. 还没有 → auto：GPUAllocator.get_best_gpu() 按 nvidia-smi 实时空闲显存挑
+#      "装得下的里面最空的"（带在途预留，防并发 load 撞同一张卡）。
+# 本文件的 groups[].gpus 只对 auto 起**软偏好**作用（runner 的 preferred_gpus）：
+# 先在组内选，组内都装不下就 spill 到全局并打 warning（gpu_allocator.py:180）。
+# 所以下面每个 group 的卡是"倾向"，不是"限定"。
+#
+# 另外：只有走 image / tts runner 子进程的节点受本文件约束。LLM（直连 vLLM）、
+# ASR（MOSS/SGLang 独立 systemd 微服务，自带 CUDA_VISIBLE_DEVICES）、向量嵌入
+# 都不经过这里，它们的卡各自决定。
 #
 # 当前 = Pro 6000 + 2x3090 三卡布局（两张 3090 之间有 NVLink bridge）。
-# 索引 = PCI_BUS_ID（与 nvidia-smi 一致；backend/.env 强制
-# CUDA_DEVICE_ORDER=PCI_BUS_ID，否则 torch 默认 FASTEST_FIRST 会把 Pro 6000
+# 索引 = PCI_BUS_ID（与 nvidia-smi 一致；src/api/main.py:11 在 import torch 前
+# setdefault CUDA_DEVICE_ORDER=PCI_BUS_ID —— 不在 .env 里，standalone 脚本
+# 不经 main.py 必须自己设，否则 torch 默认 FASTEST_FIRST 会把 Pro 6000
 # 排到 cuda:0，与本 yaml + nvidia-smi 错位，导致 ModelManager
 # get_best_gpu(nvidia-smi index) 喂给 torch 当 cuda:N 装错卡）:
-#   GPU 0: RTX 3090 (01:00)  24 GB  → 显示卡（驱动 Xorg/GNOME）——禁止放任何计算！
+#   GPU 0: RTX 3090 (01:00)  24 GB  → 显示卡（驱动 Xorg/GNOME）——重负载计算慎放！
 #                                     在显示卡上加载模型会撑爆 595 开源驱动的 NVKMS
 #                                     显存分配（NvKmsKapiMemory，GPU 0x100=bus01）→ 桌面掉登录。
-#   GPU 1: RTX Pro 6000 Blackwell  96 GB  → llm（专用，不放 image）
-#   GPU 2: RTX 3090 (9A:00)  24 GB  → tts + image（共用这张 24GB 3090）
+#   GPU 1: RTX Pro 6000 Blackwell  96 GB  → llm group 偏好（ComfyUI sidecar 也绑这张）
+#   GPU 2: RTX 3090 (9A:00)  24 GB  → tts + image group 偏好（共用这张 24GB 3090）
 #
-# image 原本钉在 GPU 0，一出图就崩桌面，已移到 GPU 2（与 tts 共用，2026-06-22）。
+# image group 的偏好原本是 GPU 0（崩桌面，见上），2026-06-22 改到 GPU 2。注意这
+# 只挡住 auto 选卡：给某个模型显式设 gpu:0 覆盖，仍会装到显示卡上。
 # 两张 3090（GPU 0 / GPU 2）之间有 NVLink，但 GPU 0 是显示卡，不能用于 llm tp；
 # 若要 NVLink tp，需先把显示器接到别的卡、腾空 GPU 0 再用 [0,2] + nvlink:true。
 #
 # 字段语义：
 #   id      group 唯一标识，runner / scheduler 用它寻址
-#   gpus    该 group 占用的 GPU index 列表（cuda:N 的 N）
+#   gpus    该 group auto 选卡时**优先**考虑的 GPU index 列表（cuda:N 的 N）；
+#           组内装不下会 spill 到全局，不是硬限制
 #   nvlink  组内 GPU 是否 NVLink 互联；vLLM tp 模型强约束 nvlink:true
 #   role    image / llm / tts —— 节点按 role 找 group
 #   vram_gb 整个 group 的合计 VRAM
@@ -31,7 +48,7 @@ groups:
     vram_gb: 96
 
   - id: image
-    gpus: [2]              # 移到 GPU2 3090（原为 GPU0 显示卡，跑图会崩桌面）；与 tts 共用 24GB
+    gpus: [2]              # 偏好 GPU2 3090（原偏好 GPU0 显示卡，跑图会崩桌面）；与 tts 共用 24GB
     nvlink: false
     role: image
     vram_gb: 24
