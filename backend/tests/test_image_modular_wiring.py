@@ -8,12 +8,44 @@ PR「true-cfg 修复」后:Flux2 comfy 单文件走**标准** `Flux2KleinPipelin
 from __future__ import annotations
 
 import asyncio
+import sys
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.services.inference.base import ImageRequest, LoRASpec
 from src.services.inference import image_modular
+
+
+@pytest.fixture(autouse=True)
+def _pin_mock_torch():
+    """本模块用例全部假定 conftest 装的 mock torch(见模块 docstring:无 GPU/真 diffusers)——
+    这里自己把这个前提钉死,不再指望它在 collection 后还成立。
+
+    背景(2026-08-29):tests/test_quant_loaders.py 要 round-trip 真张量,于是在**模块导入期**
+    把 stub 从 sys.modules evict 掉换成真 torch。pytest 在 collection 期就 import 全部测试
+    模块,所以这件事发生在**任何用例开跑之前**,污染整个 session,且与模块先后顺序无关。
+    生产代码里是函数内 `import torch`(运行时才解析 sys.modules),例如 image_modular.infer 的
+    `torch.Generator(device=self.device)` —— 拿到真 torch,而 conftest 设了
+    CUDA_VISIBLE_DEVICES="" → `AcceleratorError: no CUDA-capable device is detected`。
+    实测下面两个 offload 用例全量跑必挂、单跑必过。
+
+    为什么不在 test_quant_loaders 那边把 stub 放回去(试过,不行):真 torch 的内部实现自己
+    也走 sys.modules['torch'] 解析,把 MagicMock 塞回去会毒化真 torch 本身 —— 它的 8 个
+    用例当场挂在 `torch.tensor(..., dtype=torch.float32)`
+    (TypeError: isinstance() arg 2 must be a type)和 `AttributeError: __version__`。
+    所以只能由**需要 mock 的一方**在自己的用例范围内钉,跑完原样还回去。
+    """
+    saved = sys.modules.get("torch")
+    if not isinstance(saved, MagicMock):
+        sys.modules["torch"] = MagicMock(name="torch-stub")
+    try:
+        yield
+    finally:
+        if saved is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = saved
 
 
 def _fake_klein(monkeypatch):
