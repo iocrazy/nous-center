@@ -376,8 +376,19 @@ async def delete_template(
     template_id: int,
     session: AsyncSession = Depends(get_async_session),
 ):
-    tpl, svc = await _get_template_and_service(session, template_id)
-    await session.delete(svc)
+    # 不走 _get_template_and_service:那个 helper 在配对服务缺失时抛 404,会让
+    # **孤儿模板永远删不掉**(历史上先删了服务的行就是这样卡在库里的,2026-08-31
+    # 实机 16 行)。这里只要模板在就删,服务有就一起删、没有就跳过。
+    tpl = await session.get(ComfyTemplate, template_id)
+    if tpl is None:
+        raise HTTPException(404, detail="template not found")
+    svc = (await session.execute(
+        select(ServiceInstance)
+        .where(ServiceInstance.source_type == "comfy_template")
+        .where(ServiceInstance.source_id == template_id)
+    )).scalar_one_or_none()
+    if svc is not None:
+        await session.delete(svc)
     await session.delete(tpl)
     await session.commit()
     invalidate("services")
