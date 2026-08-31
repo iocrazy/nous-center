@@ -145,3 +145,36 @@ async def test_multiple_absent_by_default(client):
     assert (await client.put(f"/api/v1/comfy-templates/{tid}/mapping", json=mapping)).status_code == 200
     prop = (await client.get("/v1/services/opt-single/schema")).json()["input_schema"]["properties"]["pick"]
     assert "x-multiple" not in prop
+
+
+@pytest.mark.asyncio
+async def test_multiple_value_passes_enum_validation(client):
+    """x-multiple 的字段:逗号串里**每一项**分别比 enum,不是拿整串比。
+
+    2026-08-31 实机:krea2 的 styles 换成 275 项枚举后,
+    `{"styles": "sai-anime,Fooocus Cinematic"}` 直接 422
+    "must be one of ['Fooocus Enhance', ...]" —— x-multiple 当时只影响 schema
+    生成,没影响校验,于是多选值**永远过不了白名单**,功能整条是死的。
+    """
+    from src.services.service_schema import validate_service_input
+
+    schema = {"type": "object", "properties": {"styles": {
+        "type": "string", "enum": ["a", "b", "c"], "x-multiple": True}}}
+    assert validate_service_input(schema, {"styles": "a,c"}) == []
+    assert validate_service_input(schema, {"styles": "b"}) == []
+    assert validate_service_input(schema, {"styles": ""}) == [], "空串=没选,合法"
+    assert validate_service_input(schema, {"styles": "a, c"}) == [], "容忍空格"
+
+    bad = validate_service_input(schema, {"styles": "a,zzz"})
+    assert len(bad) == 1 and "zzz" in bad[0], bad
+
+
+@pytest.mark.asyncio
+async def test_single_select_still_rejects_comma_string(client):
+    """回归:没有 x-multiple 的枚举字段照旧整串比对 —— 逗号串就是非法值。"""
+    from src.services.service_schema import validate_service_input
+
+    schema = {"type": "object", "properties": {"pick": {
+        "type": "string", "enum": ["a", "b"]}}}
+    assert validate_service_input(schema, {"pick": "a"}) == []
+    assert len(validate_service_input(schema, {"pick": "a,b"})) == 1
