@@ -16,6 +16,7 @@ export type FieldKind =
   | 'boolean'
   | 'file'
   | 'select'
+  | 'thumb_select'
   | 'slider'
 
 export function num(v: unknown): number | undefined {
@@ -33,7 +34,16 @@ export function classifyField(p: ExposedParam): FieldKind {
   if (t === 'file' || t === 'image' || t === 'audio' || t === 'video' || t === 'binary' || t === 'media') {
     return 'file'
   }
-  if (Array.isArray(constraints.enum) && constraints.enum.length > 0) return 'select'
+  if (Array.isArray(constraints.enum) && constraints.enum.length > 0) {
+    // option_meta 里只要有任何一项带 image,就用缩略图网格 —— 275 个 fooocus 风格
+    // 用纯文本下拉根本没法挑(后端 comfy_templates.py::_split_options 写入)。
+    // 一张图都没有时照旧退回 <select>,不做无谓的布局变更。
+    const meta = constraints.option_meta
+    if (Array.isArray(meta) && meta.some((m) => (m as { image?: unknown })?.image)) {
+      return 'thumb_select'
+    }
+    return 'select'
+  }
   const numeric = t === 'integer' || t === 'int' || t === 'number' || t === 'float'
   // Numeric field with a bounded range → slider (对齐 Infinite-Canvas / nous
   // 节点的 slider widget,min/max/step 从 ExposedParam.constraints 带出)。

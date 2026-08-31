@@ -4,6 +4,7 @@ import type { ExposedParam } from '../../api/services'
 import { paramKey, paramSlot } from '../../api/services'
 import NodeSelectPopover from '../nodes/NodeSelectPopover'
 import { classifyField, defaultFor, isRandomizable, num, type FieldKind } from './fieldKind'
+import OptionThumbGrid, { type OptionMeta } from './OptionThumbGrid'
 
 export interface SchemaDrivenFormProps {
   inputs: ExposedParam[]
@@ -223,12 +224,34 @@ function FieldInput({
     )
   }
 
+  if (kind === 'thumb_select') {
+    const c = (param.constraints ?? {}) as { option_meta?: unknown[]; multiple?: unknown }
+    return (
+      <OptionThumbGrid
+        options={(c.option_meta ?? []) as OptionMeta[]}
+        value={String(value ?? '')}
+        multiple={c.multiple === true}
+        onChange={onChange}
+      />
+    )
+  }
+
   if (kind === 'select') {
     const c = (param.constraints ?? {}) as { enum?: unknown[]; enum_labels?: unknown }
     const opts = (c.enum ?? []) as unknown[]
     // enum_labels: 平行数组或 {value: label} 映射,缺省用 value 本身。
     const labels = c.enum_labels
+    // option_meta 优先:桥映射写的是它,enum_labels 是更早的老形态。
+    const metaLabels = (param.constraints as Record<string, unknown> | undefined)?.option_meta
+    const metaMap = Array.isArray(metaLabels)
+      ? Object.fromEntries(
+          (metaLabels as OptionMeta[])
+            .filter((m) => m?.label)
+            .map((m) => [String(m.value), m.label as string]),
+        )
+      : null
     const labelFor = (o: unknown, i: number): string => {
+      if (metaMap && metaMap[String(o)]) return metaMap[String(o)]
       if (Array.isArray(labels)) return String(labels[i] ?? o)
       if (labels && typeof labels === 'object') {
         const m = labels as Record<string, unknown>
