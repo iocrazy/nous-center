@@ -199,8 +199,18 @@ def validate_service_input(input_schema: dict, payload: Any) -> list[str]:
             errors.append(f"{k}: expected number")
         elif t == "boolean" and not isinstance(v, bool):
             errors.append(f"{k}: expected boolean")
-        if "enum" in spec and v not in spec["enum"]:
-            errors.append(f"{k}: must be one of {spec['enum']}")
+        if "enum" in spec:
+            # x-multiple 的字段传的是**逗号分隔串**(对齐 ComfyUI-Easy-Use 的
+            # select_styles,prompt.py:196 `.split(',')`),要逐项比对而不是整串比 ——
+            # 否则多选值永远撞不上白名单,功能整条是死的(2026-08-31 实机 422)。
+            if spec.get("x-multiple") and isinstance(v, str):
+                picked = [x.strip() for x in v.split(",") if x.strip()]
+                unknown = [x for x in picked if x not in spec["enum"]]
+                if unknown:
+                    errors.append(
+                        f"{k}: {unknown} not in allowed values {spec['enum']}")
+            elif v not in spec["enum"]:
+                errors.append(f"{k}: must be one of {spec['enum']}")
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             if "minimum" in spec and v < spec["minimum"]:
                 errors.append(f"{k}: must be >= {spec['minimum']}")
