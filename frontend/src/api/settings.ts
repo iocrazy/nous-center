@@ -5,8 +5,6 @@ export interface ServerSettings {
   local_models_path: string
   cosyvoice_repo_path: string
   indextts_repo_path: string
-  gpu_image: number
-  gpu_tts: number
   redis_url: string
   api_base_url: string
 }

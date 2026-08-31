@@ -53,10 +53,6 @@ class Settings(BaseSettings):
     VLLM_BASE_URL: str = "http://localhost:8100"
     VL_MODEL: str = "Qwen2.5-VL-7B-Instruct"  # default model for /api/v1/understand
 
-    GPU_IMAGE: int = 0
-    GPU_TTS: int = 1
-    GPU_VIDEO: str = "0,1"
-
     CACHE_TTL_SECONDS: int = 3600  # TTS cache TTL (1 hour)
     # 图像/产物签名 URL 有效期(秒)。服务层 API spec PR-4:输出交付 TTL 归服务层配置,
     # 不再是每个出图节点的 widget(用户:URL 有效期不该是节点的事,该是工作流 API 的功能)。
