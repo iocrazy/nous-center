@@ -17,7 +17,7 @@ import time
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -86,6 +86,9 @@ class ExposedParamMapping(BaseModel):
     options: list | None = None
     required: bool = True
     random: bool = False
+    # 多选 combo:值仍是**逗号分隔字符串**,不是数组 —— ComfyUI-Easy-Use 的
+    # select_styles 本来就 `.split(',')`(prompt.py:196)。前端据此渲多选。
+    multiple: bool = False
     comfy_node_id: str
     comfy_input: str
 
@@ -146,6 +149,36 @@ def _mapping_to_exposed_input(m: ExposedParamMapping) -> dict:
     }
 
 
+def _split_options(options: list) -> tuple[list, list[dict] | None]:
+    """combo 选项 → (纯值 enum, 元数据列表或 None)。
+
+    支持两种写法混排:裸标量(`"sai-anime"`)和富对象(`{value, label?, image?}`)。
+    **enum 永远是纯值列表** —— JSON Schema 校验、`/v1/apps` 的入参白名单、以及旧前端
+    的 `<select>` 渲染都依赖这一点,元数据绝不能混进去。
+
+    没有任何一项带 label/image 时返回 `None`,`option_meta` 就不写 —— 裸标量的老行为
+    一字不变(零回归)。
+    """
+    values: list = []
+    meta: list[dict] = []
+    rich = False
+    for o in options:
+        if isinstance(o, dict) and "value" in o:
+            values.append(o["value"])
+            m: dict = {"value": o["value"]}
+            if o.get("label") is not None:
+                m["label"] = o["label"]
+            if o.get("image") is not None:
+                m["image"] = o["image"]
+            if len(m) > 1:
+                rich = True
+            meta.append(m)
+        else:
+            values.append(o)
+            meta.append({"value": o})
+    return values, (meta if rich else None)
+
+
 def _numeric_constraints(m: ExposedParamMapping) -> dict[str, Any]:
     c: dict[str, Any] = {}
     if m.min is not None:
@@ -158,7 +191,14 @@ def _numeric_constraints(m: ExposedParamMapping) -> dict[str, Any]:
     # → input/ 目录),不是取值域。存下来会让 Playground 渲成下拉框、后端把上传新文件
     # 判成非法(2026-08-12 实机 400)。治本在这:根本不写进去。
     if m.options and str(m.type or "").lower() not in _FILE_IN_TYPES:
-        c["enum"] = m.options
+        values, option_meta = _split_options(m.options)
+        c["enum"] = values
+        # 每选项的显示名 + 缩略图(如 ComfyUI-Easy-Use 的 /easyuse/prompt/styles 返回的
+        # name_cn / thumbnail)。只在真有元数据时才写,裸标量选项不产生这个键。
+        if option_meta is not None:
+            c["option_meta"] = option_meta
+        if m.multiple:
+            c["multiple"] = True
     if m.random:
         c["random"] = m.random
     return c
@@ -180,9 +220,12 @@ def _exposed_input_to_param(item: dict) -> dict:
         "min": c.get("min", item.get("min")),
         "max": c.get("max", item.get("max")),
         "step": c.get("step", item.get("step")),
-        "options": c.get("enum", item.get("options")),
+        # 有 option_meta 就还原富形态(编辑器 round-trip 要拿回 label/image);
+        # 否则退回纯 enum,再退回 I3 修复前的顶层 options。
+        "options": c.get("option_meta") or c.get("enum", item.get("options")),
         "required": item.get("required", True),
         "random": c.get("random", item.get("random", False)),
+        "multiple": c.get("multiple", item.get("multiple", False)),
         "comfy_node_id": item.get("comfy_node_id"),
         "comfy_input": item.get("comfy_input"),
     }
@@ -459,3 +502,41 @@ async def comfy_object_info():
         )
     _object_info_cache = (now, data)
     return data
+
+
+def _style_to_option(item: dict) -> dict:
+    """sidecar 风格项 → mapping 直接能吃的 `{value, label?, image?}`。
+
+    只在源数据真有 name_cn / thumbnail 时才写对应键 —— 不编造 label(否则前端分不清
+    "有中文名"和"回退用了英文名"),也不编造 image(缩略图缺失时该退回纯文字卡片)。
+    """
+    opt: dict = {"value": item.get("name")}
+    if item.get("name_cn"):
+        opt["label"] = item["name_cn"]
+    if item.get("thumbnail"):
+        opt["image"] = item["thumbnail"]
+    return opt
+
+
+@health_router.get("/style-packs", dependencies=[Depends(require_admin)])
+async def comfy_style_packs():
+    """可选的风格包清单(easy stylesSelector 的 styles combo)。"""
+    try:
+        packs = await get_client().style_packs()
+    except (ComfyError, httpx.HTTPError, ValueError) as e:
+        raise HTTPException(502, detail=f"ComfyUI sidecar 不可达:{str(e)[:120]}")
+    return {"packs": packs}
+
+
+@health_router.get("/styles", dependencies=[Depends(require_admin)])
+async def comfy_styles(pack: str = Query(..., description="风格包名,取自 /style-packs")):
+    """某个风格包内的全部风格,已归一成 exposed_params.options 的 `{value,label,image}` 形。
+
+    前端把返回的 `options` 原样塞进 `PUT /api/v1/comfy-templates/{id}/mapping` 的
+    exposed_params 即可 —— 无需再做形状转换。
+    """
+    try:
+        items = await get_client().styles(pack)
+    except (ComfyError, httpx.HTTPError, ValueError) as e:
+        raise HTTPException(502, detail=f"ComfyUI sidecar 不可达:{str(e)[:120]}")
+    return {"pack": pack, "options": [_style_to_option(i) for i in items if i.get("name")]}
