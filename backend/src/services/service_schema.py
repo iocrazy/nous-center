@@ -106,6 +106,12 @@ def _input_property(exposed: dict, widget: dict | None) -> dict:
         # "must be one of ['5 (1).jpg','example.png']")。文件类一律不写 enum。
         if enum and str(exposed.get("type") or "").lower() not in _FILE_IN_TYPES:
             prop["enum"] = enum
+            # 每选项的显示名 + 缩略图(comfy_templates._split_options 写入)。放同级扩展
+            # 关键字而不是塞进 enum —— enum 必须保持纯值列表,校验和旧前端都依赖它。
+            # 前端有这个键就渲缩略图网格,没有就退回原来的 <select>。
+            option_meta = constraints.get("option_meta")
+            if option_meta:
+                prop["x-option-meta"] = option_meta
         if constraints.get("min") is not None:
             prop["minimum"] = constraints["min"]
         if constraints.get("max") is not None:

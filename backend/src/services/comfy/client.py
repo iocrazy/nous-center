@@ -62,6 +62,31 @@ class ComfyClient:
     async def object_info(self) -> dict:
         return (await self._client.get("/object_info", timeout=15)).json()
 
+    async def styles(self, pack: str) -> list[dict]:
+        """ComfyUI-Easy-Use 的风格清单(`/easyuse/prompt/styles?name=<包>`)。
+
+        返回项形如 `{name, name_cn, thumbnail, prompt, negative_prompt}`。thumbnail
+        对 fooocus_styles 是 GitHub raw 外链、对 krea2 包是 sidecar 本地文件 URL ——
+        两种都是浏览器能直接加载的地址,不需要我们再代理图片本身。
+        """
+        r = await self._client.get(
+            "/easyuse/prompt/styles", params={"name": pack}, timeout=15)
+        if r.status_code != 200:
+            raise ComfyError(f"读取风格清单失败(HTTP {r.status_code})")
+        data = r.json()
+        return data if isinstance(data, list) else []
+
+    async def style_packs(self) -> list[str]:
+        """可选的风格包清单 —— 从 object_info 的 `easy stylesSelector.styles` combo 取。
+
+        没装 ComfyUI-Easy-Use(或节点改名)时返回空列表,由路由层决定怎么呈现。
+        """
+        oi = await self.object_info()
+        try:
+            return list(oi["easy stylesSelector"]["input"]["required"]["styles"][1]["options"])
+        except (KeyError, IndexError, TypeError):
+            return []
+
     async def system_stats(self) -> dict:
         """VRAM/设备快照,同 health() 降级——瞬断不应打断健康面板渲染。"""
         try:
