@@ -50,7 +50,21 @@ export default function SchemaDrivenForm({
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
-    onSubmit(values)
+    // 留空的**数字**字段要从 payload 里省略,不能发空串 —— 后端
+    // validate_service_input 会判 "expected integer" 直接 422,Playground 的运行
+    // 按钮对任何带可选空数字字段的服务就此不可用(2026-08-31 实机:krea2 的 seed)。
+    // 字符串字段的空串是合法值(用户就是想传空提示词),保留。
+    const cleaned: Record<string, unknown> = {}
+    for (const p of inputs) {
+      const k = paramKey(p)
+      if (!k) continue
+      const v = values[k]
+      const kind = classifyField(p)
+      const numeric = kind === 'number' || kind === 'integer' || kind === 'slider'
+      if (numeric && (v === '' || v === undefined || v === null)) continue
+      cleaned[k] = v
+    }
+    onSubmit(cleaned)
   }
 
   const reset = () => setValues(initial)
