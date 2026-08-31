@@ -108,3 +108,40 @@ async def test_file_type_still_gets_no_enum_even_with_rich_options(client):
     prop = (await client.get("/v1/services/opt-file/schema")).json()["input_schema"]["properties"]["img"]
     assert "enum" not in prop
     assert "x-option-meta" not in prop
+
+
+@pytest.mark.asyncio
+async def test_multiple_flag_surfaces_in_schema(client):
+    """多选 combo(如 Krea2 的风格:逗号拼接送给 ComfyUI 的 select_styles)。
+
+    schema 里需要一个显式信号,否则前端只能当单选渲染。值仍是 string ——
+    ComfyUI-Easy-Use 的 `select_styles` 本来就吃逗号分隔字符串
+    (prompt.py:196 `select_styles.split(',')`),不是数组。
+    """
+    tid = await _mk(client, "opt-multi")
+    mapping = {"exposed_params": [{
+        "key": "styles", "label": "风格", "type": "string",
+        "comfy_node_id": "138", "comfy_input": "value", "required": False,
+        "multiple": True,
+        "options": [{"value": "sai-anime", "label": "SAI-动漫", "image": "https://x/a.jpg"}]}]}
+    assert (await client.put(f"/api/v1/comfy-templates/{tid}/mapping", json=mapping)).status_code == 200
+
+    prop = (await client.get("/v1/services/opt-multi/schema")).json()["input_schema"]["properties"]["styles"]
+    assert prop["type"] == "string", "多选仍然是逗号串,不是 array"
+    assert prop["x-multiple"] is True
+    # 编辑器 round-trip 也要拿得回来
+    detail = (await client.get(f"/api/v1/comfy-templates/{tid}")).json()
+    assert detail["exposed_params"][0]["multiple"] is True
+
+
+@pytest.mark.asyncio
+async def test_multiple_absent_by_default(client):
+    """没声明 multiple 的字段不产生 x-multiple —— 单选是默认,老映射零变化。"""
+    tid = await _mk(client, "opt-single")
+    mapping = {"exposed_params": [{
+        "key": "pick", "label": "选", "type": "string",
+        "comfy_node_id": "138", "comfy_input": "value",
+        "options": ["a", "b"], "required": False}]}
+    assert (await client.put(f"/api/v1/comfy-templates/{tid}/mapping", json=mapping)).status_code == 200
+    prop = (await client.get("/v1/services/opt-single/schema")).json()["input_schema"]["properties"]["pick"]
+    assert "x-multiple" not in prop

@@ -112,6 +112,10 @@ def _input_property(exposed: dict, widget: dict | None) -> dict:
             option_meta = constraints.get("option_meta")
             if option_meta:
                 prop["x-option-meta"] = option_meta
+            # 多选信号:值仍是 string(逗号串),只是允许选多项。没有这个键前端
+            # 只能当单选渲。
+            if constraints.get("multiple"):
+                prop["x-multiple"] = True
         if constraints.get("min") is not None:
             prop["minimum"] = constraints["min"]
         if constraints.get("max") is not None:

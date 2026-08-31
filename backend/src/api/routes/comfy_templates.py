@@ -86,6 +86,9 @@ class ExposedParamMapping(BaseModel):
     options: list | None = None
     required: bool = True
     random: bool = False
+    # 多选 combo:值仍是**逗号分隔字符串**,不是数组 —— ComfyUI-Easy-Use 的
+    # select_styles 本来就 `.split(',')`(prompt.py:196)。前端据此渲多选。
+    multiple: bool = False
     comfy_node_id: str
     comfy_input: str
 
@@ -194,6 +197,8 @@ def _numeric_constraints(m: ExposedParamMapping) -> dict[str, Any]:
         # name_cn / thumbnail)。只在真有元数据时才写,裸标量选项不产生这个键。
         if option_meta is not None:
             c["option_meta"] = option_meta
+        if m.multiple:
+            c["multiple"] = True
     if m.random:
         c["random"] = m.random
     return c
@@ -220,6 +225,7 @@ def _exposed_input_to_param(item: dict) -> dict:
         "options": c.get("option_meta") or c.get("enum", item.get("options")),
         "required": item.get("required", True),
         "random": c.get("random", item.get("random", False)),
+        "multiple": c.get("multiple", item.get("multiple", False)),
         "comfy_node_id": item.get("comfy_node_id"),
         "comfy_input": item.get("comfy_input"),
     }
