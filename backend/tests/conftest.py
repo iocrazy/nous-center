@@ -71,17 +71,25 @@ os.environ["NOUS_DISABLE_FRONTEND_MOUNT"] = "1"
 import tempfile as _tempfile
 os.environ.setdefault("NOUS_IMAGE_OUTPUTS", _tempfile.mkdtemp(prefix="nous-test-img-"))
 
-# CI sets DATABASE_URL="sqlite+aiosqlite:///:memory:", but in-memory sqlite is
-# per-connection: the app's session factory and the lifespan startup open
-# separate connections, each getting a fresh empty DB, so any route/lifespan
-# that touches the DB hits "no such table". Swap to a shared temp FILE sqlite
-# (one DB visible across all connections) and create the schema once below.
-# Only fires on the :memory: case (CI); local runs (postgres via .env) are
-# left completely untouched.
-_ci_memory_db = os.environ.get("DATABASE_URL", "").endswith(":memory:")
-if _ci_memory_db:
+# 测试库 = **每次运行一个隔离的临时 sqlite 文件**,无条件改写 DATABASE_URL。
+#
+# 为什么是无条件(2026-08-29 修):旧逻辑只在 CI 的 `:memory:` 情况下换库,本地跑
+# pytest 就直接读写 .env 里的**生产 Postgres**(nous_center)。实测一次全量跑在
+# comfy_templates / service_instances 各留下 16 行测试垃圾(bridge-db-test /
+# e2e-* / tpl-* / admin-e2e-*),而且 test_create_template_creates_service 硬编码
+# 的名字 `minimax-h3-r2v` 撞上生产同名行(ComfyUI 桥 PR#672,2026-08-11 建)→ 永久
+# 409;残留量还让整套测试的失败数在两次全量跑之间从 19 抖到 3(顺序/状态依赖)。
+#
+# 为什么是**文件** sqlite 而不是 `:memory:`:in-memory sqlite 是 per-connection 的,
+# app 的 session factory 和 lifespan 各开各的连接、各拿一个空库,任何碰 DB 的
+# 路由/lifespan 都会 "no such table"。临时文件库对所有连接可见,schema 在下面建一次。
+#
+# 逃生口:真要对着真库调试,显式 NOUS_TEST_USE_REAL_DB=1(护栏见
+# tests/test_db_isolation.py,该变量置 1 时自动跳过)。
+_use_real_db = os.environ.get("NOUS_TEST_USE_REAL_DB") == "1"
+if not _use_real_db:
     os.environ["DATABASE_URL"] = (
-        "sqlite+aiosqlite:///" + _tempfile.mkdtemp(prefix="nous-ci-db-") + "/test.db"
+        "sqlite+aiosqlite:///" + _tempfile.mkdtemp(prefix="nous-test-db-") + "/test.db"
     )
 
 import sys
@@ -125,10 +133,11 @@ import src.models.memory  # noqa: F401 — register model
 import src.models.api_gateway  # noqa: F401 — register model
 import src.models.status_sample  # noqa: F401 — register model(status 页采样)
 
-# Create the schema once on the shared temp-file test DB (the CI :memory: swap
-# above). All models are imported by now, so Base.metadata is complete. Runs at
-# import time — no event loop running yet — so asyncio.run is safe.
-if _ci_memory_db:
+# Create the schema once on the isolated temp-file test DB (swapped in above).
+# All models are imported by now, so Base.metadata is complete. Runs at import
+# time — no event loop running yet — so asyncio.run is safe. Skipped when the
+# NOUS_TEST_USE_REAL_DB escape hatch is on (that DB already has its schema).
+if not _use_real_db:
     import asyncio as _asyncio
 
     from src.models.database import create_engine as _create_engine
