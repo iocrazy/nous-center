@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import OptionThumbGrid, { parseValues } from './OptionThumbGrid'
+import OptionThumbGrid from './OptionThumbGrid'
+import { parseValues } from './fieldKind'
 
 const OPTS = [
   { value: 'sai-anime', label: 'SAI-动漫', image: 'https://x/a.jpg' },

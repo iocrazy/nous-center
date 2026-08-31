@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Check, Search, X } from 'lucide-react'
+import { parseValues } from './fieldKind'
 
 /** 一个带元数据的 combo 选项。后端 `constraints.option_meta` 的项形
  *  (comfy_templates.py::_split_options 写入),`label`/`image` 都可缺省。 */
@@ -16,11 +17,6 @@ export interface OptionThumbGridProps {
   value: string
   multiple?: boolean
   onChange: (next: string) => void
-}
-
-/** 逗号串 → 值数组。空串 → 空数组(不是 [''])。 */
-export function parseValues(v: string): string[] {
-  return v.split(',').map((s) => s.trim()).filter(Boolean)
 }
 
 /**

@@ -90,3 +90,10 @@ export function defaultFor(p: ExposedParam): unknown {
   }
 }
 
+
+
+/** 逗号串 → 值数组。空串 → 空数组(不是 [''])。 */
+export function parseValues(v: string): string[] {
+  return v.split(',').map((s) => s.trim()).filter(Boolean)
+}
+
