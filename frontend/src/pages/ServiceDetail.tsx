@@ -559,21 +559,18 @@ export function PlaygroundTab({ svc, initialInputs }: { svc: ServiceDetailT; ini
       let data: Record<string, unknown>
       if (isAsr) {
         if (!audioFile) throw new Error('请先选择音频文件')
-        // multipart 不能走 apiFetch(它强制 JSON Content-Type);raw fetch + same-origin cookie。
+        // body 是 FormData,apiFetch 会跳过 JSON Content-Type,让浏览器自己写
+        // multipart boundary。别手动补 Content-Type,补了后端就解不出 form 字段。
         const fd = new FormData()
         fd.append('file', audioFile)
         fd.append('model', svc.name)
         if (asrContext.trim()) fd.append('context', asrContext.trim())
         if (asrTimestamps) fd.append('timestamps', 'true')
         if (asrMergeSegments) fd.append('merge_segments', 'true')
-        const resp = await fetch('/v1/audio/transcriptions', {
-          method: 'POST', body: fd, credentials: 'same-origin',
+        data = await apiFetch<Record<string, unknown>>('/v1/audio/transcriptions', {
+          method: 'POST',
+          body: fd,
         })
-        if (!resp.ok) {
-          const t = await resp.text().catch(() => '')
-          throw new Error(`HTTP ${resp.status}: ${t.slice(0, 200)}`)
-        }
-        data = await resp.json()
       } else {
         const url =
           svc.category === 'llm'

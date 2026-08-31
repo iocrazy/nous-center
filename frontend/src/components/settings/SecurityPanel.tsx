@@ -29,14 +29,14 @@ export default function SecurityPanel() {
         <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>
           安全 & 登录
         </div>
-        <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+        <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
           除了密码登录，还可以绑定 Passkey（生物识别 / 硬件 Key）和 TOTP 动态码作为额外的登录方式。
         </div>
       </div>
 
       {!adminEnabled && (
         <Card>
-          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-xs" style={{ color: 'var(--muted)' }}>
             未启用管理员登录（<code>ADMIN_PASSWORD</code> 为空）。Passkey / TOTP 在 dev 模式下没有意义。设密码后此页才有作用。
           </div>
         </Card>
@@ -111,7 +111,7 @@ function PasskeySection() {
 
       <div className="mt-4 flex flex-col gap-1">
         {list.data?.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-xs" style={{ color: 'var(--muted)' }}>
             还没有绑定的 Passkey。
           </div>
         )}
@@ -216,11 +216,11 @@ function TotpSection() {
           </div>
           <div
             className="mt-2 font-mono select-all break-all"
-            style={{ color: 'var(--text-secondary)' }}
+            style={{ color: 'var(--muted)' }}
           >
             {pending.otpauth_url}
           </div>
-          <div className="mt-2" style={{ color: 'var(--text-secondary)' }}>
+          <div className="mt-2" style={{ color: 'var(--muted)' }}>
             如果你的客户端不支持 URL 扫描，秘密为 <code style={{ color: 'var(--text)' }}>{pending.secret}</code>
           </div>
           <form onSubmit={onVerify} className="flex gap-2 mt-3">
@@ -256,7 +256,7 @@ function TotpSection() {
               style={{
                 background: 'transparent',
                 border: '1px solid var(--border)',
-                color: 'var(--text-secondary)',
+                color: 'var(--muted)',
               }}
             >
               取消
@@ -268,7 +268,7 @@ function TotpSection() {
 
       <div className="mt-4 flex flex-col gap-1">
         {list.data?.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-xs" style={{ color: 'var(--muted)' }}>
             还没有绑定的 TOTP。
           </div>
         )}
@@ -319,7 +319,7 @@ function SectionHeader({
         {icon}
         {title}
       </div>
-      <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+      <div className="text-xs" style={{ color: 'var(--muted)' }}>
         {desc}
       </div>
     </div>
@@ -360,7 +360,7 @@ function Row({
         <div className="text-xs font-medium" style={{ color: 'var(--text)' }}>
           {label}
         </div>
-        <div className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+        <div className="text-[10px]" style={{ color: 'var(--muted)' }}>
           {sub}
         </div>
       </div>
@@ -369,7 +369,7 @@ function Row({
         disabled={disabled}
         title="删除"
         className="p-1 rounded disabled:opacity-50"
-        style={{ color: 'var(--text-secondary)', background: 'transparent' }}
+        style={{ color: 'var(--muted)', background: 'transparent' }}
       >
         <Trash2 size={12} />
       </button>

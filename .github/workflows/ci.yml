@@ -90,6 +90,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # wasm 产物只挂在 `prebuild`(即 `npm run build` 之前),而本 job 的顺序是
+      # Lint → Test → Build —— vitest 跑在产物生成**之前**,于是 import 了
+      # src/wasm/index.ts 的用例(NodeEditorOverlay.test.tsx)整个文件加载失败:
+      #   Failed to resolve import "./pkg/audio_engine.js" from "src/wasm/index.ts"
+      # 之前一直被 lint 步骤先挂掩盖着,lint 修绿后才露出来。显式先建一次。
+      - name: Build wasm (vitest 需要 src/wasm/pkg 已存在)
+        run: npm run wasm:build
+
       # vitest 之前没进 CI(job 只跑 lint+build)→ 前端单测红了没人察觉
       # (CachedHint.test 在 master 长红到 #409 才修)。接进来当门禁。
       - name: Test (vitest)

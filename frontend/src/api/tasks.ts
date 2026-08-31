@@ -20,13 +20,16 @@ export interface ExecutionTask {
   updated_at: string
   /** Server-derived from result envelope. null until the run completes
    * with an image_output, then 'image'. Used for the task card badge. */
-  task_type: 'image' | 'tts' | 'llm' | 'vision' | 'asr' | null
+  task_type: 'image' | 'tts' | 'llm' | 'vision' | 'asr' | 'video' | null
   image_width: number | null
   image_height: number | null
 
   // PR-1a/1b/1c/1d 后端落 task_type 检测时同步暴露的字段;旧 payload 缺 → undefined。
-  /** PR-1a/b/c/d:显式 ServiceType,优先于 task_type 读(getTaskType helper)。 */
-  type?: 'image' | 'tts' | 'llm' | 'vision' | 'asr' | null
+  /** PR-1a/b/c/d:显式 ServiceType,优先于 task_type 读(getTaskType helper)。
+   * 'video' 目前后端不产(execution_task_serialize.py 只探前五种),先在类型里
+   * 留位:comfy bridge 的视频任务眼下靠 getTaskType 的 workflow_name 兜底认出来,
+   * 等后端补 _detect_video_meta 后这条直读路径即可生效。 */
+  type?: 'image' | 'tts' | 'llm' | 'vision' | 'asr' | 'video' | null
   /** PR-1b:TTS 任务音频时长(秒)。 */
   audio_duration_seconds?: number | null
   /** PR-1c:LLM 任务 token 统计。 */

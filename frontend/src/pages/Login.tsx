@@ -43,7 +43,7 @@ export default function Login() {
           <div className="text-lg font-medium" style={{ color: 'var(--text)' }}>
             nous-center
           </div>
-          <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
             管理员登录
           </div>
         </div>
@@ -112,7 +112,7 @@ function ChooseMethod({
       )}
       <BigButton icon={<KeyRound size={16} />} label="使用密码" onClick={onPassword} />
       {!passkeyAvailable && !totpAvailable && (
-        <div className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+        <div className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>
           首次登录请用密码，进入后可在「设置」绑定 Passkey 或 TOTP。
         </div>
       )}
@@ -164,7 +164,7 @@ function PasswordForm({ onBack }: { onBack: () => void }) {
           style={{
             background: 'transparent',
             border: '1px solid var(--border)',
-            color: 'var(--text-secondary)',
+            color: 'var(--muted)',
           }}
         >
           返回
@@ -229,7 +229,7 @@ function TotpForm({ onBack }: { onBack: () => void }) {
           style={{
             background: 'transparent',
             border: '1px solid var(--border)',
-            color: 'var(--text-secondary)',
+            color: 'var(--muted)',
           }}
         >
           返回

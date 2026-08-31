@@ -29,8 +29,19 @@
   --card-hl: rgba(255, 255, 255, 0.03);
   --text: #e4e4e7;
   --text-strong: #fafafa;
-  --muted: #71717a;
-  --muted-strong: #52525b;
+  /* 次要文字。旧值 #71717a 对 --bg 只有 3.81:1、对 --card 3.57:1 —— 低于 WCAG AA
+   * 的 4.5:1,而这个 token 铺了全站 500+ 处次要文字(含登录/引导/安全面板)。
+   * #8b8b93 沿用 zinc 系的构造(R=G,B 略高),对 --bg 5.45 / --card 5.10 /
+   * --bg-elevated 4.98 全部过 AA,同时对 --text(#e4e4e7)仍有 2.66 的落差,
+   * 「次要文字」的层级没被拉平。--bg-hover(#262a35)上是 4.24 —— hover 是瞬时态,
+   * 未按 AA 卡。别再往亮调:#a1a1aa 能到 7.18,但跟正文就分不出主次了。 */
+  --muted: #8b8b93;
+  /* 三级(比 --muted 更淡):端口点 / 连线 fallback / minimap / 虚线框等装饰件,
+   * 外加少量 9-11px 小标签与空态占位文字。旧值 #52525b 对 --bg 仅 2.38:1,连
+   * 「非文本元素」的 3:1 都不到。接手 --muted 空出来的 zinc-500 → 对 --bg 3.81 /
+   * --card 3.57,过 3:1,且明显低于 --muted 的 5.45,层级保持。注意:那几处拿它当
+   * 小字正文用的地方仍不到 4.5:1,该改的是调用点(换 --muted),不是再提这个 token。 */
+  --muted-strong: #71717a;
   --border: #27272a;
   --border-strong: #3f3f46;
   --accent: #ff5c5c;
@@ -41,6 +52,11 @@
   --accent-2-subtle: rgba(20, 184, 166, 0.15);
   --ok: #22c55e;
   --warn: #f59e0b;
+  /* 语义红。跟 --ok/--warn/--info/--purple 同一档(全是 Tailwind 500 级),取
+   * red-500。对 --bg 4.89 / --card 4.58,与 --info(5.01)同一量级。历史上调用点
+   * 一直写 `var(--error, #ef4444)` 兜底,取同值 → 定义 token 不改变任何现有观感,
+   * 只是让漏写兜底的地方(LogsOverlay)不再掉色。 */
+  --error: #ef4444;
   --info: #3b82f6;
   --purple: #a855f7;
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
@@ -48,6 +64,13 @@
   /* Infinite-Canvas 风:节点卡圆角 + 画布 dotted 网格点色(暗主题) */
   --node-radius: 14px;
   --grid: rgba(255, 255, 255, 0.06);
+  /* 图连线专用色。别复用 --border/--border-strong/--muted:它们是为「卡片描边」和
+   * 「次要文字」调的,压在画布底色(--bg)上对比度不够,亮/暗两主题至少有一边看不见
+   * (踩过三次)。这两个值是按 WCAG 对比度直接挑的 —— 对 --bg 都在 4.5:1 以上,
+   * 远高于 3:1 的下限,同时明显低于正文 --text(~14:1),保持「连线是背景关系、
+   * 节点卡才是主角」的层级。 */
+  --graph-edge: #79839a;
+  --graph-edge-active: #a8b2c6;
   /* 框选高亮(对齐 Infinite-Canvas 洋红选框) */
   --selection: rgba(236, 72, 153, 0.9);
   --selection-fill: rgba(236, 72, 153, 0.10);
@@ -66,8 +89,11 @@
   --card-hl: rgba(0, 0, 0, 0.02);
   --text: #27272a;
   --text-strong: #09090b;
+  /* 亮色 --muted 本来就过 AA(对 --bg 4.63 / --card 4.83),不动。 */
   --muted: #71717a;
-  --muted-strong: #a1a1aa;
+  /* 三级色跟暗色同因整改:旧 #a1a1aa 对 --bg 只有 2.46:1。#8b8b93 → 3.24 / --card
+   * 3.38 / --bg-accent 3.08,过 3:1,仍明显淡于 --muted(4.63)。 */
+  --muted-strong: #8b8b93;
   --border: #e4e4e7;
   --border-strong: #d4d4d8;
   --accent: #dc2626;
@@ -78,6 +104,10 @@
   --accent-2-subtle: rgba(13, 148, 136, 0.1);
   --ok: #16a34a;
   --warn: #d97706;
+  /* 亮色语义色整档是 Tailwind 600(--ok green-600 / --warn amber-600 /
+   * --info blue-600),红取 red-600:对 --bg 4.63 / --card 4.83,过 AA。
+   * 暗色的 #ef4444(red-500)在亮底上只有 3.61,不能两边共用一个值。 */
+  --error: #dc2626;
   --info: #2563eb;
   --purple: #9333ea;
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
@@ -85,6 +115,9 @@
   /* Infinite-Canvas 风:节点卡圆角 + 画布 dotted 网格点色(亮主题) */
   --node-radius: 14px;
   --grid: rgba(15, 23, 42, 0.10);
+  /* 见暗色主题同名 token 的注释。亮色画布是近白 --bg #fafafa,连线必须往深里走。 */
+  --graph-edge: #64748b;
+  --graph-edge-active: #475569;
   /* 框选高亮(对齐 Infinite-Canvas 洋红选框) */
   --selection: rgba(219, 39, 119, 0.9);
   --selection-fill: rgba(219, 39, 119, 0.08);
@@ -245,6 +278,14 @@ input[type="number"] {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* 延迟淡入:配 `animation: nous-delayed-fade-in <dur> ease-out <delay> both` 使用。
+   fill-mode `both` 让延迟期间保持 opacity:0 —— 秒回的加载态压根不露脸,
+   只有真的慢了才淡入,避免「loading 框闪一下」。 */
+@keyframes nous-delayed-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Node slider — ElevenLabs style range input */

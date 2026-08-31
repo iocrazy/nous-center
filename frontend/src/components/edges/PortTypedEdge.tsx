@@ -90,7 +90,7 @@ function PortTypedEdge({
               borderRadius: '50%',
               background: 'var(--bg-elevated)',
               border: `1px solid ${color}`,
-              color: 'var(--err, #ef4444)',
+              color: 'var(--error, #ef4444)',
               fontSize: 13,
               lineHeight: 1,
               cursor: 'pointer',

@@ -33,6 +33,7 @@ import { usePanelStore } from '../../stores/panel'
 import { useExecutionStore } from '../../stores/execution'
 import { NODE_DEFS, type NodeType, type PortType, type WorkflowNode, type WorkflowEdge } from '../../models/workflow'
 import { buildPastedGraph } from '../../utils/pasteGraph'
+import OverlayLoading from '../common/OverlayLoading'
 import NodeLibraryPanel from '../panels/NodeLibraryPanel'
 import NodePropertyPanel from '../panels/NodePropertyPanel'
 import WorkflowsPanel from '../panels/WorkflowsPanel'
@@ -741,6 +742,7 @@ export default function NodeEditor() {
 
       {/* Canvas area — offset when panel is open */}
       <div
+        data-testid="workflow-canvas"
         className="absolute inset-0 transition-[left] duration-200"
         style={{
           left: showNodeLibrary || showLegacyPanel ? panelWidth : 0,
@@ -880,7 +882,7 @@ export default function NodeEditor() {
             type="button"
             onClick={() => { onClick(); close() }}
             className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left"
-            style={{ color: danger ? 'var(--err, #ef4444)' : 'var(--text)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            style={{ color: danger ? 'var(--error, #ef4444)' : 'var(--text)', background: 'transparent', border: 'none', cursor: 'pointer' }}
             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
           >
@@ -957,9 +959,12 @@ export default function NodeEditor() {
       {/* m09: 节点属性面板（画布模式常驻右侧；overlay 视图下隐藏） */}
       {showPropertyPanel && <NodePropertyPanel />}
 
-      {/* Page overlays —— 懒加载,首次打开时按需 fetch chunk。Suspense fallback 覆盖
-          该 chunk 下载的短暂空档(overlay 本就全屏,null fallback 即可,不闪 loading 框)。 */}
-      <Suspense fallback={null}>
+      {/* Page overlays —— 懒加载,首次打开时按需 fetch chunk。fallback 必须是**不透明满屏**的
+          OverlayLoading:overlay 本身盖在画布上面,fallback 给 null 不是「什么都不显示」,
+          而是在 chunk 到达前把底下的画布整个露出来 —— 刷新 /services /settings 闪一帧画布
+          的老 bug 就是这么来的。activeOverlay 为 null 时没有 lazy 子节点会挂起,fallback
+          不会出现,画布路由照旧直接渲染。 */}
+      <Suspense fallback={<OverlayLoading />}>
         {activeOverlay === 'dashboard' && <DashboardOverlay />}
         {activeOverlay === 'models' && <ModelsOverlay />}
         {activeOverlay === 'settings' && <SettingsOverlay />}

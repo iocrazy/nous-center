@@ -15,7 +15,7 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, Image as ImageIcon, Mic, MessageSquare, Eye, Captions,
+  X, Image as ImageIcon, Mic, MessageSquare, Eye, Captions, Film,
   RefreshCw, Copy, Play,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
@@ -23,11 +23,14 @@ import { useTasks, type ExecutionTask } from '../../api/tasks'
 import { useServices } from '../../api/services'
 import { useExecutionStore } from '../../stores/execution'
 
-type TaskType = 'image' | 'tts' | 'vision' | 'llm' | 'asr'
+type TaskType = 'image' | 'tts' | 'vision' | 'llm' | 'asr' | 'video'
 
 function getTaskType(t: ExecutionTask): TaskType | null {
   const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
-  return v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' || v === 'asr' ? v : null
+  return (
+    v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ||
+    v === 'asr' || v === 'video'
+  ) ? v : null
 }
 
 function getAudioDuration(t: ExecutionTask): number | null {
@@ -155,6 +158,7 @@ function ModalHeader({
                   : type === 'llm' ? MessageSquare
                   : type === 'vision' ? Eye
                   : type === 'asr' ? Captions
+                  : type === 'video' ? Film
                   : null
   return (
     <div

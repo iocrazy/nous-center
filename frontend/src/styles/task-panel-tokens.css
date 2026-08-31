@@ -8,11 +8,11 @@
  * 命名约定:
  *   --tp-*       task panel 专用(避免污染既有 theme.css token)
  *   --status-*   状态色(running / queued / done / failed)— 全局可复用
- *   --type-*     服务类型色(image / tts / vision / llm)— 全局可复用
+ *   --type-*     服务类型色(image / tts / vision / llm / asr / video)— 全局可复用
  *
  * 重要:status 跟 type 的颜色解耦 ——
  *   active(running)task 的视觉 glow / border / callout 用 --status-running,
- *   而 type chip 始终用 --type-{image|tts|vision|llm}。两套色绝不混用。
+ *   而 type chip 始终用 --type-{image|tts|vision|llm|asr|video}。两套色绝不混用。
  */
 
 :root {
@@ -81,6 +81,13 @@
   --type-asr: #34d399;
   --type-asr-bg-chip: rgba(52, 211, 153, 0.13);
   --type-asr-border-subtle: rgba(52, 211, 153, 0.25);
+
+  /* ComfyUI bridge:video(视频生成)—— pink。跟上面五个同档(都是 Tailwind 400
+   * 级),对 --tp-bg-card 6.69:1,跟 image 的 purple #c084fc 拉得开;不用 rose
+   * (#fb7185)是因为它跟 --status-failed 的红 #ef4444 在小 chip 上会认错。 */
+  --type-video: #f472b6;
+  --type-video-bg-chip: rgba(244, 114, 182, 0.13);
+  --type-video-border-subtle: rgba(244, 114, 182, 0.25);
 
   /* === Typography === */
   --tp-font-ui: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;

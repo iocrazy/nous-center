@@ -280,7 +280,7 @@ export default function ImageOutputNode({ id, data, selected }: NodeProps) {
               ) : phase === 'loading' ? (
                 <div style={{ fontSize: 11, color: 'var(--muted)' }}>生成中...</div>
               ) : phase === 'error' ? (
-                <div style={{ fontSize: 10, color: 'var(--err)', textAlign: 'center', padding: 8, whiteSpace: 'pre-wrap' }}>
+                <div style={{ fontSize: 10, color: 'var(--error)', textAlign: 'center', padding: 8, whiteSpace: 'pre-wrap' }}>
                   {error || '生成失败'}
                 </div>
               ) : (

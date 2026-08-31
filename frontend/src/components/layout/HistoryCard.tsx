@@ -24,28 +24,38 @@
  * llm_*_tokens/vision_completion_tokens(已在 #175-177 落地)。
  */
 import {
-  Image as ImageIcon, Mic, MessageSquare, Eye, Captions,
+  Image as ImageIcon, Mic, MessageSquare, Eye, Captions, Film,
   Search, RefreshCw, Copy, Download, Play, ChevronRight,
   AlertTriangle,
 } from 'lucide-react'
 import type { ExecutionTask } from '../../api/tasks'
 import { useExecutionStore } from '../../stores/execution'
 
-type TaskType = 'image' | 'tts' | 'vision' | 'llm' | 'asr'
+type TaskType = 'image' | 'tts' | 'vision' | 'llm' | 'asr' | 'video'
 
 const TYPE_LABEL: Record<TaskType, string> = {
   image: 'IMAGE', tts: 'TTS', vision: 'VISION', llm: 'LLM', asr: '语音识别',
+  video: 'VIDEO',
 }
 
 const DEFAULT_EXPANDED_TYPES = new Set<TaskType>(['image', 'tts'])
 
 function getTaskType(t: ExecutionTask): TaskType | null {
   const v = (t as ExecutionTask & { type?: string }).type ?? t.task_type
-  if (v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' || v === 'asr') return v
+  if (
+    v === 'image' || v === 'tts' || v === 'vision' || v === 'llm' ||
+    v === 'asr' || v === 'video'
+  ) return v
   // failed task 拿不到 task.type(后端 _detect_*_meta 只在 result 有内容时
   // 推断)→ 从 workflow_name 关键词兜底,让 chip 至少能显示意图。
   // 优先 image:多数失败发生在最重的图像工作流上,且 image chip 视觉权重最强。
   const name = (t.workflow_name || '').toLowerCase()
+  // video 必须排在 image 之前:`animatediff` 撞 image 的 `diff`,排在后面永远
+  // 抢不到。另外 comfy bridge 的视频任务(如 minimax-h3-r2v)后端至今不产
+  // task_type="video"(execution_task_serialize.py 只探 image/asr/tts/vision/llm),
+  // 所以**成功的**视频任务也只能走这条关键词兜底 —— 这不是只给 failed 用的。
+  // `hunyuan` 不能裸匹配:HunyuanDiT 是图像模型,只认 hunyuan-video。
+  if (/video|[tir]2v|hunyuan[-_]?video|cogvideo|animatediff|wan2|ltx|mochi|svd/.test(name)) return 'video'
   if (/flux|sdxl|sd[-_]|klein|ernie|image|clip|t5|vae|kohya|lora|diff/.test(name)) return 'image'
   // asr 在 tts 之前 —— MOSS-Transcribe-Diarize 是 ASR;转写/whisper 关键词归 asr。
   if (/asr|transcri|whisper|moss/.test(name)) return 'asr'
@@ -780,6 +790,7 @@ function MiniThumb({ task }: { task: ExecutionTask }) {
       {type === 'llm' && <MessageSquare size={14} />}
       {type === 'vision' && <Eye size={14} />}
       {type === 'asr' && <Captions size={14} />}
+      {type === 'video' && <Film size={14} />}
     </div>
   )
 }

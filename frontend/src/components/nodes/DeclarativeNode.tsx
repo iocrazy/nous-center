@@ -150,7 +150,7 @@ function LoraStackWidget({
             type="button"
             aria-label={`删除 LoRA ${row.name || idx + 1}`}
             onClick={() => remove(idx)}
-            style={{ ...btnStyle, color: 'var(--err)' }}
+            style={{ ...btnStyle, color: 'var(--error)' }}
           >
             <X size={10} />
           </button>
@@ -366,7 +366,7 @@ export function ClipStackWidget({
             className="nodrag" type="button"
             aria-label={`删除 CLIP ${idx + 1}`}
             onClick={() => remove(idx)}
-            style={{ ...btnStyle, color: 'var(--err)' }}
+            style={{ ...btnStyle, color: 'var(--error)' }}
           >
             <X size={10} />
           </button>

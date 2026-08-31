@@ -20,6 +20,36 @@ export type OverlayId =
   | 'history'          // 历史出图画廊(借鉴 Infinite-Canvas history;拉 image 类 task)
   | 'status'           // 系统状态页(组件健康 + 7 天 uptime,对齐 status.claude.ai)
 
+/** URL path → overlay。App 的 RouteSync 和本 store 的初值共用这一份映射:
+ *  少一处漏改就少一次「刷新后 overlay 慢一拍」。 */
+const ROUTE_TO_OVERLAY: Record<string, OverlayId> = {
+  '/models': 'models',
+  '/services': 'services',
+  '/apps': 'apps',
+  '/agents': 'agents',
+  '/settings': 'settings',
+  '/dashboard': 'dashboard',
+  '/api-keys': 'api-keys-list',
+  '/logs': 'logs',
+  '/node-packages': 'node-packages',
+  '/usage': 'usage',
+  '/studio': 'studio',
+  '/history': 'history',
+  '/status': 'status',
+}
+
+/** 纯函数:给定 pathname 得到应显示的 overlay(null = 工作流画布)。 */
+export function overlayForPath(pathname: string): OverlayId | null {
+  // `/workflows/:id` 是画布编辑器(无 overlay);`/workflows`(无 id)是 v3 m08 列表页。
+  if (pathname === '/workflows') return 'workflows-list'
+  if (pathname.startsWith('/workflows/')) return null
+  // `/services/:id`、`/api-keys/:id` 详情页各走独立 overlay slot,
+  // NodeEditor 据此决定挂哪个视图。
+  if (pathname.startsWith('/services/')) return 'service-detail'
+  if (pathname.startsWith('/api-keys/')) return 'api-key-detail'
+  return ROUTE_TO_OVERLAY[pathname] ?? null
+}
+
 /** TaskPanel 模式:dock=右侧抽屉(全高,modal-ish),float=右下角浮窗(可拖拽,不阻塞操作)。
  *  对齐 ComfyUI「停靠 / 悬浮」两态。localStorage 持久。 */
 export type TaskPanelMode = 'dock' | 'float'
@@ -93,9 +123,15 @@ function _loadSort(): { key: TaskSortKey; dir: TaskSortDir } {
 
 const _initialSort = _loadSort()
 
+// overlay 初值直接从当前 URL 推,而不是等 RouteSync 的 effect 回填:硬刷新
+// `/services` 这类页面时,NodeEditor 的第一次 render 就已经知道要挂 overlay,
+// 画布/画布浮动条根本不会先挂一轮再被换掉。
+const _initialOverlay: OverlayId | null =
+  typeof window !== 'undefined' ? overlayForPath(window.location.pathname) : null
+
 export const usePanelStore = create<PanelState>((set, get) => ({
   activePanel: 'nodes',
-  activeOverlay: null,
+  activeOverlay: _initialOverlay,
   selectedPresetId: null,
   panelWidth: 260,
   taskPanelMode: _initialTaskPanelMode,

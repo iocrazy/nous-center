@@ -29,12 +29,21 @@ nous-engine-backend` —— 装过 `install.sh` 的机器**免密**(`nous-deploy
 ```bash
 enginectl up        # 拉起全栈(DB→后端→隧道→状态)并打印启动自检 banner
 enginectl down      # 停应用栈(后端/隧道/状态);postgresql 保持运行
-enginectl restart   # 重启应用栈
+enginectl restart   # 重启应用栈 + 打印重启报告(见下)
 enginectl status    # 各 unit active? + 端口 + 公网隧道,一屏
 enginectl logs [u]  # journalctl -f(u 缺省 backend;可 cloudflared/status/postgresql)
 ```
 
 启停内部用 `sudo`(会提示密码);`status`/`logs` 只读无需 sudo。
+
+`up`/`restart` 的报告依次给:重启了哪些 unit(comfyui 未 enabled 会明说跳过、cloudflared
+随 backend 走)→ 后端**真的能收请求**的耗时(不是 `is-active`:那个早几秒就翻真;判据是
+「unit 的 ActiveEnterTimestamp 变了(=新实例,排除旧实例没死透)」+ `GET /healthz 200`)
+→ 启动自检 banner(抓不到会明说抓不到,不再静默)→ 常驻模型加载进度(`/health` 的
+startup 字段;MOSS ASR / vLLM 权重要几分钟,报「加载中」而不假称已就绪)→ 整栈 status。
+单元没回到 active 时不印 banner,改印各自日志尾巴 + `enginectl logs <u>` 指路。
+等待上限默认 180s(停这一半可能很久:backend 是 TimeoutStopSec=120 顺序 unload vLLM),
+`ENGINECTL_WAIT=<秒>` 可覆盖。
 底层是 `nous-engine.target`(总闸,`Wants=` 四个 unit)。
 
 ## 验证

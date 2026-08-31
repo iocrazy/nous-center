@@ -73,7 +73,7 @@ function tickElapsed(createdAt: string): string {
 
 function statusColor(s: ExecutionTask['status']): string {
   if (s === 'completed') return 'var(--ok)'
-  if (s === 'failed') return 'var(--err, #ef4444)'
+  if (s === 'failed') return 'var(--error, #ef4444)'
   if (s === 'cancelled') return 'var(--muted)'
   if (s === 'running') return 'var(--info)'
   return 'var(--warn)' // queued
@@ -539,7 +539,7 @@ function RunningTaskCard({ task, now: _now }: { task: ExecutionTask; now: number
             disabled={cancel.isPending}
             title="中止"
             aria-label="中止任务"
-            style={{ ...iconBtnStyle, color: 'var(--err, #ef4444)' }}
+            style={{ ...iconBtnStyle, color: 'var(--error, #ef4444)' }}
           >
             <XCircle size={14} />
           </button>
@@ -689,7 +689,7 @@ function CompletedTaskCard({ task }: { task: ExecutionTask }) {
           ) : task.task_type === 'image' ? (
             <ImageIcon size={16} style={{ color: 'var(--muted)' }} />
           ) : task.status === 'failed' ? (
-            <XCircle size={16} style={{ color: 'var(--err, #ef4444)' }} />
+            <XCircle size={16} style={{ color: 'var(--error, #ef4444)' }} />
           ) : task.status === 'cancelled' ? (
             <Ban size={16} style={{ color: 'var(--muted)' }} />
           ) : (
