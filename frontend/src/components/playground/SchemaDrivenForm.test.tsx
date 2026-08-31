@@ -154,3 +154,33 @@ describe('SchemaDrivenForm', () => {
     expect(onSubmit).toHaveBeenCalledWith({ prompt: 'hi' })
   })
 })
+
+describe('SchemaDrivenForm — 空数字字段不该发空串', () => {
+  it('留空的可选整数字段要从 payload 里省略,而不是发 ""', () => {
+    // 2026-08-31 实机:krea2 的 seed 是可选整数,UI 不填就发 {"seed": ""},
+    // 后端 validate_service_input 判 "seed: expected integer" → 422,
+    // Playground 的运行按钮对任何带可选空数字字段的服务直接不可用。
+    const onSubmit = vi.fn()
+    render(<SchemaDrivenForm inputs={[
+      { node_id: 'bridge', key: 'prompt', type: 'string', required: false },
+      { node_id: 'bridge', key: 'seed', type: 'integer', required: false },
+    ] as ExposedParam[]} onSubmit={onSubmit} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /运行/ }))
+    const payload = onSubmit.mock.calls[0][0]
+    expect(payload).not.toHaveProperty('seed')
+    // 字符串字段的空串是合法值(用户就是想传空提示词),要保留
+    expect(payload).toHaveProperty('prompt', '')
+  })
+
+  it('填了值的数字字段照常提交为数字', () => {
+    const onSubmit = vi.fn()
+    render(<SchemaDrivenForm inputs={[
+      { node_id: 'bridge', key: 'seed', type: 'integer', required: false },
+    ] as ExposedParam[]} onSubmit={onSubmit} />)
+
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '42' } })
+    fireEvent.click(screen.getByRole('button', { name: /运行/ }))
+    expect(onSubmit.mock.calls[0][0]).toEqual({ seed: 42 })
+  })
+})
