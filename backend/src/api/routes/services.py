@@ -507,6 +507,14 @@ async def delete_service(
     if svc is None:
         raise HTTPException(404, detail="service not found")
     wf_id = svc.workflow_id
+    # 「模板即服务」是 1:1 建的(POST /api/v1/comfy-templates 同时建两行),删除也要
+    # 对称 —— 否则每删一个桥服务就漏一行 comfy_templates,而且那行之后再也删不掉
+    # (旧的 delete_template 要求配对服务存在)。2026-08-31 实机漏了 16 行。
+    if svc.source_type == "comfy_template" and svc.source_id is not None:
+        from src.models.comfy_template import ComfyTemplate  # noqa: PLC0415
+        tpl = await session.get(ComfyTemplate, svc.source_id)
+        if tpl is not None:
+            await session.delete(tpl)
     await session.delete(svc)
     await session.flush()
 
