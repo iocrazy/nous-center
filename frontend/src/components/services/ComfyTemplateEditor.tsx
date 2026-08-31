@@ -22,7 +22,8 @@ import {
   type ComfyTemplateDetail,
 } from '../../api/comfyTemplates'
 import { paramKey, type ExposedParam } from '../../api/services'
-import { Field, defaultFor } from '../playground/SchemaDrivenForm'
+import { Field } from '../playground/SchemaDrivenForm'
+import { defaultFor } from '../playground/fieldKind'
 import { isComfyNodeRef, layoutComfyGraph, type ComfyWorkflow } from './comfyGraphLayout'
 import { placePopover } from './popoverPlacement'
 import { findInvalidModelRefs, type ModelRefIssue } from './workflowModelCheck'

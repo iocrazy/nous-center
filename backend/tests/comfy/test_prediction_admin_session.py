@@ -13,10 +13,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import select
 
 from src.models.database import get_session_factory
-from src.models.service_instance import ServiceInstance
 from src.services.nodes import comfy_bridge as nb
 from tests.comfy.test_bridge_node import FakeClient
 
