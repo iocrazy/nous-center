@@ -7,11 +7,19 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { installErrorReporter } from './utils/errorReporter'
 import { setUnauthorizedHandler } from './api/client'
 import { ADMIN_ME_KEY } from './api/admin'
+import { shouldRetry } from './api/retryPolicy'
 import './index.css'
 
 installErrorReporter()
 
-const queryClient = new QueryClient()
+// 4xx 不重试(见 api/retryPolicy.ts):React Query 默认对任何失败重试 3 次,而 4xx
+// 重发一百遍还是同样的错 —— 白等 4 轮,期间界面一直显示「加载中…」。
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: shouldRetry },
+    mutations: { retry: shouldRetry },
+  },
+})
 
 // Cookie expired or admin pulled the rug → flip AuthGate back to Login.
 // Plugin definitions are loaded inside <AuthGate> after authentication so we
