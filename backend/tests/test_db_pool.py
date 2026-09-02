@@ -33,3 +33,22 @@ def test_sqlite_no_pool_size():
     assert kw["pool_pre_ping"] is True
     assert "pool_size" not in kw
     assert "max_overflow" not in kw
+
+
+def test_sqlite_gets_generous_lock_timeout():
+    """sqlite 是单写者:一个写事务持锁时,另一个连接要排队等。
+
+    aiosqlite/sqlite3 默认只等 **5 秒** 就抛 "database is locked"。本地跑得快看不出来,
+    CI runner 慢(实测后端全量 782s vs 本地 260s)就成批翻车 —— 2026-09-02 一次 CI
+    16 个用例全挂在这个错上,清一色是写 DB 的(建模板/删服务/建任务)。
+
+    连接参数走 connect_args,不是 Pool 参数。
+    """
+    kw = _engine_kwargs("sqlite+aiosqlite:///./test.db")
+    assert kw["connect_args"]["timeout"] >= 30
+
+
+def test_postgres_gets_no_sqlite_connect_args():
+    """PG 不认 sqlite 的 timeout connect_arg —— 别把它漏过去。"""
+    kw = _engine_kwargs("postgresql+asyncpg://u:p@h/db")
+    assert "timeout" not in (kw.get("connect_args") or {})
