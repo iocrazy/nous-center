@@ -31,15 +31,19 @@ from src.models.api_gateway import AlertRule, ResourcePack
 DEDUP_WINDOW = timedelta(hours=24)
 
 
-def _naive_utc(dt: datetime | None) -> datetime | None:
-    """SQLite strips tzinfo on storage, so DB reads come back naive. Unify
-    application-side datetimes to naive UTC before any comparison so the
-    code runs identically on both PG and SQLite."""
+def _utc(dt: datetime | None) -> datetime | None:
+    """统一成 **aware** UTC。
+
+    列是 `DateTime(timezone=True)`,PG 读回来就是 aware,所以比较的另一侧也必须
+    aware。旧实现反过来把 aware 削成 naive —— 那是为了迁就 sqlite(它存 datetime
+    是无时区字符串,读回来 naive)。测试改跑 PG 后那个方向直接抛
+    `can't compare offset-naive and offset-aware datetimes`(2026-09-02)。
+    """
     if dt is None:
         return None
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 @dataclass
@@ -65,7 +69,7 @@ async def check_and_fire(
     race — duplicate notifications are impossible because we only fire
     when last_notified_at is old enough AND the UPDATE we emit sets it.
     """
-    now = _naive_utc(now or datetime.now(timezone.utc))
+    now = _utc(now or datetime.now(timezone.utc))
     dedup_cutoff = now - DEDUP_WINDOW
 
     stmt = select(AlertRule).where(

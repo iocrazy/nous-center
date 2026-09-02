@@ -12,8 +12,7 @@
          threshold-based notifications (% of a pack used).
          24h debounce via last_notified_at.
 
-Snowflake IDs everywhere (see utils/snowflake.py). BigInteger on PG,
-INTEGER on SQLite (Wave 1 pattern, see models/memory.py for the reason).
+Snowflake IDs everywhere (see utils/snowflake.py), stored as BigInteger.
 """
 
 from __future__ import annotations

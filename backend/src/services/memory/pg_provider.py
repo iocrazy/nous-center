@@ -1,7 +1,8 @@
 """PGMemoryProvider — reference implementation.
 
-Uses PG FTS (GIN) for content search. Works on SQLite via LIKE fallback
-(detected by dialect) — for dev/test convenience.
+Uses PG full-text search for content search(全局只用 PostgreSQL)。
+注意:models/memory.py 里目前**没有** GIN 索引,to_tsvector 是逐行现算的顺序扫描 ——
+数据量上去要补一个 `to_tsvector('simple', content)` 的 GIN 索引(需 alembic 迁移)。
 """
 
 from __future__ import annotations
@@ -120,13 +121,16 @@ class PGMemoryProvider(MemoryProvider):
                 if context_key:
                     stmt = stmt.where(MemoryEntryModel.context_key == context_key)
                 if query:
-                    dialect = s.bind.dialect.name if s.bind else "sqlite"
-                    if dialect == "postgresql":
-                        stmt = stmt.where(
-                            text("to_tsvector('simple', content) @@ plainto_tsquery(:q)")
-                        ).params(q=query)
-                    else:
-                        stmt = stmt.where(MemoryEntryModel.content.contains(query))
+                    # 全局只用 PostgreSQL,不再有 sqlite 的 LIKE 兜底分支。
+                    # 两侧配置必须一致:vector 用 'simple'(不切词干,对中英混排才正确),
+                    # query 若不指定就落 default_text_search_config —— PG 默认是 english,
+                    # 会把 "concise" 切成 "concis",与 vector 里的 'concise' 永远对不上
+                    # → 搜索静默返回空。测试以前跑 sqlite 的 LIKE 兜底,这条 PG 路径
+                    # 从没被执行过(2026-09-02 换 PG 后首次暴露)。
+                    stmt = stmt.where(
+                        text("to_tsvector('simple', content) "
+                             "@@ plainto_tsquery('simple', :q)")
+                    ).params(q=query)
                 stmt = stmt.order_by(desc(MemoryEntryModel.created_at)).limit(limit)
                 rows = (await s.execute(stmt)).scalars().all()
                 return [_to_stored_entry(r) for r in rows]

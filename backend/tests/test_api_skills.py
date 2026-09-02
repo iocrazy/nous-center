@@ -14,7 +14,7 @@ def skill_home(tmp_path):
         yield tmp_path
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_skill(client, skill_home):
     resp = await client.post(
         "/api/v1/skills",
@@ -27,14 +27,14 @@ async def test_create_skill(client, skill_home):
     assert (skill_home / "skills" / "tts-synthesis" / "SKILL.md").exists()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_duplicate_skill(client, skill_home):
     await client.post("/api/v1/skills", json={"name": "dup"})
     resp = await client.post("/api/v1/skills", json={"name": "dup"})
     assert resp.status_code == 409
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_skills(client, skill_home):
     await client.post("/api/v1/skills", json={"name": "s1", "description": "desc1"})
     await client.post("/api/v1/skills", json={"name": "s2", "description": "desc2"})
@@ -45,7 +45,7 @@ async def test_list_skills(client, skill_home):
     assert "s2" in names
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_get_skill(client, skill_home):
     await client.post(
         "/api/v1/skills",
@@ -60,13 +60,13 @@ async def test_get_skill(client, skill_home):
     assert "raw" in data
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_get_skill_not_found(client, skill_home):
     resp = await client.get("/api/v1/skills/nope")
     assert resp.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_update_skill(client, skill_home):
     await client.post("/api/v1/skills", json={"name": "updatable"})
     new_raw = "---\nname: updatable\ndescription: 更新后\n---\n\n新内容"
@@ -81,7 +81,7 @@ async def test_update_skill(client, skill_home):
     assert "新内容" in data["body"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_delete_skill(client, skill_home):
     await client.post("/api/v1/skills", json={"name": "removable"})
     resp = await client.delete("/api/v1/skills/removable")

@@ -10,22 +10,18 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from src.models.database import Base
 from src.models.status_sample import StatusSample
 from src.services import status_sampler as ss
 
 
 @pytest.fixture
-async def session(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/s.db")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def session(pg_engine):
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
     async with sf() as s:
         yield s
-    await engine.dispose()
 
 
 def _entry(loaded=True, port=40000, mtype="llm"):
@@ -180,15 +176,13 @@ async def test_uptime_history_buckets_and_pct(session):
 # ---------- 端点(admin 在测试里关闭)----------
 
 @pytest.mark.asyncio
-async def test_status_endpoint_shape(app, client, tmp_path, monkeypatch):
+async def test_status_endpoint_shape(app, client, pg_engine, monkeypatch):
     app.state.model_manager = SimpleNamespace(_models={})
     app.state.runner_supervisors = []
     monkeypatch.setattr("src.services.gpu_monitor.get_gpu_stats", lambda: [1])
-    # 用 SQLite override DB 依赖,避免本地跑碰生产 PG(uv 不 load .env)。
+    # override DB 依赖,指向 conftest 建的临时 PG schema,别碰生产库。
     from src.models.database import get_async_session
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/ep.db")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
 
     async def _override():
@@ -199,8 +193,7 @@ async def test_status_endpoint_shape(app, client, tmp_path, monkeypatch):
         r = await client.get("/api/v1/status")
     finally:
         app.dependency_overrides.pop(get_async_session, None)
-        await engine.dispose()
-    assert r.status_code == 200
+        assert r.status_code == 200
     body = r.json()
     assert set(body) >= {"overall", "updated_at", "components"}
     keys = [c["key"] for c in body["components"]]

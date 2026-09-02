@@ -9,11 +9,11 @@ import secrets as _secrets
 import bcrypt
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
 @pytest.fixture
-async def async_client_with_db(tmp_path, monkeypatch):
+async def async_client_with_db(pg_engine, monkeypatch):
     """Async test client with a real SQLite DB + workflow_runner pointed at it.
 
     workflow_runner opens its own session via create_session_factory(); we
@@ -21,12 +21,9 @@ async def async_client_with_db(tmp_path, monkeypatch):
     write to the same SQLite DB the request handler reads from.
     """
     from src.api.main import create_app
-    from src.models.database import Base, get_async_session
+    from src.models.database import get_async_session
 
-    db_path = tmp_path / "run_async.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -53,7 +50,6 @@ async def async_client_with_db(tmp_path, monkeypatch):
         c.session_factory = session_factory  # type: ignore[attr-defined]
         yield c
 
-    await engine.dispose()
 
 
 async def _poll_until_done(client, task_id, timeout=5.0):

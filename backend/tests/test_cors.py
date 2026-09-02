@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from src.api.main import create_app
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_cors_exposes_etag_and_request_id():
     app = create_app()
     transport = ASGITransport(app=app)
@@ -29,7 +29,7 @@ async def test_cors_exposes_etag_and_request_id():
     assert "X-Request-Id" in exposed, f"X-Request-Id must stay exposed; got: {expose!r}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_cors_preflight_allows_credentials():
     """Cookie-based admin login requires credentials in CORS preflight."""
     app = create_app()

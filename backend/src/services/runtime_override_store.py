@@ -55,7 +55,7 @@ async def hydrate(session_factory) -> None:
 async def set_override(session, model_id: str, key: str, value) -> None:
     """写一个覆盖键到 DB(upsert 对应列)+ 刷缓存。key ∈ VALID_KEYS。
 
-    session: 调用方注入的 AsyncSession(API handler 经 Depends 拿,测试可注入 sqlite)。
+    session: 调用方注入的 AsyncSession(API handler 经 Depends 拿,测试注入临时 PG 库的 session)。
     """
     if key not in VALID_KEYS:
         raise ValueError(f"non-overridable key: {key!r}(允许:{VALID_KEYS})")

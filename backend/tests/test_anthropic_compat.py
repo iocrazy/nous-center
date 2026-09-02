@@ -11,22 +11,19 @@ import bcrypt
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.api.main import create_app
 from src.models.api_gateway import ApiKeyGrant
-from src.models.database import Base, get_async_session
+from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 
 
 @pytest.fixture
-async def db_app_client(tmp_path):
+async def db_app_client(pg_engine):
     """db_client + 暴露 app（让测试能挂 model_manager mock）。"""
-    db_path = tmp_path / "test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
 
     async def override_session():
@@ -44,7 +41,6 @@ async def db_app_client(tmp_path):
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield app, c, sf
 
-    await engine.dispose()
 
 
 @pytest.fixture

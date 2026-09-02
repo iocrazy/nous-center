@@ -78,15 +78,12 @@ def test_recommend_floor_is_one():
 # 覆盖读写(数据加载统一 2026-06-16:DB typed 表 + 缓存,vram_budget 拆 mode/value 两列)
 # ---------------------------------------------------------------------------
 
-async def test_db_store_accepts_structured_vram_budget():
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+async def test_db_store_accepts_structured_vram_budget(pg_engine):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    from src.models.database import Base
     from src.services import runtime_override_store as store
 
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
     try:
         store.reset_cache()
@@ -97,10 +94,9 @@ async def test_db_store_accepts_structured_vram_budget():
         assert data["qwen3_embedding_4b"]["vram_budget"] == {"mode": "absolute", "value": 11}
     finally:
         store.reset_cache()
-        await engine.dispose()
+    
 
-
-async def test_db_store_rejects_unknown_key():
+async def test_db_store_rejects_unknown_key(pg_engine):
     from src.services import runtime_override_store as store
     with pytest.raises(ValueError):
         await store.set_override(None, "m", "bogus_key", 1)

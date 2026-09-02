@@ -18,9 +18,9 @@ from src.models.database import Base
 class MemoryEntryModel(Base):
     __tablename__ = "memory_entries"
 
-    # SQLite needs plain INTEGER for autoincrement to work; PG uses BIGSERIAL.
+    # BigInteger + autoincrement → PG BIGSERIAL(全局只有 PG,无方言分叉)。
     id = Column(
-        BigInteger().with_variant(Integer(), "sqlite"),
+        BigInteger(),
         primary_key=True,
         autoincrement=True,
     )

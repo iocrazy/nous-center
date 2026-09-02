@@ -2,7 +2,7 @@
 
 2026-08-29 事故:conftest 只在 CI 的 `:memory:` 情况下把 DATABASE_URL 换成隔离
 sqlite,注释还明写「local runs (postgres via .env) are left completely untouched」
-—— 于是本地跑 pytest 直接读写生产 Postgres(nous_center)。实测一次全量跑在
+—— 于是本地跑 pytest 直接读写生产库(nous_center)。实测一次全量跑在
 comfy_templates / service_instances 各留下 16 行测试垃圾(bridge-db-test /
 e2e-* / tpl-* / admin-e2e-*),并和生产行 `minimax-h3-r2v`(ComfyUI 桥 PR#672,
 建于 2026-08-11)撞名 → test_create_template_creates_service 永久 409。
@@ -20,15 +20,16 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_database_url_is_an_isolated_temp_sqlite():
-    """conftest 必须已经把 DATABASE_URL 改写成 per-run 的临时 sqlite 文件。"""
+def test_database_url_points_at_a_throwaway_test_database():
+    """conftest 必须已经把 DATABASE_URL 改写成 per-run 的临时 PG 库。"""
     url = os.environ.get("DATABASE_URL", "")
-    assert url.startswith("sqlite+aiosqlite:///"), (
-        f"测试库不是 sqlite,疑似绑到了真实库:{url!r}"
+    assert url.startswith("postgresql"), (
+        f"测试库不是 PostgreSQL(全局只用一种数据库):{url!r}"
     )
-    assert "nous-test-db-" in url, (
-        f"测试库不是 conftest 建的 per-run 临时目录:{url!r}"
+    assert "/nous_test_" in url, (
+        f"测试库不是 conftest 建的 per-run 临时库,疑似绑到了生产:{url!r}"
     )
+    assert "/nous_center" not in url, f"绑到生产库了:{url!r}"
 
 
 def test_session_factory_points_at_the_same_isolated_db():
@@ -37,11 +38,8 @@ def test_session_factory_points_at_the_same_isolated_db():
     from src.models.database import create_engine
 
     engine = create_engine()
-    try:
-        assert engine.url.get_backend_name() == "sqlite", (
-            f"应用 engine 不是 sqlite,疑似绑到了真实库:{engine.url!r}"
-        )
-        assert "nous-test-db-" in str(engine.url.database or "")
-    finally:
-        # sync dispose 够了 —— 没有连接被打开过。
-        pass
+    assert engine.url.get_backend_name() == "postgresql", (
+        f"应用 engine 不是 PostgreSQL:{engine.url!r}"
+    )
+    db = str(engine.url.database or "")
+    assert db.startswith("nous_test_"), f"应用 engine 绑到了非临时库:{db!r}"

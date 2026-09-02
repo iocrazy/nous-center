@@ -206,7 +206,7 @@ async def write_user_and_assistant_turns(
         await session.commit()
     except IntegrityError:
         # Only constraint that can fire: UNIQUE(session_id, turn_idx).
-        # Don't filter on error-message substring (SQLite vs PG differ).
+        # Don't filter on error-message substring (driver-specific wording).
         await session.rollback()
         raise ConflictError(
             "concurrent write to the same session; refetch and retry",

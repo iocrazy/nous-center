@@ -1,18 +1,17 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.api.main import create_app
-from src.models.database import Base, get_async_session
+from src.models.database import get_async_session
 from src.models.log_entry import AppLog, RequestLog
 
 
 @pytest.fixture
-async def log_client(tmp_path):
-    """App client backed by a test SQLite DB with seeded log rows."""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def log_client(pg_engine):
+    """App client backed by the temp PostgreSQL test DB with seeded log rows.
+    (timestamp 列本来就是 String(32) 的 CST 字符串,见 log_entry.py —— 不是 datetime。)"""
+    engine = pg_engine
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async with session_factory() as s:

@@ -76,7 +76,8 @@ router = APIRouter(tags=["responses"])
 # ---------- tz normalization helper ---------- #
 
 def _to_utc(dt: datetime | None) -> datetime | None:
-    """SQLite stores tz-naive; PG returns tz-aware. Normalize for comparisons."""
+    """统一成 aware UTC。PG 读回来本来就是 aware,这里只兜住应用侧
+    可能构造出的 naive 值(比如从字符串解析),保证比较两侧一致。"""
     if dt is None:
         return None
     if dt.tzinfo is None:

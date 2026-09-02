@@ -218,8 +218,8 @@ async def list_keys(
         select(InstanceApiKey).order_by(InstanceApiKey.created_at.desc())
     )).scalars().all()
 
-    # 跨 PG/SQLite 兼容：拆成两条 GROUP BY，避开 boolean→int 的 cast 差异
-    # （和 api_gateway.services_catalog 同模式）。
+    # 拆成两条 GROUP BY(和 api_gateway.services_catalog 同模式)。原因是早年要兼容
+    # sqlite 的 boolean→int cast;现在只有 PG,合并成一条是可选的清理,不是必需。
     totals = {
         kid: int(c)
         for kid, c in (await session.execute(

@@ -173,7 +173,7 @@ async def test_delete_key_cascades_grants(db_client, two_services, db_session):
     # grants 跟着 cascade 删干净。
     from sqlalchemy import select
     rows = (await db_session.execute(
-        select(ApiKeyGrant).where(ApiKeyGrant.api_key_id == created["id"])
+        select(ApiKeyGrant).where(ApiKeyGrant.api_key_id == int(created["id"]))
     )).all()
     assert rows == []
 
@@ -217,7 +217,19 @@ async def test_get_key_shows_orphan_grants_with_fallback_name(
         "/api/v1/keys",
         json={"label": "k-orphan", "service_ids": [a.id]},
     )).json()
-    # 直接物理删 service，把 grant 变成孤儿（cascade 用模型默认 ondelete）
+    # 造孤儿 grant:模型上 service_id 带 ondelete="CASCADE"(api_gateway.py:49),
+    # 在 PG 上删 service 会**连 grant 一起级联删掉**,孤儿根本造不出来。
+    # (以前测试跑 sqlite,它默认不启用外键,删 service 后 grant 就真成了孤儿 ——
+    #  场景是"造"出来的,不是 PG 的真实行为。)
+    #
+    # 但孤儿在**生产**里是真实存在的:那张表建得早,老库上 service_id 没有这个
+    # 外键约束(实测 nous_center 只有 api_key_id / instance_id 两个 FK),
+    # v3 IA 重构清理 service_instances 时就留下过孤儿 —— 防御代码正是为它写的。
+    # 所以这里先摘掉约束再删,精确复现生产的那种库形态。
+    from sqlalchemy import text as _sql
+    await db_session.execute(_sql(
+        "ALTER TABLE api_key_grants DROP CONSTRAINT IF EXISTS "
+        "api_key_grants_service_id_fkey"))
     await db_session.delete(await db_session.get(ServiceInstance, a.id))
     await db_session.commit()
 

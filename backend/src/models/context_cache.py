@@ -10,15 +10,14 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import (
-    JSON, BigInteger, CheckConstraint, Column, DateTime, ForeignKey,
+    BigInteger, CheckConstraint, Column, DateTime, ForeignKey,
     Index, Integer, String,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
 from src.models.database import Base
 
-# JSONB on PostgreSQL, plain JSON on SQLite (test fixture uses sqlite+aiosqlite)
-JsonColumn = JSON().with_variant(JSONB(), "postgresql")
+JsonColumn = JSONB()
 
 
 def _expires_at_default():

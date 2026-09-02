@@ -11,10 +11,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.models.api_gateway import ApiKeyGrant, ResourcePack
-from src.models.database import Base
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 from src.services.resource_pack import QuotaExhausted, consume, peek_remaining
@@ -33,7 +32,9 @@ async def _make_grant_with_pack(
 
     key = InstanceApiKey(
         instance_id=None, label="k", key_hash="x",
-        key_prefix=f"sk-{inst.id}",
+        # key_prefix 生产是 token[:10](deps_auth.py:76),列是 varchar(20)。
+        # 雪花 id 有 18 位,拼进来会超长 —— sqlite 不查长度,PG 会。
+        key_prefix=f"sk-{inst.id}"[:10],
     )
     session.add(key)
     await session.commit()
@@ -136,18 +137,14 @@ async def test_peek_remaining(db_session):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_consume_no_overcharge(tmp_path):
+async def test_concurrent_consume_no_overcharge(pg_engine):
     """10 concurrent callers each try to consume 100 from a 500-unit pack.
     Exactly 5 succeed; used_units lands at 500 regardless of race order.
 
-    Uses a file-backed SQLite (shared between independent sessions) so the
-    atomicity is exercised rather than masked by SQLAlchemy's per-session
-    identity map.
+    跑在真 PostgreSQL 上:10 个并发 session 各自真连接,原子性由 PG 的行锁保证 ——
+    比以前用文件 sqlite 模拟更接近生产。
     """
-    db_path = tmp_path / "concurrency.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     Session = async_sessionmaker(engine, expire_on_commit=False)
 
     # Seed a grant + pack using one session.
@@ -173,7 +170,6 @@ async def test_concurrent_consume_no_overcharge(tmp_path):
         assert final.used_units == 500
         assert final.total_units - final.used_units == 0
 
-    await engine.dispose()
 
 
 # ── allow_overshoot(H1 计费漏洞修复)──────────────────────────────
@@ -209,7 +205,7 @@ async def test_consume_overshoot_no_packs_still_raises(db_session):
     await db_session.commit()
     await db_session.refresh(inst)
     key = InstanceApiKey(instance_id=None, label="k", key_hash="x",
-                         key_prefix=f"sk-np-{inst.id}")
+                         key_prefix=f"sk-np-{inst.id}"[:10])
     db_session.add(key)
     await db_session.commit()
     await db_session.refresh(key)

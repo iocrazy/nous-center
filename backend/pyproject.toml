@@ -136,7 +136,7 @@ dev = [
     "pytest-cov>=6.0",
     "httpx>=0.28",
     "ruff>=0.9",
-    "aiosqlite>=0.22.1",
+    "pytest-xdist>=3.6",
 ]
 
 [tool.pytest.ini_options]

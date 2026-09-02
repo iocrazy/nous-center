@@ -88,10 +88,6 @@ def _window(days: int) -> tuple[datetime, datetime, datetime]:
     return prev_start, start, end
 
 
-def _is_postgres(session: AsyncSession) -> bool:
-    return session.bind.dialect.name == "postgresql"  # type: ignore[union-attr]
-
-
 # ---------- routes ----------
 
 
@@ -180,13 +176,10 @@ async def usage_timeseries(
         ).all()
     }
 
-    # Date bucketing — PG via date_trunc, SQLite via strftime.
-    if _is_postgres(session):
-        day_col = func.to_char(
-            func.date_trunc("day", LLMUsage.created_at), "YYYY-MM-DD"
-        )
-    else:
-        day_col = func.strftime("%Y-%m-%d", LLMUsage.created_at)
+    # 按天分桶。全局只用 PostgreSQL,不再有 sqlite 的 strftime 分支。
+    day_col = func.to_char(
+        func.date_trunc("day", LLMUsage.created_at), "YYYY-MM-DD"
+    )
 
     rows = (
         await session.execute(

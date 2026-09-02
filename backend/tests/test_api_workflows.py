@@ -1,7 +1,9 @@
 import pytest
 
 
-pytestmark = pytest.mark.anyio
+pytestmark = pytest.mark.asyncio  # 统一走 pytest-asyncio(asyncio_mode=auto);
+# 混用 anyio 会各建一个事件循环,asyncpg 的连接绑 loop 就抛 "attached to a
+# different loop"(aiosqlite 不在意,所以以前看不出来)。
 
 
 async def test_create_workflow(db_client):

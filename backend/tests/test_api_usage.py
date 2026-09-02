@@ -1,9 +1,8 @@
-"""m13 usage routes — happy-path shape tests on SQLite.
+"""m13 usage routes — happy-path shape tests (on PostgreSQL, like everything else).
 
-Stays away from PG-specific aggregates (no percentile_cont, no
-date_trunc — the route falls back to strftime under SQLite). We seed a
-handful of LLM/TTS rows and assert each endpoint returns the documented
-shape with reasonable values.
+We seed a handful of LLM/TTS rows and assert each endpoint returns the
+documented shape with reasonable values; the date_trunc bucketing itself is
+covered in test_inference_usage_buckets.py.
 """
 
 from __future__ import annotations

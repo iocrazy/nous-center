@@ -5,11 +5,11 @@ import pytest
 import pytest_asyncio
 import secrets as _secrets
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from unittest.mock import MagicMock
 
 from src.api.main import create_app
-from src.models.database import Base, get_async_session
+from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 from src.services.memory.pg_provider import PGMemoryProvider
@@ -47,16 +47,13 @@ def _mock_model_manager():
 
 
 @pytest_asyncio.fixture
-async def api_client_and_key(tmp_path):
+async def api_client_and_key(pg_engine):
     """Spin up app with SQLite DB, seed an active instance + API key,
     attach a PGMemoryProvider on app.state.memory_provider.
 
     Yields (client, plaintext_key).
     """
-    db_path = tmp_path / "api_memory_test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -101,7 +98,6 @@ async def api_client_and_key(tmp_path):
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c, raw_key
 
-    await engine.dispose()
 
 
 @pytest.fixture
