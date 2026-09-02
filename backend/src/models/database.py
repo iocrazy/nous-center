@@ -22,10 +22,17 @@ def _engine_kwargs(url: str) -> dict:
     请求处理器 + 后台循环(热保护/对账/日志消费/状态采样)留足余量,又不至打爆 PG。
     真要再调,配合 PG max_connections 一起改。
     """
-    kwargs = {"pool_pre_ping": True, "pool_recycle": 1800}
+    kwargs: dict = {"pool_pre_ping": True, "pool_recycle": 1800}
     if url.startswith("postgresql"):
         kwargs["pool_size"] = 10
         kwargs["max_overflow"] = 20
+    elif url.startswith("sqlite"):
+        # sqlite 是单写者:一个写事务持锁时另一个连接必须排队。sqlite3 默认只等
+        # **5 秒** 就抛 "database is locked" —— 本地跑得快看不出来,CI runner 慢
+        # (实测后端全量 782s vs 本地 260s)就成批翻车(2026-09-02 一次 CI 16 个
+        # 写 DB 的用例全挂这个错)。给足等待余量,让它排队而不是放弃。
+        # 注意这是**连接**参数,不是 Pool 参数,所以走 connect_args。
+        kwargs["connect_args"] = {"timeout": 60}
     return kwargs
 
 
