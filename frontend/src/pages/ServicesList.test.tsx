@@ -10,6 +10,8 @@ import { useToastStore } from '../stores/toast'
 const navigateSpy = vi.fn()
 const useServicesMock = vi.fn()
 const apiFetchMock = vi.fn()
+const confirmMock = vi.fn()
+const setAutostartMutate = vi.fn()
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -23,8 +25,14 @@ vi.mock('../api/services', async () => {
     useServices: () => useServicesMock(),
     // ServicesList 现在用 useDeleteService — mock 掉避免 QueryClientProvider
     useDeleteService: () => ({ mutate: vi.fn(), isPending: false }),
+    // 开机启动 toggle 同理(fetchAutostartPreview 保持真身,走被 mock 的 apiFetch)。
+    useSetServiceAutostart: () => ({ mutate: setAutostartMutate, isPending: false }),
   }
 })
+
+vi.mock('../stores/confirm', () => ({
+  confirmDialog: (...args: unknown[]) => confirmMock(...args),
+}))
 
 // ServicesList 的 onImported 处理器自己调 apiFetch(见 api/client) 去按 service_name
 // 查一次 /api/v1/services 拿新建服务的 id ——mock 掉方便控制「找到/找不到」两条分支。
@@ -70,6 +78,7 @@ function makeService(over: Partial<ServiceRow> = {}): ServiceRow {
     source_name: null,
     category: 'llm',
     meter_dim: 'tokens',
+    autostart: false,
     workflow_id: '55',
     workflow_name: 'demo-wf',
     snapshot_hash: 'sha256:abc',
@@ -86,7 +95,93 @@ beforeEach(() => {
   navigateSpy.mockReset()
   useServicesMock.mockReset()
   apiFetchMock.mockReset()
+  confirmMock.mockReset()
+  confirmMock.mockResolvedValue(true)
+  setAutostartMutate.mockReset()
   useToastStore.setState({ toasts: [] })
+})
+
+describe('ServicesList 开机启动 (autostart)', () => {
+  const PREVIEW = {
+    service_id: '1234567890',
+    name: 'sample-svc',
+    autostart: false,
+    preload_models: [{ name: 'qwen3_6_35b_a3b_fp8', vram_gb: 35, gpu: 1 }],
+  }
+
+  function renderWith(svc: Partial<ServiceRow> = {}) {
+    useServicesMock.mockReturnValue({
+      data: [makeService(svc)],
+      isLoading: false,
+      error: null,
+    })
+    render(
+      <MemoryRouter>
+        <ServicesList />
+      </MemoryRouter>,
+    )
+  }
+
+  it('右键菜单「设为开机启动」→ 先拉 preview,确认框列出开机会加载的模型', async () => {
+    apiFetchMock.mockResolvedValue(PREVIEW)
+    renderWith()
+
+    fireEvent.contextMenu(screen.getByText('sample-svc'))
+    fireEvent.click(screen.getByText('设为开机启动'))
+
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled())
+    // preview 必须是先问后端拿的,不是前端瞎编的。
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/api/v1/services/1234567890/autostart-preview',
+    )
+    const msg = (confirmMock.mock.calls[0][0] as { message: string }).message
+    expect(msg).toContain('开机将自动加载以下模型')
+    expect(msg).toContain('qwen3_6_35b_a3b_fp8')
+    expect(msg).toContain('35 GB')
+    expect(msg).toContain('GPU 1')
+  })
+
+  it('确认后才发 POST(带 enabled: true)', async () => {
+    apiFetchMock.mockResolvedValue(PREVIEW)
+    renderWith()
+
+    fireEvent.contextMenu(screen.getByText('sample-svc'))
+    fireEvent.click(screen.getByText('设为开机启动'))
+
+    await waitFor(() => expect(setAutostartMutate).toHaveBeenCalled())
+    expect(setAutostartMutate.mock.calls[0][0]).toEqual({
+      serviceId: '1234567890',
+      enabled: true,
+    })
+  })
+
+  it('确认框取消 → 一个 POST 都不发', async () => {
+    apiFetchMock.mockResolvedValue(PREVIEW)
+    confirmMock.mockResolvedValue(false)
+    renderWith()
+
+    fireEvent.contextMenu(screen.getByText('sample-svc'))
+    fireEvent.click(screen.getByText('设为开机启动'))
+
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled())
+    expect(setAutostartMutate).not.toHaveBeenCalled()
+  })
+
+  it('已开启的服务:卡片显示徽标,菜单项变成「取消开机启动」且不拉 preview', async () => {
+    renderWith({ autostart: true })
+
+    expect(screen.getByText('开机启动')).toBeTruthy()
+    fireEvent.contextMenu(screen.getByText('sample-svc'))
+    fireEvent.click(screen.getByText('取消开机启动'))
+
+    await waitFor(() => expect(setAutostartMutate).toHaveBeenCalled())
+    expect(setAutostartMutate.mock.calls[0][0]).toEqual({
+      serviceId: '1234567890',
+      enabled: false,
+    })
+    // 关掉不需要问「会加载什么」。
+    expect(apiFetchMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('ServicesList card click → navigate', () => {

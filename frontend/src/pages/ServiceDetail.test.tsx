@@ -144,6 +144,7 @@ describe('PlaygroundTab · comfy_template respond-async 集成', () => {
       source_name: 'tpl',
       category: 'image',
       meter_dim: null,
+      autostart: false,
       workflow_id: null,
       workflow_name: null,
       snapshot_hash: null,

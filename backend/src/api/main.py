@@ -80,6 +80,10 @@ _MICRO_MIGRATIONS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_llm_usage_agent_id ON llm_usage (agent_id)",
     "CREATE INDEX IF NOT EXISTS ix_response_sessions_agent_id ON response_sessions (agent_id)",
     "CREATE INDEX IF NOT EXISTS ix_instance_api_keys_key_prefix ON instance_api_keys (key_prefix)",
+    # 服务级「开机启动」(2026-09-03)。alembic 有对应迁移
+    # (c5d2e9b74a10),但生产启动仍走 create_all —— create_all 不给**已存在**的表加列,
+    # 没这条的话线上重启后 service_instances 查询全炸 UndefinedColumn。幂等,可共存。
+    "ALTER TABLE service_instances ADD COLUMN IF NOT EXISTS autostart BOOLEAN NOT NULL DEFAULT false",
 )
 
 
@@ -204,11 +208,16 @@ def _start_background_tasks(app, model_mgr):
     bg_tasks: list = []
 
     if not _bg_tasks_disabled:
-        # 注意:这里**没有**「按已发布工作流的模型依赖预加载」这一条(2026-09-03 删)。
-        # 旧的 _load_wf_deps 把每个 published 工作流引用到的模型开机全 load_model,
-        # 完全不看 resident 标记 —— 用户在 UI 里没开「自动加载」的模型照样开机占满显存,
-        # 与 UI 承诺的语义相反。工作流真正执行时 runner 走 get_or_load 按需加载,
-        # 预热只是首调快一点,不是功能必需。
+        # 开机预加载**只有一条后台任务**(_preload_sequence),顺序做两件事:
+        #   ① resident 模型(preload_residents)
+        #   ② autostart=true 服务引用到的模型(service_autostart)
+        # 没有第三条 —— 尤其**没有**「按已发布工作流的模型依赖预加载」(2026-09-03 删的
+        # _load_wf_deps:把每个 published 工作流引用到的模型开机全 load_model,完全不看
+        # resident 标记,用户没开「自动加载」的模型照样开机占满显存)。工作流真正执行时
+        # runner 走 get_or_load 按需加载。
+        #
+        # 两步**顺序 await 在同一个 task 里**,不另起并发 task:2026-07-06 生产事故就是两个
+        # 独立 task 同一瞬间往同一张卡 spawn 两个 vLLM(见 model_manager._global_load_lock)。
         #
         # Resident models marked resident: preload in the background, ordered
         # by preload_order ascending (spec 4.2). The ~120s diffusers compose
@@ -224,11 +233,18 @@ def _start_background_tasks(app, model_mgr):
             from src.api.websocket import ws_manager as _ws
             await _ws.broadcast_model_status(spec_id, "loaded")
 
+        async def _preload_sequence() -> None:
+            await model_mgr.preload_residents(on_loaded=_on_resident_loaded)
+            # autostart 服务的模型跟在 resident 后面(fail-soft,自己吞异常)。
+            from src.models.database import get_session_factory as _asf
+            from src.services.service_autostart import preload_autostart_services
+            await preload_autostart_services(
+                _asf(), model_mgr, on_loaded=_on_resident_loaded,
+            )
+
         # Persist the task ref so 3.11+ doesn't garbage-collect a still-running
         # background coroutine and silently drop the preload.
-        app.state._resident_preload_task = asyncio.create_task(
-            model_mgr.preload_residents(on_loaded=_on_resident_loaded)
-        )
+        app.state._resident_preload_task = asyncio.create_task(_preload_sequence())
 
         # Start idle model checker background task
         async def idle_checker():

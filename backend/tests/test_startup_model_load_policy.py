@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -113,20 +113,33 @@ async def test_lifespan_does_not_load_models_of_published_workflows(
 
 
 @pytest.mark.asyncio
-async def test_background_tasks_still_preload_residents(monkeypatch):
-    """resident 模型仍旧走 preload_residents;没有第二条「工作流依赖」加载源。
+async def test_background_tasks_preload_residents_then_autostart(monkeypatch):
+    """开机预加载只有一条后台任务,顺序做两件事:resident → autostart 服务。
 
-    只验 task 创建的那一刻(create_task 之后立刻 cancel,任务体一步都不跑)——
-    否则 memory_guard_loop 会真去 poll nvidia-smi(CLAUDE.md:测试绝不碰 GPU)。
+    其余后台 loop(memory_guard 会 poll nvidia-smi 等)create_task 之后立刻 cancel,
+    任务体一步都不跑(CLAUDE.md:测试绝不碰 GPU)。
     """
     monkeypatch.setenv("NOUS_DISABLE_BG_TASKS", "0")
     monkeypatch.setenv("NOUS_DISABLE_VLLM_WATCHDOG", "1")
     monkeypatch.setenv("NOUS_DISABLE_STATUS_SAMPLER", "1")
 
+    order: list[str] = []
+
     from src.api.main import _start_background_tasks
+    import src.services.service_autostart as _autostart_mod
+
+    async def _fake_autostart(session_factory, mm, on_loaded=None):
+        order.append("autostart")
+        return []
+
+    monkeypatch.setattr(_autostart_mod, "preload_autostart_services", _fake_autostart)
 
     model_mgr = MagicMock()
-    model_mgr.preload_residents = AsyncMock()
+
+    async def _fake_preload(on_loaded=None):
+        order.append("resident")
+
+    model_mgr.preload_residents = MagicMock(side_effect=_fake_preload)
     app = MagicMock()
     app.state = MagicMock()
 
@@ -135,11 +148,10 @@ async def test_background_tasks_still_preload_residents(monkeypatch):
     for t in tasks:
         t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
-    # app.state 上的 resident preload task 也要收干净。
-    pre_task = app.state._resident_preload_task
-    pre_task.cancel()
-    await asyncio.gather(pre_task, return_exceptions=True)
+    # 预加载任务是唯一一条要跑完的 —— await 它,验两步的顺序。
+    await app.state._resident_preload_task
 
-    model_mgr.preload_residents.assert_called_once()
-    # 后台起的加载只有 resident preload 这一条 —— 没人直接 load_model。
+    assert order == ["resident", "autostart"], \
+        "开机预加载必须是 resident → autostart 的单任务顺序执行(别开第二个并发加载源)"
+    # 后台没人绕过这两步直接 load_model。
     model_mgr.load_model.assert_not_called()

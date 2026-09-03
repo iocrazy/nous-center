@@ -2,12 +2,14 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     Index,
     Integer,
     JSON,
     String,
+    text as sa_text,
 )
 from sqlalchemy.orm import deferred
 
@@ -42,6 +44,12 @@ class ServiceInstance(Base):
     params_override = Column(JSON, default=dict)
     rate_limit_rpm = Column(Integer, nullable=True)
     rate_limit_tpm = Column(Integer, nullable=True)
+    # 开机启动:true = lifespan 在 resident preload 之后,顺带把本服务引用到的
+    # registry 模型也加载好(见 src/services/service_autostart.py)。默认 false ——
+    # 「没开常驻的模型不该开机占显存」是硬规矩,这是唯一的显式例外开关。
+    autostart = Column(
+        Boolean, nullable=False, default=False, server_default=sa_text("false"),
+    )
 
     # ---- v3 publish contract --------------------------------------
     # FK to the source workflow (auto-generated trivial workflow for

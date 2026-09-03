@@ -45,6 +45,8 @@ export interface ServiceRow {
   snapshot_hash: string | null
   snapshot_schema_version: number
   version: number
+  /** 开机启动:开机会预加载本服务引用的模型。默认 false —— 没开的服务开机不占显存。 */
+  autostart: boolean
   models: ServiceModelRef[]
   created_at: string
   updated_at: string
@@ -152,6 +154,57 @@ export function usePatchService() {
         method: 'PATCH',
         body: JSON.stringify(body),
       }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['services'] })
+      qc.invalidateQueries({ queryKey: ['service', String(vars.serviceId)] })
+    },
+  })
+}
+
+// ---------- 开机启动 (autostart) ----------
+
+/** 开机会为某服务加载的一个模型。vram_gb/gpu 后端按 registry spec 填,查不到就没有。 */
+export interface PreloadModel {
+  name: string
+  vram_gb?: number | null
+  gpu?: number | number[] | null
+}
+
+export interface AutostartPreview {
+  service_id: string
+  name: string
+  autostart: boolean
+  preload_models: PreloadModel[]
+}
+
+/** 「设为开机启动」确认框的数据源 —— 先问后端开机会加载什么,再让用户确认。
+ *  故意做成裸函数而不是 useQuery:它只在点菜单那一下用一次,不需要缓存/订阅。 */
+export function fetchAutostartPreview(serviceId: string | number) {
+  return apiFetch<AutostartPreview>(`/api/v1/services/${serviceId}/autostart-preview`)
+}
+
+/** 人话版「35.0 GB · GPU 1」,两项都没有就返回空串。 */
+export function preloadModelDetail(m: PreloadModel): string {
+  const bits: string[] = []
+  if (typeof m.vram_gb === 'number') bits.push(`${m.vram_gb} GB`)
+  if (typeof m.gpu === 'number') bits.push(`GPU ${m.gpu}`)
+  else if (Array.isArray(m.gpu) && m.gpu.length) bits.push(`GPU ${m.gpu.join(',')}`)
+  return bits.join(' · ')
+}
+
+export interface SetAutostartVars {
+  serviceId: string | number
+  enabled: boolean
+}
+
+export function useSetServiceAutostart() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ serviceId, enabled }: SetAutostartVars) =>
+      apiFetch<ServiceRow & { preload_models: PreloadModel[] }>(
+        `/api/v1/services/${serviceId}/autostart`,
+        { method: 'POST', body: JSON.stringify({ enabled }) },
+      ),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['services'] })
       qc.invalidateQueries({ queryKey: ['service', String(vars.serviceId)] })
