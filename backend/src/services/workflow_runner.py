@@ -79,6 +79,21 @@ async def _broadcast_task_status(task: ExecutionTask, event: str = "updated") ->
         logger.warning("broadcast_task_status failed: %s", e)
 
 
+async def _refresh_locked(session, task: ExecutionTask) -> None:
+    """收尾前重读 task 状态,**并把这一行锁到本事务提交为止**(`SELECT … FOR UPDATE`)。
+
+    下面三条收尾路径都是「先读 status,看是不是已经被 cancel 写成 cancelled,不是才
+    覆盖成 completed/failed」——这是个 check-then-act。裸 `session.refresh()` 读完就
+    放手,读和随后的 `session.commit()` 之间隔着 await 点,cancel 路径
+    (routes/predictions.py::cancel_prediction)的 UPDATE 正好可以挤进来提交
+    cancelled,然后被我们的 commit 覆盖回 completed —— **用户的终态被后到的成功态
+    覆盖**。加 FOR UPDATE 后这一行在我们提交前被独占:cancel 的 UPDATE 要么排在读
+    之前(我们读到 cancelled → honor),要么排在提交之后(它的
+    `status IN ('queued','running')` 条件不再匹配 → 0 行,不误改终态)。两边都不丢。
+    """
+    await session.refresh(task, with_for_update=True)
+
+
 async def run_workflow_task(
     task_id: int,
     workflow_data: dict,
@@ -135,7 +150,7 @@ async def run_workflow_task(
             # round2 #cancel-race:HTTP cancel 路径可能在 execute() 期间把 status 写成
             # cancelled。executor 没感知取消而正常跑完时,success 路径若直接覆盖成
             # completed 会丢掉用户的取消意图(跟下面 except 路径的 PR-3 guard 对称)。
-            await session.refresh(task)
+            await _refresh_locked(session, task)
             if task.status == "cancelled":
                 task.duration_ms = elapsed
                 await session.commit()
@@ -156,7 +171,7 @@ async def run_workflow_task(
         except ExecutionError as e:
             elapsed = int((time.monotonic() - start) * 1000)
             # PR-3:HTTP cancel 在另一路径已把 status 写 cancelled —— 不要覆盖成 failed。
-            await session.refresh(task)
+            await _refresh_locked(session, task)
             if task.status != "cancelled":
                 task.status = "failed"
                 task.error = str(e)
@@ -173,7 +188,7 @@ async def run_workflow_task(
             )
         except Exception as e:  # noqa: BLE001 — 后台 task 永不冒泡
             elapsed = int((time.monotonic() - start) * 1000)
-            await session.refresh(task)
+            await _refresh_locked(session, task)
             if task.status != "cancelled":
                 task.status = "failed"
                 task.error = str(e)

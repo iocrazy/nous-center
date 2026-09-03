@@ -230,16 +230,22 @@ async def test_cancel_forwards_interrupt_and_reaches_cancelled(client, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_cancel_does_not_clobber_a_completion_that_races_the_interrupt(client, monkeypatch):
-    """code review Important(TOCTOU):cancel_prediction 里 `await interrupt()` 生产上
-    最长 5s 真实 HTTP 往返——这个窗口内后台渲染完全可能已经跑完并把 completed+result
-    落库。旧实现取消处理器结尾无条件 `UPDATE status='cancelled'`,会把这个已经成功的
-    终态硬翻回 cancelled 且丢 output(task_to_prediction 只在 succeeded 时给 output)。
+async def test_cancel_does_not_clobber_a_render_that_already_finished(client, monkeypatch):
+    """code review Important(TOCTOU)的另一半:渲染**已经**跑完并把 completed+result
+    落库之后才到的 cancel,不能把这个成功的终态翻回 cancelled 且丢 output
+    (task_to_prediction 只在 succeeded 时给 output)。
 
-    这里让 FakeClient.interrupt() 在被 await 期间放行卡住的 wait()、并轮询等后台
-    run_workflow_task 真把 completed 落库后才返回——精确复现"interrupt 窗口内渲染
-    赢下竞态"这个时序,而不是赌 sleep 时长。cancel 响应 + DB 最终态都必须如实是
-    completed/succeeded,不能是被 cancel 路径覆盖出来的 cancelled。
+    2026-09-02 顺序修正后这条测试的装置变了(行为断言没变):以前是让
+    `FakeClient.interrupt()` 在被 await 期间放行卡住的 wait() —— 因为旧
+    `cancel_prediction` 先 interrupt 再落 cancelled,那个 await 窗口就是渲染赢下竞态的
+    地方。现在 cancel 先把 cancelled 提交、再 interrupt,interrupt 已经不可能"制造"出
+    一个后到的 completed 了(制造出来也会被 workflow_runner 的 honor-cancelled 挡掉,
+    见 test_cancel_forwards_interrupt_and_reaches_cancelled)。真正还会发生的"渲染赢"
+    只剩一种:渲染自己先跑完。装置照这个改 —— 放行 wait()、轮询等 completed 真落库,
+    再发 cancel。
+
+    另断言 `interrupt_calls == 0`:任务已终态,不该再往 sidecar 发 `/interrupt` ——
+    那一发打不到本任务,只会误伤排在后面的下一个渲染(C1 那条不变式)。
     """
     from src.models.execution_task import ExecutionTask
 
@@ -249,7 +255,6 @@ async def test_cancel_does_not_clobber_a_completion_that_races_the_interrupt(cli
         def __init__(self):
             super().__init__()
             self.interrupt_calls = 0
-            self.task_id: int | None = None  # 拿到 pid 后由测试回填
 
         async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
             await wait_gate.wait()
@@ -257,16 +262,6 @@ async def test_cancel_does_not_clobber_a_completion_that_races_the_interrupt(cli
 
         async def interrupt(self) -> None:
             self.interrupt_calls += 1
-            wait_gate.set()  # 放行后台的 wait(),让它继续跑完 executor 并 commit
-            sf = get_session_factory()
-            deadline = asyncio.get_event_loop().time() + 2.0
-            while asyncio.get_event_loop().time() < deadline:
-                async with sf() as s:
-                    t = await s.get(ExecutionTask, self.task_id)
-                if t is not None and t.status == "completed":
-                    return
-                await asyncio.sleep(0.005)
-            raise AssertionError("后台渲染没能在 interrupt 窗口内落 completed(测试装置问题)")
 
     fc = _RaceFakeClient()
     monkeypatch.setattr(nb, "get_client", lambda: fc)
@@ -281,7 +276,6 @@ async def test_cancel_does_not_clobber_a_completion_that_races_the_interrupt(cli
         headers={**headers, "Prefer": "respond-async"})
     assert r.status_code == 202, r.text
     pid = r.json()["id"]
-    fc.task_id = int(pid)
 
     deadline = asyncio.get_event_loop().time() + 5.0
     status = None
@@ -293,9 +287,22 @@ async def test_cancel_does_not_clobber_a_completion_that_races_the_interrupt(cli
     assert status == "processing", f"prediction 未在超时前进入 running(last={status})"
     await _wait_running_task_id(int(pid))  # see docstring — C1 fix needs the node past `async with _SEM:`
 
+    # 放行渲染,轮询等 run_workflow_task 真把 completed 落库(不赌 sleep 时长)。
+    wait_gate.set()
+    sf = get_session_factory()
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline:
+        async with sf() as s:
+            t = await s.get(ExecutionTask, int(pid))
+        if t is not None and t.status == "completed":
+            break
+        await asyncio.sleep(0.005)
+    else:
+        raise AssertionError("后台渲染没能在超时前落 completed(测试装置问题)")
+
     cancel_resp = await client.post(f"/v1/predictions/{pid}/cancel", headers=headers)
     assert cancel_resp.status_code == 200, cancel_resp.text
-    assert fc.interrupt_calls == 1
+    assert fc.interrupt_calls == 0
 
     # 竞态赢家是「渲染先完成」——cancel 的响应必须如实反映 succeeded + output,不能报
     # cancelled 丢 output。

@@ -335,6 +335,21 @@ async def cancel_prediction(
     现在只在被取消的 prediction_id 确实是 `comfy_bridge` 当前持有信号量的那个任务时
     才转发 —— 排在后面的任务靠桥节点自己在拿到信号量后的 cancel-race 复查跳过渲染
     (comfy_bridge.py::_task_is_cancelled),不需要也不该经这条 interrupt 路径。
+
+    **先落 cancelled、再转发 interrupt**(2026-09-02 修的产品赛跑,CI flake 循着它来):
+    旧顺序是 interrupt → 条件 UPDATE。`await interrupt()` 在生产里是一次最长 5s 的真实
+    HTTP 往返、在测试里也至少让出一次事件循环 —— 这个窗口里被打断的渲染会一路走完
+    `ComfyClient.wait()` 返回 → 桥节点收尾 → workflow_runner 抢先把终态写成
+    completed/failed。等 cancel 的条件 UPDATE 才落到 DB 时它只能匹配 queued/running,
+    0 行生效,于是:
+      · 中断成功(桥节点抛"未产出任何产物")→ runner 看到 status 还是 running → 落
+        **failed**,用户点的取消被记成失败;
+      · 测试替身那种「interrupt 后 wait 仍返回成功」→ 落 **completed** → 端点回
+        `succeeded`(就是 flaky 的那条断言)。
+    先把 cancelled 提交,取消意图对后到的 runner 就是可见的既成事实(runner 两条收尾
+    路径都 honor cancelled,见 workflow_runner.py),interrupt 只剩"尽快止损"的作用,
+    不再参与终态竞速。条件 UPDATE 本身保留:渲染在我们下手**之前**就已经真跑完的
+    情况仍然让真实终态赢(0 行生效 → refresh 拿到 completed,不把成功硬翻成取消)。
     """
     _, api_key = auth
     task = (await session.execute(
@@ -345,32 +360,39 @@ async def cancel_prediction(
         raise HTTPException(404, detail="prediction not found")
     if task.status in ("completed", "failed", "cancelled"):
         return task_to_prediction(task, service=task.workflow_name)
+    # 先*判断*要不要 interrupt(纯读,没有任何副作用),真正的 `await interrupt()` 留到
+    # cancelled 落库之后 —— 这一步不会放行任何渲染,所以不参与终态竞速。
+    should_interrupt = False
     if task.status == "running":
         svc = (await session.execute(
             select(ServiceInstance).where(ServiceInstance.name == task.workflow_name)
         )).scalar_one_or_none()
         if svc is not None and svc.source_type == "comfy_template":
-            from src.services.nodes.comfy_bridge import get_running_task_id  # noqa: PLC0415
-            if get_running_task_id() == prediction_id:
-                from src.api.routes.comfy_templates import get_client  # noqa: PLC0415
-                try:
-                    await get_client().interrupt()
-                except Exception as e:  # noqa: BLE001 — sidecar 掉线不该挡住 DB 落 cancelled
-                    import logging  # noqa: PLC0415
-                    logging.getLogger(__name__).warning(
-                        "cancel_prediction: comfy interrupt failed for task %s: %s",
-                        prediction_id, e)
-    # TOCTOU 守护(镜像 workflow_runner.py run_workflow_task 反方向的 cancel-race guard):
-    # 上面 `await interrupt()`(生产里最长 5s 真实 HTTP 往返)期间,后台渲染完全可能已经
-    # 跑完并把 completed+result 落库 —— 这里若无条件 UPDATE status='cancelled',会把一个
-    # 已经成功的终态硬翻回 cancelled 且丢 output(task_to_prediction 只在 succeeded 时给
-    # output),终态错报。条件 UPDATE 只在仍是 queued/running 时才真的落 cancelled,否则
-    # 0 行生效,下面 refresh 拿到的就是渲染赢下竞态后的真实终态。
-    await session.execute(
+            from src.services.nodes import comfy_bridge  # noqa: PLC0415
+            should_interrupt = comfy_bridge.get_running_task_id() == prediction_id
+
+    # TOCTOU 守护:条件 UPDATE 只在仍是 queued/running 时才真的落 cancelled —— 渲染在上面
+    # 那两次 DB 往返期间抢先跑完(completed/failed)时 0 行生效,不把一个已成功的终态硬翻
+    # 回 cancelled 且丢 output(task_to_prediction 只在 succeeded 时给 output)。
+    marked = (await session.execute(
         update(ExecutionTask).where(
             ExecutionTask.id == prediction_id,
             ExecutionTask.status.in_(("queued", "running")),
-        ).values(status="cancelled", cancel_reason="client cancel"))
+        ).values(status="cancelled", cancel_reason="client cancel"))).rowcount
     await session.commit()
+
+    # 渲染已经赢下竞态(marked==0)时不再打断:那一发 `/interrupt` 打不到本任务,只会误伤
+    # sidecar 上排在后面的下一个渲染(C1 那条不变式)。落库到这里之间还隔着一次 commit
+    # 往返,渲染也可能恰好在这个缝里跑完、下一个任务已拿到信号量 —— 所以发 interrupt 前
+    # **再核一次**持有者仍是本任务,把误伤窗口压到最小(纯内存读,零成本)。
+    if marked and should_interrupt and comfy_bridge.get_running_task_id() == prediction_id:
+        from src.api.routes.comfy_templates import get_client  # noqa: PLC0415
+        try:
+            await get_client().interrupt()
+        except Exception as e:  # noqa: BLE001 — sidecar 掉线不该挡住已落的 cancelled
+            import logging  # noqa: PLC0415
+            logging.getLogger(__name__).warning(
+                "cancel_prediction: comfy interrupt failed for task %s: %s",
+                prediction_id, e)
     await session.refresh(task)
     return task_to_prediction(task, service=task.workflow_name)
