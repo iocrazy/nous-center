@@ -80,3 +80,70 @@ async def test_sidecar_down_degrades_to_502_not_500(client, monkeypatch):
     monkeypatch.setattr(ct_mod, "get_client", lambda: FakeClient(boom=True))
     r = await client.get("/api/v1/comfy/styles", params={"pack": "fooocus_styles"})
     assert r.status_code == 502, r.text
+
+
+# ---------- 缩略图代理 ----------
+
+
+class ImageClient:
+    """styles() 给 krea2 那种相对路径缩略图;style_image() 回一坨假 JPEG。"""
+
+    def __init__(self, boom=False):
+        self.boom = boom
+        self.seen: list[str] = []
+
+    async def styles(self, pack: str):
+        return [{"name": "Photography", "name_cn": "摄影",
+                 "thumbnail": "/easyuse/prompt/styles/image?path=./samples/摄影__Photography.jpg"},
+                {"name": "Fooocus Enhance", "name_cn": "Fooocus-优化增强",
+                 "thumbnail": "https://raw.githubusercontent.com/x/a.jpg"}]
+
+    async def style_image(self, src: str):
+        self.seen.append(src)
+        if self.boom:
+            from src.services.comfy.client import ComfyError
+            raise ComfyError("sidecar 掉线")
+        return b"\xff\xd8\xff-fake-jpeg", "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_relative_thumbnail_rewritten_to_proxy(client, monkeypatch):
+    """krea2 那批包的 thumbnail 是 **sidecar 侧相对路径** —— 浏览器按 nous 的 origin
+    解析必 404。归一时改写成走 /api/v1/comfy/style-image 代理;绝对外链原样透传。"""
+    monkeypatch.setattr(ct_mod, "get_client", lambda: ImageClient())
+    opts = (await client.get("/api/v1/comfy/styles", params={"pack": "krea2"})).json()["options"]
+
+    assert opts[0]["image"].startswith("/api/v1/comfy/style-image?src=")
+    assert "%2Feasyuse%2F" in opts[0]["image"], "相对路径要 URL-encode 进 src"
+    assert opts[1]["image"] == "https://raw.githubusercontent.com/x/a.jpg", "外链不动"
+
+
+@pytest.mark.asyncio
+async def test_style_image_proxied(client, monkeypatch):
+    fake = ImageClient()
+    monkeypatch.setattr(ct_mod, "get_client", lambda: fake)
+    src = "/easyuse/prompt/styles/image?path=./samples/摄影__Photography.jpg"
+    r = await client.get("/api/v1/comfy/style-image", params={"src": src})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("image/jpeg")
+    assert "max-age" in r.headers.get("cache-control", "")
+    assert fake.seen == [src]
+
+
+@pytest.mark.asyncio
+async def test_style_image_rejects_non_easyuse_src(client, monkeypatch):
+    """闸门:只放行 /easyuse/*,否则这个端点就是个"拿 admin 身份任意打 sidecar"的跳板。"""
+    fake = ImageClient()
+    monkeypatch.setattr(ct_mod, "get_client", lambda: fake)
+    for bad in ["/history", "http://evil.example/x.jpg", "/view?filename=secret.png"]:
+        r = await client.get("/api/v1/comfy/style-image", params={"src": bad})
+        assert r.status_code == 400, (bad, r.text)
+    assert fake.seen == [], "被拒的请求一次都不该打到 sidecar"
+
+
+@pytest.mark.asyncio
+async def test_style_image_sidecar_down_is_502(client, monkeypatch):
+    monkeypatch.setattr(ct_mod, "get_client", lambda: ImageClient(boom=True))
+    r = await client.get("/api/v1/comfy/style-image",
+                         params={"src": "/easyuse/prompt/styles/image?path=x.jpg"})
+    assert r.status_code == 502, r.text

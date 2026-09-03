@@ -109,6 +109,17 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   都认)——脚本化调用(无浏览器 cookie)可以直接用 `ADMIN_TOKEN` 当 bearer,也可以
   先用它经 `POST /api/v1/keys {label, service_ids:[<service 数字 id>]}` 铸一把授权给该
   service 的 M:N key,再拿它的 `secret` 调 predictions(两条路都通)。
+- **选项可依赖另一个参数**:`exposed_params` 项上写
+  `options_depends_on: "<另一个 key>"` + `options_source: "comfy_styles"`,该字段的
+  选项清单就在**运行期**按依赖参数的当前值拉(krea2:`styles` 随 `style_pack` 切换),
+  不再只认注册时冻结的那份静态 enum。链路:mapping → `constraints.options_*` →
+  schema 的 `x-options-depends-on`/`x-options-source` → 前端 `DependentOptionField`
+  按 `GET /api/v1/comfy/styles?pack=` 拉 + 后端 `comfy/style_options.py`
+  (10 分钟 TTL 缓存)按包校验。**静态 enum 照旧写**,是 sidecar 不可达时的兜底
+  (拿不到清单只 warning + 退回静态,绝不让预测 500)。`options_depends_on` 指向不存在
+  的 key 在 PUT mapping 时就拒(400 `validation_error`)。
+  krea2 那批风格包的缩略图是 sidecar 侧**相对路径**,经
+  `GET /api/v1/comfy/style-image?src=` 代理(只放行 `/easyuse/*`)。
 - env 三件套:`NOUS_COMFY_URL`(sidecar 地址,默认 `http://127.0.0.1:8188`)、
   `NOUS_COMFY_TIMEOUT`(渲染等待上限,默认 14400s)、
   `NOUS_COMFY_DOWNLOAD_TIMEOUT`(产物下载超时,默认 120s)。

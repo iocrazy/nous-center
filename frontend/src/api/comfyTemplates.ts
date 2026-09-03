@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './client'
 
 // ---------- shared types ----------
@@ -13,6 +14,11 @@ export interface ComfyExposedParam {
   options?: unknown[]
   required?: boolean
   random?: boolean
+  multiple?: boolean
+  /** 选项依赖:本字段的选项清单随**另一个 exposed_param 的当前值**变(写它的 key)。 */
+  options_depends_on?: string | null
+  /** 去哪儿取那份清单。目前只有 `comfy_styles`(ComfyUI-Easy-Use 风格清单)。 */
+  options_source?: 'comfy_styles' | null
   comfy_node_id: string
   comfy_input: string
 }
@@ -124,4 +130,32 @@ export function getObjectInfo(): Promise<Record<string, unknown>> {
 
 export function freeComfyVram(): Promise<FreeComfyVramResult> {
   return apiFetch<FreeComfyVramResult>('/api/v1/comfy/free', { method: 'POST' })
+}
+
+
+// ---------- 动态选项(选项依赖)----------
+
+/** `GET /api/v1/comfy/styles` 归一后的选项项 —— 与 exposed_params.options 同形。 */
+export interface ComfyStyleOption {
+  value: string
+  label?: string
+  image?: string
+}
+
+export function getComfyStyles(pack: string): Promise<{ pack: string; options: ComfyStyleOption[] }> {
+  return apiFetch(`/api/v1/comfy/styles?pack=${encodeURIComponent(pack)}`)
+}
+
+/** 某个风格包的风格清单。`pack` 为空(还没选包)时不发请求。
+ *
+ *  queryKey 带上 pack —— 切包就是换一个缓存条目,来回切不会重复打 sidecar。
+ *  `retry: false`:sidecar 离线时立刻让 UI 退回静态清单,而不是转三次圈才认输。 */
+export function useComfyStyles(pack: string | undefined) {
+  return useQuery({
+    queryKey: ['comfy-styles', pack],
+    queryFn: () => getComfyStyles(pack as string),
+    enabled: Boolean(pack),
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
 }

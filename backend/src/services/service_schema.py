@@ -116,6 +116,14 @@ def _input_property(exposed: dict, widget: dict | None) -> dict:
             # 只能当单选渲。
             if constraints.get("multiple"):
                 prop["x-multiple"] = True
+        # 选项依赖(与 enum 并存,不是二选一):值域取决于另一个入参的当前值
+        # (`x-options-depends-on` 指向那个入参的 key),运行期去
+        # `x-options-source` 指定的来源取清单。上面的静态 enum / x-option-meta
+        # 照旧输出 —— 它们是**默认包**那一份,当来源不可达时的兜底与离线展示。
+        if constraints.get("options_depends_on"):
+            prop["x-options-depends-on"] = constraints["options_depends_on"]
+        if constraints.get("options_source"):
+            prop["x-options-source"] = constraints["options_source"]
         if constraints.get("min") is not None:
             prop["minimum"] = constraints["min"]
         if constraints.get("max") is not None:
@@ -174,10 +182,24 @@ def build_service_io_schema(exposed_inputs, exposed_outputs, snapshot) -> dict:
     return {"input_schema": input_schema, "output_schema": output_schema}
 
 
-def validate_service_input(input_schema: dict, payload: Any) -> list[str]:
+def _enum_hint(values: list) -> str:
+    """错误信息里的允许值清单 —— 动态清单可能有几百项,截断到前 20。"""
+    if len(values) <= 20:
+        return str(values)
+    return f"{values[:20]}…(共 {len(values)} 项)"
+
+
+def validate_service_input(
+    input_schema: dict, payload: Any, dynamic_enums: dict[str, list] | None = None,
+) -> list[str]:
     """手写校验(无 jsonschema 依赖):required / type / enum / min-max。返回错误列表(空=通过)。
 
     多余的未声明字段放过(passthrough,不报错)—— 工作流可能有 schema 没覆盖的内部入参。
+
+    `dynamic_enums`:`{key: 允许值列表}`,**覆盖**该字段 schema 里的静态 enum。给带
+    `x-options-source` 的字段用(值域随另一个入参变,见 `comfy/style_options.py`)。
+    本函数保持同步无 I/O —— 清单由调用方预取后传进来(理由见 resolve_dynamic_enums 的
+    docstring)。传 None / 该 key 不在里面 → 照旧用静态 enum。
     """
     errors: list[str] = []
     if not isinstance(payload, dict):
@@ -199,18 +221,23 @@ def validate_service_input(input_schema: dict, payload: Any) -> list[str]:
             errors.append(f"{k}: expected number")
         elif t == "boolean" and not isinstance(v, bool):
             errors.append(f"{k}: expected boolean")
-        if "enum" in spec:
+        # 动态清单优先于静态 enum;两者都没有就跳过白名单校验(如自由文本字段,
+        # 或声明了动态来源但来源不可达且当初没冻结静态 enum 的字段)。
+        allowed = (dynamic_enums or {}).get(k)
+        if allowed is None:
+            allowed = spec.get("enum")
+        if allowed is not None:
             # x-multiple 的字段传的是**逗号分隔串**(对齐 ComfyUI-Easy-Use 的
             # select_styles,prompt.py:196 `.split(',')`),要逐项比对而不是整串比 ——
             # 否则多选值永远撞不上白名单,功能整条是死的(2026-08-31 实机 422)。
             if spec.get("x-multiple") and isinstance(v, str):
                 picked = [x.strip() for x in v.split(",") if x.strip()]
-                unknown = [x for x in picked if x not in spec["enum"]]
+                unknown = [x for x in picked if x not in allowed]
                 if unknown:
                     errors.append(
-                        f"{k}: {unknown} not in allowed values {spec['enum']}")
-            elif v not in spec["enum"]:
-                errors.append(f"{k}: must be one of {spec['enum']}")
+                        f"{k}: {unknown} not in allowed values {_enum_hint(allowed)}")
+            elif v not in allowed:
+                errors.append(f"{k}: must be one of {_enum_hint(allowed)}")
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             if "minimum" in spec and v < spec["minimum"]:
                 errors.append(f"{k}: must be >= {spec['minimum']}")

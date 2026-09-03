@@ -66,8 +66,10 @@ class ComfyClient:
         """ComfyUI-Easy-Use 的风格清单(`/easyuse/prompt/styles?name=<包>`)。
 
         返回项形如 `{name, name_cn, thumbnail, prompt, negative_prompt}`。thumbnail
-        对 fooocus_styles 是 GitHub raw 外链、对 krea2 包是 sidecar 本地文件 URL ——
-        两种都是浏览器能直接加载的地址,不需要我们再代理图片本身。
+        对 fooocus_styles 是 GitHub raw 外链(浏览器直接能加载),对 krea2 那批包是
+        **sidecar 侧的相对路径**(`/easyuse/prompt/styles/image?path=…`)—— 后者浏览器
+        会按 nous 的 origin 解析必 404,由路由层 `_style_to_option` 改写成走
+        `/api/v1/comfy/style-image` 代理(见 comfy_templates.py)。
         """
         r = await self._client.get(
             "/easyuse/prompt/styles", params={"name": pack}, timeout=15)
@@ -75,6 +77,18 @@ class ComfyClient:
             raise ComfyError(f"读取风格清单失败(HTTP {r.status_code})")
         data = r.json()
         return data if isinstance(data, list) else []
+
+    async def style_image(self, src: str) -> tuple[bytes, str]:
+        """取一张风格缩略图(sidecar 侧的相对 URL,如
+        `/easyuse/prompt/styles/image?path=./samples/x.jpg`)。
+
+        krea2 那批风格包的 `thumbnail` 是**相对路径**(fooocus 包才是 GitHub 外链)——
+        浏览器拿到会按 nous 自己的 origin 解析,必 404。所以要经后端代理一手。
+        """
+        r = await self._client.get(src, timeout=30)
+        if r.status_code != 200:
+            raise ComfyError(f"读取风格缩略图失败(HTTP {r.status_code})")
+        return r.content, r.headers.get("content-type", "image/jpeg")
 
     async def style_packs(self) -> list[str]:
         """可选的风格包清单 —— 从 object_info 的 `easy stylesSelector.styles` combo 取。
