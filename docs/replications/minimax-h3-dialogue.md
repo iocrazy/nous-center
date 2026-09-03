@@ -189,9 +189,13 @@ lanczos、对齐 32、总像素 1280k)归一后才进 conditioning,所以上传�
 产物结构(嵌套,不是顶层 `items`):
 
 ```
-output.outputs.bridge.video_url    → /files/videos/<date>/<hash>.mp4?token=…&expires=…
+output.outputs.bridge.video_url    → /files/images/<date>/<hash>.mp4?token=…&expires=…
 output.outputs.bridge.items[0].url → 同一个 URL
 ```
+
+注意路径段是 `images` 不是 `videos` —— 桥的落盘走
+`image_output_storage.write_image`,那个函数把签名 URL 固定拼成
+`/files/images/<date>/<uuid>.<ext>`,只有扩展名随产物类型变。
 
 ### 调用示例
 
