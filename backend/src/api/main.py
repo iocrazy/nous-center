@@ -178,11 +178,11 @@ def _install_log_handlers() -> None:
     logger.info("Application log collector installed (db + stdout)")
 
 
-def _start_background_tasks(app, model_mgr, wf_model_deps):
+def _start_background_tasks(app, model_mgr):
     """启动常驻后台 loop(god-lifespan 拆分第二刀)。
 
-    内联 async def 保持在函数内、闭包 app/model_mgr/wf_model_deps —— 不把闭包变量穿线到
-    模块级,零 NameError 风险,行为逐字不变。返回 shutdown/finally 要 cancel 的 4 个句柄;
+    内联 async def 保持在函数内、闭包 app/model_mgr —— 不把闭包变量穿线到
+    模块级,零 NameError 风险。返回 shutdown/finally 要 cancel 的 4 个句柄;
     NOUS_DISABLE_BG_TASKS=1(测试)时全为空([]/None)。
     """
     # NOUS_DISABLE_BG_TASKS=1 → skip all background tasks.
@@ -199,22 +199,17 @@ def _start_background_tasks(app, model_mgr, wf_model_deps):
     response_cleanup_task = None
     partial_worker = None
     # round4 #8/#9:常驻后台 loop 早先用裸 asyncio.create_task,既不持引用(Py3.11+
-    # event loop 只持弱引用 → _load_wf_deps 这种起手无 sleep 护栏的可能被 GC 丢弃),
+    # event loop 只持弱引用 → 起手无 sleep 护栏的任务可能被 GC 丢弃),
     # shutdown 也不 cancel(留半完成 subprocess)。收进 list 持引用 + finally 统一 cancel。
     bg_tasks: list = []
 
     if not _bg_tasks_disabled:
-        # Load workflow dependencies in background (non-blocking)
-        async def _load_wf_deps():
-            for dep in wf_model_deps:
-                try:
-                    await model_mgr.load_model(dep["key"])
-                except Exception as e:
-                    logger.warning("Failed to load model %s for workflow %s: %s", dep["key"], dep["wf_id"], e)
-
-        if wf_model_deps:
-            bg_tasks.append(asyncio.create_task(_load_wf_deps()))
-
+        # 注意:这里**没有**「按已发布工作流的模型依赖预加载」这一条(2026-09-03 删)。
+        # 旧的 _load_wf_deps 把每个 published 工作流引用到的模型开机全 load_model,
+        # 完全不看 resident 标记 —— 用户在 UI 里没开「自动加载」的模型照样开机占满显存,
+        # 与 UI 承诺的语义相反。工作流真正执行时 runner 走 get_or_load 按需加载,
+        # 预热只是首调快一点,不是功能必需。
+        #
         # Resident models marked resident: preload in the background, ordered
         # by preload_order ascending (spec 4.2). The ~120s diffusers compose
         # must not block /health (cloudflared / systemd probes would mark the
@@ -567,7 +562,7 @@ async def lifespan(app: FastAPI):
                 logger.info(
                     # rep_model_key 是 llm group 的「代表标识」(取 llm_specs[0].id),
                     # **不是启动加载目标** —— 它 status 一直 unloaded。实际加载由
-                    # published 工作流依赖(_load_wf_deps)/ resident preload / 手动决定。
+                    # resident preload / 工作流执行时的按需 get_or_load / 手动决定。
                     # 旧文案打 `model_key=%s` 易被误读成「启动加载了这个模型」(排查
                     # startup 自动加载时踩过坑,见 memory project_startup_model_load_paths)。
                     "Lane K: LLMRunner instantiated (group=%s, gpus=%s, "
@@ -665,13 +660,18 @@ async def lifespan(app: FastAPI):
                     logger.warning("Failed to reconnect %s: %s", spec.id, e)
                 break
 
-    # Auto-load disabled — models are loaded manually from the UI
-    # Resident flag only prevents auto-unload by idle checker
+    # 开机加载策略(2026-09-03 收敛,与 UI 语义对齐):
+    #   * 只有 `resident: true` 的模型会被开机预加载(下面 preload_residents)。
+    #   * 已发布工作流引用到的模型 **不** 预加载 —— 工作流真正执行时 runner
+    #     走 get_or_load 按需加载(首调慢一点,不占开机显存)。
+    #   * 下面这轮对账登记的模型引用只用于「防卸载」(挡 idle checker / LRU 驱逐),
+    #     登记本身绝不触发 load。
+    #   * 其余加载都由 UI 手动触发。
 
     # Re-register model references for published workflows
     from src.services.startup_reconcile import reconcile_orphan_published_workflows
     async with sf() as session:
-        orphan_published, wf_model_deps = await reconcile_orphan_published_workflows(
+        orphan_published = await reconcile_orphan_published_workflows(
             session, model_mgr,
         )
         if orphan_published:
@@ -700,7 +700,7 @@ async def lifespan(app: FastAPI):
             )
 
     bg_tasks, cache_cleanup_task, response_cleanup_task, partial_worker = (
-        _start_background_tasks(app, model_mgr, wf_model_deps)
+        _start_background_tasks(app, model_mgr)
     )
 
     # 启动自检 banner(对齐 PAPERCLIP)—— 全 wiring 完后打一屏聚合状态到 stdout/journald。
@@ -728,7 +728,7 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
         # round4 #9:cancel + await 常驻后台 loop(idle/memory_guard/log_cleanup/
-        # orphan_reap/_load_wf_deps),否则它们随 loop 关闭被硬杀,可能在
+        # orphan_reap),否则它们随 loop 关闭被硬杀,可能在
         # check_idle_models / nvidia-smi poll 中途留半完成状态。
         for t in bg_tasks:
             t.cancel()
