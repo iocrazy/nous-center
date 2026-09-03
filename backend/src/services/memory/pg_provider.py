@@ -1,8 +1,9 @@
 """PGMemoryProvider — reference implementation.
 
 Uses PG full-text search for content search(全局只用 PostgreSQL)。
-注意:models/memory.py 里目前**没有** GIN 索引,to_tsvector 是逐行现算的顺序扫描 ——
-数据量上去要补一个 `to_tsvector('simple', content)` 的 GIN 索引(需 alembic 迁移)。
+下面 prefetch 的 `to_tsvector('simple', content)` 由 models/memory.py 上的表达式 GIN
+索引 `idx_mem_content_fts` 支撑(迁移 a3f1c07d5b2e)。**改这里的表达式就得同步改索引**
+——两边差一个字(比如漏掉 'simple')planner 就用不上索引,退回全表扫 + 逐行现算 tsvector。
 """
 
 from __future__ import annotations

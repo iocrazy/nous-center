@@ -22,6 +22,20 @@ import pytest
 _BACKEND = Path(__file__).resolve().parent.parent
 
 
+def _pg_fetch(dsn: str, sql: str) -> list:
+    """裸 asyncpg 查一句 SQL(用来断言迁移真的把 DDL 落到了库上)。"""
+    import asyncpg
+
+    async def _run():
+        conn = await asyncpg.connect(dsn)
+        try:
+            return await conn.fetch(sql)
+        finally:
+            await conn.close()
+
+    return asyncio.run(_run())
+
+
 def _pg_admin(admin_dsn: str, sql: str) -> None:
     """裸 asyncpg 执行一句管理 SQL(建库/删库不能在事务里,asyncpg 默认 autocommit)。"""
     import asyncpg
@@ -81,3 +95,27 @@ def test_baseline_upgrade_then_zero_diff(fresh_pg_db):
     # check 返回 0 且明确"无新操作" = upgrade 后的库 schema 与 models 完全一致。
     assert check.returncode == 0, f"alembic check found drift (baseline != models):\n{combined}"
     assert "No new upgrade operations detected" in combined, combined
+
+
+def test_upgrade_head_creates_memory_fts_gin_index(fresh_pg_db):
+    """`upgrade head` 必须在全新库上产出 memory_entries 的表达式 GIN 索引。
+
+    上面的 `alembic check` 只按**索引名**比对表达式索引(autogenerate 把它归到 `on '()'`),
+    名字对了就算数 —— 一个同名的 btree 索引照样能骗过它。这里直接读 pg_indexes 的
+    indexdef,把 `USING gin` 和 `to_tsvector('simple'` 钉死:表达式与
+    pg_provider.py 查询侧差一个字,planner 就用不上索引。
+    """
+    db = fresh_pg_db
+
+    up = _run_alembic(["upgrade", "head"], db)
+    assert up.returncode == 0, f"upgrade head failed:\n{up.stdout}\n{up.stderr}"
+
+    rows = _pg_fetch(
+        db.replace("postgresql+asyncpg://", "postgresql://"),
+        "SELECT indexdef FROM pg_indexes "
+        "WHERE tablename = 'memory_entries' AND indexname = 'idx_mem_content_fts'",
+    )
+    assert rows, "upgrade head 后没有 idx_mem_content_fts"
+    indexdef = rows[0]["indexdef"]
+    assert "USING gin" in indexdef, indexdef
+    assert "to_tsvector('simple'" in indexdef, indexdef
