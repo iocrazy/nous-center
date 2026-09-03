@@ -80,3 +80,141 @@ async def test_sidecar_down_degrades_to_502_not_500(client, monkeypatch):
     monkeypatch.setattr(ct_mod, "get_client", lambda: FakeClient(boom=True))
     r = await client.get("/api/v1/comfy/styles", params={"pack": "fooocus_styles"})
     assert r.status_code == 502, r.text
+
+
+# ---------- 缩略图代理 ----------
+
+
+class ImageClient:
+    """styles() 给 krea2 那种相对路径缩略图;style_image() 回一坨假 JPEG。"""
+
+    def __init__(self, boom=False, thumbnail=None):
+        self.boom = boom
+        self.thumbnail = thumbnail
+        self.seen: list[str] = []
+
+    async def styles(self, pack: str, *, timeout: float = 15.0):
+        thumb = self.thumbnail or (
+            "/easyuse/prompt/styles/image?path=./samples/摄影__Photography.jpg")
+        return [{"name": "Photography", "name_cn": "摄影", "thumbnail": thumb},
+                {"name": "Fooocus Enhance", "name_cn": "Fooocus-优化增强",
+                 "thumbnail": "https://raw.githubusercontent.com/x/a.jpg"}]
+
+    async def style_image(self, path: str):
+        self.seen.append(path)
+        if self.boom:
+            from src.services.comfy.client import ComfyError
+            raise ComfyError("sidecar 掉线")
+        return b"\xff\xd8\xff-fake-jpeg", "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_relative_thumbnail_rewritten_to_proxy(client, monkeypatch):
+    """krea2 那批包的 thumbnail 是 **sidecar 侧相对路径** —— 浏览器按 nous 的 origin
+    解析必 404。归一时抠出 `path=` 改写成走代理;绝对外链原样透传。"""
+    monkeypatch.setattr(ct_mod, "get_client", lambda: ImageClient())
+    opts = (await client.get("/api/v1/comfy/styles", params={"pack": "krea2"})).json()["options"]
+
+    assert opts[0]["image"].startswith("/api/v1/comfy/style-image?path=")
+    # 传的是**文件路径**,不是整条 sidecar URL —— 代理端点没有"转发任意 src"这回事
+    assert "easyuse" not in opts[0]["image"]
+    assert opts[1]["image"] == "https://raw.githubusercontent.com/x/a.jpg", "外链不动"
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_without_path_is_dropped(client, monkeypatch):
+    """相对地址里没有 path= → 代理不了,干脆不给 image(前端退回文字卡片),
+    而不是吐一个必然 404 的地址。"""
+    monkeypatch.setattr(ct_mod, "get_client",
+                        lambda: ImageClient(thumbnail="/easyuse/whatever.jpg"))
+    opts = (await client.get("/api/v1/comfy/styles", params={"pack": "krea2"})).json()["options"]
+    assert "image" not in opts[0]
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_with_dotdot_is_dropped(client, monkeypatch):
+    monkeypatch.setattr(ct_mod, "get_client", lambda: ImageClient(
+        thumbnail="/easyuse/prompt/styles/image?path=../../../etc/passwd"))
+    opts = (await client.get("/api/v1/comfy/styles", params={"pack": "krea2"})).json()["options"]
+    assert "image" not in opts[0]
+
+
+@pytest.mark.asyncio
+async def test_style_image_proxied(client, monkeypatch):
+    fake = ImageClient()
+    monkeypatch.setattr(ct_mod, "get_client", lambda: fake)
+    r = await client.get("/api/v1/comfy/style-image",
+                         params={"path": "./samples/摄影__Photography.jpg"})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("image/jpeg")
+    # private 而不是 public:这个端点要 admin 鉴权,public 会让 cloudflared /
+    # 中间缓存把字节回给没鉴权的人。
+    assert r.headers.get("cache-control") == "private, max-age=3600"
+    assert fake.seen == ["./samples/摄影__Photography.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_style_image_rejects_dotdot(client, monkeypatch):
+    """`..` 段直接 400 —— sidecar 自己会拿这个路径去找文件,别让它接到能跳出
+    styles 目录的东西。"""
+    fake = ImageClient()
+    monkeypatch.setattr(ct_mod, "get_client", lambda: fake)
+    for bad in ["../../etc/passwd", "./samples/../../secret.png",
+                "..\\..\\windows\\win.ini"]:
+        r = await client.get("/api/v1/comfy/style-image", params={"path": bad})
+        assert r.status_code == 400, (bad, r.text)
+    assert fake.seen == [], "被拒的请求一次都不该打到 sidecar"
+
+
+@pytest.mark.asyncio
+async def test_style_image_cannot_reach_other_sidecar_routes(client, monkeypatch):
+    """回归(实测过的安全绕过):早先那版收整条 `src` 再转发、靠
+    `startswith("/easyuse/")` 把关,而 httpx 合并相对 URL 时会**归一化点段** ——
+    `/easyuse/../history` 到 sidecar 就成了 `/history`,于是这个端点等于"拿 admin
+    身份任意打 sidecar GET"。现在参数是文件路径、路由写死,`src` 根本不存在。
+    """
+    fake = ImageClient()
+    monkeypatch.setattr(ct_mod, "get_client", lambda: fake)
+
+    # 老的绕过形状:src 参数已不被接受(缺 path → 422 参数校验)
+    r = await client.get("/api/v1/comfy/style-image", params={"src": "/easyuse/../history"})
+    assert r.status_code in (400, 422), r.text
+
+    # 就算把同样的串塞进 path,也只会被当成文件名传给缩略图路由,且 `..` 先被拦下
+    r2 = await client.get("/api/v1/comfy/style-image", params={"path": "/easyuse/../history"})
+    assert r2.status_code == 400, r2.text
+    assert fake.seen == []
+
+
+@pytest.mark.asyncio
+async def test_style_image_path_with_hash_and_space(client, monkeypatch):
+    """含 `#`/空格/`%` 的文件名要原样送到 sidecar。
+
+    早先当 URL 字符串拼给 httpx 时,`#` 会被当 fragment 把查询截断
+    (`path=./samples/Neon #3 50%.jpg` → `path=./samples/Neon%20`),图必取不回来。
+    改走 `params=` 之后由 httpx 负责转义,值不再被二次解析。
+    """
+    fake = ImageClient()
+    monkeypatch.setattr(ct_mod, "get_client", lambda: fake)
+    weird = "./samples/Neon #3 50% + more.jpg"
+    r = await client.get("/api/v1/comfy/style-image", params={"path": weird})
+    assert r.status_code == 200, r.text
+    assert fake.seen == [weird], "路径要一字不差地到达 client"
+
+
+@pytest.mark.asyncio
+async def test_style_image_sidecar_down_is_502(client, monkeypatch):
+    monkeypatch.setattr(ct_mod, "get_client", lambda: ImageClient(boom=True))
+    r = await client.get("/api/v1/comfy/style-image", params={"path": "x.jpg"})
+    assert r.status_code == 502, r.text
+
+
+def test_client_style_image_hits_fixed_route_with_params():
+    """单测 client 那一层:URL 由写死的路由 + params 组装,不受 path 内容影响。"""
+    from src.services.comfy.client import STYLE_IMAGE_ROUTE, ComfyClient
+
+    c = ComfyClient(base_url="http://sidecar:8888")
+    for evil in ["/easyuse/../history", "../../view?filename=secret.png"]:
+        url = str(c._client.build_request(
+            "GET", STYLE_IMAGE_ROUTE, params={"path": evil}).url)
+        assert url.startswith("http://sidecar:8888/easyuse/prompt/styles/image?"), url

@@ -3,8 +3,17 @@ import { Dices } from 'lucide-react'
 import type { ExposedParam } from '../../api/services'
 import { paramKey, paramSlot } from '../../api/services'
 import NodeSelectPopover from '../nodes/NodeSelectPopover'
-import { classifyField, defaultFor, isRandomizable, num, type FieldKind } from './fieldKind'
+import {
+  classifyField,
+  defaultFor,
+  isRandomizable,
+  num,
+  optionDependency,
+  staticOptions,
+  type FieldKind,
+} from './fieldKind'
 import OptionThumbGrid, { type OptionMeta } from './OptionThumbGrid'
+import DependentOptionField from './DependentOptionField'
 
 export interface SchemaDrivenFormProps {
   inputs: ExposedParam[]
@@ -80,17 +89,23 @@ export default function SchemaDrivenForm({
             该服务没有暴露入参 · 直接点运行即可
           </div>
         )}
-        {inputs.map((p) => (
-          <Field
-            key={`${p.node_id}.${paramKey(p)}`}
-            param={p}
-            value={values[paramKey(p) ?? '']}
-            onChange={(v) => {
-              const k = paramKey(p)
-              if (k) update(k, v)
-            }}
-          />
-        ))}
+        {inputs.map((p) => {
+          // 选项依赖:把「被依赖的那个参数」的当前值传下去(如 style_pack 的值),
+          // 字段自己据此拉自己的选项清单。没声明依赖的字段传 undefined,行为不变。
+          const dep = optionDependency(p)
+          return (
+            <Field
+              key={`${p.node_id}.${paramKey(p)}`}
+              param={p}
+              value={values[paramKey(p) ?? '']}
+              dependsValue={dep ? String(values[dep.dependsOn] ?? '') : undefined}
+              onChange={(v) => {
+                const k = paramKey(p)
+                if (k) update(k, v)
+              }}
+            />
+          )
+        })}
       </div>
       <div
         className="flex items-center gap-2"
@@ -148,10 +163,15 @@ export function Field({
   param,
   value,
   onChange,
+  dependsValue,
 }: {
   param: ExposedParam
   value: unknown
   onChange: (v: unknown) => void
+  /** 该字段的选项所依赖的那个参数的当前值(见 optionDependency)。只有整份表单值
+   *  的持有者(SchemaDrivenForm)给得出来;ComfyTemplateEditor 的单字段预览不传,
+   *  于是自动退回静态清单。 */
+  dependsValue?: string
 }) {
   const kind = classifyField(param)
   const slot = paramSlot(param) ?? '?'
@@ -180,7 +200,13 @@ export function Field({
           }}>必填</span>
         )}
       </label>
-      <FieldInput kind={kind} param={param} value={value} onChange={onChange} />
+      <FieldInput
+        kind={kind}
+        param={param}
+        value={value}
+        onChange={onChange}
+        dependsValue={dependsValue}
+      />
     </div>
   )
 }
@@ -190,11 +216,13 @@ function FieldInput({
   param,
   value,
   onChange,
+  dependsValue,
 }: {
   kind: FieldKind
   param: ExposedParam
   value: unknown
   onChange: (v: unknown) => void
+  dependsValue?: string
 }) {
   const inputStyle = {
     width: '100%',
@@ -234,6 +262,24 @@ function FieldInput({
           lineHeight: 1.5,
           fontFamily: 'inherit',
         }}
+      />
+    )
+  }
+
+  // 选项依赖(两种 combo 共用一套逻辑):清单不是注册时冻结的那份,而是按依赖参数
+  // 的当前值实时拉。只有真声明了依赖、且拿得到依赖值时才走这条 —— 否则一切照旧。
+  const dep = kind === 'thumb_select' || kind === 'select' ? optionDependency(param) : null
+  if (dep && dependsValue !== undefined) {
+    const c = (param.constraints ?? {}) as { multiple?: unknown }
+    return (
+      <DependentOptionField
+        kind={kind as 'thumb_select' | 'select'}
+        source={dep.source}
+        dependsValue={dependsValue}
+        fallback={staticOptions(param)}
+        multiple={c.multiple === true}
+        value={value}
+        onChange={onChange}
       />
     )
   }

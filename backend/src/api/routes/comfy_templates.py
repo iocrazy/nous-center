@@ -14,11 +14,12 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any
+import urllib.parse
+from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,12 +90,44 @@ class ExposedParamMapping(BaseModel):
     # 多选 combo:值仍是**逗号分隔字符串**,不是数组 —— ComfyUI-Easy-Use 的
     # select_styles 本来就 `.split(',')`(prompt.py:196)。前端据此渲多选。
     multiple: bool = False
+    # 选项依赖:本字段的合法值域由**另一个 exposed_param 的当前值**决定(如
+    # `styles` 的清单随 `style_pack` 变)。`options_depends_on` 写那个参数的 key,
+    # `options_source` 写去哪儿取清单。做成 Literal 而不是自由字符串:以后加别的
+    # 来源(lora / checkpoint 清单…)时是加一个枚举值,协议形状不用改。
+    options_depends_on: str | None = None
+    options_source: Literal["comfy_styles"] | None = None
     comfy_node_id: str
     comfy_input: str
 
 
 class MappingBody(BaseModel):
     exposed_params: list[ExposedParamMapping]
+
+    @model_validator(mode="after")
+    def _check_options_depends_on(self) -> MappingBody:
+        """`options_depends_on` 必须指向**同一份 mapping 里存在的 key**(且不能是自己)。
+
+        指向不存在的 key 会让运行期永远解析不出包名 → 静默退回静态 enum,用户看到的
+        是"切了包但没联动"这种查不出原因的症状。发布时就拒掉(全仓的
+        RequestValidationError handler 把请求体校验失败统一翻成 **400 +
+        code=validation_error**,不是裸 FastAPI 的 422)。
+        """
+        keys = {p.key for p in self.exposed_params}
+        for p in self.exposed_params:
+            dep = p.options_depends_on
+            if dep is None:
+                continue
+            if dep == p.key:
+                raise ValueError(f"exposed_param {p.key!r}: options_depends_on 不能指向自己")
+            if dep not in keys:
+                raise ValueError(
+                    f"exposed_param {p.key!r}: options_depends_on={dep!r} "
+                    f"不是本 mapping 里的 key(现有:{sorted(keys)})")
+            if p.options_source is None:
+                raise ValueError(
+                    f"exposed_param {p.key!r}: 声明了 options_depends_on 就必须同时给 "
+                    "options_source(否则运行期不知道去哪儿取清单)")
+        return self
 
 
 class ReuploadBody(BaseModel):
@@ -201,6 +234,13 @@ def _numeric_constraints(m: ExposedParamMapping) -> dict[str, Any]:
             c["multiple"] = True
     if m.random:
         c["random"] = m.random
+    # 选项依赖与 enum 正交:即便这次没冻结静态 options(或是文件类字段),依赖关系也照存。
+    # service_schema 据此输出 x-options-depends-on / x-options-source,前端据此改成
+    # 运行期按依赖参数拉清单。
+    if m.options_depends_on:
+        c["options_depends_on"] = m.options_depends_on
+    if m.options_source:
+        c["options_source"] = m.options_source
     return c
 
 
@@ -226,6 +266,8 @@ def _exposed_input_to_param(item: dict) -> dict:
         "required": item.get("required", True),
         "random": c.get("random", item.get("random", False)),
         "multiple": c.get("multiple", item.get("multiple", False)),
+        "options_depends_on": c.get("options_depends_on", item.get("options_depends_on")),
+        "options_source": c.get("options_source", item.get("options_source")),
         "comfy_node_id": item.get("comfy_node_id"),
         "comfy_input": item.get("comfy_input"),
     }
@@ -515,6 +557,33 @@ async def comfy_object_info():
     return data
 
 
+def _has_dotdot(path: str) -> bool:
+    """路径里有没有 `..` 段(`/` 和 `\\` 都算分隔符)。"""
+    return any(seg == ".." for seg in path.replace("\\", "/").split("/"))
+
+
+def _thumbnail_url(thumbnail: str) -> str | None:
+    """sidecar 的 thumbnail → 浏览器真能加载的地址;转不了 → None(该项退回文字卡片)。
+
+    fooocus_styles 给的是 `https://raw.githubusercontent.com/...` 绝对外链,原样透传;
+    krea2 那批包给的是 `/easyuse/prompt/styles/image?path=./samples/x.jpg` 这种
+    **sidecar 侧相对路径** —— 浏览器会拿 nous 自己的 origin(:8000)去解析,必 404。
+    从中把 `path=` 的值抠出来,改写成走下面的代理端点。
+
+    **只传 path、不传整条 URL**:代理端点若接受任意 `src` 再转发,httpx 归一化点段会让
+    `/easyuse/../history` 变成 `/history`,前缀白名单形同虚设(见 ComfyClient.style_image)。
+    """
+    if thumbnail.startswith(("http://", "https://", "data:")):
+        return thumbnail
+    q = urllib.parse.urlsplit(thumbnail).query
+    path = (urllib.parse.parse_qs(q).get("path") or [None])[0]
+    # 没有 path= 的相对地址代理不了(路由是写死的,只认这一个参数)—— 宁可不给 image,
+    # 让前端退回纯文字卡片,也不吐一个必然 404 的地址。
+    if not path or _has_dotdot(path):
+        return None
+    return "/api/v1/comfy/style-image?path=" + urllib.parse.quote(path, safe="")
+
+
 def _style_to_option(item: dict) -> dict:
     """sidecar 风格项 → mapping 直接能吃的 `{value, label?, image?}`。
 
@@ -525,8 +594,35 @@ def _style_to_option(item: dict) -> dict:
     if item.get("name_cn"):
         opt["label"] = item["name_cn"]
     if item.get("thumbnail"):
-        opt["image"] = item["thumbnail"]
+        image = _thumbnail_url(item["thumbnail"])
+        if image:
+            opt["image"] = image
     return opt
+
+
+@health_router.get("/style-image", dependencies=[Depends(require_admin)])
+async def comfy_style_image(
+    path: str = Query(..., description="缩略图文件路径,取自 /styles 返回的 image 里的 path="),
+):
+    """风格缩略图代理 —— **只**代理 ComfyUI-Easy-Use 的缩略图这一条路由。
+
+    收的是文件路径而不是 URL:早先那版收 `src` 再转发、靠 `startswith("/easyuse/")`
+    把关,而 httpx 合并相对 URL 时会归一化点段 —— `/easyuse/../history` 到了 sidecar
+    就是 `/history`,于是这个端点等于"拿 admin 身份任意打 sidecar GET"。写死路由 +
+    `params={"path": …}` 从根上没有这个可能;`..` 段再挡一道(sidecar 侧自己去解析
+    文件路径,别让它接到能跳出 styles 目录的东西)。
+
+    缓存用 **private**:这个端点要 admin 鉴权,`public` 会让 cloudflared / 中间缓存
+    把字节回给没鉴权的人。
+    """
+    if _has_dotdot(path):
+        raise HTTPException(400, detail="path 不能包含 `..` 段")
+    try:
+        content, mime = await get_client().style_image(path)
+    except (ComfyError, httpx.HTTPError, ValueError) as e:
+        raise HTTPException(502, detail=f"ComfyUI sidecar 不可达:{str(e)[:120]}")
+    return Response(content=content, media_type=mime,
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 @health_router.get("/style-packs", dependencies=[Depends(require_admin)])

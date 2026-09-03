@@ -97,3 +97,45 @@ export function parseValues(v: string): string[] {
   return v.split(',').map((s) => s.trim()).filter(Boolean)
 }
 
+
+
+/** 一个 combo 选项(与 OptionThumbGrid 的 `OptionMeta` 同形,这里另写一份纯类型
+ *  声明是为了不让 fieldKind.ts 依赖组件文件)。 */
+export interface FieldOption {
+  value: string
+  label?: string
+  image?: string
+}
+
+export interface OptionDependency {
+  /** 依赖的那个参数的 key —— 它的当前值就是拉清单用的入参(如风格包名)。 */
+  dependsOn: string
+  /** 清单来源。目前只有 `comfy_styles`。 */
+  source: string
+}
+
+/** 该字段的选项是否依赖另一个参数;不依赖 → null。
+ *
+ *  认两种形状:Playground 拿的是 `/api/v1/services/{id}` 的 exposed_inputs
+ *  (`constraints.options_depends_on`),第三方按 `/v1/services/{name}/schema` 集成
+ *  拿的是 JSON-Schema 扩展关键字(`x-options-depends-on`)。后端两处都会写。 */
+export function optionDependency(p: ExposedParam): OptionDependency | null {
+  const c = (p.constraints ?? {}) as Record<string, unknown>
+  const dependsOn = c.options_depends_on ?? c['x-options-depends-on']
+  const source = c.options_source ?? c['x-options-source']
+  if (typeof dependsOn !== 'string' || !dependsOn) return null
+  if (typeof source !== 'string' || !source) return null
+  return { dependsOn, source }
+}
+
+/** 注册时冻结下来的静态选项 —— 动态清单没到/拉失败时的兜底与离线展示。 */
+export function staticOptions(p: ExposedParam): FieldOption[] {
+  const c = (p.constraints ?? {}) as Record<string, unknown>
+  const meta = c.option_meta ?? c['x-option-meta']
+  if (Array.isArray(meta)) {
+    return (meta as FieldOption[]).filter((m) => m && m.value !== undefined)
+  }
+  const enumValues = c.enum
+  if (Array.isArray(enumValues)) return enumValues.map((v) => ({ value: String(v) }))
+  return []
+}

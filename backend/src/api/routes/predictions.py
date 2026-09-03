@@ -32,6 +32,7 @@ from src.services.prediction_service import (
     snapshot_to_executor_form,
     task_to_prediction,
 )
+from src.services.comfy.style_options import resolve_dynamic_enums
 from src.services.service_schema import build_service_io_schema, validate_service_input
 
 # /v1/* = 对外 bearer-authed 端点(AdminSessionGate 只拦 /api/*,这里用各自的 bearer 校验)。
@@ -201,7 +202,14 @@ async def create_prediction(
     inputs = body.input or {}
     schema = build_service_io_schema(
         instance.exposed_inputs, instance.exposed_outputs, snapshot)
-    errors = validate_service_input(schema["input_schema"], inputs)
+    # 选项依赖(x-options-source):某些字段的合法值域取决于**另一个入参的当前值**
+    # (krea2:`styles` 的清单随 `style_pack` 变),运行期去 sidecar 取(带 10 分钟
+    # 进程内缓存)。在这里**预取**再传给同步的 validate_service_input —— 校验函数本身
+    # 保持无 I/O、可单测(理由详见 style_options.resolve_dynamic_enums)。没有字段声明
+    # 依赖时这是一次纯字典遍历,不产生任何网络往返。
+    dynamic_enums = await resolve_dynamic_enums(schema["input_schema"], inputs)
+    errors = validate_service_input(
+        schema["input_schema"], inputs, dynamic_enums=dynamic_enums)
     if errors:
         raise HTTPException(422, detail={"message": "input validation failed", "errors": errors})
 
