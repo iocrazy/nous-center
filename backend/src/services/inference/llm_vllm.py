@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
 import logging
 import os
@@ -540,7 +541,18 @@ class VLLMAdapter(InferenceAdapter):
             except Exception as e:
                 logger.warning("Error killing vLLM subprocess: %s", e)
             finally:
+                # 显式关 stdout 管道:光把 Popen 丢掉,读端 FD 要等 GC 才回收
+                # (-W default 下就是 "ResourceWarning: unclosed file")。只在进程确已
+                # 退出、且抽干线程已收尾时关 —— 进程还活着时 _drain_stdout 正阻塞在
+                # 这个 fd 上,从别的线程抽它是自找麻烦;那种情况留给 GC。
+                if self._process.poll() is not None:
+                    if self._drain_thread is not None:
+                        self._drain_thread.join(timeout=1.0)
+                    if self._process.stdout is not None:
+                        with contextlib.suppress(Exception):
+                            self._process.stdout.close()
                 self._process = None
+                self._drain_thread = None
             return
 
         # Kill adopted orphan process. Re-validate identity before signalling:

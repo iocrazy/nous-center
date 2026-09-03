@@ -104,8 +104,12 @@ class _ThreadedServer:
     """uvicorn running on a daemon thread with port=0 (OS picks free port)."""
 
     def __init__(self, app: FastAPI) -> None:
+        # ws="none":这个假 vLLM 只讲 HTTP。默认 ws="auto" 会去 import
+        # uvicorn.protocols.websockets.websockets_impl,那里 `from websockets.server
+        # import WebSocketServerProtocol` 命中 websockets 14+ 的 legacy 弃用告警
+        # (两条 DeprecationWarning,来自第三方、我们改不动)——不加载它就没有。
         self._config = uvicorn.Config(
-            app, host="127.0.0.1", port=0, log_level="warning"
+            app, host="127.0.0.1", port=0, log_level="warning", ws="none"
         )
         self._server = uvicorn.Server(self._config)
         self._thread = threading.Thread(target=self._server.run, daemon=True)

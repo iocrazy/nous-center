@@ -2,8 +2,10 @@ import pytest
 from httpx import AsyncClient
 from unittest.mock import patch
 
-pytestmark = pytest.mark.asyncio  # 统一走 pytest-asyncio(asyncio_mode=auto);
-# 混用 anyio 会各建一个事件循环,asyncpg 的连接绑 loop 就抛 "attached to a
+# 本文件统一走 pytest-asyncio(pyproject 里 asyncio_mode=auto,async 测试自动挂 mark,
+# 不需要显式 pytestmark —— 模块级 mark 会连同步测试一起标上,pytest-asyncio 会为每个
+# 同步测试报一条 "is marked with '@pytest.mark.asyncio' but it is not an async function")。
+# 别改用 anyio:混用会各建一个事件循环,asyncpg 的连接绑 loop 就抛 "attached to a
 # different loop"(aiosqlite 不在意,所以以前看不出来)。
 
 async def test_monitor_stats(db_client: AsyncClient):

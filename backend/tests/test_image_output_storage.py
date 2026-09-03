@@ -9,6 +9,18 @@ from pathlib import Path
 import pytest
 
 
+def _cookie_header(admin_cookie: str) -> dict[str, str]:
+    """管理端 cookie 直接拼进 Cookie header。
+
+    httpx 0.28 起 per-request `cookies=` 已弃用(cookie 持久化语义有歧义),而
+    `client` fixture 是整个模块共享的 AsyncClient —— 往实例上塞 cookie 会漏给
+    同模块后续用例(比如那些故意不带 cookie、断言 403 的),所以走 header。
+    """
+    from src.api.admin_session import COOKIE_NAME
+
+    return {"Cookie": f"{COOKIE_NAME}={admin_cookie}"}
+
+
 @pytest.fixture
 def storage_tmp(tmp_path, monkeypatch):
     """Redirect storage to a tmp dir AND restore on teardown."""
@@ -216,7 +228,7 @@ async def test_image_route_admin_cookie_bypasses_expired_token(
     场景:前端 React Query 缓存里的 task URL token 是 5h 前签的(过期),
     重新 mount ImageOutputNode 直接发请求 — 应 200(cookie 路径),不该 403。
     """
-    from src.api.admin_session import COOKIE_NAME, issue_token
+    from src.api.admin_session import issue_token
     from src.services.image_output_storage import _sign, write_image
 
     rec = write_image(b"PNG_OWNER", ext="png", ttl_seconds=600)
@@ -226,7 +238,7 @@ async def test_image_route_admin_cookie_bypasses_expired_token(
     url = f"/files/images/{today}/{rec['uuid']}.png?token={stale_token}&expires={expired}"
 
     admin_cookie, _ = issue_token()
-    resp = await client.get(url, cookies={COOKIE_NAME: admin_cookie})
+    resp = await client.get(url, headers=_cookie_header(admin_cookie))
     assert resp.status_code == 200
     assert resp.content == b"PNG_OWNER"
     # 短缓存(60s),不能用 token 的 expires 锚
@@ -238,7 +250,7 @@ async def test_image_route_admin_cookie_works_without_token(
     storage_tmp, with_signing_secret, with_login_required, client,
 ):
     """admin cookie 路径连 token/expires query 都不需要。"""
-    from src.api.admin_session import COOKIE_NAME, issue_token
+    from src.api.admin_session import issue_token
     from src.services.image_output_storage import write_image
 
     rec = write_image(b"BARE", ext="png", ttl_seconds=600)
@@ -246,7 +258,7 @@ async def test_image_route_admin_cookie_works_without_token(
     url = f"/files/images/{today}/{rec['uuid']}.png"  # 无 query 参数
 
     admin_cookie, _ = issue_token()
-    resp = await client.get(url, cookies={COOKIE_NAME: admin_cookie})
+    resp = await client.get(url, headers=_cookie_header(admin_cookie))
     assert resp.status_code == 200
     assert resp.content == b"BARE"
 
@@ -256,19 +268,19 @@ async def test_image_route_admin_path_still_blocks_traversal(
     storage_tmp, with_signing_secret, with_login_required, client,
 ):
     """admin cookie 不能绕过 filename/path 校验 — ../ 类攻击仍 403。"""
-    from src.api.admin_session import COOKIE_NAME, issue_token
+    from src.api.admin_session import issue_token
 
     admin_cookie, _ = issue_token()
     # 非白名单扩展名
     resp = await client.get(
         "/files/images/2026-05-26/file.exe",
-        cookies={COOKIE_NAME: admin_cookie},
+        headers=_cookie_header(admin_cookie),
     )
     assert resp.status_code == 403
     # 非法 uuid 形状
     resp = await client.get(
         "/files/images/2026-05-26/not-a-uuid.png",
-        cookies={COOKIE_NAME: admin_cookie},
+        headers=_cookie_header(admin_cookie),
     )
     assert resp.status_code == 403
 
