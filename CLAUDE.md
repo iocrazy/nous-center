@@ -52,6 +52,13 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 - **并行**:`uv run pytest tests -n 8`(pytest-xdist,每 worker 各自临时库)本地约 65s,
   串行约 6 分钟;`-n 16` 不会更快。CI 用 `-n auto`。PG `max_connections=100` 是 worker
   数上限的天花板,别在 48 核机器上 `-n auto`。
+- **测试绝不能真起推理服务碰 GPU**(2026-09-02 事故:本地生产 venv 装着 vllm,
+  `test_vllm_adapter` 真起 `python -m vllm.entrypoints…`、`CUDA_VISIBLE_DEVICES` 被 adapter
+  覆盖成 "0",多 worker 并发初始化 CUDA 把 RTX 3090 驱动跑挂,nvidia-smi 全 D 态,后端 API
+  与桌面一起冻死,只能重启)。conftest 有 Popen 护栏:argv 含 `vllm.entrypoints` /
+  `sglang.launch_server` / `sgl-omni` 直接 AssertionError,只有 `NOUS_RUN_GPU_TESTS=1`
+  放行。写涉及 adapter.load() 的测试一律 mock `subprocess.Popen`。派 subagent 跑测试时,
+  两个人**别同时**跑全量(runner 子进程用例会互相拖挂),且先 `nvidia-smi` 确认驱动活着。
 
 ## Performance
 
