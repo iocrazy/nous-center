@@ -10,13 +10,18 @@ import {
   Link2,
   MoreHorizontal,
   Plus,
+  Power,
   Search,
   Trash2,
 } from 'lucide-react'
 import {
   endpointFor,
+  fetchAutostartPreview,
+  preloadModelDetail,
   useDeleteService,
   useServices,
+  useSetServiceAutostart,
+  type AutostartPreview,
   type ServiceCategory,
   type ServiceModelRef,
   type ServiceRow,
@@ -60,6 +65,7 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const del = useDeleteService()
+  const setAutostart = useSetServiceAutostart()
   const toast = useToastStore((s) => s.add)
 
   const counts = useMemo(() => buildCounts(services ?? []), [services])
@@ -75,6 +81,51 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
   const goDetail = (id: string) => {
     if (onOpen) onOpen(id)
     else navigate(`/services/${id}`)
+  }
+
+  /** 开机启动开关。开之前**先问后端开机会加载哪些模型**并让用户确认 —— 这正是
+   *  「没开常驻的模型不该开机占显存」那条规矩的显式例外,必须让人看清代价。 */
+  const handleToggleAutostart = async (svc: ServiceRow) => {
+    if (svc.autostart) {
+      const ok = await confirmDialog({
+        title: '取消开机启动',
+        message: `取消 "${svc.name}" 的开机启动?\n开机将不再预加载它的模型(首次调用会慢一些)。`,
+        confirmText: '取消开机启动',
+      })
+      if (!ok) return
+      setAutostart.mutate(
+        { serviceId: svc.id, enabled: false },
+        {
+          onSuccess: () => toast(`已取消 ${svc.name} 的开机启动`, 'success'),
+          onError: (e) => toast(`设置失败：${(e as Error).message}`, 'error'),
+        },
+      )
+      return
+    }
+
+    let preview: AutostartPreview
+    try {
+      preview = await fetchAutostartPreview(svc.id)
+    } catch (e) {
+      toast(`读取开机加载清单失败：${(e as Error).message}`, 'error')
+      return
+    }
+    const lines = preview.preload_models.map((m) => {
+      const detail = preloadModelDetail(m)
+      return detail ? `• ${m.name}（${detail}）` : `• ${m.name}`
+    })
+    const message = lines.length
+      ? `开机将自动加载以下模型:\n${lines.join('\n')}`
+      : `"${svc.name}" 没有可预加载的模型（图像类服务的组件按需加载）。\n仍要设为开机启动?`
+    const ok = await confirmDialog({ title: '设为开机启动', message, confirmText: '开机启动' })
+    if (!ok) return
+    setAutostart.mutate(
+      { serviceId: svc.id, enabled: true },
+      {
+        onSuccess: () => toast(`已设为开机启动：${svc.name}`, 'success'),
+        onError: (e) => toast(`设置失败：${(e as Error).message}`, 'error'),
+      },
+    )
   }
 
   const handleDelete = async (svc: ServiceRow) => {
@@ -190,6 +241,7 @@ export default function ServicesList({ onOpen }: ServicesListProps) {
                 onPlayground={() => goDetail(svc.id)}
                 onOpenWorkflow={(wfId) => navigate(`/workflows/${wfId}`)}
                 onDelete={() => handleDelete(svc)}
+                onToggleAutostart={() => handleToggleAutostart(svc)}
               />
             ))}
           </div>
@@ -366,12 +418,14 @@ function ServiceCard({
   onPlayground,
   onOpenWorkflow,
   onDelete,
+  onToggleAutostart,
 }: {
   svc: ServiceRow
   onOpen: () => void
   onPlayground: () => void
   onOpenWorkflow: (workflowId: string) => void
   onDelete: () => void
+  onToggleAutostart: () => void
 }) {
   const statusStyle = STATUS_STYLES[svc.status] ?? STATUS_STYLES.active
   const inactive = svc.status !== 'active'
@@ -425,6 +479,11 @@ function ServiceCard({
         color: 'var(--text)',
         position: 'relative',
       }}
+      // 右键 = 打开同一个菜单(和 ··· 按钮共用 menuOpen 状态,行为一致)。
+      onContextMenu={(e) => {
+        e.preventDefault()
+        setMenuOpen(true)
+      }}
     >
       <div ref={menuRef} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }}>
         <button
@@ -463,6 +522,36 @@ function ServiceCard({
               padding: '4px 0',
             }}
           >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen(false)
+                onToggleAutostart()
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: '100%',
+                padding: '6px 12px',
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text)',
+                fontSize: 12,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--bg-hover, rgba(255,255,255,0.05))'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <Power size={12} />
+              {svc.autostart ? '取消开机启动' : '设为开机启动'}
+            </button>
             <button
               type="button"
               onClick={(e) => {
@@ -531,6 +620,7 @@ function ServiceCard({
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <CategoryTag category={effectiveCategory(svc)} />
           {svc.source_type === 'comfy_template' && <ComfyBridgeBadge />}
+          {svc.autostart && <AutostartBadge />}
           <SourceTag
             sourceType={svc.source_type}
             workflowId={svc.workflow_id}
@@ -662,6 +752,28 @@ function ComfyBridgeBadge() {
     >
       <Link2 size={9} />
       桥
+    </span>
+  )
+}
+
+function AutostartBadge() {
+  return (
+    <span
+      title="开机启动:后端启动时会预加载该服务引用的模型"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 3,
+        fontSize: 10,
+        padding: '1px 7px',
+        borderRadius: 10,
+        background: 'color-mix(in srgb, var(--warn) 15%, transparent)',
+        color: 'var(--warn)',
+        border: '1px solid var(--warn)',
+      }}
+    >
+      <Power size={9} />
+      开机启动
     </span>
   )
 }

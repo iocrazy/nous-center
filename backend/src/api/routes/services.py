@@ -10,6 +10,8 @@ Endpoints:
   POST   /api/v1/services/quick-provision — quick-provision (admin)
   PATCH  /api/v1/services/{id}            — status lifecycle (admin)
   DELETE /api/v1/services/{id}            — delete (admin)
+  GET    /api/v1/services/{id}/autostart-preview — 开机会加载哪些模型(确认框用)
+  POST   /api/v1/services/{id}/autostart  — 开/关开机启动 (admin)
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from src.models.database import get_async_session
 from src.models.schemas import ExposedParam
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
+from src.services.service_autostart import preload_model_infos
 from src.services.service_models import extract_service_models
 from src.services.workflow_snapshot import (
     _IMAGE_NODE_TYPES,
@@ -86,6 +89,8 @@ class ServiceOut(BaseModel):
     snapshot_hash: str | None = None
     snapshot_schema_version: int = 1
     version: int = 1
+    # 开机启动:开机预加载本服务引用的模型(见 services/service_autostart.py)。
+    autostart: bool = False
     # 该服务工作流依赖的模型/组件(静态枚举;加载状态前端实时叠加)。
     models: list[ServiceModelRef] = []
     created_at: datetime
@@ -100,6 +105,30 @@ class ServiceDetailOut(ServiceOut):
     workflow_snapshot: dict
     exposed_inputs: list
     exposed_outputs: list
+
+
+class PreloadModelOut(BaseModel):
+    """开机会为该服务加载的一个模型。vram_gb/gpu 来自 registry spec,查不到就为 None。"""
+    name: str
+    vram_gb: float | None = None
+    gpu: int | list[int] | None = None
+
+
+class AutostartBody(BaseModel):
+    enabled: bool
+
+
+class ServiceAutostartOut(ServiceOut):
+    """toggle 的返回:更新后的服务 + 开机会加载的模型清单。"""
+    preload_models: list[PreloadModelOut] = []
+
+
+class AutostartPreviewOut(BaseModel):
+    """确认框用:开了开机启动后,开机会加载哪些模型。"""
+    service_id: str
+    name: str
+    autostart: bool
+    preload_models: list[PreloadModelOut] = []
 
 
 class ServicePatch(BaseModel):
@@ -455,6 +484,78 @@ async def patch_service(
     await session.refresh(svc)
     invalidate("services")
     return svc
+
+
+def _registry_of(request: Request):
+    """从 app.state 拿 ModelRegistry(没有 lifespan 的测试态返回 None)。"""
+    mm = getattr(request.app.state, "model_manager", None)
+    return getattr(mm, "_registry", None) if mm is not None else None
+
+
+async def _load_svc_with_snapshot(session: AsyncSession, service_id: int) -> ServiceInstance:
+    """取服务并 undefer snapshot —— 枚举模型依赖必须读它,lazy load 在 async 路径会炸。"""
+    svc = await session.scalar(
+        select(ServiceInstance)
+        .options(undefer(ServiceInstance.workflow_snapshot))
+        .where(ServiceInstance.id == service_id)
+    )
+    if svc is None:
+        raise HTTPException(404, detail="service not found")
+    return svc
+
+
+@router.get(
+    "/services/{service_id}/autostart-preview",
+    response_model=AutostartPreviewOut,
+    dependencies=[Depends(require_admin)],
+)
+async def autostart_preview(
+    service_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """开机启动确认框的数据源:开了之后开机会加载哪些模型。
+
+    只列 registry engine —— 图像类服务引用的是组件文件(dtype/device/lora 才定 combo),
+    开机不预加载它们,所以也不在这里承诺。清单可能为空(那就是「开了也不会加载什么」)。
+    """
+    svc = await _load_svc_with_snapshot(session, service_id)
+    return AutostartPreviewOut(
+        service_id=str(svc.id),
+        name=svc.name,
+        autostart=bool(svc.autostart),
+        preload_models=[
+            PreloadModelOut(**m) for m in preload_model_infos(svc, _registry_of(request))
+        ],
+    )
+
+
+@router.post(
+    "/services/{service_id}/autostart",
+    response_model=ServiceAutostartOut,
+    dependencies=[Depends(require_admin)],
+)
+async def set_autostart(
+    service_id: int,
+    body: AutostartBody,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+):
+    """开/关服务的开机启动。开着 = 开机在 resident preload 之后顺带加载它引用的模型。"""
+    svc = await _load_svc_with_snapshot(session, service_id)
+    svc.autostart = body.enabled
+    await session.commit()
+    await session.refresh(svc)
+    invalidate("services")
+    logger.info(
+        "service %s (%s) autostart → %s", svc.id, svc.name, "on" if body.enabled else "off",
+    )
+    out = ServiceAutostartOut.model_validate(svc)
+    out.models = _service_model_refs(svc)
+    out.preload_models = [
+        PreloadModelOut(**m) for m in preload_model_infos(svc, _registry_of(request))
+    ]
+    return out
 
 
 def _validate_exposed_against_snapshot(
