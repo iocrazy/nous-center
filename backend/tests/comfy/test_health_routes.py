@@ -160,3 +160,27 @@ async def test_free_noop_when_nothing_resident(client, monkeypatch):
     monkeypatch.setattr(ct_mod, "_FREE_POLL_INTERVAL", 0)
     body = (await client.post("/api/v1/comfy/free")).json()
     assert body["settled"] is True and body["freed_bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_health_reports_running_render(client, monkeypatch):
+    """排障字段:谁占着渲染信号量、占了多久。
+
+    2026-09-03 事故里"所有 comfy 服务都不动了"要翻日志才知道是哪个任务卡着、卡了多久
+    —— 现在健康面板直接给 `{task_id, held_seconds}`(空闲 None)。
+    """
+    import time
+
+    import src.services.nodes.comfy_bridge as nb
+
+    monkeypatch.setattr(ct_mod, "get_client", lambda: FakeClient())
+
+    r = await client.get("/api/v1/comfy/health")
+    assert r.status_code == 200
+    assert r.json()["running_render"] is None  # 空闲
+
+    monkeypatch.setattr(nb, "_running_task_id", 4242)
+    monkeypatch.setattr(nb, "_running_since", time.monotonic() - 35 * 60)
+    body = (await client.get("/api/v1/comfy/health")).json()["running_render"]
+    assert body["task_id"] == 4242
+    assert body["held_seconds"] >= 35 * 60

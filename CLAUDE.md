@@ -144,6 +144,19 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   `/v1/services/{name}/schema` 里的 `x-option-meta[].image` 对只持 `InstanceApiKey` 的
   第三方就是 401 —— 缩略图渲不出来(值本身照常可用)。前端 Playground 走 admin 会话不
   受影响。要给第三方也能看的缩略图,得先给这个代理端点开一条 InstanceApiKey 能过的路。
+- **等待渲染时必须能被打断**(2026-09-03 事故):`ComfyClient.wait` 除了轮询
+  `/history/{prompt_id}`,每轮还查 `/queue` 并按 `should_abort` 探测取消 ——
+  ① 桥节点传入"这个 ExecutionTask 在 DB 里是不是 cancelled",**每 5 轮(≈10s)才查
+  一次**(4 小时的渲染每 2s 打一次 DB = 7200 次纯轮询查询,晚 10 秒发现取消无差别);
+  ② prompt 连续 3 轮既不在 `queue_running` 也不在 `queue_pending`、且 `/history` 仍没有
+  → 判 "sidecar 已丢弃该任务"(重启/清队列)抛错。`/queue` 打不通算**状态未知**,
+  不判丢失(重启窗口本身就是打不通)。**别把这两条摘掉**:ComfyUI 的 `/interrupt`
+  只在节点之间生效,卡在某节点内部(那次是等一个 CLOSE_WAIT 的 HF 下载)时救不回来,
+  没有这两条 wait 会占着 `_SEM` 干等到 `NOUS_COMFY_TIMEOUT`(默认 4 小时),
+  所有 comfy 服务一起堵死,只能重启后端。抛出的 `ComfyError` 落 failed;若 DB 已是
+  cancelled,`workflow_runner` 的 honor-cancelled 分支保住 canceled 终态。
+  `GET /api/v1/comfy/health` 的 `running_render`(`{task_id, held_seconds}`,空闲 None)
+  就是给下次排障一眼看出"谁占着信号量、占了多久"的。
 - env 三件套:`NOUS_COMFY_URL`(sidecar 地址,默认 `http://127.0.0.1:8188`)、
   `NOUS_COMFY_TIMEOUT`(渲染等待上限,默认 14400s)、
   `NOUS_COMFY_DOWNLOAD_TIMEOUT`(产物下载超时,默认 120s)。

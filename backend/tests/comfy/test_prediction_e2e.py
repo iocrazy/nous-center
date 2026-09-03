@@ -27,6 +27,7 @@ from src.models.api_gateway import ApiKeyGrant
 from src.models.database import get_session_factory
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
+from src.services.comfy.client import ComfyError
 from tests.comfy.test_bridge_node import FakeClient
 
 WF = {
@@ -173,9 +174,10 @@ class _InterruptFakeClient(FakeClient):
         self._gate = gate
         self.interrupt_calls = 0
 
-    async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+    async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, **_kw):
         await self._gate.wait()
-        return await super().wait(prompt_id, timeout_s=timeout_s, interval_s=interval_s)
+        return await super().wait(
+                prompt_id, timeout_s=timeout_s, interval_s=interval_s, **_kw)
 
     async def interrupt(self) -> None:
         self.interrupt_calls += 1
@@ -256,9 +258,10 @@ async def test_cancel_does_not_clobber_a_render_that_already_finished(client, mo
             super().__init__()
             self.interrupt_calls = 0
 
-        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, **_kw):
             await wait_gate.wait()
-            return await super().wait(prompt_id, timeout_s=timeout_s, interval_s=interval_s)
+            return await super().wait(
+                prompt_id, timeout_s=timeout_s, interval_s=interval_s, **_kw)
 
         async def interrupt(self) -> None:
             self.interrupt_calls += 1
@@ -374,7 +377,7 @@ async def test_empty_outputs_marks_task_failed(client, monkeypatch):
     写产物之前是最常见成因)→ 桥节点报错,task 必须落 failed(不是悄悄 succeeded 却
     没有任何输出)。"""
     class _EmptyOutputsFakeClient(FakeClient):
-        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, **_kw):
             return {"outputs": {}}
 
     fc = _EmptyOutputsFakeClient()
@@ -419,7 +422,7 @@ async def test_cancel_queued_behind_semaphore_does_not_interrupt_other_render(cl
             self.first_submitted.set()
             return f"p{len(self.submitted_graphs)}"
 
-        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, **_kw):
             await render_gate.wait()
             return {"outputs": {"92": {"images": [
                 {"filename": "out.mp4", "subfolder": "", "type": "output"}]}}}
@@ -525,3 +528,115 @@ def test_task_to_dict_surfaces_video_thumbnails_and_url():
     assert "/files/out.mp4?t=1" in d["output_thumbnails"]
     # dedup:items[].url 和 video_url 是同一张(同一支视频原片),不该在 8 张缩略帽里占两格。
     assert d["output_thumbnails"].count("/files/out.mp4?t=1") == 1
+
+
+class _AbortAwareFakeClient(FakeClient):
+    """wait() 按生产语义轮询 `should_abort`:被取消就抛 `ComfyError` 退出。
+
+    真 `ComfyClient.wait` 的实现细节(轮询频率、/queue 丢任务检测)由
+    `tests/comfy/test_client.py` 单独覆盖;这里只验证桥节点**把探测接上去了**,
+    以及取消抛错后整条链路的终态和信号量释放。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.abort_polls = 0
+
+    async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, should_abort=None, **_kw):
+        assert should_abort is not None, "桥节点必须把取消探测传给 client.wait"
+        while True:
+            self.abort_polls += 1
+            if await should_abort():
+                raise ComfyError("渲染已取消")
+            await asyncio.sleep(0.01)
+
+    async def interrupt(self) -> None:
+        pass  # sidecar 卡死时 /interrupt 无效 —— 本测试模拟的正是这种情况
+
+
+async def _assert_semaphore_free(client, monkeypatch, name: str) -> None:
+    """信号量真的被释放了:换一个正常的 FakeClient 再跑一单,必须能在轮询超时内跑完。
+
+    (若前一单的节点还占着 `_SEM`,这一单会永远卡在 `async with _SEM:` 上,
+    `_poll_prediction` 5s 超时 → 断言失败。)"""
+    monkeypatch.setattr(nb, "get_client", lambda: FakeClient())
+    raw_key = await _make_service_and_key(client, name)
+    headers = {"Authorization": f"Bearer {raw_key}"}
+    r = await client.post(
+        f"/v1/services/{name}/predictions", json={"input": {"prompt": "hi"}},
+        headers={**headers, "Prefer": "respond-async"})
+    assert r.status_code == 202, r.text
+    final = await _poll_prediction(client, r.json()["id"], headers)
+    assert final["status"] == "succeeded", final
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_wait_exits_render_and_frees_semaphore(client, monkeypatch):
+    """2026-09-03 事故的正面用例:任务卡在 ComfyUI 渲染里被取消。
+
+    `/interrupt` 只在 ComfyUI 的节点边界生效 —— 卡在某节点内部(那次是一个进入
+    CLOSE_WAIT 的 HF 下载)时它救不回来,旧代码的 `wait()` 会一路等到
+    NOUS_COMFY_TIMEOUT(默认 4 小时)且全程占着 `_SEM`,后面所有 comfy 服务全堵死。
+    现在 wait 自己按低频复查 DB 状态:落了 cancelled 就抛错退出。
+
+    断言:① 终态仍是 canceled(不被 ComfyError 覆盖成 failed —— workflow_runner 的
+    honor-cancelled 分支);② 信号量释放,后续任务能正常跑完。
+    """
+    fc = _AbortAwareFakeClient()
+    monkeypatch.setattr(nb, "get_client", lambda: fc)
+    monkeypatch.setattr(comfy_templates_route, "get_client", lambda: fc)
+    _patch_no_thumbnail(monkeypatch)
+
+    raw_key = await _make_service_and_key(client, "e2e-abort-wait")
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    r = await client.post(
+        "/v1/services/e2e-abort-wait/predictions", json={"input": {"prompt": "hi"}},
+        headers={**headers, "Prefer": "respond-async"})
+    assert r.status_code == 202, r.text
+    pid = r.json()["id"]
+    await _wait_running_task_id(int(pid))  # 节点已持有 _SEM、卡在 wait() 里
+
+    cancel_resp = await client.post(f"/v1/predictions/{pid}/cancel", headers=headers)
+    assert cancel_resp.status_code == 200, cancel_resp.text
+
+    # 没有任何 gate 被放行 —— 节点退出完全靠 wait 内部的取消探测。先等它真的放手
+    # (prediction 状态在 cancel 落库那一刻就是 canceled 了,单看状态证明不了节点已退出)。
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline and nb.get_running_task_id() is not None:
+        await asyncio.sleep(0.005)
+    assert nb.get_running_task_id() is None, "取消后桥节点没在 5s 内退出 wait 并释放信号量"
+    assert fc.abort_polls >= 1
+
+    final = await _poll_prediction(client, pid, headers)
+    assert final["status"] == "canceled", final
+    assert final["output"] is None, final
+
+    await _assert_semaphore_free(client, monkeypatch, "e2e-abort-wait-next")
+
+
+@pytest.mark.asyncio
+async def test_sidecar_lost_prompt_fails_task_and_frees_semaphore(client, monkeypatch):
+    """sidecar 重启(或队列被清)→ prompt 既不在 /queue 也永不进 /history:
+    `wait()` 判丢失抛错 → 任务落 failed(错误信息里有「丢失」),信号量释放。
+    旧行为是干等到 4 小时超时,期间所有 comfy 服务排队堵死。"""
+    class _LostFakeClient(FakeClient):
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, **_kw):
+            raise ComfyError("ComfyUI 侧任务已丢失(sidecar 可能重启过)")
+
+    monkeypatch.setattr(nb, "get_client", lambda: _LostFakeClient())
+    _patch_no_thumbnail(monkeypatch)
+
+    raw_key = await _make_service_and_key(client, "e2e-lost-prompt")
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    r = await client.post(
+        "/v1/services/e2e-lost-prompt/predictions", json={"input": {"prompt": "hi"}},
+        headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "failed", body
+    assert "丢失" in (body["error"] or ""), body
+    assert nb.get_running_task_id() is None
+
+    await _assert_semaphore_free(client, monkeypatch, "e2e-lost-prompt-next")

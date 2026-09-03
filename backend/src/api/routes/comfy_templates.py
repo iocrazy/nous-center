@@ -497,6 +497,12 @@ async def comfy_health():
     health_result["devices"] = (
         _devices_from_stats(await client.system_stats()) if health_result.get("online") else []
     )
+    # 谁占着渲染信号量、占了多久(空闲时 None)。桥节点一次只放一个渲染进 sidecar,
+    # 卡住时所有 comfy 服务一起堵 —— 把这两个数摆在健康面板上,排障不用翻日志猜
+    # (2026-09-03 事故:某个 wait 干等了 35 分钟才被发现)。延迟 import 是为了不让
+    # 路由模块在 import 期就拉进节点层(predictions.py 里同样的写法)。
+    from src.services.nodes import comfy_bridge  # noqa: PLC0415
+    health_result["running_render"] = comfy_bridge.get_running_render()
     return health_result
 
 

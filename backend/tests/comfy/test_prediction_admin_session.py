@@ -97,7 +97,7 @@ def _gated_client(gate: asyncio.Event, *, wait_result: dict | None = None):
     """
 
     class _GatedClient(FakeClient):
-        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+        async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, **_kw):
             await gate.wait()
             if wait_result is not None:
                 return wait_result

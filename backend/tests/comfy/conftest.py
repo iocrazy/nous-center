@@ -18,6 +18,8 @@ import src.services.nodes.comfy_bridge as nb
 def _isolate_bridge_globals():
     nb._SEM = asyncio.Semaphore(1)
     nb._running_task_id = None
+    nb._running_since = None
     yield
     nb._SEM = asyncio.Semaphore(1)
     nb._running_task_id = None
+    nb._running_since = None

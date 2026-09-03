@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import urllib.parse
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -143,19 +144,95 @@ class ComfyClient:
             raise ComfyError(translate_prompt_error(r.status_code, r.text), status_code=422)
         return r.json()["prompt_id"]
 
-    async def wait(self, prompt_id: str, *, timeout_s: float, interval_s: float = 2.0) -> dict:
+    async def _history_entry(self, prompt_id: str) -> dict | None:
+        """`/history/{id}` 里这条记录;不存在**或** sidecar 瞬断都返回 None
+        (调用方一律当"还没出现",继续轮询)。"""
+        try:
+            res = (await self._client.get(f"/history/{prompt_id}", timeout=10)).json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if isinstance(res, dict) and prompt_id in res:
+            return res[prompt_id]
+        return None
+
+    async def _queue_has(self, prompt_id: str) -> bool | None:
+        """prompt 还在 sidecar 队列里(running 或 pending)吗?
+
+        返回 True/False,**未知返回 None** —— sidecar 不可达(重启窗口里正是如此)、
+        返回体不是 dict、或两个队列键一个都没有(不认得的响应形状)都算未知,调用方
+        不能据此判"任务没了"。
+
+        `/queue` 的 `queue_running` / `queue_pending` 是列表,每项形如
+        `[number, prompt_id, graph, extra_data, outputs]` —— prompt_id 在下标 1。
+        """
+        try:
+            q = (await self._client.get("/queue", timeout=10)).json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(q, dict) or ("queue_running" not in q and "queue_pending" not in q):
+            return None
+        for bucket in ("queue_running", "queue_pending"):
+            for item in q.get(bucket) or []:
+                if isinstance(item, (list, tuple)) and len(item) > 1 and item[1] == prompt_id:
+                    return True
+        return False
+
+    async def wait(
+        self,
+        prompt_id: str,
+        *,
+        timeout_s: float,
+        interval_s: float = 2.0,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
+        abort_check_every: int = 5,
+        missing_grace_rounds: int = 3,
+    ) -> dict:
+        """轮询到 `/history/{prompt_id}` 出现为止,期间兼顾两件事(2026-09-03 事故)。
+
+        1. **取消**:`should_abort()` 返回 True 就抛 `ComfyError("渲染已取消")`。
+           调用方(桥节点)传的是"这个 ExecutionTask 在 DB 里是不是 cancelled"。
+           **每 `abort_check_every` 轮才查一次**(默认 5 × 2s = 10s):渲染动辄几十
+           分钟、上限 `NOUS_COMFY_TIMEOUT` 默认 14400s,每 2s 打一次 DB 就是 7200 次
+           纯轮询查询;而"取消晚 10 秒被发现"对用户无差别 —— cancel 端点已经先落
+           cancelled 再转发 `/interrupt`(routes/predictions.py),这条检查只是兜住
+           "`/interrupt` 拉不动 ComfyUI"(它只在节点边界生效,卡在某节点内部的下载/
+           网络等待救不回来)的情况。
+        2. **sidecar 重启 / 队列被清**:prompt 既不在 `/queue` 也永远不会进
+           `/history` —— 不检测的话这个 wait 会占着渲染信号量干等到 4 小时超时,
+           后面所有 comfy 服务全堵死(正是 2026-09-03 线上事故的形态)。连续
+           `missing_grace_rounds` 轮"队列里没有"才判丢失(刚 submit 完有个极短窗口
+           两边都还没有),判之前再确认一次 history(任务可能正好在两次请求之间跑完)。
+        """
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout_s
+        rounds = 0
+        missing_rounds = 0
         while True:
-            try:
-                res = (await self._client.get(f"/history/{prompt_id}", timeout=10)).json()
-                if prompt_id in res:
-                    return res[prompt_id]
-            except (httpx.HTTPError, ValueError):
-                pass  # sidecar 瞬断:继续轮询直到超时
+            if (
+                should_abort is not None
+                and rounds % abort_check_every == 0
+                and await should_abort()
+            ):
+                raise ComfyError("渲染已取消")
+
+            history = await self._history_entry(prompt_id)
+            if history is not None:
+                return history
+
+            if await self._queue_has(prompt_id) is False:
+                missing_rounds += 1
+                if missing_rounds >= missing_grace_rounds:
+                    history = await self._history_entry(prompt_id)
+                    if history is not None:
+                        return history
+                    raise ComfyError("ComfyUI 侧任务已丢失(sidecar 可能重启过)")
+            else:
+                missing_rounds = 0  # 回到队列里 / 状态未知 → 重新计数
+
             if loop.time() >= deadline:
                 raise ComfyError("ComfyUI 渲染超时(NOUS_COMFY_TIMEOUT)。注意:ComfyUI 侧任务可能仍在运行。")
             await asyncio.sleep(interval_s)
+            rounds += 1
 
     async def download(self, item: dict) -> bytes:
         qs = urllib.parse.urlencode({
