@@ -1,14 +1,13 @@
 import json
 import pytest
 
-# Skip this entire file when vllm is not installed (main deps don't include it;
-# use `uv sync --extra inference` to enable). test_load_fails_if_no_vllm_and_bad_model
-# spawns a real subprocess via subprocess.Popen which, without vllm, enters a state
-# that can hang the NVIDIA driver / X session on dual-GPU hosts — so avoid running
-# it at all in non-inference environments. When vllm IS installed (inference host),
-# this test runs normally and validates the adapter's subprocess lifecycle.
-pytest.importorskip("vllm")
-
+# 这个文件不需要装 vllm:VLLMAdapter 本身不 import vllm,只是拼命令行起子进程。
+# 以前这里 `pytest.importorskip("vllm")`,逻辑是"没装 vllm 就跳过,装了就真起子进程
+# 验证生命周期" —— 在装了 vllm 的生产机上这恰恰是灾难(2026-09-02:真起的 vllm 把
+# CUDA_VISIBLE_DEVICES 覆盖成 "0",多 worker 并发初始化 CUDA,把 RTX 3090 驱动跑挂)。
+# 现在 test_load_fails_if_no_vllm_and_bad_model 用假 Popen,全文件零真子进程;
+# conftest 另有 Popen 层护栏,谁再真起 vllm.entrypoints 会直接 AssertionError。
+import io
 from unittest.mock import AsyncMock, patch, MagicMock
 from src.services.inference.llm_vllm import VLLMAdapter
 from src.services.inference.base import (
@@ -66,7 +65,12 @@ async def test_load_fetches_remote_max_model_len_when_unconfigured(tmp_path):
 
 
 async def test_load_fails_if_no_vllm_and_bad_model(adapter):
-    """If vLLM is not running and model path is invalid, load() raises RuntimeError."""
+    """If vLLM is not running and the spawned server dies, load() raises RuntimeError.
+
+    子进程是**假的**(Popen 被换成一个已退出、returncode=1 的桩):这个用例验证的是
+    adapter 对"子进程起不来"的处理路径(读尾部日志 → 杀进程 → 抛 RuntimeError),
+    不需要、也**绝不能**真起 vLLM —— 见文件头注释。
+    """
     auto_result = {
         "port": 19999, "tp": 1, "max_model_len": 4096,
         "utilization": 0.85, "quantization": None, "dtype": None,
@@ -75,13 +79,31 @@ async def test_load_fails_if_no_vllm_and_bad_model(adapter):
         # and clamp_util_to_free on the load path — must be present.
         "gpu_total_gb": 24.0, "gpu_free_gb": 20.0,
     }
-    # Health check fails (no existing vLLM)
+    fake_proc = MagicMock()
+    fake_proc.pid = 424242
+    fake_proc.returncode = 1
+    fake_proc.poll = MagicMock(return_value=1)          # 已退出
+    fake_proc.stdout = io.StringIO("ValueError: no model found\n")  # 抽干线程读到 EOF
+    fake_proc.wait = MagicMock(return_value=1)
+
+    import src.services.inference.llm_vllm as _mod
+    # Health check fails (no existing vLLM); Popen 换成桩;_kill_process 不去信号一个假 pid
     with patch.object(adapter, "_health_check", new_callable=AsyncMock, return_value=False), \
-         patch.object(adapter, "_auto_configure", return_value=auto_result):
-        # subprocess will fail because model_path is a temp dir with no model
+         patch.object(adapter, "_auto_configure", return_value=auto_result), \
+         patch.object(_mod.subprocess, "Popen", return_value=fake_proc) as popen, \
+         patch.object(adapter, "_kill_process"):
         with pytest.raises(RuntimeError, match="vLLM failed to start"):
             await adapter.load("cpu")
     assert not adapter.is_loaded
+
+    # 顺带钉住两个事实,免得以后有人把它改回真起进程还不自知:
+    # 1) 起的确实是 vllm 的 OpenAI server 入口;
+    # 2) device="cpu" 会被映射成 CUDA_VISIBLE_DEVICES="0" —— 这正是 2026-09-02
+    #    事故里子进程真摸到 GPU 的原因(conftest 设的 "" 被它覆盖)。
+    assert popen.call_count == 1
+    argv = popen.call_args.args[0]
+    assert "vllm.entrypoints.openai.api_server" in argv
+    assert popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "0"
 
 
 async def test_unload_kills_subprocess(adapter):

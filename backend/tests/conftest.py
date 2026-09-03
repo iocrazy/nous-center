@@ -44,6 +44,39 @@ def _guarded_kill(pid, sig):
 os.killpg = _guarded_killpg
 os.kill = _guarded_kill
 
+# CRITICAL SAFETY (2026-09-02 事故): 测试进程里**绝不允许真起推理服务子进程**。
+# test_vllm_adapter 里一个用例走到 VLLMAdapter.load() 的真 Popen,而 llm_vllm.py 对
+# device="cpu" 会把 CUDA_VISIBLE_DEVICES 设成 "0"(覆盖上面的 ""),于是
+# `python -m vllm.entrypoints...` 真的在 GPU 上初始化 CUDA;xdist 8 worker × 两个并发
+# 跑批一起起,NVRM 先报 VA 空间耗尽,随后 RTX 3090 GSP RPC 超时(Xid 175/154),
+# nvidia-smi 全进 D 态,后端 API、Xwayland、ComfyUI 全冻,只能重启机器。
+# CI 用 --ignore 挡住那个文件,本地(生产 venv 装了 vllm)裸跑 `pytest tests` 就中招。
+# 这里在 Popen 层面拦:argv 里出现推理服务入口就 raise(把问题就地炸出来),
+# 显式 NOUS_RUN_GPU_TESTS=1 才放行(真机 e2e)。子类化保留 isinstance / patch 语义。
+import subprocess as _subprocess
+
+_real_popen = _subprocess.Popen
+_INFERENCE_SERVER_MARKERS = ("vllm.entrypoints", "sglang.launch_server", "sgl-omni")
+
+
+class _GuardedPopen(_real_popen):
+    def __init__(self, args, *a, **kw):
+        argv = args if isinstance(args, (list, tuple)) else [args]
+        joined = " ".join(str(x) for x in argv)
+        if (
+            any(m in joined for m in _INFERENCE_SERVER_MARKERS)
+            and os.environ.get("NOUS_RUN_GPU_TESTS") != "1"
+        ):
+            raise AssertionError(
+                "BLOCKED real inference-server spawn in tests: "
+                f"{joined[:160]} — mock subprocess.Popen in the test, or set "
+                "NOUS_RUN_GPU_TESTS=1 for a deliberate on-GPU e2e run."
+            )
+        super().__init__(args, *a, **kw)
+
+
+_subprocess.Popen = _GuardedPopen
+
 # Tests must not inherit the developer's local admin password from .env —
 # pydantic-settings reads .env automatically, which would 401 every admin-gated
 # route. Force-empty here disables the cookie gate (dev mode) for the whole
