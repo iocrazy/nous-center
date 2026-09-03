@@ -382,8 +382,10 @@ async def cancel_prediction(
     await session.commit()
 
     # 渲染已经赢下竞态(marked==0)时不再打断:那一发 `/interrupt` 打不到本任务,只会误伤
-    # sidecar 上排在后面的下一个渲染(C1 那条不变式)。
-    if marked and should_interrupt:
+    # sidecar 上排在后面的下一个渲染(C1 那条不变式)。落库到这里之间还隔着一次 commit
+    # 往返,渲染也可能恰好在这个缝里跑完、下一个任务已拿到信号量 —— 所以发 interrupt 前
+    # **再核一次**持有者仍是本任务,把误伤窗口压到最小(纯内存读,零成本)。
+    if marked and should_interrupt and comfy_bridge.get_running_task_id() == prediction_id:
         from src.api.routes.comfy_templates import get_client  # noqa: PLC0415
         try:
             await get_client().interrupt()

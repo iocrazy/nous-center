@@ -90,9 +90,6 @@ async def _refresh_locked(session, task: ExecutionTask) -> None:
     覆盖**。加 FOR UPDATE 后这一行在我们提交前被独占:cancel 的 UPDATE 要么排在读
     之前(我们读到 cancelled → honor),要么排在提交之后(它的
     `status IN ('queued','running')` 条件不再匹配 → 0 行,不误改终态)。两边都不丢。
-
-    sqlite 方言不渲染 FOR UPDATE(无行锁),行为退化成裸 refresh —— 生产/测试都是
-    PostgreSQL,不影响。
     """
     await session.refresh(task, with_for_update=True)
 
