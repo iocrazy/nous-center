@@ -99,12 +99,13 @@ def _input_property(exposed: dict, widget: dict | None) -> dict:
     # 补齐(不是二选一——widget 分支给的 type 仍然生效,这里只加 enum/minimum/maximum)。
     constraints = exposed.get("constraints")
     if isinstance(constraints, dict):
+        is_file = str(exposed.get("type") or "").lower() in _FILE_IN_TYPES
         enum = constraints.get("enum")
         # 文件类输入的 enum 不是取值域,是 **sidecar 上已有文件的清单**(ComfyUI
         # object_info 给 LoadImage.image 的就是 input/ 目录列表)。当白名单校验会
         # 把"上传一个新文件"这件正事判成非法(2026-08-12 实机:上传图片必 400
         # "must be one of ['5 (1).jpg','example.png']")。文件类一律不写 enum。
-        if enum and str(exposed.get("type") or "").lower() not in _FILE_IN_TYPES:
+        if enum and not is_file:
             prop["enum"] = enum
             # 每选项的显示名 + 缩略图(comfy_templates._split_options 写入)。放同级扩展
             # 关键字而不是塞进 enum —— enum 必须保持纯值列表,校验和旧前端都依赖它。
@@ -112,18 +113,22 @@ def _input_property(exposed: dict, widget: dict | None) -> dict:
             option_meta = constraints.get("option_meta")
             if option_meta:
                 prop["x-option-meta"] = option_meta
-            # 多选信号:值仍是 string(逗号串),只是允许选多项。没有这个键前端
-            # 只能当单选渲。
-            if constraints.get("multiple"):
-                prop["x-multiple"] = True
-        # 选项依赖(与 enum 并存,不是二选一):值域取决于另一个入参的当前值
+        # 多选信号:值仍是 string(逗号串),只是允许选多项。**独立于静态 enum 输出** ——
+        # 只声明动态依赖、没冻结 enum 的字段同样要带上,否则 validate_service_input 会拿
+        # 动态清单去整串比对 "a,b" 而不是逐项比,多选必 422。
+        if constraints.get("multiple"):
+            prop["x-multiple"] = True
+        # 选项依赖(与静态 enum 并存,不是二选一):值域取决于另一个入参的当前值
         # (`x-options-depends-on` 指向那个入参的 key),运行期去
         # `x-options-source` 指定的来源取清单。上面的静态 enum / x-option-meta
         # 照旧输出 —— 它们是**默认包**那一份,当来源不可达时的兜底与离线展示。
-        if constraints.get("options_depends_on"):
-            prop["x-options-depends-on"] = constraints["options_depends_on"]
-        if constraints.get("options_source"):
-            prop["x-options-source"] = constraints["options_source"]
+        # 文件类字段一律不输出:它的值是上传的文件,给它挂一份动态清单会让
+        # resolve_dynamic_enums 拿风格名当白名单,上传必 422(与上面不写 enum 同理)。
+        if not is_file:
+            if constraints.get("options_depends_on"):
+                prop["x-options-depends-on"] = constraints["options_depends_on"]
+            if constraints.get("options_source"):
+                prop["x-options-source"] = constraints["options_source"]
         if constraints.get("min") is not None:
             prop["minimum"] = constraints["min"]
         if constraints.get("max") is not None:

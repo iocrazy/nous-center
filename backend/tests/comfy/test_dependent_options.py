@@ -10,7 +10,7 @@ sidecar 一律 mock —— 测试不碰真 ComfyUI。
 import pytest
 
 from src.services.comfy import style_options
-from src.services.service_schema import validate_service_input
+from src.services.service_schema import build_service_io_schema, validate_service_input
 
 WF = {"1243": {"class_type": "easy stylesSelector",
                "inputs": {"styles": "fooocus_styles", "select_styles": ""}}}
@@ -432,3 +432,168 @@ async def test_cache_refresh_moves_entry_to_newest(monkeypatch):
     await style_options.style_values("b")
     style_options._cache_put("a", ["x"])
     assert list(style_options._style_cache) == ["b", "a"]
+
+
+# ---------- 不冻结静态 options、只声明依赖(enum-less mapping)----------
+#
+# krea2 的 mapping 是「静态 options + 依赖」,下面这批覆盖的是另一种合法形状:
+# **一项静态 options 都不冻结**,值域完全交给运行期的动态清单。三处只在这种形状下
+# 才触发的 bug(multiple 丢失 / 前端渲成文本框 / 文件类被套清单)就是从这儿进来的。
+
+
+def _schema_no_static_enum():
+    """enum-less 的 styles:只有 x-multiple + 依赖声明,没有冻结的静态 enum。"""
+    return {"type": "object", "properties": {
+        "style_pack": {"type": "string", "default": "fooocus_styles",
+                       "enum": ["fooocus_styles", "krea2_397styles-anime_动漫"]},
+        "styles": {"type": "string", "x-multiple": True,
+                   "x-options-depends-on": "style_pack",
+                   "x-options-source": "comfy_styles"}}}
+
+
+@pytest.mark.asyncio
+async def test_enum_less_mapping_keeps_multiple_flag(client):
+    """`multiple` 是**值的形状**标志,跟有没有冻结静态 enum 无关。
+
+    曾经它被嵌在 `if m.options` 里 —— 不冻结 options 的 mapping 存不下这个标志,
+    schema 没有 x-multiple,运行期就拿动态清单整串比对 "a,b" → 多选必 422。
+    """
+    tid = await _mk(client, "dep-enumless")
+    r = await client.put(f"/api/v1/comfy-templates/{tid}/mapping",
+                         json=_mapping(options=None))
+    assert r.status_code == 200, r.text
+
+    detail = (await client.get(f"/api/v1/comfy-templates/{tid}")).json()
+    styles = next(p for p in detail["exposed_params"] if p["key"] == "styles")
+    assert styles["multiple"] is True
+
+    prop = (await client.get("/v1/services/dep-enumless/schema")
+            ).json()["input_schema"]["properties"]["styles"]
+    assert prop["x-multiple"] is True, "没有它,多选值会被整串比对"
+    assert "enum" not in prop, "本来就没冻结静态清单"
+    assert prop["x-options-depends-on"] == "style_pack"
+    assert prop["x-options-source"] == "comfy_styles"
+
+
+@pytest.mark.asyncio
+async def test_enum_less_multi_select_validates_per_item(monkeypatch):
+    """enum-less + 多选:逗号串按动态清单**逐项**校验,整串放行。"""
+    fake = FakeClient()
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+
+    schema = _schema_no_static_enum()
+    payload = {"style_pack": "krea2_397styles-anime_动漫", "styles": "krea-cel,krea-ink"}
+    dyn = await style_options.resolve_dynamic_enums(schema, payload)
+    assert dyn == {"styles": ["krea-cel", "krea-ink"]}
+    assert validate_service_input(schema, payload, dynamic_enums=dyn) == []
+
+
+@pytest.mark.asyncio
+async def test_enum_less_multi_select_reports_only_bad_items(monkeypatch):
+    """逐项校验的另一半:只有清单外的那几项进报错,合法项不受牵连。"""
+    fake = FakeClient()
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+
+    schema = _schema_no_static_enum()
+    payload = {"style_pack": "krea2_397styles-anime_动漫", "styles": "krea-cel,not-a-style"}
+    dyn = await style_options.resolve_dynamic_enums(schema, payload)
+    errs = validate_service_input(schema, payload, dynamic_enums=dyn)
+    assert len(errs) == 1 and "not-a-style" in errs[0], errs
+    assert "krea-cel,not-a-style" not in errs[0], "整串比对的老症状"
+
+
+@pytest.mark.asyncio
+async def test_enum_less_prediction_accepts_multi_select(client, monkeypatch):
+    """端到端:enum-less mapping 下,多选串里只有非法项被点名(不是整串被拒)。
+
+    跟 test_prediction_endpoint_uses_dynamic_pack 同理只断言"拒绝"这一侧 —— 放行会
+    真排一个渲染任务去敲 sidecar。合法项没进报错,就证明走的是逐项分支。
+    """
+    tid = await _mk(client, "dep-enumless-predict")
+    assert (await client.put(f"/api/v1/comfy-templates/{tid}/mapping",
+                             json=_mapping(options=None))).status_code == 200
+
+    fake = FakeClient()
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+
+    r = await client.post(
+        "/v1/services/dep-enumless-predict/predictions",
+        headers={"Prefer": "respond-async"},
+        json={"input": {"style_pack": "krea2_397styles-anime_动漫",
+                        "styles": "krea-cel,not-a-style"}})
+    assert r.status_code == 422, r.text
+    assert "not-a-style" in r.text
+    assert "not in allowed values" in r.text, "整串比对会是 must be one of"
+
+
+# ---------- 文件类参数不接受选项依赖 ----------
+
+
+def _file_mapping(**overrides):
+    """一个文件类入参(上传图)+ 依赖声明 —— 本来就不该被接受的形状。"""
+    portrait = {
+        "key": "portrait", "label": "参考图", "type": "image",
+        "comfy_node_id": "1243", "comfy_input": "select_styles", "required": False,
+        "options_depends_on": "style_pack", "options_source": "comfy_styles",
+    }
+    portrait.update(overrides)
+    return {"exposed_params": [
+        {"key": "style_pack", "label": "风格包", "type": "string",
+         "comfy_node_id": "1243", "comfy_input": "styles", "required": False,
+         "default": "fooocus_styles",
+         "options": ["fooocus_styles", "krea2_397styles-anime_动漫"]},
+        portrait,
+    ]}
+
+
+@pytest.mark.asyncio
+async def test_file_param_rejects_options_dependency(client):
+    """文件类字段的值是**上传的文件**,不是从清单里选一项。给它挂动态清单 = 运行期拿
+    一份风格名当白名单,上传必 422(2026-08-12 那个静态 enum 回归换条路复现)。
+    """
+    tid = await _mk(client, "dep-file")
+    r = await client.put(f"/api/v1/comfy-templates/{tid}/mapping", json=_file_mapping())
+    _assert_rejected(r, "文件类参数")
+
+
+@pytest.mark.asyncio
+async def test_file_param_rejects_bare_options_source(client):
+    """只写 options_source 不写 depends_on 也拒 —— 它一样会让 schema 挂上动态清单。"""
+    tid = await _mk(client, "dep-file-src")
+    r = await client.put(f"/api/v1/comfy-templates/{tid}/mapping",
+                         json=_file_mapping(options_depends_on=None))
+    _assert_rejected(r, "文件类参数")
+
+
+@pytest.mark.parametrize("ftype", ["image", "file", "audio", "video", "binary", "media"])
+def test_file_param_schema_never_carries_dynamic_options(ftype):
+    """双保险(老数据 / 绕过 MappingBody 的路径):schema 侧对文件类也不输出
+    x-options-*,跟不输出 enum 同理 —— 有它 resolve_dynamic_enums 就会给上传字段
+    发一份风格清单当白名单。
+    """
+    exposed = [{
+        "key": "portrait", "node_id": "bridge", "input_name": "portrait", "type": ftype,
+        "constraints": {"enum": ["5 (1).jpg", "example.png"],
+                        "options_depends_on": "style_pack",
+                        "options_source": "comfy_styles"},
+    }]
+    prop = build_service_io_schema(
+        exposed, [], {"nodes": [], "edges": []})["input_schema"]["properties"]["portrait"]
+    assert "enum" not in prop
+    assert "x-options-depends-on" not in prop
+    assert "x-options-source" not in prop
+
+
+@pytest.mark.asyncio
+async def test_file_param_upload_survives_dynamic_resolution():
+    """接上一条的后果面:这样的 schema 过 resolve_dynamic_enums 拿不到任何清单,
+    上传的 data URI 因此不会撞白名单(不然就是 2026-08-12 那个上传必 400)。"""
+    exposed = [{
+        "key": "portrait", "node_id": "bridge", "input_name": "portrait", "type": "image",
+        "constraints": {"options_depends_on": "style_pack", "options_source": "comfy_styles"},
+    }]
+    schema = build_service_io_schema(exposed, [], {"nodes": [], "edges": []})["input_schema"]
+    payload = {"portrait": "data:image/png;base64,AAAA"}
+    dyn = await style_options.resolve_dynamic_enums(schema, payload)
+    assert dyn == {}
+    assert validate_service_input(schema, payload, dynamic_enums=dyn) == []

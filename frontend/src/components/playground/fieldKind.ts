@@ -44,6 +44,12 @@ export function classifyField(p: ExposedParam): FieldKind {
     }
     return 'select'
   }
+  // 静态 enum 是空的、但字段声明了「选项随另一个参数变」(options_source):清单在运行期
+  // 才拉,注册时一项都没冻结。这仍然是个**选择器**,不是自由文本 —— 不在这里归类,
+  // SchemaDrivenForm 的依赖分支(只对 select/thumb_select 生效)就挂不上,字段会渲成
+  // 多行文本框、联动整条失效。网格还是下拉由 DependentOptionField 按**实际拉到的**
+  // 清单有没有缩略图决定,所以这里统一给 'select'。
+  if (optionDependency(p)) return 'select'
   const numeric = t === 'integer' || t === 'int' || t === 'number' || t === 'float'
   // Numeric field with a bounded range → slider (对齐 Infinite-Canvas / nous
   // 节点的 slider widget,min/max/step 从 ExposedParam.constraints 带出)。

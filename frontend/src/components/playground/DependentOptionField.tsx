@@ -5,8 +5,6 @@ import OptionThumbGrid, { type OptionMeta } from './OptionThumbGrid'
 import { parseValues, type FieldOption } from './fieldKind'
 
 export interface DependentOptionFieldProps {
-  /** 渲成缩略图网格还是普通下拉 —— 与 classifyField 的判定保持一致。 */
-  kind: 'thumb_select' | 'select'
   /** 清单来源(`constraints.options_source`)。目前只有 `comfy_styles`。 */
   source: string
   /** 依赖参数的**当前值**,即拉清单用的入参(风格包名)。空 = 还没选,直接用静态清单。 */
@@ -25,9 +23,12 @@ export interface DependentOptionFieldProps {
  * 条件调用 —— 塞进 FieldInput 会让**所有**字段(以及 ComfyTemplateEditor 的节点预览、
  * 既有的一堆无 QueryClientProvider 的测试)都被迫依赖 React Query。做成只在真声明了
  * 依赖时才挂载的子组件,其余路径一行代码都不受影响。
+ *
+ * 「缩略图网格还是普通下拉」由**实际拿到的清单**有没有 image 决定,不由父组件按注册时
+ * 冻结的静态数据算一次定死 —— 只声明依赖、没冻结静态 options 的 mapping 在父组件那边
+ * 算出来永远是下拉,而运行期拉到的清单可能项项带图(krea2 的风格包就是)。
  */
 export default function DependentOptionField({
-  kind,
   source,
   dependsValue,
   fallback,
@@ -41,6 +42,8 @@ export default function DependentOptionField({
 
   const options: FieldOption[] = data?.options ?? fallback
   const current = String(value ?? '')
+  // 任何一项带缩略图就渲网格(275 项风格用纯文本下拉没法挑);一张图都没有退回下拉。
+  const useGrid = options.some((o) => o.image)
 
   // 切包后把**已选但新包里没有**的值清掉 —— 留着提交必被后端白名单拒(422),
   // 而且缩略图网格里也根本渲不出来(用户看不见自己选了什么)。
@@ -69,7 +72,7 @@ export default function DependentOptionField({
       {hint && (
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>{hint}</div>
       )}
-      {kind === 'thumb_select' ? (
+      {useGrid ? (
         <OptionThumbGrid
           options={options as OptionMeta[]}
           value={current}
