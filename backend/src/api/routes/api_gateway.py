@@ -431,8 +431,8 @@ async def services_catalog(
     )).scalars().all()
 
     # Per-instance aggregates: grant counts + pack sums.
-    # Split into two scalar queries to keep portability between PG and
-    # SQLite (boolean-to-int casting works differently across drivers).
+    # Split into two scalar queries (historically for sqlite portability;
+    # PG-only now, merging them into one FILTER query is an optional cleanup).
     totals_stmt = (
         select(ApiKeyGrant.service_id, func.count(ApiKeyGrant.id))
         .group_by(ApiKeyGrant.service_id)

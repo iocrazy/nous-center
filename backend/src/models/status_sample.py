@@ -6,13 +6,12 @@
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String
+from sqlalchemy import BigInteger, DateTime, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.models.database import Base
 
-# BIGINT 在 SQLite(测试)不自增,只有 INTEGER PRIMARY KEY 自增 → with_variant 兜底。
-_AutoId = BigInteger().with_variant(Integer, "sqlite")
+_AutoId = BigInteger()
 
 
 class StatusSample(Base):

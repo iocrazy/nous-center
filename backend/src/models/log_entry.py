@@ -13,10 +13,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from src.models.database import Base
 
-# BIGINT doesn't autoincrement on SQLite (only INTEGER PRIMARY KEY does), but the
-# test suite runs on SQLite. with_variant → BIGINT on PG (prod), INTEGER on SQLite
-# (tests) so the id autoincrements on both.
-_AutoId = BigInteger().with_variant(Integer, "sqlite")
+# BIGINT + autoincrement=True → PG BIGSERIAL。(以前为 sqlite 测试 with_variant 成
+# INTEGER,2026-09-02 测试改跑 PG 后去掉,全局只有一种数据库。)
+_AutoId = BigInteger()
 
 
 class RequestLog(Base):

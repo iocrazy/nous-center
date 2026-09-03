@@ -482,16 +482,16 @@ async def test_find_referencing_services_empty_for_unreferenced_key(db_session):
 
 
 @pytest.fixture
-async def delete_client(tmp_path, monkeypatch):
+async def delete_client(tmp_path, monkeypatch, pg_engine):
     """带真 DB + 假模型树 + 「什么都没加载」的 model_manager 的 client。
 
     yields (client, models_root, models_d, session_factory)
     """
     from httpx import ASGITransport, AsyncClient
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from src.api.main import create_app
-    from src.models.database import Base, get_async_session
+    from src.models.database import get_async_session
 
     models_root = tmp_path / "models"
     models_root.mkdir()
@@ -507,10 +507,7 @@ async def delete_client(tmp_path, monkeypatch):
         md, "scan_code_refs", lambda *a, **kw: {"refs": [], "truncated": False, "scan_error": None}
     )
 
-    db_path = tmp_path / "test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def override_session():

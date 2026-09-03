@@ -193,7 +193,7 @@ async def uptime_history(session: AsyncSession, *, days: int = 7) -> dict[str, d
     """聚合每组件「过去 days 天每天 uptime%」+ 总 uptime%。
 
     返回 {component: {"uptime_pct": float, "days": [{"date","uptime_pct","status","samples"}]}}。
-    用 func.date(ts) 按 UTC 日分桶(PG/SQLite 都支持),桶内 uptime=operational 占比。
+    用 func.date(ts) 按 UTC 日分桶,桶内 uptime=operational 占比。
     """
     since = datetime.now(timezone.utc) - timedelta(days=days)
     day_col = func.date(StatusSample.ts)

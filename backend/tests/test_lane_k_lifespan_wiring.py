@@ -12,30 +12,28 @@ instantiate 它们 —— smoke 实测 `app.state.runner_supervisors` 全仓零 
 
 DB 注意:lifespan 跑全套 DB 初始化(create_all + voice-preset migration +
 metadata sync)。CI 用 `:memory:` SQLite,每次 create_engine() 新进程私有 →
-表会丢。本测试 monkeypatch DATABASE_URL 指向 tmp_path 下的文件 sqlite,
+表会丢。(历史)本测试曾把 DATABASE_URL 指向 tmp_path 下的文件 sqlite;现在全局 PG,
 保证 lifespan 内多次 create_engine() 看到同一份表结构。
 """
 from __future__ import annotations
+
+import os
 
 import pytest
 
 
 @pytest.fixture
-def file_sqlite_db(monkeypatch, tmp_path):
-    """Point DATABASE_URL at tmp_path file sqlite + clear get_settings cache.
+def temp_pg_db(monkeypatch, tmp_path):
+    """让 lifespan 跑在 conftest 建的临时 PG 库上(前身叫 file_sqlite_db)。
 
-    lifespan calls create_engine() multiple times (DB sync, voice preset
-    migration, metadata sync, response cleanup, etc); with `:memory:` each
-    call gets a private DB and the second connection sees "no such table".
-    A file sqlite under tmp_path keeps the table set stable for one lifespan run.
+    以前这里把 DATABASE_URL 换成 tmp_path 下的文件 sqlite —— 因为 `:memory:`
+    sqlite 是 per-connection 的,lifespan 多次 create_engine() 会各拿一个空库。
+    全局改用 PostgreSQL 后 DATABASE_URL 本来就是一个稳定的共享临时库,不需要再换;
+    只保留"清缓存"这部分,保证 lifespan 读到的是当前 URL、不复用陈旧 engine。
     """
-    db_path = tmp_path / "lane_k_test.db"
-    db_url = f"sqlite+aiosqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", db_url)
+    db_url = os.environ["DATABASE_URL"]
     from src.config import get_settings
     get_settings.cache_clear()
-    # Also nuke the global _session_factory cache in src.models.database so
-    # get_async_session does not reuse a stale `:memory:` engine.
     import src.models.database as _db_mod
     monkeypatch.setattr(_db_mod, "_session_factory", None, raising=False)
     yield db_url
@@ -44,7 +42,7 @@ def file_sqlite_db(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_lifespan_populates_runner_supervisors_clients_and_llm_runner(
-    monkeypatch, tmp_path, file_sqlite_db
+    monkeypatch, tmp_path, temp_pg_db
 ):
     """Lane K 主断言：开启 runner spawn gate 后，lifespan 应在 app.state 上塞好：
       * runner_supervisors —— image / tts group 各一个（不包含 llm group）
@@ -141,7 +139,7 @@ async def test_lifespan_populates_runner_supervisors_clients_and_llm_runner(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_skips_runner_spawn_by_default(file_sqlite_db):
+async def test_lifespan_skips_runner_spawn_by_default(temp_pg_db):
     """默认 conftest 的 NOUS_DISABLE_BG_TASKS=1 + 无 NOUS_DISABLE_RUNNER_SPAWN
     覆盖时,Lane K 不应起任何 supervisor —— 保证现有 fast 测试套不变慢/不被破坏。
 

@@ -3,17 +3,14 @@ the conftest SQLite test DB; the log models register on Base via this import."""
 import asyncio
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from src.models.database import Base
 from src.models.log_entry import AppLog, AuditLog, FrontendLog, RequestLog
 from src.services.log_store import LogWriter, cleanup_logs, query_logs
 
 
-async def _make_factory(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/log_store.db")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def _make_factory(pg_engine):
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -97,8 +94,8 @@ async def test_cleanup_rowcap(db_session):
 
 # ---- LogWriter (async queue + consumer) ----
 
-async def test_writer_enqueue_flushes_to_db(tmp_path):
-    factory = await _make_factory(tmp_path)
+async def test_writer_enqueue_flushes_to_db(pg_engine):
+    factory = await _make_factory(pg_engine)
     writer = LogWriter()
     writer.start(session_factory=factory, batch_max=10)
     try:
@@ -127,8 +124,8 @@ async def test_enqueue_before_start_is_noop():
     assert not writer.started
 
 
-async def test_queue_full_increments_dropped(tmp_path):
-    factory = await _make_factory(tmp_path)
+async def test_queue_full_increments_dropped(pg_engine):
+    factory = await _make_factory(pg_engine)
     writer = LogWriter()
     # tiny queue; don't run the consumer-drain race — fill faster than drain
     writer.start(session_factory=factory, maxsize=2, batch_max=1)

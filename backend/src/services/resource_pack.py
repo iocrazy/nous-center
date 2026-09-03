@@ -36,15 +36,19 @@ from src.models.api_gateway import ResourcePack
 logger = logging.getLogger(__name__)
 
 
-def _naive_utc(dt: datetime | None) -> datetime | None:
-    """SQLite strips tzinfo on storage, so DB reads come back naive. Unify
-    application-side datetimes to naive UTC before any comparison so the
-    code runs identically on both PG and SQLite."""
+def _utc(dt: datetime | None) -> datetime | None:
+    """统一成 **aware** UTC。
+
+    列是 `DateTime(timezone=True)`,PG 读回来就是 aware,所以比较的另一侧也必须
+    aware。旧实现反过来把 aware 削成 naive —— 那是为了迁就 sqlite(它存 datetime
+    是无时区字符串,读回来 naive)。测试改跑 PG 后那个方向直接抛
+    `can't compare offset-naive and offset-aware datetimes`(2026-09-02)。
+    """
     if dt is None:
         return None
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class QuotaExhausted(Exception):
@@ -82,7 +86,7 @@ async def consume(
         # accept garbage from the caller.
         raise ValueError(f"units must be positive, got {units}")
 
-    now = _naive_utc(now or datetime.now(timezone.utc))
+    now = _utc(now or datetime.now(timezone.utc))
 
     # Pick packs in FIFO-by-expiry order. null expiry is last (NULLS LAST).
     # We select IDs only; the atomic UPDATE below is what actually charges.
@@ -172,7 +176,7 @@ async def peek_remaining(
     Read-only; use for dashboards and pre-flight "would this request fit".
     Note that peek + consume is not atomic — consume is the source of truth.
     """
-    now = _naive_utc(now or datetime.now(timezone.utc))
+    now = _utc(now or datetime.now(timezone.utc))
     stmt = select(
         (ResourcePack.total_units - ResourcePack.used_units)
     ).where(

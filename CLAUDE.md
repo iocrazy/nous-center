@@ -42,6 +42,16 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 - SPA catch-all is disabled in tests via `NOUS_DISABLE_FRONTEND_MOUNT=1`
   (also set in conftest). If you add a new test that registers routes after
   `create_app()`, this matters — otherwise the catch-all swallows them.
+- **测试只跑 PostgreSQL,没有 sqlite**(2026-09-02 起,全局只有一种数据库)。conftest
+  按 `DATABASE_URL`(`.env` 或环境变量,角色需 `CREATEDB`)建一个
+  `nous_test_<worker>_<hex>` 临时库,建表一次、每个用例后 `TRUNCATE … RESTART IDENTITY
+  CASCADE`、进程退出时 DROP。**新加 `src/models/xxx.py` 必须同步加进 conftest 顶部的
+  `import src.models.xxx` 列表**,否则建表时不存在、用到它的用例报 UndefinedTable。
+  被 SIGKILL 的跑批不走 atexit,残留库手动
+  `DROP DATABASE "nous_test_…"`。别用 `NOUS_TEST_USE_REAL_DB=1`(直连真库的逃生口,会污染生产数据)。
+- **并行**:`uv run pytest tests -n 8`(pytest-xdist,每 worker 各自临时库)本地约 65s,
+  串行约 6 分钟;`-n 16` 不会更快。CI 用 `-n auto`。PG `max_connections=100` 是 worker
+  数上限的天花板,别在 48 核机器上 `-n auto`。
 
 ## Performance
 

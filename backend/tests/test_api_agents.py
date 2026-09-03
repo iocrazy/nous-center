@@ -14,7 +14,7 @@ def agent_home(tmp_path):
         yield tmp_path
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_agent(client, agent_home):
     resp = await client.post("/api/v1/agents", json={"name": "alice"})
     assert resp.status_code == 201
@@ -25,14 +25,14 @@ async def test_create_agent(client, agent_home):
     assert (agent_home / "agents" / "alice" / "config.json").exists()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_duplicate_agent(client, agent_home):
     await client.post("/api/v1/agents", json={"name": "bob"})
     resp = await client.post("/api/v1/agents", json={"name": "bob"})
     assert resp.status_code == 409
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_agents(client, agent_home):
     await client.post("/api/v1/agents", json={"name": "a1"})
     await client.post("/api/v1/agents", json={"name": "a2"})
@@ -43,7 +43,7 @@ async def test_list_agents(client, agent_home):
     assert "a2" in names
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_get_agent(client, agent_home):
     await client.post("/api/v1/agents", json={"name": "carl", "display_name": "Carl"})
     resp = await client.get("/api/v1/agents/carl")
@@ -54,13 +54,13 @@ async def test_get_agent(client, agent_home):
     assert "AGENT.md" in data["prompts"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_get_agent_not_found(client, agent_home):
     resp = await client.get("/api/v1/agents/nope")
     assert resp.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_update_agent(client, agent_home):
     await client.post("/api/v1/agents", json={"name": "dave"})
     resp = await client.patch(
@@ -72,7 +72,7 @@ async def test_update_agent(client, agent_home):
     assert data["status"] == "active"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_delete_agent(client, agent_home):
     await client.post("/api/v1/agents", json={"name": "eve"})
     resp = await client.delete("/api/v1/agents/eve")
@@ -80,7 +80,7 @@ async def test_delete_agent(client, agent_home):
     assert not (agent_home / "agents" / "eve").exists()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_save_prompt(client, agent_home):
     await client.post("/api/v1/agents", json={"name": "frank"})
     resp = await client.put(
@@ -105,7 +105,7 @@ async def test_save_prompt(client, agent_home):
 # a mismatched bearer to force 403.
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_agent_preview_returns_system_message(
     api_client, bearer_headers, fixtures_home
 ):
@@ -121,7 +121,7 @@ async def test_agent_preview_returns_system_message(
     assert "<available_skills>" in data["system_message"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_agent_preview_requires_admin(
     monkeypatch, api_client, fixtures_home
 ):
@@ -139,7 +139,7 @@ async def test_agent_preview_requires_admin(
         get_settings.cache_clear()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_agent_preview_not_found(
     monkeypatch, api_client, bearer_headers, tmp_path
 ):

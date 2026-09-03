@@ -73,8 +73,8 @@ _MICRO_MIGRATIONS: tuple[str, ...] = (
     # prod 漂移 reconcile(alembic stamp 时 check 出,2026-07-06):models 早把 agent_id
     # 加宽到 String(128)+index、key_prefix 加 index,但既有 prod 列仍 VARCHAR(64)/缺索引
     # (micro-migration 历史只加列不改类型/补这些索引)。加宽是非破坏(64→128 不丢数据);
-    # 索引 IF NOT EXISTS 幂等。sqlite(测试)不支持 ALTER COLUMN TYPE → best-effort 跳过无害
-    # (fresh DB 由 create_all 直接按 model 建对)。
+    # 索引 IF NOT EXISTS 幂等。每条都是 best-effort:fresh DB 由 create_all 直接按 model
+    # 建对,这些语句在它上面是 no-op/已存在,失败也无害。
     "ALTER TABLE llm_usage ALTER COLUMN agent_id TYPE VARCHAR(128)",
     "ALTER TABLE response_sessions ALTER COLUMN agent_id TYPE VARCHAR(128)",
     "CREATE INDEX IF NOT EXISTS ix_llm_usage_agent_id ON llm_usage (agent_id)",
@@ -88,7 +88,6 @@ async def _connect_and_init_db() -> None:
 
     Retry DB connect:docker postgres 容器可能 backend 启动时还在 healthcheck 阶段
     (race condition seen 2026-05-07)。Backoff 2/4/8/16/32/60s = 122s 总等超时再死。
-    SQLite URL 永远 1 次成功,循环退化为零成本。
     """
     from src.models.database import Base, create_engine
     import src.models.voice_preset  # noqa: F401

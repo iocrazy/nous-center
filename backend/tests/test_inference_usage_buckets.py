@@ -1,21 +1,21 @@
-"""round4 #4:get_inference_usage 在 SQLite 上不再 500(早先无条件 date_trunc)。"""
+"""get_inference_usage 的时间分桶(date_trunc)在真 PG 上按 day/hour 正确落桶。
+
+前身是 round4 #4 的「SQLite 上不再 500」用例;全局改 PostgreSQL 后 strftime 分支已删,
+本用例改为验证 PG 路径的分桶结果。"""
 
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from src.models.database import Base
 from src.models.llm_usage import LLMUsage
 
 
 @pytest.mark.asyncio
-async def test_get_inference_usage_sqlite_does_not_crash(tmp_path, monkeypatch):
+async def test_get_inference_usage_buckets_by_day_and_hour(pg_engine, monkeypatch):
     from src.services import usage_service
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'u.db'}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 表由 fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
     async with sf() as s:
         s.add(LLMUsage(
@@ -31,16 +31,15 @@ async def test_get_inference_usage_sqlite_does_not_crash(tmp_path, monkeypatch):
     win_start = datetime(2026, 5, 29, tzinfo=timezone.utc)
     win_end = datetime(2026, 5, 31, tzinfo=timezone.utc)
 
-    # 早先这里对 SQLite 抛 date_trunc 不支持 → 现在 strftime 分支正常返回
     res = await usage_service.get_inference_usage(
         interval="day", columnar=True, start=win_start, end=win_end)
     assert res["DataCount"] == 1
     row = res["Data"][0]
-    assert row[0] == "2026-05-30"  # strftime day bucket(字符串,_iso_bucket 原样返回)
+    # date_trunc('day') 返 datetime → _iso_bucket 给 "2026-05-30T00:00:00+00:00"
+    assert row[0].startswith("2026-05-30")
     assert int(row[2]) == 10 and int(row[3]) == 5
 
     # 非 columnar 也不崩
     res2 = await usage_service.get_inference_usage(interval="hour", start=win_start, end=win_end)
-    assert res2["data"][0]["hour"].startswith("2026-05-30 12:00")
+    assert res2["data"][0]["hour"].startswith("2026-05-30T12:00")
 
-    await engine.dispose()

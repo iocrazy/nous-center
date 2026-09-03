@@ -80,17 +80,14 @@ def test_load_settings_yaml_non_dict_returns_empty(tmp_path, monkeypatch):
     assert cfg._load_settings_yaml() == {"FOO": "bar"}
 
 
-async def test_runtime_override_db_roundtrip():
+async def test_runtime_override_db_roundtrip(pg_engine):
     """数据加载统一(2026-06-16):set_override 写 DB(typed 列)→ hydrate → get_overrides
     读回同形状 dict。load_runtime_overrides 走该缓存。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    from src.models.database import Base
     from src.services import runtime_override_store as store
 
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
     try:
         store.reset_cache()
@@ -111,7 +108,7 @@ async def test_runtime_override_db_roundtrip():
         assert store.get_overrides()["m3"]["vram_budget"]["value"] == 22.0
     finally:
         store.reset_cache()
-        await engine.dispose()
+        pass  # engine 由 pg_engine fixture 释放
 
 
 async def test_runtime_override_rejects_non_overridable_key():
@@ -121,23 +118,20 @@ async def test_runtime_override_rejects_non_overridable_key():
         await store.set_override(None, "m1", "type", "evil")  # 检查先于 session 使用
 
 
-async def test_runtime_override_migrate_corrupt_json_is_soft(tmp_path):
+async def test_runtime_override_migrate_corrupt_json_is_soft(tmp_path, pg_engine):
     """一次性迁移读坏 JSON 不该拖垮启动 → 返回 0,不抛。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    from src.models.database import Base
     from src.services import runtime_override_store as store
 
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
     bad = tmp_path / "runtime_overrides.json"
     bad.write_text("{not json")
     try:
         assert await store.migrate_json_if_empty(sf, str(bad)) == 0
     finally:
-        await engine.dispose()
+        pass  # engine 由 pg_engine fixture 释放
 
 
 def test_runtime_override_overlays_model_configs(monkeypatch):

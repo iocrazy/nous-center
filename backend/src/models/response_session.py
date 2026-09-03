@@ -9,14 +9,14 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import (
-    JSON, BigInteger, CheckConstraint, Column, DateTime, ForeignKey,
+    BigInteger, CheckConstraint, Column, DateTime, ForeignKey,
     Index, Integer, LargeBinary, String, Text, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
 from src.models.database import Base
 
-JsonColumn = JSON().with_variant(JSONB(), "postgresql")
+JsonColumn = JSONB()
 
 
 def _expires_at_default():
@@ -52,8 +52,8 @@ class ResponseSession(Base):
     )
 
     __table_args__ = (
-        # Keep CHECK simple; 7-day upper bound enforced at API layer to avoid
-        # PG `interval` syntax breaking the SQLite test fixture.
+        # Keep CHECK simple; 7-day upper bound enforced at API layer (historically
+        # to keep the CHECK dialect-neutral; now purely a layering choice).
         CheckConstraint(
             "expire_at > created_at",
             name="response_session_expire_at_check",

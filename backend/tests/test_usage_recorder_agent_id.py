@@ -6,25 +6,20 @@ factory to point at a temp SQLite engine, then verify the row written.
 """
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from src.models.database import Base
 from src.models.llm_usage import LLMUsage
 from src.services import usage_service
 from src.services.usage_service import record_llm_usage
 
 
-async def _setup_engine(tmp_path):
-    db_path = tmp_path / "test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    sf = async_sessionmaker(engine, expire_on_commit=False)
-    return engine, sf
+async def _setup_engine(pg_engine):
+    """表由 pg_engine fixture 建好(全局只用 PostgreSQL)。"""
+    return pg_engine, async_sessionmaker(pg_engine, expire_on_commit=False)
 
 
-async def test_record_llm_usage_writes_agent_id(tmp_path, monkeypatch):
-    engine, sf = await _setup_engine(tmp_path)
+async def test_record_llm_usage_writes_agent_id(pg_engine, monkeypatch):
+    engine, sf = await _setup_engine(pg_engine)
     monkeypatch.setattr(usage_service, "get_session_factory", lambda: sf)
     try:
         await record_llm_usage(
@@ -37,12 +32,12 @@ async def test_record_llm_usage_writes_agent_id(tmp_path, monkeypatch):
             row = (await session.execute(select(LLMUsage))).scalar_one()
             assert row.agent_id == "tutor"
     finally:
-        await engine.dispose()
+        pass  # engine 由 pg_engine fixture 释放
 
 
-async def test_record_llm_usage_agent_id_optional(tmp_path, monkeypatch):
+async def test_record_llm_usage_agent_id_optional(pg_engine, monkeypatch):
     """Omitting agent_id should write NULL."""
-    engine, sf = await _setup_engine(tmp_path)
+    engine, sf = await _setup_engine(pg_engine)
     monkeypatch.setattr(usage_service, "get_session_factory", lambda: sf)
     try:
         await record_llm_usage(
@@ -54,4 +49,4 @@ async def test_record_llm_usage_agent_id_optional(tmp_path, monkeypatch):
             row = (await session.execute(select(LLMUsage))).scalar_one()
             assert row.agent_id is None
     finally:
-        await engine.dispose()
+        pass  # engine 由 pg_engine fixture 释放

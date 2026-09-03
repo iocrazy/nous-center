@@ -13,8 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _iso_bucket(b) -> str | None:
-    """时间分桶 → ISO 字符串。PG date_trunc 返 datetime(.isoformat());SQLite strftime
-    返字符串(原样返回)。None-safe(round4 #4)。"""
+    """时间分桶 → ISO 字符串。date_trunc 返 datetime → .isoformat()。None-safe。"""
     if b is None:
         return None
     return b.isoformat() if hasattr(b, "isoformat") else str(b)
@@ -170,7 +169,6 @@ async def get_inference_usage(
 
     interval: "day" | "hour" — bucket width.
     group_by: "Model" | "Instance" | "ApiKey".
-    Dialect note: uses `date_trunc` (PG). SQLite tests should mock.
     """
     if end is None:
         end = datetime.now(timezone.utc)
@@ -190,13 +188,9 @@ async def get_inference_usage(
 
     sf = get_session_factory()
     async with sf() as session:
-        # round4 #4:按方言选时间分桶 —— 早先无条件 date_trunc(PG-only),SQLite 部署/测试
-        # 调本接口直接 500。对齐 routes/usage.py 的 _is_postgres 分支。
-        if session.bind.dialect.name == "postgresql":  # type: ignore[union-attr]
-            bucket = func.date_trunc(interval, LLMUsage.created_at).label("bucket")
-        else:
-            _fmt = "%Y-%m-%d" if interval == "day" else "%Y-%m-%d %H:00:00"
-            bucket = func.strftime(_fmt, LLMUsage.created_at).label("bucket")
+        # 全局只用 PostgreSQL:date_trunc 直接上,不再有 sqlite 的 strftime 分支
+        # (round4 #4 那个分叉是为了让 sqlite 测试不 500 加的,测试改跑 PG 后没必要了)。
+        bucket = func.date_trunc(interval, LLMUsage.created_at).label("bucket")
         stmt = (
             select(
                 bucket,

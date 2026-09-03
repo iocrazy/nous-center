@@ -71,26 +71,102 @@ os.environ["NOUS_DISABLE_FRONTEND_MOUNT"] = "1"
 import tempfile as _tempfile
 os.environ.setdefault("NOUS_IMAGE_OUTPUTS", _tempfile.mkdtemp(prefix="nous-test-img-"))
 
-# 测试库 = **每次运行一个隔离的临时 sqlite 文件**,无条件改写 DATABASE_URL。
+# 测试库 = **每次运行一个新建的临时 PostgreSQL 库**,无条件改写 DATABASE_URL。
 #
-# 为什么是无条件(2026-08-29 修):旧逻辑只在 CI 的 `:memory:` 情况下换库,本地跑
-# pytest 就直接读写 .env 里的**生产 Postgres**(nous_center)。实测一次全量跑在
+# 为什么是 PG 而不是 sqlite(2026-09-02 改):全局只用一种数据库。生产是 PG,测试
+# 也跑 PG —— 测试环境与生产同构,"sqlite 过得去、PG 过不去"那类 bug 再也藏不住。
+# 换掉之前踩过的:CI 慢 runner 上 sqlite 单写者锁超时,16 个写 DB 的用例成批红
+# (#688),那是纯粹为迁就 sqlite 付的成本。
+#
+# 为什么是无条件(2026-08-29 起):旧逻辑只在 CI 的 `:memory:` 情况下换库,本地跑
+# pytest 就直接读写 .env 里的**生产库**(nous_center)。实测一次全量跑在
 # comfy_templates / service_instances 各留下 16 行测试垃圾(bridge-db-test /
 # e2e-* / tpl-* / admin-e2e-*),而且 test_create_template_creates_service 硬编码
-# 的名字 `minimax-h3-r2v` 撞上生产同名行(ComfyUI 桥 PR#672,2026-08-11 建)→ 永久
-# 409;残留量还让整套测试的失败数在两次全量跑之间从 19 抖到 3(顺序/状态依赖)。
+# 的名字 `minimax-h3-r2v` 撞上生产同名行 → 永久 409。这条不变式必须保住。
 #
-# 为什么是**文件** sqlite 而不是 `:memory:`:in-memory sqlite 是 per-connection 的,
-# app 的 session factory 和 lifespan 各开各的连接、各拿一个空库,任何碰 DB 的
-# 路由/lifespan 都会 "no such table"。临时文件库对所有连接可见,schema 在下面建一次。
+# 隔离粒度 = 每次 pytest 进程一个库(名字带随机后缀),退出时 DROP。并行跑互不干扰。
+# 需要 nous 角色有 CREATEDB 权限(`ALTER ROLE nous CREATEDB`)。
 #
 # 逃生口:真要对着真库调试,显式 NOUS_TEST_USE_REAL_DB=1(护栏见
 # tests/test_db_isolation.py,该变量置 1 时自动跳过)。
+import asyncio
+import atexit as _atexit
+import secrets as _secrets
+import urllib.parse as _urlparse
+
 _use_real_db = os.environ.get("NOUS_TEST_USE_REAL_DB") == "1"
+_test_db_name: str | None = None
+_admin_url: str | None = None
+
+
+def _pg_admin(sql: str) -> None:
+    """用 asyncpg 直连 postgres 库执行一句管理 SQL(建库/删库/踢连接)。
+
+    CREATE/DROP DATABASE 不能在事务里跑,asyncpg 的 execute 默认就是 autocommit,
+    正好合用。走裸驱动而不是 SQLAlchemy —— 建库这步早于任何 engine,不想把
+    连接池/方言那套牵进来。
+    """
+    import asyncio as _a  # noqa: PLC0415
+
+    import asyncpg as _apg  # noqa: PLC0415
+
+    dsn = (_admin_url or "").replace("postgresql+asyncpg://", "postgresql://")
+
+    async def _run():
+        conn = await _apg.connect(dsn)
+        try:
+            await conn.execute(sql)
+        finally:
+            await conn.close()
+
+    _a.run(_run())
+
+
+def _swap_in_temp_pg_database() -> None:
+    """按 .env 的连接信息建一个 nous_test_<随机> 库,把 DATABASE_URL 指过去。"""
+    global _test_db_name, _admin_url
+    # .env 由 pydantic-settings 在实例化时读,**不进 os.environ** —— 所以这里要
+    # 走 Settings 拿基准 URL,不能只看环境变量(环境变量优先,便于 CI 覆盖)。
+    base = os.environ.get("DATABASE_URL") or ""
+    if not base:
+        from src.config import get_settings  # noqa: PLC0415
+        base = get_settings().DATABASE_URL
+        get_settings.cache_clear()   # 下面要改 DATABASE_URL,别让缓存里留旧值
+    if not base.startswith("postgresql"):
+        raise RuntimeError(
+            f"测试要求 PostgreSQL,但解析到的 DATABASE_URL 是 {base[:40]!r} —— "
+            "检查 backend/.env",
+        )
+    parsed = _urlparse.urlparse(base)
+    # xdist 下每个 worker 是独立进程,各自走到这里建自己的库;名字带上 worker id
+    # (gw0/gw1…,非 xdist 时为 main)方便从 pg_stat_activity 反查是哪个 worker 的。
+    _worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    _test_db_name = f"nous_test_{_worker}_{_secrets.token_hex(4)}"
+    # 建/删库连到已存在的 postgres 库。只装了 asyncpg(生产驱动),没有 psycopg2,
+    # 所以这里直接用 asyncpg 裸连 + asyncio.run —— 此刻还没有事件循环在跑,安全。
+    _admin_url = _urlparse.urlunparse(parsed._replace(path="/postgres"))
+    _pg_admin(f'CREATE DATABASE "{_test_db_name}"')
+    os.environ["DATABASE_URL"] = _urlparse.urlunparse(
+        parsed._replace(path=f"/{_test_db_name}"))
+
+
+def _drop_temp_pg_database() -> None:
+    """进程退出时删掉临时库。失败只告警 —— 不能让清理把测试结果搞成失败。"""
+    if not _test_db_name or not _admin_url:
+        return
+    try:
+        # 先踢掉残留连接,否则 DROP 会因 "database is being accessed" 失败。
+        _pg_admin(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            f"WHERE datname = '{_test_db_name}' AND pid <> pg_backend_pid()")
+        _pg_admin(f'DROP DATABASE IF EXISTS "{_test_db_name}"')
+    except Exception as e:  # noqa: BLE001 — 清理失败不该影响测试结论
+        print(f"[conftest] 清理临时测试库 {_test_db_name} 失败: {e}")
+
+
 if not _use_real_db:
-    os.environ["DATABASE_URL"] = (
-        "sqlite+aiosqlite:///" + _tempfile.mkdtemp(prefix="nous-test-db-") + "/test.db"
-    )
+    _swap_in_temp_pg_database()
+    _atexit.register(_drop_temp_pg_database)
 
 import sys
 from unittest.mock import MagicMock
@@ -132,6 +208,16 @@ import src.models.model_runtime_override  # noqa: F401 — register model(数据
 import src.models.memory  # noqa: F401 — register model
 import src.models.api_gateway  # noqa: F401 — register model
 import src.models.status_sample  # noqa: F401 — register model(status 页采样)
+# 下面 6 个以前没显式 import:5 个靠别的模块间接带进 Base.metadata,`task` 则**完全
+# 没进** —— create_all 时表不存在,某个测试文件稍后 import 它,metadata 才多出
+# `tasks`,此后每个 teardown 的 TRUNCATE 都撞 UndefinedTable(2026-09-02,1954 个 error)。
+# 模型必须全部在这里 import,建表才建得齐;别依赖间接 import 的运气。
+import src.models.admin_credentials  # noqa: E402,F401
+import src.models.comfy_template  # noqa: E402,F401
+import src.models.file  # noqa: E402,F401
+import src.models.llm_usage  # noqa: E402,F401
+import src.models.log_entry  # noqa: E402,F401
+import src.models.task  # noqa: E402,F401
 
 # Create the schema once on the isolated temp-file test DB (swapped in above).
 # All models are imported by now, so Base.metadata is complete. Runs at import
@@ -152,14 +238,29 @@ if not _use_real_db:
 
 
 @pytest.fixture(autouse=True)
-def _reset_memoized_session_factory():
+async def _reset_memoized_session_factory():
     """round4 #1:database.get_session_factory() 进程级 memoize 共享工厂(修生产 engine
-    泄漏)。测试间必须重置,否则一个测试首次调用绑定的工厂会泄漏到后续测试(尤其各
-    test 用自己的临时 DB / monkeypatch 时)。每个 test 前后清掉全局。"""
+    泄漏)。测试间必须重置,否则一个测试首次调用绑定的工厂会泄漏到后续测试。
+
+    光置 None 不够 —— 旧 engine 的连接池还挂着连接。以前各测试各用一个 schema,
+    泄漏的连接指向别的 schema、互不相干;现在所有测试共用一套表,泄漏连接若带着
+    未结束事务会卡住 TRUNCATE。所以这里**真 dispose**。"""
     import src.models.database as _db
-    _db._session_factory = None
+
+    async def _dispose():
+        f = _db._session_factory
+        _db._session_factory = None
+        if f is not None:
+            bind = f.kw.get("bind")
+            if bind is not None:
+                try:
+                    await bind.dispose()
+                except Exception:  # noqa: BLE001 — 清理失败不该判测试失败
+                    pass
+
+    await _dispose()
     yield
-    _db._session_factory = None
+    await _dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -204,13 +305,123 @@ async def client(app):
         yield c
 
 
+def _test_engine():
+    """给 fixture 用的、指向临时测试库的独立 engine。
+
+    历史:换 PG 之初照搬了 sqlite「一测试一文件」的隔离思路 —— 每个 fixture 建一个
+    独立 schema、跑完 DROP。实测 PG 建/删一套表要 57ms(sqlite 7ms),465 个用例
+    累计多花 ~230s,是「换 PG 后测试慢一倍」的真正来源(单条查询 PG 反而更快:
+    0.095ms vs 0.114ms)。
+
+    现在:表在进程启动时建**一次**(见顶部 _init_ci_test_schema),所有 fixture 共用
+    public schema;测试之间用 TRUNCATE 清数据(10ms,见 _truncate_after_each_test),
+    表结构不动。
+    """
+    from sqlalchemy.pool import NullPool  # noqa: PLC0415
+
+    # NullPool:每次连接现开现关。asyncpg 连接绑定创建它的 event loop,pytest-asyncio
+    # 默认每个测试一个 loop —— 复用池里的旧连接会抛 "attached to a different loop"。
+    return create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool)
+
+
+@pytest.fixture(autouse=True)
+async def _drain_leftover_tasks(_truncate_after_each_test):
+    """测试结束时回收它遗留的 asyncio 任务。
+
+    异步 prediction 走 `asyncio.create_task(exec_coro)`(predictions.py:244),
+    测试拿到 202 就返回了,那个任务还在跑。以前各测试各用一个 schema,泄漏任务写到
+    哪都没人看;现在所有测试共用一套表,泄漏任务会两头咬人:
+      * 还持着事务 → TRUNCATE 等锁 5s 超时(LockNotAvailableError)
+      * 跑过 monkeypatch 拆除 → 桥去连真 sidecar(httpx ConnectError)
+    同一根因、两种症状,而且看时序 —— 三次跑出三个结果。
+
+    依赖 `_truncate_after_each_test` 是为了**排序**:pytest 先 setup 依赖再 setup
+    本 fixture,teardown 反过来 → 本 fixture 先跑(cancel 任务),TRUNCATE 后跑。
+    """
+    yield
+    cur = asyncio.current_task()
+    leftover = [t for t in asyncio.all_tasks() if t is not cur and not t.done()]
+    for t in leftover:
+        t.cancel()
+    if leftover:
+        # return_exceptions:被 cancel 的任务抛 CancelledError 是预期,别让它冒泡
+        await asyncio.wait(leftover, timeout=5.0)
+
+
 @pytest.fixture
-async def db_client(tmp_path):
-    """Client with a real (SQLite) test database for voice preset tests."""
-    db_path = tmp_path / "test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def pg_engine():
+    """给自建 engine 的测试用:指向临时测试库、表已建好的 PG engine。
+
+    以前这些测试各写 `create_async_engine("sqlite+aiosqlite:///...")` 自己造库。
+    全局改用 PostgreSQL 后不能再那么写(JSONB 等类型 sqlite 编译不了),统一走这里。
+    """
+    engine = _test_engine()
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+async def _truncate_all_tables() -> None:
+    """清空全部表(保留结构)。lock_timeout 兜底:要是哪个测试泄漏了未提交事务,
+    TRUNCATE 会等锁 —— 与其无限挂着,不如 5s 后报错把泄漏者揪出来。"""
+    from sqlalchemy import text as _text  # noqa: PLC0415
+
+    engine = _test_engine()
+    try:
+        try:
+            async with engine.begin() as conn:
+                # 只清**库里真实存在**的表。Base.metadata 可能含晚 import 的模型
+                # (某测试文件才 import src.models.xxx → metadata 多出一张 create_all 时
+                # 还不存在的表)。硬列出来 TRUNCATE 会报 UndefinedTable,而且**之后每个
+                # 测试的 teardown 都跟着倒**(2026-09-02 实测 1954 个 error 全是
+                # `relation "tasks" does not exist`)。取交集就免疫这类漂移;真缺表会在
+                # 用到它的那个测试里局部报错,更好定位。
+                existing = {r[0] for r in await conn.execute(_text(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))}
+                names = ", ".join(f'"{t}"' for t in Base.metadata.tables if t in existing)
+                if not names:
+                    return
+                await conn.execute(_text("SET LOCAL lock_timeout = '5s'"))
+                await conn.execute(_text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+        except Exception as e:  # noqa: BLE001 — 下面补上阻塞者再抛
+            if "lock timeout" not in str(e):
+                raise
+            # 谁占着锁?把 pg_stat_activity 里同库的其它连接打出来 —— 泄漏事务的
+            # 那条会显示 state='idle in transaction' 且 query 是它最后执行的 SQL,
+            # 直接指向泄漏源。比猜"哪个测试没关 session"快得多。
+            blockers = []
+            async with engine.connect() as conn:
+                rows = await conn.execute(_text(
+                    "SELECT pid, state, wait_event_type, left(query, 120) AS q "
+                    "FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid()"))
+                blockers = [dict(r._mapping) for r in rows]
+            raise RuntimeError(
+                "TRUNCATE 等锁 5s 超时 —— 有测试泄漏了未结束的事务。"
+                f"同库其它连接:{blockers}") from e
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+async def _truncate_after_each_test():
+    """每个测试跑完清一次表 —— 这是测试间隔离的唯一机制(不再建/删 schema)。
+
+    autouse 且不依赖别的 fixture → setup 最早、teardown **最晚**,保证跑到这里时
+    测试自己的 engine 都已 dispose、事务都已结束,TRUNCATE 拿得到锁。
+    """
+    if _use_real_db:
+        yield
+        return
+    yield
+    await _truncate_all_tables()
+
+
+@pytest.fixture
+async def db_client():
+    """Client with a real (PostgreSQL) test database for voice preset tests."""
+    engine = _test_engine()
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -230,18 +441,20 @@ async def db_client(tmp_path):
 
 
 @pytest.fixture
-async def db_session(tmp_path):
+async def db_session():
     """Raw async session with all tables created (no app)."""
-    db_path = tmp_path / "test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = _test_engine()
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with session_factory() as session:
+    session = session_factory()
+    try:
         yield session
-
-    await engine.dispose()
+    finally:
+        # 显式在**当前**事件循环里关掉 session,再拆 schema。交给 `async with` 的
+        # 隐式关闭会在 teardown 的另一个 loop 里跑,asyncpg 抛
+        # "attached to a different loop"。
+        await session.close()
+        await engine.dispose()
 
 # Auto-use fixture: isolate tests from real logs.db
 from .conftest_logs import _silence_db_log_handler  # noqa: F401
@@ -498,7 +711,7 @@ def mock_vllm(monkeypatch):
 
 
 @pytest.fixture
-async def api_client(tmp_path):
+async def api_client():
     """Async client with a SQLite-backed app, a loaded-LLM adapter mock,
     and a LLM-type service instance + API key preseeded.
 
@@ -510,19 +723,15 @@ async def api_client(tmp_path):
     import secrets as _secrets
     from unittest.mock import MagicMock
 
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from src.api.main import create_app
     from src.models.api_gateway import ApiKeyGrant
-    from src.models.database import Base, get_async_session
+    from src.models.database import get_async_session
     from src.models.instance_api_key import InstanceApiKey
     from src.models.service_instance import ServiceInstance
 
-    db_path = tmp_path / "api_client.db"
-    db_url = f"sqlite+aiosqlite:///{db_path}"
-    engine = create_async_engine(db_url)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = _test_engine()
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 

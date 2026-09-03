@@ -1,27 +1,22 @@
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import src.models.memory  # noqa: F401  register models on Base.metadata
-from src.models.database import Base
 from src.services.memory.pg_provider import PGMemoryProvider
 
 from tests.test_memory_provider_abc import AbstractMemoryProviderTests
 
 
 @pytest_asyncio.fixture
-async def async_session_factory(tmp_path):
-    db_path = tmp_path / "pg_memory_test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    yield factory
-    await engine.dispose()
+async def async_session_factory(pg_engine):
+    # 表由 pg_engine fixture 建好;这个 provider 名字就叫 PG,以前却一直在 sqlite 上跑
+    # ("against PG (SQLite in tests)"),JSONB / 全文索引这些 PG 专属路径从没被真正执行过。
+    return async_sessionmaker(pg_engine, expire_on_commit=False)
 
 
 class TestPGMemoryProviderContract(AbstractMemoryProviderTests):
-    """Run the full AbstractMemoryProviderTests suite against PG (SQLite in tests)."""
+    """Run the full AbstractMemoryProviderTests suite against a real PostgreSQL."""
 
     @pytest_asyncio.fixture
     async def provider(self, async_session_factory):

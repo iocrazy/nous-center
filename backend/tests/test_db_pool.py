@@ -2,8 +2,10 @@
 
 单管理员长驻服务后台 PG,连接可能因 PG 重启/网络抖动/空闲超时被服务端关闭。默认无
 pre_ping 时,下一个请求 checkout 到陈旧连接会抛 "server closed connection unexpectedly"。
-pre_ping 在 checkout 前发轻量 SELECT 1,失败即丢弃取新的。pool_size/max_overflow 不在此
-设置 —— 那需配合 PG max_connections 调,留默认。
+pre_ping 在 checkout 前发轻量 SELECT 1,失败即丢弃取新的。
+
+2026-09-02:全局只用 PostgreSQL(生产和测试都是),原来那几个 sqlite 分支的用例
+连同被测代码一起删了。
 """
 
 from src.models.database import _engine_kwargs
@@ -25,30 +27,3 @@ def test_postgres_gets_bounded_pool():
     assert kw["pool_size"] == 10
     assert kw["max_overflow"] == 20
     assert kw["pool_size"] + kw["max_overflow"] < 100
-
-
-def test_sqlite_no_pool_size():
-    # aiosqlite 池不接受 pool_size/max_overflow(设了 TypeError),只留 pre_ping/recycle。
-    kw = _engine_kwargs("sqlite+aiosqlite:///./test.db")
-    assert kw["pool_pre_ping"] is True
-    assert "pool_size" not in kw
-    assert "max_overflow" not in kw
-
-
-def test_sqlite_gets_generous_lock_timeout():
-    """sqlite 是单写者:一个写事务持锁时,另一个连接要排队等。
-
-    aiosqlite/sqlite3 默认只等 **5 秒** 就抛 "database is locked"。本地跑得快看不出来,
-    CI runner 慢(实测后端全量 782s vs 本地 260s)就成批翻车 —— 2026-09-02 一次 CI
-    16 个用例全挂在这个错上,清一色是写 DB 的(建模板/删服务/建任务)。
-
-    连接参数走 connect_args,不是 Pool 参数。
-    """
-    kw = _engine_kwargs("sqlite+aiosqlite:///./test.db")
-    assert kw["connect_args"]["timeout"] >= 30
-
-
-def test_postgres_gets_no_sqlite_connect_args():
-    """PG 不认 sqlite 的 timeout connect_arg —— 别把它漏过去。"""
-    kw = _engine_kwargs("postgresql+asyncpg://u:p@h/db")
-    assert "timeout" not in (kw.get("connect_args") or {})

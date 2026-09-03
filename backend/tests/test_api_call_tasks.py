@@ -9,27 +9,24 @@ get_session_factory patch 姿势)。
 """
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from src.models.database import Base
 from src.models.execution_task import ExecutionTask
 
 
-async def _make_sf(tmp_path, monkeypatch):
+async def _make_sf(pg_engine, monkeypatch):
     from src.services import api_call_tasks
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'act.db'}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    engine = pg_engine   # 全局只用 PostgreSQL;表由 pg_engine fixture 建好
     sf = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(api_call_tasks, "get_session_factory", lambda: sf)
     return api_call_tasks, sf
 
 
 @pytest.mark.asyncio
-async def test_two_phase_running_then_completed(tmp_path, monkeypatch):
+async def test_two_phase_running_then_completed(pg_engine, monkeypatch):
     """create → running(可见);finalize(completed)→ 终态 + result 契约。"""
-    api_call_tasks, sf = await _make_sf(tmp_path, monkeypatch)
+    api_call_tasks, sf = await _make_sf(pg_engine, monkeypatch)
 
     task_id = await api_call_tasks.create_api_call_task(
         service_name="moss-asr",
@@ -70,9 +67,9 @@ async def test_two_phase_running_then_completed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_two_phase_running_then_failed(tmp_path, monkeypatch):
+async def test_two_phase_running_then_failed(pg_engine, monkeypatch):
     """create → running;finalize(failed)→ error 落库、无 result。"""
-    api_call_tasks, sf = await _make_sf(tmp_path, monkeypatch)
+    api_call_tasks, sf = await _make_sf(pg_engine, monkeypatch)
 
     task_id = await api_call_tasks.create_api_call_task(
         service_name="moss-asr",
@@ -122,9 +119,9 @@ async def test_create_failure_returns_none_and_finalize_short_circuits(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_fail_orphaned_running_asr_tasks(tmp_path, monkeypatch):
+async def test_fail_orphaned_running_asr_tasks(pg_engine, monkeypatch):
     """启动清理:running∧workflow_id NULL∧kind=asr → failed;其余 running 不动。"""
-    api_call_tasks, sf = await _make_sf(tmp_path, monkeypatch)
+    api_call_tasks, sf = await _make_sf(pg_engine, monkeypatch)
 
     async with sf() as s:
         orphan = ExecutionTask(

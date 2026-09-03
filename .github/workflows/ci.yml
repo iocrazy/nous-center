@@ -10,6 +10,21 @@ jobs:
   backend:
     name: Backend · lint + tests
     runs-on: ubuntu-latest
+    # 全局只用 PostgreSQL(2026-09-02):测试不再跑 sqlite,而是每次建一个临时 PG 库
+    # (tests/conftest.py 需要 CREATEDB 权限;官方镜像的 POSTGRES_USER 是超级用户,自带)。
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: nous
+          POSTGRES_PASSWORD: nous
+          POSTGRES_DB: nous_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nous"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: backend
@@ -42,14 +57,18 @@ jobs:
         # review T2:test_workers / test_ws_tts 实测不需要 GPU(celery 注册断言 / TestClient
         # WS),已从 ignore 移出纳入门禁。剩下 3 个真需要 live vLLM,保留 ignore。
         # review T3:加 --cov 只报告覆盖率(暂不设阈值门槛),让盲区可见。
+        # 2026-09-02:-n auto(pytest-xdist)并行。每个 worker 自建一个 nous_test_<worker>_<hex>
+        # 临时 PG 库,互不干扰;runner 2–4 核所以 auto 不会撑爆 PG 的 max_connections。
         run: |
           uv run pytest -rfE --tb=short --maxfail=50 -p no:cacheprovider \
+            -n auto \
             --cov=src --cov-report=term-missing:skip-covered \
             --ignore=tests/test_integration_smoke.py \
             --ignore=tests/test_tts_engine_adapter.py \
             --ignore=tests/test_vllm_adapter.py
         env:
-          DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+          # conftest 会基于这个 URL 建 nous_test_<随机> 临时库,跑完 DROP —— 这里只是基准
+          DATABASE_URL: "postgresql+asyncpg://nous:nous@localhost:5432/nous_ci"
           REDIS_URL: "redis://localhost:6379/0"
           CUDA_VISIBLE_DEVICES: ""
 
