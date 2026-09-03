@@ -125,7 +125,14 @@ lanczos、对齐 32、总像素 1280k)归一后才进 conditioning,所以上传�
 - **帧数**: `#165` 的表达式
   `max(5, round(a*24)) + (5 - (max(5, round(a*24)) % 17)) % 17`,即时长 `a` 秒 × 24fps
   向上对齐到 `17n+5` 网格(节点 tooltip:"24fps; snapped up to the 17n+5 H3 grid")。
-  2 秒 → 56 帧。
+  **对齐会让成片略长于请求值**,调用方按下表预期:
+
+  | `duration_s` | 帧数 | 成片时长 @24fps |
+  |---|---|---|
+  | 2 | 56 | 2.33s |
+  | 4 | 107 | 4.46s |
+  | 8 | 192 | 8.00s |
+  | 15 | 362 | 15.08s |
 - **输出**: `#226` `VHS_VideoCombine`,`video/h265-mp4`、`yuv420p10le`、crf 22、
   frame_rate 24,音轨来自 `#20` 的 AUDIO 输出。**没有 SaveVideo 节点**,产物由
   VHS 落盘后桥去抓。
