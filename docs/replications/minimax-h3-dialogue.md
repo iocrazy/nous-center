@@ -240,29 +240,57 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 ## 真机验证
 
-**⏳ 待补**:2026-09-03 提交时 sidecar 被另一个 krea2 作业挂住(见下),真机 smoke 排队未跑完。
+2026-09-03,经 nous 服务(不是直连 sidecar),`ffprobe` 断言 video + audio 双流。
 
-预测已发出并停在 `processing`:`prediction 353842649272160256`,参数 `duration_s=2`、
-`seed=20260903`、`image1` 走 data URI 上传、`image2`/`image3`/`audio2` 走 sidecar 已有文件名、
-`audio1` 走 data URI 上传 —— 上传路径与文件名路径两种形态都覆盖到了。
+| # | prediction | 参数 | predict_time | 端到端 | 产物 |
+|---|---|---|---|---|---|
+| 1 | `353848502905737216` | `duration_s=2`, `seed=20260903` | **111.8s**(冷,含权重加载) | 115.5s | 293,744 B |
+| 2 | `353849263177863168` | 同上,`seed=777` | **59.1s**(热) | 63.1s | 310,438 B |
 
-卡住的不是 H3:ComfyUI 队列里 running 的是一个 26 节点 krea2 作业(`prompt_id 3fce9ce5`),
-02:52:58 收到 prompt 后 20+ 分钟无日志输出,三张卡 GPU 利用率 0%、进程 0.9% CPU 停在
-`ep_poll`、`/proc/<pid>/io` 零增长,socket 上挂着一条到 `118.184.26.113:443` 的 CLOSE-WAIT
-(本地地址 `198.18.0.1`,mihomo/clash tun 的 fake-IP 段)—— 网络拉取挂死。阻塞链是
-「krea2 作业挂住 → 占住 ComfyUI 队列 → nous 的 krea2 prediction 排在后面 → 它持有
-`comfy_bridge._SEM(1)` → H3 prediction 压根没提交给 sidecar」。别人的任务,没动。
+两次产物规格一致:
 
-队列恢复后需要补齐的:产物路径、实际分辨率、时长、首片耗时、`ffprobe` 的 video+audio
-双流断言。
+| 项 | 值 |
+|---|---|
+| 视频流 | hevc **1440×832**,56 帧,24/1 fps |
+| 音频流 | aac 32000 Hz,**双声道** |
+| 时长 | 2.333s(= 56 帧 ÷ 24,与 17n+5 对齐表吻合) |
+| URL | `/files/images/2026-09-03/<hash>.mp4?token=…&expires=…` |
+
+**分辨率实测 1440×832**,不是按 ResolutionSelector(0.5MP/16:9/mult 32 → 960×544)
+乘 1.5 直推的 1440×816 —— 高度被 `#13` 的潜空间网格又抬了一档。要精确尺寸以实测为准。
+
+**冷热差一倍**:第 1 次要把 `MiniMaxH3TEModel_`(25,882 MB)+ `MiniMaxH3`(32,427 MB)
++ 两个 VAE 从盘搬进显存,`model_type FLOW_AV`;第 2 次权重常驻,只跑采样。生产估算按热态
+的 ~59s / 2.3 秒片长。
+
+**语义核对 ✓**:参考图是一张棕色长发、白大衣白围巾的少女;提示词写的是「黄昏雪原、
+远处低矮山脊、呼出一小口白气」。抽第 8/30/52 帧看,人物形象与参考图一致,雪原黄昏背景
+和呼白气都出现了 —— 图参考、文本分镜、音频通道三条链路端到端都通。
+
+**参数形态覆盖**:`image1` / `audio1` 走 data URI(桥自动上传到 sidecar),
+`image2` / `image3` / `audio2` 走"sidecar input/ 里已有的文件名"。两种形态都验证过。
+请求体 ~3.1 MB,没有触发任何体积限制。
+
+### 踩到的两个坑(都不是 H3 的问题)
+
+1. **后端重启会把在飞的 prediction 变成永久孤儿**。03:23:49 提交的
+   `353847545677484032` 在 22 秒后遇上 `nous-engine-backend` 重启(03:24:11 Stopping /
+   03:24:13 Started),执行任务随进程一起没了,但 DB 行永远停在 `processing`,
+   ComfyUI 侧从没收到过那张图。只能手动 `POST /v1/predictions/{id}/cancel` 再重发。
+2. **别拿 sidecar 的 `got prompt` 反推"我的任务在跑"**。当时 sidecar 日志里确实有一条
+   03:24:55 的 `got prompt`、47.4 秒跑完,但那是别人的 krea2(日志里是 `Krea2TEModel_` /
+   `WanVAE` / llama-cpp)。判断 H3 任务是否真在跑,要看日志里有没有 `MiniMaxH3*` 的
+   `Requested to load` —— `/queue` 的深度和 GPU 利用率都会骗人。
 
 ## 运维注意
 
 - sidecar `nous-engine-comfyui` 在 `:8888`(不是文档默认的 `:8188`),绑
-  `CUDA_VISIBLE_DEVICES=1` = RTX PRO 6000 96G。H3 是 32B CLIP + int8 UNet + 两个 VAE,
-  只有这张卡装得下。
+  `CUDA_VISIBLE_DEVICES=1` = RTX PRO 6000 96G。H3 实测要搬
+  25,882 MB(TE)+ 32,427 MB(UNet)+ 两个 VAE 进显存,只有这张卡装得下。
 - `comfy_bridge._SEM(1)` 全局串行:`krea2`、`minimax-h3-r2v`、`minimax-h3-dialogue`
-  共用一把信号量,任何一个在渲染时其余全部排队。本次 smoke 就在一个 krea2 任务后面排了队。
+  共用一把信号量,任何一个在渲染时其余全部排队。本次 smoke 前后被 krea2 任务挡过两次。
+- **首次调用会因权重冷加载慢一倍**(实测 112s vs 热态 59s)。sidecar 重启后、或被别的
+  大模型任务挤掉显存后,第一发都要重新付这笔钱。
 - 直接投给 sidecar 的任务(不经 nous)不受这把锁管,会在 ComfyUI 自己的队列里和桥的
   任务混排。
 - 时长是主要成本项:`duration_s` 每加 1 秒多 24 帧,两遍采样都要跑。`hires_scale` 直接
