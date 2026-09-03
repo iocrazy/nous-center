@@ -1,6 +1,9 @@
-"""全局加载串行门(2026-07-06 生产事故:_load_wf_deps + preload_residents 并发
+"""全局加载串行门(2026-07-06 生产事故:开机 _load_wf_deps + preload_residents 并发
 往同卡 spawn 两个 vLLM → engine core init 竞争,embedding 加载失败)。
-load_model 的真正 adapter.load() 必须串行,一次只加载一个模型。"""
+load_model 的真正 adapter.load() 必须串行,一次只加载一个模型。
+
+事故当事的 `_load_wf_deps` 已于 2026-09-03 删除,但串行门仍是必需:preload_residents
+与请求路径的 get_or_load / UI 手动 load / 组件 preload / vLLM 重连依然会并发进来。"""
 import asyncio
 from unittest.mock import MagicMock
 

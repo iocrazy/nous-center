@@ -159,11 +159,16 @@ class ModelManager:
         # failed load_model attempts). get_loaded_adapter raises ModelLoadError
         # when a record exists. Cleared on successful load.
         self._load_failures: dict[str, str] = {}
-        # 全局加载串行门(2026-07-06 生产事故:_load_wf_deps 与 preload_residents 是两个
-        # 独立 asyncio task,开机同一瞬间往同一张卡 spawn 两个 vLLM → engine core init
+        # 全局加载串行门(2026-07-06 生产事故:开机 _load_wf_deps 与 preload_residents 是
+        # 两个独立 asyncio task,同一瞬间往同一张卡 spawn 两个 vLLM → engine core init
         # 竞争,embedding 加载失败;跨卡则是相关联功率尖峰,GPU 掉总线诱因)。选卡由
         # allocator 的在途预留保证并发安全;这里串行化真正的 adapter.load(),一次只加载
-        # 一个模型 —— 开机变顺序加载(略慢但稳),消除同卡 init 竞争 + 多卡功率齐冲。
+        # 一个模型 —— 加载变顺序(略慢但稳),消除同卡 init 竞争 + 多卡功率齐冲。
+        #
+        # 2026-09-03:事故当事的 `_load_wf_deps`(按已发布工作流依赖开机预热)已删,
+        # **但这道门必须留** —— 并发加载源不止那一个:后台 preload_residents 与请求
+        # 路径的 get_or_load(runner 按需加载)、UI 手动 load、组件 preload 端点、
+        # vLLM 重连全都能同时进来,同一张卡两个 adapter.load() 的竞争条件原样存在。
         self._global_load_lock = asyncio.Lock()
         # round3 #2:load_model 自动选卡(spec.gpu is None → get_best_gpu)后,实际落卡
         # index 是局部变量;OOM 时 load_model raise、还没写进 _models → get_or_load 拿不到

@@ -28,18 +28,19 @@ async def test_orphan_published_reverts_to_draft_and_linked_registers_deps(db_se
     mm.get_model_dependencies = MagicMock(return_value=[{"key": "qwen3_8b", "type": "llm"}])
     mm.add_reference = MagicMock()
 
-    orphan, deps = await reconcile_orphan_published_workflows(db_session, mm)
+    orphan = await reconcile_orphan_published_workflows(db_session, mm)
 
     assert orphan == 1
     await db_session.refresh(wf_orphan)
     await db_session.refresh(wf_linked)
     assert wf_orphan.status == "draft"       # 孤儿退回
     assert wf_linked.status == "published"   # 有关联的保持
-    assert deps == [{"key": "qwen3_8b", "wf_id": wf_linked.id}]
     mm.add_reference.assert_called_once_with("qwen3_8b", str(wf_linked.id))
+    # 登记引用只挡 idle/LRU 卸载,绝不触发加载(2026-09-03 删 _load_wf_deps 预热)。
+    mm.load_model.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_no_published_is_noop(db_session):
-    orphan, deps = await reconcile_orphan_published_workflows(db_session, MagicMock())
-    assert orphan == 0 and deps == []
+    orphan = await reconcile_orphan_published_workflows(db_session, MagicMock())
+    assert orphan == 0
