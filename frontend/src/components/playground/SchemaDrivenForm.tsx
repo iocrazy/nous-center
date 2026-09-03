@@ -273,7 +273,6 @@ function FieldInput({
     const c = (param.constraints ?? {}) as { multiple?: unknown }
     return (
       <DependentOptionField
-        kind={kind as 'thumb_select' | 'select'}
         source={dep.source}
         dependsValue={dependsValue}
         fallback={staticOptions(param)}

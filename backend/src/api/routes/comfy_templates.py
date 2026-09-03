@@ -63,6 +63,10 @@ def _bridge_snapshot(template_id: int) -> dict:
     }
 
 
+# 文件类输入 = 上传文件,不是从清单里选(见 _numeric_constraints / service_schema)。
+_FILE_IN_TYPES = {"image", "file", "audio", "video", "binary", "media"}
+
+
 # ---------- Pydantic shapes ----------
 
 
@@ -115,6 +119,17 @@ class MappingBody(BaseModel):
         keys = {p.key for p in self.exposed_params}
         for p in self.exposed_params:
             dep = p.options_depends_on
+            # 文件类字段的值是**上传的文件**(桥把 data URI 落到 sidecar),不是从清单里
+            # 选一项。给它挂动态清单 = 运行期 resolve_dynamic_enums 拿一份风格名当白名单,
+            # 上传必 422 —— 正是 2026-08-12 那个「静态 enum 把上传判非法」的回归换条路
+            # 复现。发布时就拒,别等实机。
+            if str(p.type or "").lower() in _FILE_IN_TYPES and (
+                dep is not None or p.options_source is not None
+            ):
+                raise ValueError(
+                    f"exposed_param {p.key!r}: 文件类参数(type={p.type!r})不能声明 "
+                    "options_depends_on/options_source —— 它的值是上传的文件,不是从"
+                    "选项清单里选一项,挂上动态清单会让上传被白名单拒掉")
             if dep is None:
                 continue
             if dep == p.key:
@@ -153,10 +168,6 @@ async def _get_template_and_service(
     if svc is None:
         raise HTTPException(404, detail="service not found for template")
     return tpl, svc
-
-
-# 文件类输入 = 上传文件,不是从清单里选(见 _numeric_constraints / service_schema)。
-_FILE_IN_TYPES = {"image", "file", "audio", "video", "binary", "media"}
 
 
 def _mapping_to_exposed_input(m: ExposedParamMapping) -> dict:
@@ -223,24 +234,31 @@ def _numeric_constraints(m: ExposedParamMapping) -> dict[str, Any]:
     # 文件类字段不存 enum:ComfyUI 给的 options 是 sidecar 已有文件清单(LoadImage.image
     # → input/ 目录),不是取值域。存下来会让 Playground 渲成下拉框、后端把上传新文件
     # 判成非法(2026-08-12 实机 400)。治本在这:根本不写进去。
-    if m.options and str(m.type or "").lower() not in _FILE_IN_TYPES:
+    is_file = str(m.type or "").lower() in _FILE_IN_TYPES
+    if m.options and not is_file:
         values, option_meta = _split_options(m.options)
         c["enum"] = values
         # 每选项的显示名 + 缩略图(如 ComfyUI-Easy-Use 的 /easyuse/prompt/styles 返回的
         # name_cn / thumbnail)。只在真有元数据时才写,裸标量选项不产生这个键。
         if option_meta is not None:
             c["option_meta"] = option_meta
-        if m.multiple:
-            c["multiple"] = True
+    # `multiple` 描述的是**值的形状**(逗号分隔串,允许选多项),跟"有没有冻结一份静态
+    # enum"是两件事。曾经把它嵌在 `if m.options` 里 —— 只声明依赖、不冻结静态 options 的
+    # mapping 于是丢了这个标志,schema 没有 x-multiple,运行期 validate_service_input
+    # 拿动态清单整串比对 'a,b' → 每次多选必 422(2026-08-31 那个 bug 从新路径回来)。
+    if m.multiple:
+        c["multiple"] = True
     if m.random:
         c["random"] = m.random
-    # 选项依赖与 enum 正交:即便这次没冻结静态 options(或是文件类字段),依赖关系也照存。
+    # 选项依赖与静态 enum 正交:即便这次没冻结静态 options,依赖关系也照存。
     # service_schema 据此输出 x-options-depends-on / x-options-source,前端据此改成
-    # 运行期按依赖参数拉清单。
-    if m.options_depends_on:
-        c["options_depends_on"] = m.options_depends_on
-    if m.options_source:
-        c["options_source"] = m.options_source
+    # 运行期按依赖参数拉清单。文件类字段一律不存 —— MappingBody 已经在入口拒了,这里
+    # 是第二道保险(老数据/直接调用 helper 的路径)。
+    if not is_file:
+        if m.options_depends_on:
+            c["options_depends_on"] = m.options_depends_on
+        if m.options_source:
+            c["options_source"] = m.options_source
     return c
 
 

@@ -131,6 +131,19 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   成功缓存 10 分钟;③ 预校验取数用 5s 短超时(列清单那条仍是 15s)。
   **「取不到」(None,退回静态 enum)与「取到了但为空」([],空白名单全拒)是两回事**,
   后者退回默认包的静态 enum 正是本机制要防的错配。
+- **`multiple` 与静态 options 正交**:`multiple` 说的是**值的形状**(逗号分隔串),
+  跟「有没有在注册时冻结一份静态 enum」无关 —— 只声明依赖、不带 options 的 mapping
+  同样要落 `constraints.multiple` / schema 的 `x-multiple`,否则运行期会拿动态清单去
+  整串比对 `'a,b'`,多选必 422。
+- **文件类参数(image/file/audio/video/binary/media)不能声明 `options_depends_on`
+  /`options_source`**:PUT mapping 直接 400 `validation_error`。它的值是上传的文件,
+  挂上动态清单等于给上传字段发一份风格名白名单,上传必 422。schema 侧对文件类也不
+  输出 `x-options-*`(双保险,兜老数据)。
+- **已知限制**:`_thumbnail_url` 把 sidecar 的相对缩略图改写成 admin-only 的代理地址
+  (`/api/v1/comfy/style-image`)。如果编辑器把某个动态包的 options **冻结进 mapping**,
+  `/v1/services/{name}/schema` 里的 `x-option-meta[].image` 对只持 `InstanceApiKey` 的
+  第三方就是 401 —— 缩略图渲不出来(值本身照常可用)。前端 Playground 走 admin 会话不
+  受影响。要给第三方也能看的缩略图,得先给这个代理端点开一条 InstanceApiKey 能过的路。
 - env 三件套:`NOUS_COMFY_URL`(sidecar 地址,默认 `http://127.0.0.1:8188`)、
   `NOUS_COMFY_TIMEOUT`(渲染等待上限,默认 14400s)、
   `NOUS_COMFY_DOWNLOAD_TIMEOUT`(产物下载超时,默认 120s)。
