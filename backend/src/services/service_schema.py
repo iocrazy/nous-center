@@ -226,7 +226,15 @@ def validate_service_input(
         allowed = (dynamic_enums or {}).get(k)
         if allowed is None:
             allowed = spec.get("enum")
-        if allowed is not None:
+        if allowed == [] and dynamic_enums and k in dynamic_enums:
+            # 来源答了、但这个包一个选项都没有(包空 / 没加载)。**不能**退回静态 enum
+            # ——那是默认包的清单,拿它放行正是本机制要防的错配。空白名单 = 全拒,
+            # 但错误信息得说清楚是"清单空",而不是干巴巴甩一个 `[]`。
+            if not (spec.get("x-multiple") and isinstance(v, str) and not v.strip()):
+                errors.append(
+                    f"{k}: 选项清单为空(依赖参数指向的来源当前没有可选值,"
+                    f"可能是该包未加载),暂不接受任何值")
+        elif allowed is not None:
             # x-multiple 的字段传的是**逗号分隔串**(对齐 ComfyUI-Easy-Use 的
             # select_styles,prompt.py:196 `.split(',')`),要逐项比对而不是整串比 ——
             # 否则多选值永远撞不上白名单,功能整条是死的(2026-08-31 实机 422)。

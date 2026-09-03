@@ -108,7 +108,9 @@ class MappingBody(BaseModel):
         """`options_depends_on` 必须指向**同一份 mapping 里存在的 key**(且不能是自己)。
 
         指向不存在的 key 会让运行期永远解析不出包名 → 静默退回静态 enum,用户看到的
-        是"切了包但没联动"这种查不出原因的症状。发布时就拒掉(422)。
+        是"切了包但没联动"这种查不出原因的症状。发布时就拒掉(全仓的
+        RequestValidationError handler 把请求体校验失败统一翻成 **400 +
+        code=validation_error**,不是裸 FastAPI 的 422)。
         """
         keys = {p.key for p in self.exposed_params}
         for p in self.exposed_params:
@@ -555,23 +557,31 @@ async def comfy_object_info():
     return data
 
 
-# sidecar 侧允许被代理的前缀 —— 只放行 ComfyUI-Easy-Use 的缩略图路由。不加这道闸,
-# `/api/v1/comfy/style-image?src=…` 就成了一个"拿 admin 身份任意打 sidecar"的通用跳板。
-_STYLE_IMAGE_PREFIX = "/easyuse/"
+def _has_dotdot(path: str) -> bool:
+    """路径里有没有 `..` 段(`/` 和 `\\` 都算分隔符)。"""
+    return any(seg == ".." for seg in path.replace("\\", "/").split("/"))
 
 
-def _thumbnail_url(thumbnail: str) -> str:
-    """sidecar 的 thumbnail → 浏览器真能加载的地址。
+def _thumbnail_url(thumbnail: str) -> str | None:
+    """sidecar 的 thumbnail → 浏览器真能加载的地址;转不了 → None(该项退回文字卡片)。
 
     fooocus_styles 给的是 `https://raw.githubusercontent.com/...` 绝对外链,原样透传;
     krea2 那批包给的是 `/easyuse/prompt/styles/image?path=./samples/x.jpg` 这种
     **sidecar 侧相对路径** —— 浏览器会拿 nous 自己的 origin(:8000)去解析,必 404。
-    改写成走下面的代理端点(sidecar 只监听内网,前端本来也够不着)。
+    从中把 `path=` 的值抠出来,改写成走下面的代理端点。
+
+    **只传 path、不传整条 URL**:代理端点若接受任意 `src` 再转发,httpx 归一化点段会让
+    `/easyuse/../history` 变成 `/history`,前缀白名单形同虚设(见 ComfyClient.style_image)。
     """
     if thumbnail.startswith(("http://", "https://", "data:")):
         return thumbnail
-    src = thumbnail if thumbnail.startswith("/") else "/" + thumbnail
-    return "/api/v1/comfy/style-image?src=" + urllib.parse.quote(src, safe="")
+    q = urllib.parse.urlsplit(thumbnail).query
+    path = (urllib.parse.parse_qs(q).get("path") or [None])[0]
+    # 没有 path= 的相对地址代理不了(路由是写死的,只认这一个参数)—— 宁可不给 image,
+    # 让前端退回纯文字卡片,也不吐一个必然 404 的地址。
+    if not path or _has_dotdot(path):
+        return None
+    return "/api/v1/comfy/style-image?path=" + urllib.parse.quote(path, safe="")
 
 
 def _style_to_option(item: dict) -> dict:
@@ -584,26 +594,35 @@ def _style_to_option(item: dict) -> dict:
     if item.get("name_cn"):
         opt["label"] = item["name_cn"]
     if item.get("thumbnail"):
-        opt["image"] = _thumbnail_url(item["thumbnail"])
+        image = _thumbnail_url(item["thumbnail"])
+        if image:
+            opt["image"] = image
     return opt
 
 
 @health_router.get("/style-image", dependencies=[Depends(require_admin)])
 async def comfy_style_image(
-    src: str = Query(..., description="sidecar 侧缩略图路径,取自 /styles 返回的 image"),
+    path: str = Query(..., description="缩略图文件路径,取自 /styles 返回的 image 里的 path="),
 ):
-    """风格缩略图代理 —— 只转发 `/easyuse/*`(见 _STYLE_IMAGE_PREFIX)。
+    """风格缩略图代理 —— **只**代理 ComfyUI-Easy-Use 的缩略图这一条路由。
 
-    缩略图是静态文件,给一小时的浏览器缓存:一个包几百张图,切来切去不该反复回源。
+    收的是文件路径而不是 URL:早先那版收 `src` 再转发、靠 `startswith("/easyuse/")`
+    把关,而 httpx 合并相对 URL 时会归一化点段 —— `/easyuse/../history` 到了 sidecar
+    就是 `/history`,于是这个端点等于"拿 admin 身份任意打 sidecar GET"。写死路由 +
+    `params={"path": …}` 从根上没有这个可能;`..` 段再挡一道(sidecar 侧自己去解析
+    文件路径,别让它接到能跳出 styles 目录的东西)。
+
+    缓存用 **private**:这个端点要 admin 鉴权,`public` 会让 cloudflared / 中间缓存
+    把字节回给没鉴权的人。
     """
-    if not src.startswith(_STYLE_IMAGE_PREFIX):
-        raise HTTPException(400, detail=f"src 必须以 {_STYLE_IMAGE_PREFIX} 开头")
+    if _has_dotdot(path):
+        raise HTTPException(400, detail="path 不能包含 `..` 段")
     try:
-        content, mime = await get_client().style_image(src)
+        content, mime = await get_client().style_image(path)
     except (ComfyError, httpx.HTTPError, ValueError) as e:
         raise HTTPException(502, detail=f"ComfyUI sidecar 不可达:{str(e)[:120]}")
     return Response(content=content, media_type=mime,
-                    headers={"Cache-Control": "public, max-age=3600"})
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 @health_router.get("/style-packs", dependencies=[Depends(require_admin)])

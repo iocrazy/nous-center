@@ -47,15 +47,17 @@ class FakeClient:
     """只实现 styles();记录调用次数,用来断言 TTL 缓存真的挡住了第二次往返。"""
 
     def __init__(self, packs=None, boom=False):
-        self.packs = packs or {
+        self.packs = packs if packs is not None else {
             "fooocus_styles": ["Fooocus Enhance", "sai-anime"],
             "krea2_397styles-anime_动漫": ["krea-cel", "krea-ink"],
         }
         self.boom = boom
         self.calls: list[str] = []
+        self.timeouts: list[float] = []
 
-    async def styles(self, pack: str):
+    async def styles(self, pack: str, *, timeout: float = 15.0):
         self.calls.append(pack)
+        self.timeouts.append(timeout)
         if self.boom:
             from src.services.comfy.client import ComfyError
             raise ComfyError("sidecar 掉线")
@@ -280,3 +282,153 @@ async def test_prediction_endpoint_uses_dynamic_pack(client, monkeypatch):
     assert r.status_code == 422, r.text
     assert "sai-anime" in r.text
     assert fake.calls == ["krea2_397styles-anime_动漫"], "校验用的是提交的包,不是默认包"
+
+
+# ---------- 预取的闸门与缓存(#4/#5/#6 审查项)----------
+
+
+@pytest.mark.asyncio
+async def test_unknown_pack_never_reaches_sidecar(monkeypatch):
+    """闸门:`resolve_dynamic_enums` 跑在 `validate_service_input` **之前**,不能拿
+    没经白名单的包名去打 sidecar —— 否则任何持 key 的人 POST 一串随机 pack,每次都是
+    一趟 sidecar 往返 + 一个缓存条目。落不进依赖参数 enum 的值直接不取(它本来就会被
+    随后的静态校验拒掉)。
+    """
+    fake = FakeClient()
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+
+    dyn = await style_options.resolve_dynamic_enums(
+        _schema(), {"style_pack": "attacker-supplied-garbage", "styles": "x"})
+    assert dyn == {}
+    assert fake.calls == [], "非法包名一次都不该打到 sidecar"
+    assert style_options._style_cache == {}, "也不该在缓存里占一格"
+
+    # 该值随后由静态 enum 校验拒掉 —— 没被静默放过
+    errs = validate_service_input(
+        _schema(), {"style_pack": "attacker-supplied-garbage", "styles": "x"})
+    assert any("style_pack" in e for e in errs), errs
+
+
+@pytest.mark.asyncio
+async def test_dep_without_enum_only_trusts_default(monkeypatch):
+    """依赖参数没声明 enum 时,只认 schema 里的 default(唯一可信的来源)。"""
+    fake = FakeClient()
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+    schema = _schema()
+    del schema["properties"]["style_pack"]["enum"]
+
+    assert await style_options.resolve_dynamic_enums(
+        schema, {"style_pack": "whatever"}) == {}
+    assert fake.calls == []
+
+    await style_options.resolve_dynamic_enums(schema, {"style_pack": "fooocus_styles"})
+    assert fake.calls == ["fooocus_styles"]
+
+
+@pytest.mark.asyncio
+async def test_prefetch_uses_short_timeout(monkeypatch):
+    """预校验取数用 5s 短超时,不复用列清单那条的 15s —— sidecar 卡死时不该让用户
+    的预测干等。"""
+    fake = FakeClient()
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+    await style_options.resolve_dynamic_enums(_schema(), {"style_pack": "fooocus_styles"})
+    assert fake.timeouts == [style_options.STYLE_FETCH_TIMEOUT_S]
+    assert style_options.STYLE_FETCH_TIMEOUT_S == 5.0
+
+
+@pytest.mark.asyncio
+async def test_failure_is_negatively_cached(monkeypatch):
+    """失败要负缓存:sidecar 卡死时,30 秒内的后续预测直接退回静态 enum,
+    不再每个都去等满超时。"""
+    fake = FakeClient(boom=True)
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+    payload = {"style_pack": "fooocus_styles", "styles": "sai-anime"}
+
+    assert await style_options.resolve_dynamic_enums(_schema(), payload) == {}
+    assert await style_options.resolve_dynamic_enums(_schema(), payload) == {}
+    assert fake.calls == ["fooocus_styles"], "第二次要命中负缓存"
+
+    # 负缓存 30 秒(远短于成功的 10 分钟)—— sidecar 一恢复就能自愈
+    assert style_options.STYLE_CACHE_FAILURE_TTL_S == 30.0
+    assert style_options.STYLE_CACHE_FAILURE_TTL_S < style_options.STYLE_CACHE_TTL_S
+
+
+@pytest.mark.asyncio
+async def test_failure_negative_cache_expires(monkeypatch):
+    """负缓存过期后重新尝试(不是永久放弃)。"""
+    fake = FakeClient(boom=True)
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+    await style_options.style_values("fooocus_styles")
+    assert fake.calls == ["fooocus_styles"]
+
+    # 把那条负缓存的时间戳往前拨过 TTL
+    ts, values = style_options._style_cache["fooocus_styles"]
+    style_options._style_cache["fooocus_styles"] = (
+        ts - style_options.STYLE_CACHE_FAILURE_TTL_S - 1, values)
+
+    fake.boom = False
+    assert await style_options.style_values("fooocus_styles") == [
+        "Fooocus Enhance", "sai-anime"]
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_pack_is_empty_whitelist_not_static_fallback(monkeypatch):
+    """**取到了但是空** ≠ **取不到**。
+
+    包存在却一个风格都没有(没加载)时退回默认包的静态 enum,正好是本机制要防的
+    "拿 A 包的清单校验 B 包"。空清单 = 空白名单,全拒,且错误信息要说清是清单空。
+    """
+    fake = FakeClient(packs={"krea2_397styles-anime_动漫": []})
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+
+    payload = {"style_pack": "krea2_397styles-anime_动漫", "styles": "sai-anime"}
+    dyn = await style_options.resolve_dynamic_enums(_schema(), payload)
+    assert dyn == {"styles": []}, "空清单要进结果(空白名单),不是当没拿到"
+
+    errs = validate_service_input(_schema(), payload, dynamic_enums=dyn)
+    assert len(errs) == 1 and "清单为空" in errs[0], errs
+    # 没选任何风格时不该报错(空串 = 没选)
+    assert validate_service_input(
+        _schema(), {**payload, "styles": ""}, dynamic_enums=dyn) == []
+
+
+@pytest.mark.asyncio
+async def test_empty_result_cached_only_briefly(monkeypatch):
+    """空结果按负缓存的 30 秒算,不占满 10 分钟 —— 包加载完就该自愈。"""
+    fake = FakeClient(packs={"fooocus_styles": []})
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+    assert await style_options.style_values("fooocus_styles") == []
+
+    ts, values = style_options._style_cache["fooocus_styles"]
+    style_options._style_cache["fooocus_styles"] = (
+        ts - style_options.STYLE_CACHE_FAILURE_TTL_S - 1, values)
+    fake.packs = {"fooocus_styles": ["Fooocus Enhance"]}
+    assert await style_options.style_values("fooocus_styles") == ["Fooocus Enhance"]
+
+
+@pytest.mark.asyncio
+async def test_cache_is_bounded(monkeypatch):
+    """缓存条目有上限并按插入序驱逐 —— 包名来自请求,不设上限就是个能被喂大的字典。"""
+    packs = {f"pack-{i}": [f"style-{i}"] for i in range(
+        style_options.STYLE_CACHE_MAX_ENTRIES + 20)}
+    fake = FakeClient(packs=packs)
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+
+    for name in packs:
+        await style_options.style_values(name)
+
+    assert len(style_options._style_cache) == style_options.STYLE_CACHE_MAX_ENTRIES
+    assert "pack-0" not in style_options._style_cache, "最旧的被驱逐"
+    assert f"pack-{len(packs) - 1}" in style_options._style_cache, "最新的还在"
+
+
+@pytest.mark.asyncio
+async def test_cache_refresh_moves_entry_to_newest(monkeypatch):
+    """刷新已有 key 要把它挪到队尾,免得热条目因为当初插得早而被优先驱逐。"""
+    fake = FakeClient(packs={"a": ["x"], "b": ["y"]})
+    monkeypatch.setattr(style_options, "get_comfy_client", lambda: fake)
+    await style_options.style_values("a")
+    await style_options.style_values("b")
+    style_options._cache_put("a", ["x"])
+    assert list(style_options._style_cache) == ["b", "a"]

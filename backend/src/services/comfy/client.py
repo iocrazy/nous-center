@@ -13,6 +13,10 @@ def _base_url() -> str:
     return os.getenv("NOUS_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 
 
+# ComfyUI-Easy-Use 的风格缩略图路由。代理端点只打这一条(见 ComfyClient.style_image)。
+STYLE_IMAGE_ROUTE = "/easyuse/prompt/styles/image"
+
+
 class ComfyError(RuntimeError):
     def __init__(self, message: str, *, status_code: int = 502) -> None:
         super().__init__(message)
@@ -62,7 +66,7 @@ class ComfyClient:
     async def object_info(self) -> dict:
         return (await self._client.get("/object_info", timeout=15)).json()
 
-    async def styles(self, pack: str) -> list[dict]:
+    async def styles(self, pack: str, *, timeout: float = 15.0) -> list[dict]:
         """ComfyUI-Easy-Use 的风格清单(`/easyuse/prompt/styles?name=<包>`)。
 
         返回项形如 `{name, name_cn, thumbnail, prompt, negative_prompt}`。thumbnail
@@ -72,20 +76,28 @@ class ComfyClient:
         `/api/v1/comfy/style-image` 代理(见 comfy_templates.py)。
         """
         r = await self._client.get(
-            "/easyuse/prompt/styles", params={"name": pack}, timeout=15)
+            "/easyuse/prompt/styles", params={"name": pack}, timeout=timeout)
         if r.status_code != 200:
             raise ComfyError(f"读取风格清单失败(HTTP {r.status_code})")
         data = r.json()
         return data if isinstance(data, list) else []
 
-    async def style_image(self, src: str) -> tuple[bytes, str]:
-        """取一张风格缩略图(sidecar 侧的相对 URL,如
-        `/easyuse/prompt/styles/image?path=./samples/x.jpg`)。
+    async def style_image(self, path: str) -> tuple[bytes, str]:
+        """取一张风格缩略图。`path` 是 sidecar 缩略图 URL 里 `path=` 那个值
+        (如 `./samples/x.jpg`),**不是**整条 URL。
 
         krea2 那批风格包的 `thumbnail` 是**相对路径**(fooocus 包才是 GitHub 外链)——
         浏览器拿到会按 nous 自己的 origin 解析,必 404。所以要经后端代理一手。
+
+        路由**写死**在这里、参数走 `params=`,绝不把调用方给的字符串当 URL 拼:
+          · httpx 合并相对 URL 时会归一化点段 —— `/easyuse/../history` 直接变成
+            `/history`(实测),任何"前缀白名单"都挡不住,代理会退化成"拿 admin
+            身份任意打 sidecar GET"的跳板;
+          · 当 URL 拼还会把文件名里的 `#` 当 fragment、`%`/`+` 当转义,
+            `./samples/Neon #3.jpg` 这种名字的图直接取不回来。
         """
-        r = await self._client.get(src, timeout=30)
+        r = await self._client.get(
+            STYLE_IMAGE_ROUTE, params={"path": path}, timeout=30)
         if r.status_code != 200:
             raise ComfyError(f"读取风格缩略图失败(HTTP {r.status_code})")
         return r.content, r.headers.get("content-type", "image/jpeg")

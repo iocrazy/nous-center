@@ -119,7 +119,18 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   (拿不到清单只 warning + 退回静态,绝不让预测 500)。`options_depends_on` 指向不存在
   的 key 在 PUT mapping 时就拒(400 `validation_error`)。
   krea2 那批风格包的缩略图是 sidecar 侧**相对路径**,经
-  `GET /api/v1/comfy/style-image?src=` 代理(只放行 `/easyuse/*`)。
+  `GET /api/v1/comfy/style-image?path=<文件路径>` 代理:**只收文件路径、不收 URL**,
+  路由写死 + httpx `params=` 传参。别改回"收 src 再转发 + 前缀白名单"——httpx 合并
+  相对 URL 会归一化点段,`/easyuse/../history` 到 sidecar 就是 `/history`,白名单形同
+  虚设(2026-09-03 审查实测)。缓存头是 `private`(端点要 admin 鉴权,`public` 会让
+  cloudflared/中间缓存把字节回给未鉴权者)。
+- 动态清单的取数(`style_options.py`)有三条闸门:① 依赖参数的值必须先落在它自己的
+  静态 enum 里(没 enum 则只认 default)才会去打 sidecar —— 这段跑在
+  `validate_service_input` **之前**,不设闸等于让任何持 key 的人拿随机包名驱动出站请求
+  + 撑大进程内缓存;② 缓存 256 条上限、按插入序驱逐,失败与空结果只缓存 30s(负缓存),
+  成功缓存 10 分钟;③ 预校验取数用 5s 短超时(列清单那条仍是 15s)。
+  **「取不到」(None,退回静态 enum)与「取到了但为空」([],空白名单全拒)是两回事**,
+  后者退回默认包的静态 enum 正是本机制要防的错配。
 - env 三件套:`NOUS_COMFY_URL`(sidecar 地址,默认 `http://127.0.0.1:8188`)、
   `NOUS_COMFY_TIMEOUT`(渲染等待上限,默认 14400s)、
   `NOUS_COMFY_DOWNLOAD_TIMEOUT`(产物下载超时,默认 120s)。
