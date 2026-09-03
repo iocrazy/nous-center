@@ -1,6 +1,7 @@
-"""Wave 1 memory tables (MemoryEntry + MemoryEmbedding).
+"""Wave 1 memory tables (MemoryEntry + MemoryEmbedding)。
 
-Dialect-agnostic declarations; FTS index is PG-only and added in raw SQL migration.
+全局只有 PostgreSQL,索引直接声明在这里(含 FTS 的表达式 GIN 索引),
+由 alembic 迁移落到库上。
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     BigInteger, Column, DateTime, ForeignKey, Index, Integer,
-    LargeBinary, String, Text,
+    LargeBinary, String, Text, text,
 )
 
 from src.models.database import Base
@@ -51,6 +52,15 @@ class MemoryEntryModel(Base):
         # 归属/查询走 api_key_id(prefetch 按 owner + context_key + 时间排序)。
         Index("idx_mem_key_created", "api_key_id", "created_at"),
         Index("idx_mem_key_ctx_cat", "api_key_id", "context_key", "category"),
+        # 全文检索的表达式 GIN 索引。**表达式必须与查询侧逐字一致**
+        # (pg_provider.py::prefetch 的 `to_tsvector('simple', content)`,含 'simple'):
+        # planner 只在表达式完全匹配时才用得上这个索引,差一个配置名就退回全表扫 +
+        # 逐行现算 tsvector。
+        Index(
+            "idx_mem_content_fts",
+            text("to_tsvector('simple', content)"),
+            postgresql_using="gin",
+        ),
     )
 
 
