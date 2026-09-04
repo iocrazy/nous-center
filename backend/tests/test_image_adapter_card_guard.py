@@ -4,6 +4,19 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from types import SimpleNamespace
+
+
+def _entry(gpu_index: int, *, resident: bool, vram_mb: int, gpu_indices=None):
+    """LoadedModel 的轻量替身 —— 带 `cards()`,即「这个模型占哪些卡」的单一实现
+    (manager 的驱逐/腾显存都经它,stub 也要有,别让 duck-type 掩盖真实契约)。"""
+    idxs = list(gpu_indices or [gpu_index])
+    return SimpleNamespace(
+        gpu_index=gpu_index,
+        gpu_indices=idxs,
+        cards=lambda idxs=idxs: list(idxs),
+        spec=SimpleNamespace(resident=resident, vram_mb=vram_mb),
+    )
 
 from src.services.gpu_allocator import GPUAllocator
 from src.services.inference.component_spec import ComponentSpec
@@ -125,11 +138,10 @@ async def test_guard_raises_when_nothing_evictable(mm, monkeypatch, tmp_path):
 
 def test_evictable_mb_on_card(mm):
     """该卡可驱逐 adapter 显存之和:非常驻/未引用/未在用 才算(spec 2026-06-07)。"""
-    from types import SimpleNamespace
     mm._models = {
-        "a": SimpleNamespace(gpu_index=1, spec=SimpleNamespace(resident=False, vram_mb=18000)),
-        "b": SimpleNamespace(gpu_index=1, spec=SimpleNamespace(resident=True, vram_mb=9000)),   # 常驻不算
-        "c": SimpleNamespace(gpu_index=2, spec=SimpleNamespace(resident=False, vram_mb=5000)),  # 别的卡
+        "a": _entry(1, resident=False, vram_mb=18000),
+        "b": _entry(1, resident=True, vram_mb=9000),    # 常驻不算
+        "c": _entry(2, resident=False, vram_mb=5000),   # 别的卡
     }
     assert mm._evictable_mb_on_card(1) == 18000
     mm._references = {"a": {"combo-x"}}  # a 被引用 → 不算
@@ -147,11 +159,10 @@ def test_resolve_auto_card_prefers_raw_free(mm, monkeypatch):
 
 def test_resolve_auto_card_falls_back_to_evictable(mm, monkeypatch):
     """没卡有真空闲,但某卡腾掉空闲 adapter 后装得下 → 选那张卡(主动找能腾的卡注入)。"""
-    from types import SimpleNamespace
     monkeypatch.setattr(mm._allocator, "get_best_gpu", lambda need, *, reserve=True: -1)  # 无真空闲
     mm._models = {
-        "a": SimpleNamespace(gpu_index=0, spec=SimpleNamespace(resident=False, vram_mb=0)),
-        "b": SimpleNamespace(gpu_index=2, spec=SimpleNamespace(resident=False, vram_mb=0)),
+        "a": _entry(0, resident=False, vram_mb=0),
+        "b": _entry(2, resident=False, vram_mb=0),
     }
     monkeypatch.setattr(mm, "_card_effective_free_mb",
                         lambda i: {0: 20000, 2: 60000}.get(i))

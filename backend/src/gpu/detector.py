@@ -132,7 +132,9 @@ def get_device_for_engine(engine_config: dict) -> str:
     """Resolve device string for an engine based on config and available GPUs.
 
     Logic:
-    - If config has explicit 'gpu' field, honor it (and warn if that GPU
+    - If config has an explicit 'gpus' group (tensor parallel), honor it and
+      return the group's primary card (warning for every member driving a display)
+    - Else if config has explicit 'gpu' field, honor it (and warn if that GPU
       is driving a display server — TTS/LLM on the X GPU has crashed sessions)
     - Otherwise pick the first non-display GPU
     - Fallback to first GPU if all appear to be driving displays
@@ -144,6 +146,26 @@ def get_device_for_engine(engine_config: dict) -> str:
         return "cpu"
 
     display_indices = get_display_gpu_indices()
+
+    # GPU 组(张量并行)优先于单卡 `gpu`:组内**每张卡**都要过 display-GPU 检查
+    # (只查主卡的话,组里那张在驱动桌面的副卡照样会把会话跑挂)。返回主卡设备串,
+    # 全组经 spec.gpus → adapter 的 `gpus` kwarg 传下去。
+    gpu_group = engine_config.get("gpus")
+    if isinstance(gpu_group, (list, tuple)) and gpu_group:
+        idxs = []
+        for raw in gpu_group:
+            try:
+                idxs.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if idxs:
+            on_display = [i for i in idxs if i in display_indices]
+            if on_display:
+                logger.warning(
+                    "Engine pinned to GPU group %s but %s drive(s) a display "
+                    "server — compute load here can hang the desktop.", idxs, on_display,
+                )
+            return f"cuda:{idxs[0]}"
 
     gpu_index = engine_config.get("gpu")
     if gpu_index is not None:

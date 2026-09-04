@@ -158,7 +158,7 @@ def save_settings(updates: dict) -> None:
 # 旧 JSON 路径仅留作一次性迁移源(migrate_json_if_empty)。
 _RUNTIME_OVERRIDES_REL = "configs/runtime_overrides.json"
 # vram_budget:每模型显存预算({"mode":"auto|percent|absolute","value":N})。
-_OVERRIDABLE_KEYS = ("resident", "gpu", "vram_budget")
+_OVERRIDABLE_KEYS = ("resident", "gpu", "gpus", "vram_budget")
 
 
 def load_runtime_overrides() -> dict:
@@ -251,6 +251,9 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
                 # `gpu` stays None when unset so the GPU detector can auto-pick
                 # a non-display card instead of defaulting to cuda:0.
                 "gpu": entry.get("gpu"),
+                # `gpus: [0, 2]` = 该模型以张量并行跨这组卡加载(见 src/gpu/topology.py)。
+                # 与 `gpu` 并存,给了就以它为准。None = 未配。
+                "gpus": entry.get("gpus"),
                 "vram_gb": round(entry.get("vram_mb", 0) / 1024, 1),
                 "resident": entry.get("resident", False),
                 "local_path": local_path,
@@ -314,7 +317,7 @@ def resolve_vram_utilization(
 
 
 def _apply_runtime_overrides(cfgs: dict) -> None:
-    """把 runtime_overrides.json 的 resident/gpu/vram_budget 叠加进 cfgs(原地改)。overlay 优先于 models.yaml。"""
+    """把运行时覆盖(resident/gpu/gpus/vram_budget)叠加进 cfgs(原地改)。overlay 优先于 models.yaml。"""
     overrides = load_runtime_overrides()
     for mid, ov in overrides.items():
         if mid in cfgs and isinstance(ov, dict):

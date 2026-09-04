@@ -24,9 +24,19 @@ class ModelSpec(BaseModel):
     resident: bool = False
     ttl_seconds: int = 300
     gpu: int | list[int] | None = None
+    # GPU 组(张量并行):`[0, 2]` = 把这组卡当一个单元用,tp=len(gpus)。**优先于 `gpu`**。
+    # 来源:models.yaml 的 `gpus:` 或运行时覆盖 model_runtime_overrides.gpus。
+    # None = 未配 → 单卡 `gpu` / 自动选卡。
+    gpus: list[int] | None = None
     preload_order: int | None = None
 
     model_config = ConfigDict(frozen=True)
+
+
+def _ov_gpus(ov: dict, entry: dict):
+    """运行时覆盖的 gpus 优先于 YAML 的 —— 覆盖里的 `[]` 是「显式清空组」,
+    要盖住 YAML 的 `gpus:`(不是"没设"→ 回退 YAML)。见 model_runtime_override.gpus 三态。"""
+    return ov["gpus"] if "gpus" in ov else entry.get("gpus")
 
 
 def _coerce_paths(entry: dict[str, Any]) -> dict[str, str]:
@@ -61,6 +71,7 @@ class ModelRegistry:
         # 局部 import 避免 registry↔config 启动期循环(同 add_from_scan)。
         from pathlib import Path as _Path  # noqa: PLC0415
         from src.config import collect_model_entries, load_runtime_overrides  # noqa: PLC0415
+        from src.gpu.topology import sanitize_config_gpus  # noqa: PLC0415
         overrides = load_runtime_overrides()
         for entry in collect_model_entries(_Path(config_path)):
             ov = overrides.get(entry["id"]) or {}
@@ -74,6 +85,10 @@ class ModelRegistry:
                 resident=ov.get("resident", entry.get("resident", False)),
                 ttl_seconds=entry.get("ttl_seconds", 3600 if entry["type"] == "llm" else 300),
                 gpu=ov.get("gpu", entry.get("gpu")),
+                # YAML / 覆盖里的 gpus 过一遍校验(大小、去重、存在、同型号)——
+                # 非法就 log error 并忽略该字段(按单卡走),绝不流到适配器(审查 #14)。
+                # ov 里的 [] 是"显式清空组"的哨兵:sanitize 返回 None,回落单卡 gpu。
+                gpus=sanitize_config_gpus(entry["id"], {"gpus": _ov_gpus(ov, entry)}),
                 preload_order=entry.get("preload_order"),
             )
             self._specs[spec.id] = spec
@@ -131,6 +146,7 @@ class ModelRegistry:
             paths = {"main": cfg["local_path"]}
         # scan_models() 不并 overlay → 同 _load 套用,保持运行时覆盖单一来源(2026-06-16 统一)。
         from src.config import load_runtime_overrides  # noqa: PLC0415
+        from src.gpu.topology import sanitize_config_gpus  # noqa: PLC0415
         ov = load_runtime_overrides().get(model_id) or {}
         spec = ModelSpec(
             id=model_id,
@@ -142,6 +158,7 @@ class ModelRegistry:
             resident=ov.get("resident", cfg.get("resident", False)),
             ttl_seconds=cfg.get("ttl_seconds", 3600 if cfg.get("type") == "llm" else 300),
             gpu=ov.get("gpu", cfg.get("gpu")),
+            gpus=sanitize_config_gpus(model_id, {"gpus": _ov_gpus(ov, cfg)}),
             preload_order=cfg.get("preload_order"),
         )
         self._specs[spec.id] = spec

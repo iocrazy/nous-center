@@ -179,19 +179,48 @@ class GPUAllocator:
                 pick = _pick(stats)
 
             if pick >= 0 and reserve:
-                self._pending[pick] = self._pending.get(pick, 0) + int(required_vram_mb)
+                self._reserve_locked(pick, required_vram_mb)
             return pick
+
+    # 在途预留的加/减:**不持锁**的内部实现,三个公开方法都在同一把
+    # `_pending_lock` 下调它(此前 get_best_gpu / release_reservation / 组版各写了
+    # 一遍同样的加减,锁语义分散在三处)。
+    def _reserve_locked(self, gpu_index: int, mb: float) -> None:
+        if gpu_index is None or gpu_index < 0:
+            return
+        self._pending[gpu_index] = self._pending.get(gpu_index, 0) + int(mb)
+
+    def _release_locked(self, gpu_index: int, mb: float) -> None:
+        if gpu_index is None or gpu_index < 0:
+            return
+        remaining = self._pending.get(gpu_index, 0) - int(mb)
+        if remaining > 0:
+            self._pending[gpu_index] = remaining
+        else:
+            self._pending.pop(gpu_index, None)
 
     def release_reservation(self, gpu_index: int, required_vram_mb: float) -> None:
         """释放 get_best_gpu(reserve=True) 登记的在途预留(load 完成或失败后调用)。"""
-        if gpu_index < 0:
-            return
         with self._pending_lock:
-            remaining = self._pending.get(gpu_index, 0) - int(required_vram_mb)
-            if remaining > 0:
-                self._pending[gpu_index] = remaining
-            else:
-                self._pending.pop(gpu_index, None)
+            self._release_locked(gpu_index, required_vram_mb)
+
+    def reserve_gpus(self, gpu_indices: list[int], mb_per_gpu: float) -> None:
+        """给一个 **GPU 组**(张量并行)在组内每张卡上登记在途预留。
+
+        get_best_gpu 的 C1 预留只覆盖「allocator 自己选出来的单卡」;显式配了 `gpus`
+        的模型压根不经过它 → 并发的 auto 选卡看不到这组卡即将被占满,会撞上来。
+        每张卡登记 `mb_per_gpu`(= 模型总显存 / 卡数,TP 是均分)。
+        必须与 release_gpus 成对调用。
+        """
+        with self._pending_lock:
+            for idx in gpu_indices:
+                self._reserve_locked(idx, mb_per_gpu)
+
+    def release_gpus(self, gpu_indices: list[int], mb_per_gpu: float) -> None:
+        """释放 reserve_gpus 登记的组预留(load 完成或失败后调用)。"""
+        with self._pending_lock:
+            for idx in gpu_indices:
+                self._release_locked(idx, mb_per_gpu)
 
     def get_free_mb(self, gpu_index: int) -> int:
         stats = self._poll()

@@ -27,6 +27,12 @@ from src.services.inference.base import (
     TextRequest,
     UsageMeter,
 )
+from src.services.inference._placement import (
+    LaunchPlacement,
+    apply_visible_devices,
+    estimate_model_size_gb,
+    resolve_launch_placement,
+)
 from src.utils.constants import ALLOWED_LLM_HOSTS
 
 logger = logging.getLogger(__name__)
@@ -82,6 +88,8 @@ class VLLMAdapter(InferenceAdapter):
 
     modality = MediaModality.TEXT
     estimated_vram_mb = 0  # Determined at runtime
+    # 接受 manager 传下来的 GPU 组(张量并行)。见 InferenceAdapter.supports_gpu_group。
+    supports_gpu_group = True
 
     def __init__(
         self,
@@ -99,6 +107,7 @@ class VLLMAdapter(InferenceAdapter):
         vllm_runner: str | None = None,
         vram_budget: dict | None = None,
         adopt_pid: int | None = None,
+        gpus: list[int] | None = None,
         **kwargs: Any,
     ):
         super().__init__(paths=paths, device=device)
@@ -106,6 +115,12 @@ class VLLMAdapter(InferenceAdapter):
         self.model_path = Path(paths.get("main", ""))
         self._port = vllm_port or (int(vllm_base_url.split(":")[-1]) if vllm_base_url else 0)
         self._tp = tensor_parallel_size
+        # 显式 GPU 组(模型级 `gpus: [0, 2]`)。给了就以它为准:
+        # CUDA_VISIBLE_DEVICES=组内物理 index + --tensor-parallel-size=组内卡数
+        # (除非显式 tensor_parallel_size 更小)。None = 走单卡 / 自动选组。
+        self._gpus = [int(i) for i in gpus] if gpus else None
+        # load() 时真正落地的组(含自动选出来的);观测/测试读它,None=单卡。
+        self.gpu_indices: list[int] | None = None
         self._max_model_len = max_model_len
         self._gpu_mem_util = gpu_memory_utilization
         self._quantization = quantization
@@ -162,14 +177,8 @@ class VLLMAdapter(InferenceAdapter):
             with open(config_file) as f:
                 model_config = json.load(f)
 
-        # 2. Get model size from safetensors / bin files
-        model_size_gb = sum(
-            f.stat().st_size for f in model_path.glob("*.safetensors")
-        ) / (1024**3)
-        if model_size_gb == 0:
-            model_size_gb = sum(
-                f.stat().st_size for f in model_path.glob("*.bin")
-            ) / (1024**3)
+        # 2. 模型体积 —— 与 manager 共用同一把尺子(放置决策和预算必须基于同一个数)
+        model_size_gb = estimate_model_size_gb(model_path)
 
         # 3. Auto-detect quantization from config
         quant_config = model_config.get("quantization_config", {})
@@ -181,30 +190,19 @@ class VLLMAdapter(InferenceAdapter):
         # 4. Auto-detect dtype — let vLLM choose (bfloat16 is safer for mixed-dtype GPTQ models)
         dtype = None
 
-        # 5. Get GPU info
-        gpu_stats = poll_gpu_stats()
-
-        # 6. Determine GPU index
-        if device and ":" in device:
-            gpu_idx = int(device.split(":")[-1])
-        else:
-            gpu_idx = (
-                max(range(len(gpu_stats)), key=lambda i: gpu_stats[i]["free_mb"])
-                if gpu_stats
-                else 0
-            )
-
-        gpu_total_gb = gpu_stats[gpu_idx]["total_mb"] / 1024 if gpu_idx < len(gpu_stats) else 24.0
-        gpu_free_gb = gpu_stats[gpu_idx]["free_mb"] / 1024 if gpu_idx < len(gpu_stats) else 24.0
-
-        # 7. Determine tensor_parallel_size
-        tp = self._tp or 1
-        if tp <= 1 and model_size_gb > gpu_free_gb * 0.85:
-            total_free = sum(g["free_mb"] for g in gpu_stats) / 1024
-            if total_free > model_size_gb * 1.2:
-                tp = len(gpu_stats)
-            else:
-                tp = 1
+        # 5-7. 落卡 / tp / 预算 —— **只执行 manager 传下来的 device/gpus,不自己选卡**。
+        # 放置决策的唯一入口是 ModelManager._resolve_placement(2026-09-03 审查):
+        # 适配器自行改 gpu_idx 会造成"预算按 A 卡算、CVD 钉 B 卡"的启动期 OOM,
+        # 且 manager 记录的落卡与真实占用不符。
+        placement = resolve_launch_placement(
+            device=device, gpus=self._gpus, requested_tp=self._tp,
+            stats=poll_gpu_stats(), label="vLLM",
+        )
+        tp = placement.tp
+        group = list(placement.cards) if tp > 1 else None
+        gpu_idx = placement.primary
+        gpu_total_gb = placement.total_gb or 24.0
+        gpu_free_gb = placement.free_gb or gpu_total_gb
 
         # 8. Calculate gpu_memory_utilization
         if tp > 1:
@@ -264,6 +262,10 @@ class VLLMAdapter(InferenceAdapter):
         return {
             "port": port,
             "tp": tp,
+            # 最终落卡:多卡组(tp>1)时是整组,单卡时 None(单卡看 gpu_idx)。
+            "gpus": list(group) if group else None,
+            # 真正要钉进 CUDA_VISIBLE_DEVICES 的卡 —— 单卡也在里面,绝不为空。
+            "cards": list(placement.cards),
             "max_model_len": max_model_len,
             "utilization": round(utilization, 2),
             "quantization": quantization,
@@ -300,7 +302,13 @@ class VLLMAdapter(InferenceAdapter):
         # Auto-configure parameters
         auto = self._auto_configure(device)
         port = self._port or auto["port"]
-        tp = self._tp or auto["tp"]
+        # tp / 落卡在 _auto_configure 里已经定死(resolve_launch_placement,含
+        # "显式 tp 只能收窄组"和"没组就不许 tp>1"),这里**不再重算一遍**。
+        tp = auto["tp"]
+        cards: list[int] = list(auto.get("cards") or [])
+        gpu_group: list[int] | None = list(auto["gpus"]) if auto.get("gpus") else None
+        # 真实落卡回填给 manager(它 load 完读这个字段登记 gpu_indices)。
+        self.gpu_indices = list(cards) if cards else None
         max_model_len = self._max_model_len or auto["max_model_len"]
         self.max_model_len = max_model_len  # expose for clamp logic
         # 显存预算优先级:overlay vram_budget(percent/absolute) > yaml gpu_memory_utilization > auto 公式
@@ -325,8 +333,9 @@ class VLLMAdapter(InferenceAdapter):
         self.base_url = self._base_url
 
         logger.info(
-            "Auto-config: model=%.1fGB, tp=%d, max_len=%d, util=%.2f, seqs=%d, quant=%s",
-            auto["model_size_gb"], tp, max_model_len, utilization, max_num_seqs, quantization,
+            "Auto-config: model=%.1fGB, tp=%d, gpus=%s, max_len=%d, util=%.2f, seqs=%d, quant=%s",
+            auto["model_size_gb"], tp, gpu_group or cards,
+            max_model_len, utilization, max_num_seqs, quantization,
         )
 
         # Resolve model path
@@ -409,14 +418,14 @@ class VLLMAdapter(InferenceAdapter):
         env.setdefault("VLLM_ATTENTION_BACKEND", "TORCH_SDPA")
         env.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
-        # Set CUDA_VISIBLE_DEVICES for single-GPU mode
-        if tp <= 1 and device:
-            # Extract GPU index from device string like "cuda:0"
-            gpu_idx = device.split(":")[-1] if ":" in device else "0"
-            env["CUDA_VISIBLE_DEVICES"] = gpu_idx
-            logger.info("Starting vLLM on GPU %s: %s", gpu_idx, " ".join(cmd))
-        else:
-            logger.info("Starting vLLM (TP=%d): %s", tp, " ".join(cmd))
+        # 落卡:**永远显式钉 CUDA_VISIBLE_DEVICES**(单卡也钉)。见 _placement 的三条不变式。
+        apply_visible_devices(
+            env,
+            LaunchPlacement(cards=cards, tp=tp,
+                            total_gb=auto.get("gpu_total_gb", 0.0),
+                            free_gb=auto.get("gpu_free_gb", 0.0)),
+            cmd, "vLLM",
+        )
 
         self._process = subprocess.Popen(
             cmd,

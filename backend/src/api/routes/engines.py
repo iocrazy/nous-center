@@ -6,6 +6,10 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from functools import lru_cache
+
+from pydantic import BaseModel
+
 from src.api.deps_admin import require_admin
 from src.api.response_cache import cached, invalidate
 from src.services.model_scanner import scan_models, _VLLM_ADAPTER
@@ -33,6 +37,9 @@ def _spawn_bg(coro) -> asyncio.Task:
     return t
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
+# GPU 拓扑(卡组)另起一个前缀:它讲的是**机器的卡**,不是某个引擎 —— 挂在
+# /api/v1/engines 下会读成"引擎的组"。main.py 一并 include。
+gpu_router = APIRouter(prefix="/api/v1/gpu", tags=["gpu"])
 logger = logging.getLogger(__name__)
 
 # In-memory loading state tracker: model_id -> {"status": "loading"|"failed", "detail": str}
@@ -104,10 +111,15 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         status = "unloaded"
         status_detail = None
 
-    # `gpu` can be None when the YAML leaves the slot to the detector. For
-    # display, resolve via the detector so the UI shows the real assignment.
-    gpu_field = cfg.get("gpu")
-    if gpu_field is None:
+    # 字段规则(审查 #6):`gpu` **永远是主卡 int**(组的第一张),`gpus` 是**唯一**的
+    # 列表字段(单卡 → None)。此前配了组时 `gpu` 也被设成同一个 list,前端得在菜单和
+    # 卡片各 `Array.isArray` 判一次组,两处判据还可能不一致。
+    from src.gpu.topology import resolve_gpus
+    configured = resolve_gpus(cfg)          # gpu/gpus 优先级的唯一实现
+    gpu_group = configured if len(configured) > 1 else None
+    if configured:
+        gpu_field = configured[0]
+    else:
         from src.gpu.detector import get_device_for_engine
         device = get_device_for_engine(cfg)
         try:
@@ -138,6 +150,8 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         type=cfg["type"],
         status=status,
         gpu=gpu_field,
+        gpus=gpu_group,
+        supports_gpu_group=_adapter_supports_gpu_group(cfg.get("adapter")),
         vram_gb=cfg.get("vram_gb", 0),
         resident=cfg.get("resident", False),
         local_path=local_path,
@@ -821,31 +835,32 @@ async def set_launch_params(name: str, body: dict):
 
 
 def _card_total_gb_for_engine(cfg: dict, loaded_gpu: int | None = None) -> float:
-    """目标卡总显存(GB)。优先级:**真实落卡(已加载)> cfg.gpu 钉卡 > detector 推断** → 回退 24。
+    """预算分母 = 目标卡的总显存(GB)。优先级:**真实落卡(已加载)> 配置钉的卡/组 >
+    detector 推断** → 回退 24。
 
-    未钉卡的引擎,detector 的 get_device_for_engine 与运行时 GPUAllocator 的实际落卡可能分歧
-    (如 embedding 无 gpu 字段:detector 给 3090 24G,实际 vLLM 落 Pro6000 96G)。已加载时直接
-    用真实落卡总显存,否则推荐%/absolute-cap 校验会按错卡算 → 误拒合法预算(用户报告诱因)。"""
-    from src.gpu.detector import get_device_for_engine, gpu_summary
-    devices = gpu_summary().get("devices", [])
-    by_index = {d["index"]: d.get("vram_gb") for d in devices}
+    组(张量并行)按组内**最小** total 算,不是求和:`gpu_memory_utilization` 是**每卡**
+    比例。数据源统一走 `topology.group_budget_gb`(nvidia-smi 的 MB)—— 与适配器同一个
+    实现、同一个数据源。此前这里用 `gpu_summary()`(torch 的 total_memory,四舍五入到
+    0.1G)、适配器用 nvidia-smi,同一张卡两个数,预算端点放行的绝对值适配器可能算超,
+    正是注释里警告的那种启动期 OOM(审查 #4)。
+    """
+    from src.gpu.topology import group_budget_gb, resolve_gpus
 
-    if loaded_gpu is not None and loaded_gpu in by_index:
-        return float(by_index[loaded_gpu] or 24.0)
+    if loaded_gpu is not None:
+        total, _free = group_budget_gb([loaded_gpu])
+        if total > 0:
+            return total
 
-    gpu_field = cfg.get("gpu")
-    if gpu_field is None:
+    cards = resolve_gpus(cfg)
+    if not cards:
+        from src.gpu.detector import get_device_for_engine
         try:
             dev = get_device_for_engine(cfg)
-            gpu_field = int(dev.split(":")[-1]) if dev.startswith("cuda") else 0
+            cards = [int(dev.split(":")[-1])] if dev.startswith("cuda") else [0]
         except (ValueError, IndexError):
-            gpu_field = 0
-    if isinstance(gpu_field, str) and gpu_field.startswith("cuda"):
-        try:
-            gpu_field = int(gpu_field.split(":")[-1])
-        except (ValueError, IndexError):
-            gpu_field = 0
-    return float(by_index.get(gpu_field) or 24.0)
+            cards = [0]
+    total, _free = group_budget_gb(cards)
+    return total or 24.0
 
 
 # _VLLM_ADAPTER 单一来源在 model_scanner(顶部 import;去重:此前两处各定义一份同值)。
@@ -920,30 +935,126 @@ async def set_vram_budget(name: str, request: Request, body: dict = Body(...),
             "hint": "需重新加载模型生效(unload + load)"}
 
 
+class GpuAssignment(BaseModel):
+    """PATCH /engines/{name}/gpu 的请求体 —— **只用于钉 GPU 组**。
+
+    单卡走查询参数 `?gpu=N`(老路径,前端一直这么发),body 只承载 `gpus`。
+    此前 body 里还有个 `gpu` 字段,没有任何调用方会发它,徒增一条优先级分支(审查 #6)。
+    """
+
+    gpus: list[int] | None = None
+
+
 @router.patch("/{name}/gpu", dependencies=[Depends(require_admin)])
-async def set_gpu(name: str, request: Request, gpu: int = 0,
+async def set_gpu(name: str, request: Request, gpu: int | None = None,
+                  body: GpuAssignment | None = Body(None),
                   session: AsyncSession = Depends(get_async_session)):
-    """Change GPU assignment for an engine.
+    """Change GPU assignment for an engine —— 单卡或 GPU 组(张量并行)。
 
     写 DB 表 model_runtime_overrides(与 resident/vram_budget 一致;数据加载统一 2026-06-16)
     —— 不再写 git 跟踪的 models.yaml(旧行为污染 git 树、且 registry 读 yaml/overlay 口径分裂
-    导致落卡设置不生效)。registry 套用覆盖 → spec.gpu 驱动 vLLM 落卡。写后 reload registry 让
-    spec.gpu 立即刷新,随后 unload + load 即落新卡。
+    导致落卡设置不生效)。registry 套用覆盖 → spec.gpu / spec.gpus 驱动 vLLM 落卡。写后 reload
+    registry 让 spec 立即刷新,随后 unload + load 即落新卡。
+
+    组的合法性在这里就卡死(而不是等到 load 时炸):≥2 张、去重、卡存在、**同型号**。
+    异构组队(3090 + PRO 6000)做张量并行要么白扔大卡显存要么直接 OOM,一律 400。
     """
     from src.config import load_model_configs
     from src.services import runtime_override_store
 
-    if name not in load_model_configs():
+    cfg = load_model_configs().get(name)
+    if cfg is None:
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
-    await runtime_override_store.set_override(session, name, "gpu", gpu)
-    # reload registry → spec.gpu 从覆盖刷新(否则停在旧值,unload+load 仍落旧卡)。
+    group = list(body.gpus) if (body is not None and body.gpus) else None
+    if group is not None:
+        # 校验里有两次 nvidia-smi(显示卡探测 + 拓扑)—— 别在事件循环上跑(审查 #17)。
+        group = await asyncio.to_thread(_validate_gpu_group, group, cfg)
+        await runtime_override_store.set_override(session, name, "gpus", group)
+        result = {"name": name, "gpu": group[0], "gpus": group}
+    else:
+        # set_override("gpu") 会把 gpus 写成 `[]`(显式清空组)—— 用户点单卡就是要退出组。
+        await runtime_override_store.set_override(session, name, "gpu", int(gpu or 0))
+        result = {"name": name, "gpu": int(gpu or 0), "gpus": None}
+
+    # reload registry → spec.gpu/spec.gpus 从覆盖刷新(否则停在旧值,unload+load 仍落旧卡)。
     mgr = getattr(request.app.state, "model_manager", None)
     if mgr is not None and getattr(mgr, "_registry", None) is not None:
         mgr._registry.reload()
     invalidate("engines")
-    return {"name": name, "gpu": gpu, "applied": False,
-            "hint": "需重新加载模型生效(unload + load)"}
+    return {**result, "applied": False, "hint": "需重新加载模型生效(unload + load)"}
+
+
+@lru_cache(maxsize=64)
+def _adapter_supports_gpu_group(dotted: str | None) -> bool:
+    """这个引擎的适配器接不接受 GPU 组(张量并行)。见 InferenceAdapter.supports_gpu_group。
+
+    只有 vLLM / SGLang 这类子进程型 LLM 适配器为 True。给别的引擎配组会造成
+    manager 按两张卡各预留一半、`loaded_gpus` 显示 0+2,而适配器实际单卡跑 ——
+    卡 2 的预留是幻影、UI 在撒谎(审查 #21)。
+    """
+    if not dotted:
+        return False
+    module_path, _, class_name = dotted.rpartition(".")
+    if not module_path:
+        return False
+    try:
+        import importlib
+        return bool(getattr(getattr(importlib.import_module(module_path), class_name, None),
+                            "supports_gpu_group", False))
+    except Exception:  # noqa: BLE001 — 依赖没装的适配器不该让引擎列表 500
+        return False
+
+
+def _validate_gpu_group(raw: list[int], cfg: dict | None = None) -> list[int]:
+    """校验 GPU 组 —— errors 抬成 400,warnings 打日志。
+
+    校验规则本身在 `topology.validate_gpu_group`(**唯一实现**,YAML 加载路径也调它);
+    这里只负责 HTTP 语义 + 适配器能力那条(引擎相关,不属于纯拓扑)。
+    显示卡检查与单卡路径一致 —— 单卡钉到显示卡也只是 warning,不拒(审查 #2)。
+    """
+    from src.gpu.topology import validate_gpu_group
+
+    if cfg is not None and not _adapter_supports_gpu_group(cfg.get("adapter")):
+        raise HTTPException(
+            400,
+            detail=(
+                f"该引擎的适配器不支持 GPU 组(张量并行):{cfg.get('adapter') or '(无)'}。"
+                "只有 vLLM / SGLang 这类子进程型 LLM 引擎能跨卡加载;"
+                "给别的引擎配组会造成'按两张卡预留、实际单卡跑'的幻影占用。"
+            ),
+        )
+    gpus, errors, warnings = validate_gpu_group(raw)
+    if errors:
+        raise HTTPException(400, detail="; ".join(errors))
+    for w in warnings:
+        logger.warning("GPU 组分配:%s", w)
+    return gpus
+
+
+@gpu_router.get("/groups")
+@cached("gpu-groups", ttl=60)
+async def list_gpu_groups(request: Request):
+    """可用于张量并行的 GPU 组候选 —— **hardware.yaml 里声明过的多卡 group**。
+
+    `[{"id":"llm-tp","gpus":[0,2],"name":"RTX 3090","nvlink":true,"total_gb":48.0,
+       "display_gpus":[0]}]` —— 前端「GPU 分配 → 组合」子菜单直接渲染这个。
+
+    候选**不是**由这里枚举卡的组合来的:那样会绕过 hardware.yaml 里的运维约束
+    (本机 GPU 0 是显示卡,腾空前不该拿它跑 TP)。yaml 没声明多卡组 → 返回空 +
+    `hint`,前端菜单就只剩单卡项(审查 #1)。异构 / 大小非 2 的幂的组会被丢掉。
+    """
+    from src.gpu.topology import candidate_groups
+
+    groups = await asyncio.to_thread(candidate_groups)
+    out: dict = {"groups": groups}
+    if not groups:
+        out["hint"] = (
+            "configs/hardware.yaml 里没有声明多卡 group —— 张量并行的候选组只认那份"
+            "拓扑(它记着'哪张卡在驱动显示器'这类运维约束)。要跨卡请先在其中加一个"
+            "多卡 group(gpus + nvlink)。"
+        )
+    return out
 
 
 @router.get("/scheduler/status")

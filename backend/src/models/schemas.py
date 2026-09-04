@@ -82,7 +82,13 @@ class EngineInfo(BaseModel):
     display_name: str
     type: str
     status: Literal["loaded", "unloaded", "loading", "failed"]
-    gpu: int | list[int]
+    # 字段规则:`gpu` **永远是主卡**(组的第一张);`gpus` 是**唯一**的列表字段 ——
+    # 配了 GPU 组(张量并行)时是整组,单卡时 None。前端只按 `gpus` 判组。
+    gpu: int
+    gpus: list[int] | None = None
+    # 该引擎的适配器接不接受 GPU 组(只有 vLLM / SGLang 这类子进程型 LLM 为 True)。
+    # 前端据此决定要不要显示「组合」子菜单项 —— 给别的引擎配组是幻影预留(审查 #21)。
+    supports_gpu_group: bool = False
     vram_gb: float
     resident: bool
     # 统一引擎库(2026-06-02):区分目录条目种类供前端分组。

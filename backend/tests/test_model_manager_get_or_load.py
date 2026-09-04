@@ -149,7 +149,7 @@ async def test_oom_evicts_auto_selected_card_not_global_lru():
     assert "v2" not in mm.loaded_model_ids   # 与 OOM 同卡 → 被驱逐
     assert "v0" in mm.loaded_model_ids        # 另一张卡 → 不受影响(老 bug 会误驱它)
     assert "newm" in mm.loaded_model_ids
-    assert mm._last_attempt_gpu["newm"] == 2
+    assert mm._last_attempt_gpus["newm"] == [2]
 
 
 @pytest.mark.asyncio

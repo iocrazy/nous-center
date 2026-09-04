@@ -109,12 +109,16 @@ async def test_db_store_rejects_unknown_key(pg_engine):
 def test_card_total_prefers_loaded_gpu(monkeypatch):
     import src.api.routes.engines as eng
 
-    # gpu_summary/get_device_for_engine 在 _card_total_gb_for_engine 内部 import,patch 源模块。
+    # 预算分母现在与适配器同源 = nvidia-smi 的 MB(topology.group_budget_gb),不再是
+    # torch 的 gpu_summary —— 同一张卡两个数会让端点放行适配器算超的绝对值(审查 #4)。
     # 三卡:0=3090(24G) 1=Pro6000(96G) 2=3090(24G)。
     import src.gpu.detector as det
-    monkeypatch.setattr(det, "gpu_summary", lambda: {"devices": [
-        {"index": 0, "vram_gb": 24.0}, {"index": 1, "vram_gb": 96.0}, {"index": 2, "vram_gb": 24.0},
-    ]})
+    import src.services.gpu_monitor as gm
+    monkeypatch.setattr(gm, "poll_gpu_stats", lambda: [
+        {"index": 0, "total_mb": 24 * 1024, "free_mb": 20 * 1024},
+        {"index": 1, "total_mb": 96 * 1024, "free_mb": 90 * 1024},
+        {"index": 2, "total_mb": 24 * 1024, "free_mb": 20 * 1024},
+    ])
     monkeypatch.setattr(det, "get_device_for_engine", lambda cfg: "cuda:0")  # detector 默认给 3090
 
     cfg = {"gpu": None, "type": "embedding"}

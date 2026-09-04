@@ -273,6 +273,11 @@ class InferenceAdapter(ABC):
 
     modality: ClassVar[MediaModality] = MediaModality.MULTIMODAL
     estimated_vram_mb: ClassVar[int] = 0
+    # True = 这个适配器接受 manager 传下来的 GPU 组(`gpus=[0, 2]`,张量并行)。
+    # 默认 False:大多数适配器只会用一张卡,给它分组会造成"manager 按两张卡预留、
+    # 实际单卡跑"的幻影预留 + loaded_gpus 撒谎(2026-09-03 审查)。API 也据此拒绝
+    # 给不支持的引擎配组。
+    supports_gpu_group: ClassVar[bool] = False
 
     def __init__(self, paths: dict[str, str], device: str = "cuda", **params: Any):
         self.paths = paths
