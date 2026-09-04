@@ -1,11 +1,16 @@
-"""启动对账 helper(E-D:N+1 → 单 DISTINCT 查询)。孤儿 published→draft、有关联登记引用。"""
+"""启动对账 helper(E-D:N+1 → 单 DISTINCT 查询)。孤儿 published→draft、有关联登记引用;
+以及上次进程遗留的在飞 execution_task → failed。"""
 from unittest.mock import MagicMock
 
 import pytest
 
+from src.models.execution_task import ExecutionTask
 from src.models.service_instance import ServiceInstance
 from src.models.workflow import Workflow
-from src.services.startup_reconcile import reconcile_orphan_published_workflows
+from src.services.startup_reconcile import (
+    reconcile_orphan_inflight_tasks,
+    reconcile_orphan_published_workflows,
+)
 
 
 @pytest.mark.asyncio
@@ -44,3 +49,49 @@ async def test_orphan_published_reverts_to_draft_and_linked_registers_deps(db_se
 async def test_no_published_is_noop(db_session):
     orphan = await reconcile_orphan_published_workflows(db_session, MagicMock())
     assert orphan == 0
+
+
+@pytest.mark.asyncio
+async def test_orphan_inflight_tasks_converge_to_failed(db_session):
+    """queued/running(不管新旧)全收敛成 failed;终态行一个字都不动。"""
+    running_a = ExecutionTask(workflow_name="wf-a", status="running", nodes_total=3)
+    running_b = ExecutionTask(workflow_name="wf-b", status="running", nodes_total=1,
+                              current_node="node-7")
+    queued = ExecutionTask(workflow_name="wf-c", status="queued")
+    done = ExecutionTask(workflow_name="wf-d", status="completed",
+                         result={"ok": True}, duration_ms=1234)
+    cancelled = ExecutionTask(workflow_name="wf-e", status="cancelled",
+                              cancel_reason="client cancel")
+    db_session.add_all([running_a, running_b, queued, done, cancelled])
+    await db_session.commit()
+
+    n = await reconcile_orphan_inflight_tasks(db_session)
+
+    assert n == 3
+    for task in (running_a, running_b, queued):
+        await db_session.refresh(task)
+        assert task.status == "failed"
+        assert "重启" in (task.error or "")
+        assert task.finished_at is not None      # = API 的 completed_at
+        assert task.duration_ms is not None
+        assert task.current_node is None
+    await db_session.refresh(done)
+    await db_session.refresh(cancelled)
+    assert done.status == "completed"            # 终态不动
+    assert done.error is None
+    assert done.duration_ms == 1234              # 已有耗时不被覆盖
+    assert cancelled.status == "cancelled"
+    assert cancelled.error is None
+
+
+@pytest.mark.asyncio
+async def test_orphan_inflight_noop_when_all_terminal(db_session):
+    """全是终态 → 返回 0(调用方据此不打日志)。"""
+    db_session.add(ExecutionTask(workflow_name="wf", status="completed"))
+    await db_session.commit()
+    assert await reconcile_orphan_inflight_tasks(db_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_orphan_inflight_noop_on_empty_table(db_session):
+    assert await reconcile_orphan_inflight_tasks(db_session) == 0
