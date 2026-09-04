@@ -21,6 +21,12 @@ from typing import Any
 
 import httpx
 
+from src.services.inference._placement import (
+    LaunchPlacement,
+    apply_visible_devices,
+    estimate_model_size_gb,
+    resolve_launch_placement,
+)
 from src.services.inference.base import (
     InferenceAdapter,
     InferenceRequest,
@@ -46,6 +52,8 @@ class SGLangAdapter(InferenceAdapter):
 
     modality = MediaModality.TEXT
     estimated_vram_mb = 0
+    # 接受 manager 传下来的 GPU 组(张量并行)。见 InferenceAdapter.supports_gpu_group。
+    supports_gpu_group = True
 
     def __init__(
         self,
@@ -59,12 +67,16 @@ class SGLangAdapter(InferenceAdapter):
         dtype: str | None = None,
         max_num_seqs: int | None = None,
         adopt_pid: int | None = None,
+        gpus: list[int] | None = None,
         **kwargs: Any,
     ):
         super().__init__(paths=paths, device=device)
         self.model_path = Path(paths.get("main", ""))
         self._port = sglang_port or 0
         self._tp = tensor_parallel_size
+        # GPU 组(张量并行),由 manager 决定后传下来;None = 单卡。见 _placement.py。
+        self._gpus = [int(i) for i in gpus] if gpus else None
+        self.gpu_indices: list[int] | None = None
         self._max_model_len = max_model_len
         self._gpu_mem_util = gpu_memory_utilization
         self._quantization = quantization
@@ -105,37 +117,24 @@ class SGLangAdapter(InferenceAdapter):
             with open(config_file) as f:
                 model_config = json.load(f)
 
-        model_size_gb = sum(
-            f.stat().st_size for f in model_path.glob("*.safetensors")
-        ) / (1024**3)
-        if model_size_gb == 0:
-            model_size_gb = sum(
-                f.stat().st_size for f in model_path.glob("*.bin")
-            ) / (1024**3)
+        model_size_gb = estimate_model_size_gb(model_path)
 
         quant_config = model_config.get("quantization_config", {})
         quantization = quant_config.get("quant_method")
         # SGLang uses gptq_marlin automatically, just pass gptq
         dtype = None
 
-        gpu_stats = poll_gpu_stats()
-
-        if device and ":" in device:
-            gpu_idx = int(device.split(":")[-1])
-        else:
-            gpu_idx = (
-                max(range(len(gpu_stats)), key=lambda i: gpu_stats[i]["free_mb"])
-                if gpu_stats else 0
-            )
-
-        gpu_total_gb = gpu_stats[gpu_idx]["total_mb"] / 1024 if gpu_idx < len(gpu_stats) else 24.0
-        gpu_free_gb = gpu_stats[gpu_idx]["free_mb"] / 1024 if gpu_idx < len(gpu_stats) else 24.0
-
-        tp = self._tp or 1
-        if tp <= 1 and model_size_gb > gpu_free_gb * 0.6:
-            total_free = sum(g["free_mb"] for g in gpu_stats) / 1024
-            if total_free > model_size_gb * 1.2:
-                tp = len(gpu_stats)
+        # 落卡 / tp / 预算 —— 与 vLLM 走同一个 helper(**适配器不自己选卡**)。
+        # 老逻辑 `tp = len(gpu_stats)` 会把机器上全部卡(异构!)拉进张量并行,
+        # 且 tp>1 时不钉 CUDA_VISIBLE_DEVICES —— 与 vLLM 那边是同一个坑,一起修。
+        placement = resolve_launch_placement(
+            device=device, gpus=self._gpus, requested_tp=self._tp,
+            stats=poll_gpu_stats(), label="SGLang",
+        )
+        tp = placement.tp
+        gpu_idx = placement.primary
+        gpu_total_gb = placement.total_gb or 24.0
+        gpu_free_gb = placement.free_gb or gpu_total_gb
 
         if tp > 1:
             per_gpu_model = model_size_gb / tp
@@ -174,6 +173,8 @@ class SGLangAdapter(InferenceAdapter):
         return {
             "port": port,
             "tp": tp,
+            "gpus": list(placement.cards) if tp > 1 else None,
+            "cards": list(placement.cards),
             "max_model_len": max_model_len,
             "utilization": round(utilization, 2),
             "quantization": quantization,
@@ -202,7 +203,10 @@ class SGLangAdapter(InferenceAdapter):
 
         auto = self._auto_configure(device)
         port = self._port or auto["port"]
-        tp = self._tp or auto["tp"]
+        # tp / 落卡在 _auto_configure 里已定死(resolve_launch_placement),不再重算。
+        tp = auto["tp"]
+        cards: list[int] = list(auto.get("cards") or [])
+        self.gpu_indices = list(cards) if cards else None
         max_model_len = self._max_model_len or auto["max_model_len"]
         self.max_model_len = max_model_len
         utilization = self._gpu_mem_util or auto["utilization"]
@@ -214,8 +218,8 @@ class SGLangAdapter(InferenceAdapter):
         self.base_url = self._base_url
 
         logger.info(
-            "SGLang auto-config: model=%.1fGB, tp=%d, max_len=%d, util=%.2f, seqs=%d, quant=%s",
-            auto["model_size_gb"], tp, max_model_len, utilization, max_num_seqs, quantization,
+            "SGLang auto-config: model=%.1fGB, tp=%d, gpus=%s, max_len=%d, util=%.2f, seqs=%d, quant=%s",
+            auto["model_size_gb"], tp, cards, max_model_len, utilization, max_num_seqs, quantization,
         )
 
         from src.config import get_settings
@@ -245,12 +249,12 @@ class SGLangAdapter(InferenceAdapter):
         env["TORCH_HOME"] = str(Path(_cache_root) / "torch")
         env["XDG_CACHE_HOME"] = _cache_root
 
-        if tp <= 1 and device:
-            gpu_idx = device.split(":")[-1] if ":" in device else "0"
-            env["CUDA_VISIBLE_DEVICES"] = gpu_idx
-            logger.info("Starting SGLang on GPU %s: %s", gpu_idx, " ".join(cmd))
-        else:
-            logger.info("Starting SGLang (TP=%d): %s", tp, " ".join(cmd))
+        # **永远显式钉 CUDA_VISIBLE_DEVICES**(单卡也钉)——见 _placement 的三条不变式。
+        apply_visible_devices(
+            env,
+            LaunchPlacement(cards=cards, tp=tp, total_gb=0.0, free_gb=0.0),
+            cmd, "SGLang",
+        )
 
         self._process = subprocess.Popen(
             cmd,

@@ -294,23 +294,24 @@ async def _compute_system_stats(request: Request):
     # Add loaded models to GPU info
     from src.config import load_model_configs
     from src.gpu.detector import get_device_for_engine
+    from src.gpu.topology import resolve_gpus
 
     configs = load_model_configs()
     loaded = model_mgr.loaded_model_ids if model_mgr is not None else []
     for model_key in loaded:
         cfg = configs.get(model_key, {})
-        gpu_idx = cfg.get("gpu")
-        # If the config didn't pin a GPU, resolve via detector (same logic the
-        # scheduler used at load time, so the answer matches where the engine
-        # actually landed).
-        if gpu_idx is None:
+        # 张量并行的模型占多张卡 —— 只读 cfg["gpu"] 会让它只出现在一张卡下(审查 #23)。
+        # 真实落卡(manager 的 gpu_indices)优先于配置;都没有才让 detector 推断。
+        entry = getattr(model_mgr, "_models", {}).get(model_key) if model_mgr else None
+        cards = list(entry.cards()) if entry is not None else resolve_gpus(cfg)
+        if not cards:
             device = get_device_for_engine(cfg)
             if device.startswith("cuda:"):
                 try:
-                    gpu_idx = int(device.split(":")[-1])
+                    cards = [int(device.split(":")[-1])]
                 except ValueError:
-                    gpu_idx = None
-        if isinstance(gpu_idx, int):
+                    cards = []
+        for gpu_idx in cards:
             # Find the GPU in our list and add the model
             matched = False
             for g in gpus:

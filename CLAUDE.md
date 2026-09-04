@@ -71,24 +71,36 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 
 ## GPU 放置 / 张量并行 (GPU groups)
 
-- 本机三张卡(PCI 序):`cuda:0` = RTX 3090 24G、`cuda:1` = RTX PRO 6000 96G、
-  `cuda:2` = RTX 3090 24G。**0 与 2 之间有 NVLink**(`nvidia-smi topo -m` 显示 NV4),
-  Pro 6000 无 NVLink。生产经 `src/api/main.py` setdefault 了 `CUDA_DEVICE_ORDER=PCI_BUS_ID`。
-- **模型级 `gpus: [0, 2]`**(与单卡 `gpu: int` 并存,**给了 gpus 就以它为准**)=
-  以张量并行跨这组卡加载,`tp = len(gpus)`(显式 `tensor_parallel_size` 只能收窄)。
-  三处落点:models.yaml 的 `gpus:`、运行时覆盖表 `model_runtime_overrides.gpus`(JSONB)、
-  `PATCH /api/v1/engines/{name}/gpu` 的 body `{"gpus":[0,2]}`(单卡仍是 `?gpu=N`,
-  设单卡会显式清空组)。前端「GPU 分配」右键子菜单从 `GET /api/v1/gpu/groups` 拉候选。
-- **异构卡绝不混做张量并行**。自动选组(`src/gpu/topology.py::select_tp_group`)按
-  `name` 分同型号组 → 组内每卡都要装得下分片(按**最小** free 算,不是 sum)→ NVLink
-  全连通的组优先。选不出来就退单卡最大者并 `logger.error` 说明,**不再**像老代码那样
-  `tp = len(gpu_stats)` 把三张异构卡一起拉进 TP。
-- **tp > 1 必须伴随显式 `CUDA_VISIBLE_DEVICES`**。老代码只在 tp<=1 时钉,tp>1 时什么都
-  不设 → 子进程继承父进程环境看到全部卡。改这块时别把 `llm_vllm.py` 里那段 CVD 逻辑
-  简化回去。显存预算(`clamp_util_to_free` / `_card_total_gb_for_engine`)一律按组内
-  **最小** total/free 算 —— `gpu_memory_utilization` 是每卡比例,按 sum 算会启动即 OOM。
-- `hardware.yaml` 的 `groups[]` 是**另一回事**(runner 子进程的调度分组,`GPUAllocator`
-  用),语义没变;模型级 GPU 放置是按模型灵活配的,不写死在 hardware.yaml。
+- 本机三张卡(PCI 序):`cuda:0` = RTX 3090 24G(**驱动显示器**)、`cuda:1` = RTX PRO 6000
+  96G、`cuda:2` = RTX 3090 24G。0 与 2 之间有 NVLink(`nvidia-smi topo -m` 显示 NV4)。
+  生产经 `src/api/main.py` setdefault 了 `CUDA_DEVICE_ORDER=PCI_BUS_ID`。
+- **放置决策只在 `ModelManager._resolve_placement` 一处**。适配器(vLLM/SGLang)只执行
+  传下来的 `device`/`gpus`,**绝不自己换卡** —— 适配器自作主张换卡会造成「预算按 A 卡算、
+  `CUDA_VISIBLE_DEVICES` 钉 B 卡」的启动期 OOM,manager 记的落卡也和真实占用对不上。
+- **显式 `gpu`/`gpus` 是硬约束**:装不下就 `ModelLoadError`(信息里给可用组的建议),
+  不自动搬。只有没有任何显式放置的模型才走自动选卡/选组。
+- **模型级 `gpus: [0, 2]`**(与单卡 `gpu` 并存,给了就以它为准)= 张量并行跨这组卡,
+  `tp = len(gpus)`(显式 `tensor_parallel_size` 只能**收窄**)。落点:models.yaml 的
+  `gpus:`、`model_runtime_overrides.gpus`(JSONB **三态**:NULL=未覆盖 / `[]`=显式清空组 /
+  `[0,2]`=组;没有 `[]` 这个哨兵,YAML 配了组的模型永远退不出组)、
+  `PATCH /api/v1/engines/{name}/gpu` 的 body `{"gpus":[0,2]}`(单卡仍是 `?gpu=N`)。
+- **候选组的权威来源是 `configs/hardware.yaml`**(经 `GPUAllocator._build_groups` 解析),
+  **不是**代码枚举卡的组合 —— 那份 yaml 记着运维约束(GPU 0 驱动显示器,腾空前别用于 TP)。
+  `nvidia-smi topo -m` 只用于 nvlink 的**校验/补缺**。yaml 没声明多卡 group →
+  `GET /api/v1/gpu/groups` 返回空 + hint,菜单里就没有「组合」项。要跨卡先去 yaml 加组。
+- 组的硬性校验(`topology.validate_gpu_group`,HTTP 与 YAML 路径共用):≥2 张、去重、
+  卡存在、**同型号**、大小是 **2 的幂**(tp 要整除注意力头数)。显示卡只 warning
+  (与单卡路径一致)。YAML 里写了非法组 → log error 并忽略该字段,不阻塞启动。
+- **绝不存在「不钉卡」的启动分支**(`inference/_placement.py` 的三条不变式)。要 tp>1
+  却没有组 → 退单卡 + `logger.error`,不拿"全部可见卡"顶上(那正是 2026-09-02 事故的
+  形状)。没有落卡结论时钉 `CUDA_VISIBLE_DEVICES=""`。
+- 只有 `supports_gpu_group = True` 的适配器(vLLM / SGLang)能吃组;别的引擎配组会被
+  API 400 拒,manager 也只对它们做组预留(否则是幻影预留 + `loaded_gpus` 撒谎)。
+- 显存预算(`topology.group_budget_gb`,**唯一实现**)按组内**最小** total/free 算,
+  不是求和 —— `gpu_memory_utilization` 是每卡比例。预算端点与适配器同源(nvidia-smi 的
+  MB),别一边用 torch 的 `gpu_summary()` 一边用 nvidia-smi。
+- `gpu`/`gpus` 优先级的唯一实现是 `topology.resolve_gpus(cfg_or_spec)`;
+  API 响应里 **`gpu` 永远是主卡 int、`gpus` 是唯一的列表字段**(单卡为 None)。
 
 ## 图像引擎 (image engine)
 

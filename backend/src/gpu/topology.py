@@ -1,25 +1,28 @@
-"""GPU 拓扑:NVLink 直连关系 + 「同型号可组队」候选组。
+"""GPU 拓扑与放置规则 —— `gpu`/`gpus` 优先级、组校验、组预算、可用组候选。
 
-为什么要这个模块 —— 张量并行(tensor parallel, tp>1)**只在同型号卡之间成立**:
-vLLM 把权重按卡数均分,组内最小的卡决定整组上限。把 96G 的 Pro 6000 和 24G 的 3090
-混做一组,要么按最小卡 24G 算把大卡浪费掉,要么直接 OOM。所以自动选组必须先按
-``name`` 分组,**绝不混异构**。
+**权威来源是 `configs/hardware.yaml`**(经 `GPUAllocator._build_groups` 解析,这里不另起
+一套解析)。那份 yaml 记着运维约束 —— 比如本机 GPU 0 是显示卡,虽然与 GPU 2 之间有
+NVLink,但在把显示器挪走之前不该拿来跑张量并行。所以「哪些卡可以组成一个 TP 单元」
+只认 yaml 里声明的多卡 group;`nvidia-smi topo -m` 在这里**只用于校验/补缺**
+(yaml 没写 nvlink 时探测一下、写了但探不到时告警),不构成新的候选来源。
 
-NVLink 是次级偏好:``nvidia-smi topo -m`` 里两卡交叉格是 ``NV<n>``(n=链路数)时,
-它们之间的 all-reduce 走 NVLink 而不是 PCIe/主机桥,TP 的每步同步开销小一个量级。
-拿不到拓扑(没有 nvidia-smi / 解析失败)时一律视为「无 NVLink」——降级成"能跑但慢",
-不阻塞选组。
+张量并行(tp>1)的两条硬规则:
+  1. **只在同型号卡之间**:vLLM 按卡数均分权重,组内最小的卡决定整组上限。96G 的
+     Pro 6000 和 24G 的 3090 混一组,要么按 24G 算白扔 72G,要么启动即 OOM。
+  2. **组大小是 2 的幂**:tp 必须整除注意力头数,非 2 的幂在真实模型上基本起不来。
 
-放在独立文件而非 detector.py:detector 是 torch 侧的设备发现,这里全部走 nvidia-smi
-文本(测试里 torch 被 mock,拓扑仍要能查)。
+放置决策本身**只发生在 `ModelManager._resolve_placement` 一处**;适配器只执行传下来的
+device / gpus(2026-09-03 审查)。本模块提供它需要的纯函数。
 """
 
 from __future__ import annotations
 
-import itertools
 import logging
 import re
 import subprocess
+import threading
+import time
+from itertools import combinations
 
 logger = logging.getLogger(__name__)
 
@@ -27,27 +30,26 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _GPU_ROW_RE = re.compile(r"^GPU(\d+)\b")
 _NVLINK_CELL_RE = re.compile(r"^NV\d+$")
 
-# 进程内缓存:拓扑与卡名在进程生命周期里不变(热插拔 GPU 不在支持范围)。
-_cached_nvlink: set[frozenset[int]] | None = None
-_cached_names: dict[int, str] | None = None
+# 允许的 TP 组大小(2 的幂;vLLM 要求 tp 整除注意力头数)。
+_ALLOWED_GROUP_SIZES = (2, 4, 8)
+# 候选组返回上限 —— 菜单不该被几十项撑爆。
+_MAX_CANDIDATES = 8
+
+# 拓扑缓存。**失败不永久缓存**:探测失败(nvidia-smi 缺失/超时)只压 30s 负缓存,
+# 否则一次启动期抖动就让整个进程余生都以为"没有 NVLink"(审查 #18)。
+_NEGATIVE_TTL_S = 30.0
+_cache_lock = threading.Lock()
+_nvlink_cache: tuple[float, set[frozenset[int]]] | None = None  # (expires_at, pairs)
 
 
-def _run_smi(args: list[str], timeout: float = 5.0) -> str | None:
-    try:
-        r = subprocess.run(
-            ["nvidia-smi", *args], capture_output=True, text=True, timeout=timeout
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0:
-        return None
-    return r.stdout
-
+# ---------------------------------------------------------------------------
+# nvidia-smi topo -m —— 只用于 nvlink 的校验/补缺
+# ---------------------------------------------------------------------------
 
 def parse_topo_matrix(text: str) -> set[frozenset[int]]:
-    """解析 ``nvidia-smi topo -m`` 输出 → NVLink 直连的 GPU index 对集合。
+    """解析 ``nvidia-smi topo -m`` → NVLink 直连的 GPU index 对集合。
 
-    行形如 ``GPU0\t X \tNODE\tNV4\t0-47\t...``:第 0 列是行标签,随后 N 列是与
+    行形如 ``GPU0\\t X \\tNODE\\tNV4\\t0-47\\t...``:第 0 列是行标签,随后 N 列是与
     GPU0..GPU{N-1} 的连接类型,再往后是 CPU/NUMA affinity 等无关列。N 由 GPU 行数
     决定(比数表头列更稳:表头带 ANSI 转义且各驱动版本列名不一)。
     """
@@ -63,59 +65,48 @@ def parse_topo_matrix(text: str) -> set[frozenset[int]]:
     pairs: set[frozenset[int]] = set()
     for idx, cells in rows:
         for j, cell in enumerate(cells[:n]):
-            if j == idx:
-                continue
-            if _NVLINK_CELL_RE.match(cell):
+            if j != idx and _NVLINK_CELL_RE.match(cell):
                 pairs.add(frozenset((idx, j)))
     return pairs
 
 
 def nvlink_pairs(refresh: bool = False) -> set[frozenset[int]]:
-    """有 NVLink 直连的 GPU index 对(``{frozenset({0, 2}), ...}``)。
+    """有 NVLink 直连的 GPU index 对。探测不到 → 空集(视为无 NVLink,只降级不阻塞)。
 
-    拿不到拓扑 → 空集(= 视为无 NVLink)。**绝不因此报错**:NVLink 只是偏好,
-    没有它 TP 照样能跑。
+    成功的结果长期缓存(拓扑不会中途变);**失败只缓存 30 秒**,下次调用会重试。
     """
-    global _cached_nvlink
-    if _cached_nvlink is not None and not refresh:
-        return set(_cached_nvlink)
-    out = _run_smi(["topo", "-m"])
-    if out is None:
-        _cached_nvlink = set()
-        return set()
+    global _nvlink_cache
+    now = time.monotonic()
+    with _cache_lock:
+        if not refresh and _nvlink_cache is not None and _nvlink_cache[0] > now:
+            return set(_nvlink_cache[1])
+
+    pairs: set[frozenset[int]] = set()
+    ok = False
     try:
-        _cached_nvlink = parse_topo_matrix(out)
-    except Exception as e:  # noqa: BLE001 — 拓扑解析失败降级成「无 NVLink」
-        logger.warning("解析 nvidia-smi topo -m 失败,视为无 NVLink:%s", e)
-        _cached_nvlink = set()
-    return set(_cached_nvlink)
+        r = subprocess.run(
+            ["nvidia-smi", "topo", "-m"], capture_output=True, text=True, timeout=5
+        )
+        if r.returncode == 0:
+            pairs = parse_topo_matrix(r.stdout)
+            ok = True
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as e:
+        logger.warning("nvidia-smi topo -m 探测失败(%s)—— 暂按无 NVLink 处理,%.0fs 后重试",
+                       type(e).__name__, _NEGATIVE_TTL_S)
+    except Exception as e:  # noqa: BLE001 — 解析异常同样降级
+        logger.warning("解析 nvidia-smi topo -m 失败,暂按无 NVLink 处理:%s", e)
 
-
-def gpu_names(refresh: bool = False) -> dict[int, str]:
-    """``{index: 型号名}``。同型号判定的依据(自动组队只在同名卡之间做)。"""
-    global _cached_names
-    if _cached_names is not None and not refresh:
-        return dict(_cached_names)
-    out = _run_smi(["--query-gpu=index,name", "--format=csv,noheader"])
-    names: dict[int, str] = {}
-    if out:
-        for line in out.strip().splitlines():
-            parts = [p.strip() for p in line.split(",", 1)]
-            if len(parts) < 2:
-                continue
-            try:
-                names[int(parts[0])] = parts[1]
-            except ValueError:
-                continue
-    _cached_names = names
-    return dict(names)
+    with _cache_lock:
+        # 成功 → 永久(float("inf"));失败 → 30s 后重试。
+        _nvlink_cache = (float("inf") if ok else now + _NEGATIVE_TTL_S, pairs)
+    return set(pairs)
 
 
 def reset_cache() -> None:
-    """清进程内缓存(测试用)。"""
-    global _cached_nvlink, _cached_names
-    _cached_nvlink = None
-    _cached_names = None
+    """清拓扑缓存(测试用)。"""
+    global _nvlink_cache
+    with _cache_lock:
+        _nvlink_cache = None
 
 
 def group_is_nvlinked(gpus: list[int], pairs: set[frozenset[int]] | None = None) -> bool:
@@ -124,102 +115,329 @@ def group_is_nvlinked(gpus: list[int], pairs: set[frozenset[int]] | None = None)
         return False
     if pairs is None:
         pairs = nvlink_pairs()
-    return all(frozenset((a, b)) in pairs for a, b in itertools.combinations(gpus, 2))
+    return all(frozenset((a, b)) in pairs for a, b in combinations(gpus, 2))
 
 
-def candidate_groups(
-    stats: list[dict] | None = None,
-    names: dict[int, str] | None = None,
-    pairs: set[frozenset[int]] | None = None,
-    max_size: int = 4,
-) -> list[dict]:
-    """可用于张量并行的**同型号**候选组(size ≥ 2)。
+def warm_caches() -> None:
+    """启动时预热拓扑/卡信息(同步 subprocess —— 调用方丢 to_thread)。
 
-    返回 ``[{"gpus": [0, 2], "name": "RTX 3090", "nvlink": True, "total_gb": 48.0}, ...]``,
-    NVLink 组优先、其次卡数少的、其次 index 小的。前端「GPU 分配 → 组合」子菜单直接吃这个。
-    异构卡永不成组 —— 这正是本函数存在的意义。
+    之后 `nvlink_pairs()` / `gpu_names()` 都是缓存命中,不会在请求路径或 load 路径上
+    再吃一次 nvidia-smi 的几十毫秒(审查 #17)。
     """
+    try:
+        nvlink_pairs(refresh=True)
+        gpu_names()
+    except Exception as e:  # noqa: BLE001 — 预热失败不该拖垮启动
+        logger.warning("GPU 拓扑预热失败(不影响启动):%s", e)
+
+
+# ---------------------------------------------------------------------------
+# 卡信息 —— 复用 detector 的缓存,不再自己 shell-out
+# ---------------------------------------------------------------------------
+
+def gpu_names() -> dict[int, str]:
+    """``{index: 型号名}``,来自 `detector.get_gpus()`(进程内缓存)。同型号判定的依据。"""
+    from src.gpu.detector import get_gpus  # noqa: PLC0415
+
+    try:
+        return {g.index: g.name for g in get_gpus()}
+    except Exception:  # noqa: BLE001 — 无 torch / 无 GPU 环境
+        return {}
+
+
+def gpu_totals_gb() -> dict[int, float]:
+    """``{index: 总显存 GB}``,同样来自 `detector.get_gpus()` 的缓存。"""
+    from src.gpu.detector import get_gpus  # noqa: PLC0415
+
+    try:
+        return {g.index: g.vram_total_gb for g in get_gpus()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def display_gpu_indices() -> set[int]:
+    """驱动显示服务的卡 —— 与单卡路径同一个探测(`detector.get_display_gpu_indices`)。"""
+    from src.gpu.detector import get_display_gpu_indices  # noqa: PLC0415
+
+    return get_display_gpu_indices()
+
+
+# ---------------------------------------------------------------------------
+# gpu / gpus 优先级 —— 唯一实现
+# ---------------------------------------------------------------------------
+
+def _field(obj, key: str):
+    """从 dict(models.yaml cfg)或对象(ModelSpec)取字段,两种形状同一套读法。"""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def resolve_gpus(config_or_spec) -> list[int]:
+    """该模型显式配置的落卡列表 —— **`gpu`/`gpus` 优先级的唯一实现**。
+
+    `gpus`(组)优先于 `gpu`(单卡);都没有 → ``[]``(= 交给自动选卡)。
+    `gpus: []` 是「显式清空组」的哨兵(运行时覆盖用它区分"没设"和"设为无组"),
+    此时回落到 `gpu`。
+    返回值永远是去重后的 int 列表,顺序保持配置里的顺序。
+    """
+    raw_group = _field(config_or_spec, "gpus")
+    out: list[int] = []
+    if isinstance(raw_group, (list, tuple)):
+        for v in raw_group:
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv >= 0 and iv not in out:
+                out.append(iv)
+        if out:
+            return out
+
+    single = _field(config_or_spec, "gpu")
+    if isinstance(single, bool) or single is None:
+        return []
+    if isinstance(single, int):
+        return [single] if single >= 0 else []
+    if isinstance(single, (list, tuple)):  # 历史形状:gpu 也可能是 list
+        for v in single:
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv >= 0 and iv not in out:
+                out.append(iv)
+        return out
+    if isinstance(single, str) and single.startswith("cuda"):
+        try:
+            return [int(single.split(":")[-1])]
+        except ValueError:
+            return []
+    return []
+
+
+# ---------------------------------------------------------------------------
+# 组校验 —— HTTP 路径与 YAML 加载路径共用的唯一实现
+# ---------------------------------------------------------------------------
+
+def validate_gpu_group(
+    gpus, *, groups: list | None = None, check_warnings: bool = True
+) -> tuple[list[int], list[str], list[str]]:
+    """校验一个 GPU 组。→ ``(归一化后的组, errors, warnings)``。
+
+    errors 非空 = 这个组不能用(HTTP 400 / YAML 加载时忽略并 log error):
+      * 不是整数列表 / 有重复 / 少于 2 张 / 大小不是 2 的幂
+      * 卡不存在
+      * **异构**(型号不一致)
+    warnings = 能用但要提醒(与单卡路径行为一致 —— 单卡钉到显示卡也只是 warning):
+      * 组内有卡在驱动显示服务
+      * 组没在 hardware.yaml 里声明(绕过了拓扑权威的软偏好)
+      * 组内并非两两 NVLink 直连(TP 走 PCIe,慢)
+
+    `check_warnings=False` 只跑 errors —— 那部分全部走 `gpu_names()` 的进程内缓存,
+    没有 subprocess。YAML 加载路径(同步、可能在事件循环上)用它,别在那儿吃
+    `nvidia-smi` 的几十毫秒;HTTP 路径走完整版(路由已丢 to_thread)。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        norm = [int(i) for i in gpus]
+    except (TypeError, ValueError):
+        return [], ["gpus must be a list of integers"], []
+    if len(set(norm)) != len(norm):
+        errors.append("gpus contains duplicate indices")
+    if len(norm) < 2:
+        errors.append("a GPU group needs at least 2 cards")
+    elif len(norm) not in _ALLOWED_GROUP_SIZES:
+        errors.append(
+            f"GPU 组大小必须是 2 的幂({', '.join(map(str, _ALLOWED_GROUP_SIZES))}):"
+            f"tp 要整除注意力头数,{len(norm)} 张卡的组起不来"
+        )
+    if errors:
+        return [], errors, warnings
+
+    norm = sorted(norm)
+    names = gpu_names()
+    if names:
+        missing = [i for i in norm if i not in names]
+        if missing:
+            errors.append(f"unknown GPU index: {missing}")
+            return [], errors, warnings
+        distinct = {names[i] for i in norm}
+        if len(distinct) > 1:
+            errors.append(
+                "GPU 组必须同型号(异构卡做张量并行会按最小卡算或直接 OOM):"
+                f"{sorted(distinct)}"
+            )
+            return [], errors, warnings
+
+    if not check_warnings:
+        return norm, errors, warnings
+
+    on_display = sorted(set(norm) & display_gpu_indices())
+    if on_display:
+        warnings.append(
+            f"GPU 组 {norm} 里 {on_display} 在驱动显示服务 —— 重负载会把桌面挤崩"
+        )
+    if groups is None:
+        groups = hardware_groups()
+    declared = {tuple(sorted(g.gpus)) for g in groups if len(g.gpus) > 1}
+    if declared and tuple(norm) not in declared:
+        warnings.append(
+            f"GPU 组 {norm} 未在 hardware.yaml 里声明(已声明的多卡组:"
+            f"{[list(d) for d in sorted(declared)]})"
+        )
+    if not group_is_nvlinked(norm):
+        warnings.append(f"GPU 组 {norm} 并非两两 NVLink 直连 —— TP 同步走 PCIe,较慢")
+    return norm, errors, warnings
+
+
+def sanitize_config_gpus(model_id: str, config_or_entry) -> list[int] | None:
+    """YAML / 覆盖里读到的 `gpus` 过一遍校验。非法 → log error 并返回 None(忽略该字段,
+    **不阻塞启动**);合法 → 返回归一化后的组。单卡 `gpu` 不走这里。"""
+    raw = _field(config_or_entry, "gpus")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+    norm, errors, warnings = validate_gpu_group(list(raw), check_warnings=False)
+    if errors:
+        logger.error("模型 %s 的 gpus=%s 非法,已忽略(按单卡 gpu / 自动选卡处理):%s",
+                     model_id, list(raw), "; ".join(errors))
+        return None
+    for w in warnings:
+        logger.warning("模型 %s 的 GPU 组:%s", model_id, w)
+    return norm
+
+
+# ---------------------------------------------------------------------------
+# 组预算 —— 组内最小 total/free(唯一实现)
+# ---------------------------------------------------------------------------
+
+def group_budget_gb(idxs: list[int], stats: list[dict] | None = None) -> tuple[float, float]:
+    """一组卡的 ``(total_gb, free_gb)`` —— 取组内**最小**,不是求和。
+
+    TP 均分权重、`gpu_memory_utilization` 是**每卡**比例,组内最小的卡先见底。按 sum
+    算会让预算端点放行一个单卡装不下的绝对值,适配器再照着它起 → 启动即 OOM。
+    预算端点与适配器都必须走这一个实现(数据源统一为 nvidia-smi 的 MB,不混 torch 的
+    四舍五入 GB)。查不到 → (0.0, 0.0),调用方按"未知"处理。
+    """
+    if not idxs:
+        return 0.0, 0.0
     if stats is None:
         from src.services.gpu_monitor import poll_gpu_stats  # noqa: PLC0415
 
         stats = poll_gpu_stats()
-    if names is None:
-        names = gpu_names()
-    if pairs is None:
-        pairs = nvlink_pairs()
+    by_index = {int(s["index"]): s for s in stats}
+    cards = [by_index[i] for i in idxs if i in by_index]
+    if not cards:
+        return 0.0, 0.0
+    return (
+        min(float(c.get("total_mb") or 0) for c in cards) / 1024,
+        min(float(c.get("free_mb") or 0) for c in cards) / 1024,
+    )
 
-    total_by_idx = {int(s["index"]): float(s.get("total_mb") or 0) / 1024 for s in stats}
-    by_name: dict[str, list[int]] = {}
-    for idx in sorted(total_by_idx):
-        by_name.setdefault(names.get(idx, f"GPU{idx}"), []).append(idx)
+
+# ---------------------------------------------------------------------------
+# 候选组 —— 权威来源是 hardware.yaml
+# ---------------------------------------------------------------------------
+
+def hardware_groups(hardware_config: dict | None = None) -> list:
+    """hardware.yaml 的 group 拓扑,**复用 `GPUAllocator` 的解析**(不另起一套)。
+
+    读不到 / 解析失败 → `[]`(候选组为空,UI 就只剩单卡项 —— 这正是"没声明过多卡组"
+    该有的样子)。
+    """
+    try:
+        from src.config import load_hardware_config  # noqa: PLC0415
+        from src.services.gpu_allocator import GPUAllocator  # noqa: PLC0415
+
+        cfg = load_hardware_config() if hardware_config is None else hardware_config
+        return GPUAllocator(poll_fn=lambda: [], hardware_config=cfg).groups()
+    except Exception as e:  # noqa: BLE001 — 拓扑读不到不该拖垮调用方
+        logger.warning("读 hardware.yaml 组拓扑失败,按无多卡组处理:%s", e)
+        return []
+
+
+def candidate_groups(groups: list | None = None) -> list[dict]:
+    """可用于张量并行的候选组 —— **hardware.yaml 里声明的多卡 group**,过完同型号/大小校验。
+
+    返回
+    ``[{"gpus":[0,2], "name":"RTX 3090", "nvlink":true, "total_gb":48.0, "display_gpus":[0]}]``,
+    NVLink 组优先、卡数少的优先。异构组、大小非 2 的幂的组会被丢掉并 log error ——
+    它们不是"可选但不推荐",是根本起不来。
+
+    `nvlink` 以 yaml 为准,yaml 没标(False)时用 `topo -m` **补缺**;yaml 标了 true 但
+    探测不到则保留 yaml 的值并告警(拓扑可能只是查不到)。
+    """
+    if groups is None:
+        groups = hardware_groups()
+    names = gpu_names()
+    totals = gpu_totals_gb()
+    pairs = nvlink_pairs()
+    display = display_gpu_indices()
 
     out: list[dict] = []
-    for name, idxs in by_name.items():
-        if len(idxs) < 2:
+    for g in groups:
+        gpus = sorted(int(i) for i in g.gpus)
+        if len(gpus) < 2:
             continue
-        for size in range(2, min(len(idxs), max_size) + 1):
-            for combo in itertools.combinations(idxs, size):
-                gpus = list(combo)
-                out.append(
-                    {
-                        "gpus": gpus,
-                        "name": name,
-                        "nvlink": group_is_nvlinked(gpus, pairs),
-                        "total_gb": round(sum(total_by_idx.get(i, 0.0) for i in gpus), 1),
-                    }
-                )
-    out.sort(key=lambda g: (not g["nvlink"], len(g["gpus"]), g["gpus"]))
-    return out
+        norm, errors, _ = validate_gpu_group(gpus, groups=groups)
+        if errors:
+            logger.error("hardware.yaml 的组 %s(%s)不可用于张量并行:%s",
+                         g.id, gpus, "; ".join(errors))
+            continue
+        detected = group_is_nvlinked(norm, pairs)
+        if g.nvlink and not detected:
+            logger.warning("hardware.yaml 的组 %s 标了 nvlink,但 topo -m 没探到直连", g.id)
+        out.append({
+            "id": g.id,
+            "gpus": norm,
+            "name": names.get(norm[0], f"GPU{norm[0]}"),
+            "nvlink": bool(g.nvlink or detected),
+            "total_gb": round(sum(totals.get(i, 0.0) for i in norm), 1),
+            "display_gpus": sorted(set(norm) & display),
+        })
+    out.sort(key=lambda d: (not d["nvlink"], len(d["gpus"]), d["gpus"]))
+    return out[:_MAX_CANDIDATES]
 
 
 def select_tp_group(
-    stats: list[dict],
     model_size_gb: float,
     *,
-    names: dict[int, str] | None = None,
-    pairs: set[frozenset[int]] | None = None,
+    groups: list | None = None,
+    candidates: list[dict] | None = None,
     exact_size: int | None = None,
+    stats: list[dict] | None = None,
     headroom: float = 1.2,
-    max_size: int = 4,
 ) -> list[int]:
     """给一个装不下单卡的模型挑一组卡做张量并行。挑不到返回 ``[]``。
 
-    规则(顺序即优先级):
-      1. **只在同型号卡之间挑** —— 异构组队要么按最小卡算白扔大卡显存,要么启动即 OOM;
-      2. 组内每张卡都要装得下自己那份分片:``min(free) * size >= model_size * headroom``
-         (按组内**最小** free 算,不是求和 —— TP 是均分,最小的卡先炸);
-      3. NVLink 全连通的组优先;
-      4. 同为 NVLink(或同为非 NVLink)时,卡数少的优先(省卡),再按组内总 free 多的优先。
+    只在 `candidate_groups()`(= hardware.yaml 声明过、且过了同型号校验的组)里挑 ——
+    **不自己枚举卡的组合**,否则就绕过了 yaml 里的运维约束(比如"GPU 0 是显示卡,
+    腾空前别拿它做 tp")。
 
-    ``exact_size`` 非空时只考虑该卡数的组(用于「用户显式配了 tensor_parallel_size=N
-    但没配 gpus」的场景)。
+    过滤:组内每张卡都要装得下自己那份分片,``min(free) * size >= model_size * headroom``
+    (按组内**最小** free 算,不是求和 —— 最小的卡先炸)。
+    排序:NVLink 优先 → 卡数少优先 → 组内总 free 多优先。
     """
-    if names is None:
-        names = gpu_names()
-    if pairs is None:
-        pairs = nvlink_pairs()
+    if candidates is None:
+        candidates = candidate_groups(groups)
+    if stats is None:
+        from src.services.gpu_monitor import poll_gpu_stats  # noqa: PLC0415
 
-    by_name: dict[str, list[dict]] = {}
-    for s in stats:
-        idx = int(s["index"])
-        by_name.setdefault(names.get(idx, f"GPU{idx}"), []).append(s)
+        stats = poll_gpu_stats()
 
     best: tuple[tuple, list[int]] | None = None
-    for cards in by_name.values():
-        if len(cards) < 2:
+    for cand in candidates:
+        gpus = list(cand["gpus"])
+        if exact_size is not None and len(gpus) != exact_size:
             continue
-        cards = sorted(cards, key=lambda c: int(c["index"]))
-        sizes = [exact_size] if exact_size else range(2, min(len(cards), max_size) + 1)
-        for size in sizes:
-            if not size or size < 2 or size > len(cards):
-                continue
-            for combo in itertools.combinations(cards, size):
-                idxs = [int(c["index"]) for c in combo]
-                min_free_gb = min(float(c.get("free_mb") or 0) for c in combo) / 1024
-                if min_free_gb * size < model_size_gb * headroom:
-                    continue
-                total_free = sum(float(c.get("free_mb") or 0) for c in combo)
-                key = (group_is_nvlinked(idxs, pairs), -size, total_free)
-                if best is None or key > best[0]:
-                    best = (key, idxs)
+        _total, free = group_budget_gb(gpus, stats)
+        if free * len(gpus) < model_size_gb * headroom:
+            continue
+        key = (bool(cand["nvlink"]), -len(gpus), free * len(gpus))
+        if best is None or key > best[0]:
+            best = (key, gpus)
     return list(best[1]) if best else []

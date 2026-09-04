@@ -68,12 +68,17 @@ async def set_override(session, model_id: str, key: str, value) -> None:
     if key == "resident":
         row.resident = bool(value)
     elif key == "gpu":
-        # 钉单卡 = 显式取消 GPU 组(否则组仍优先,用户点「GPU 1」却还落在 0+2 上)。
+        # 钉单卡 = **显式清空** GPU 组。写 `[]`(不是 NULL):NULL 表示"没覆盖过",
+        # 合并时会退回 models.yaml 的 `gpus:` —— 那样用户点「GPU 1」表面写了单卡、
+        # 实际仍按 YAML 的组加载(审查 #9)。
         row.gpu = int(value)
-        row.gpus = None
+        row.gpus = []
     elif key == "gpus":
-        # value = [0, 2] / None(清除组,回退单卡 gpu)
-        row.gpus = [int(i) for i in value] if value else None
+        # value = [0, 2] 设组;[] / None = 显式清空组(回退单卡 gpu)。
+        # 同步把 gpu 设成组首卡,让 `gpu` 永远是"主卡"这条字段规则成立(审查 #6/#16)。
+        row.gpus = [int(i) for i in value] if value else []
+        if row.gpus:
+            row.gpu = row.gpus[0]
     elif key == "vram_budget":
         # value = {"mode": auto|percent|absolute, "value": float?}
         row.vram_budget_mode = (value or {}).get("mode")
@@ -117,7 +122,7 @@ async def migrate_json_if_empty(session_factory, json_path) -> int:
                 row.resident = bool(ov["resident"])
             if "gpu" in ov:
                 row.gpu = int(ov["gpu"])
-            if isinstance(ov.get("gpus"), list) and ov["gpus"]:
+            if isinstance(ov.get("gpus"), list):
                 row.gpus = [int(i) for i in ov["gpus"]]
             vb = ov.get("vram_budget")
             if isinstance(vb, dict):

@@ -107,6 +107,19 @@ def _reference_repo_for_arch(arch: str) -> str | None:
 __all__ = ["ModelLoadError", "ModelManager", "ModelNotFoundError"]
 
 
+class _Placement(BaseModel):
+    """一次 load 的落卡结论(ModelManager._resolve_placement 的返回值)。"""
+
+    gpu_indices: list[int] = Field(default_factory=list)   # [] = 未知(加载后探测)
+    detect_after_load: bool = False
+    reserved_single: tuple[int, int] = (-1, 0)             # (gpu, mb) —— 单卡在途预留
+    reserved_group: tuple[list[int], int] | None = None    # (cards, mb/卡) —— 组在途预留
+
+    @property
+    def gpu_index(self) -> int:
+        return self.gpu_indices[0] if self.gpu_indices else (0 if self.detect_after_load else -1)
+
+
 class LoadedModel(BaseModel):
     """Runtime entry per loaded model: spec + adapter instance + GPU placement
     + LRU bookkeeping. Mutable (touch() updates last_used)."""
@@ -126,6 +139,14 @@ class LoadedModel(BaseModel):
 
     def touch(self) -> None:
         self.last_used = time.monotonic()
+
+    def cards(self) -> list[int]:
+        """这个模型占着哪几张卡 —— 「gpu_indices 优先、退回主卡」这条回退逻辑的唯一实现
+        (此前散在 evict_lru / _evictable_mb_on_card / _resolve_auto_card 三处)。"""
+        idxs = [int(i) for i in (self.gpu_indices or []) if i is not None and i >= 0]
+        if idxs:
+            return idxs
+        return [self.gpu_index] if self.gpu_index is not None and self.gpu_index >= 0 else []
 
 
 # PR-1 Task 6: components are lighter than full LoadedModel — they're just a loaded
@@ -174,7 +195,8 @@ class ModelManager:
         # index 是局部变量;OOM 时 load_model raise、还没写进 _models → get_or_load 拿不到
         # 真正 OOM 的卡,退成 evict_lru(None) 驱全局 LRU(可能驱了另一张没满的卡,OOM 的卡
         # 仍满 → 重试再 OOM → 永久毒化)。这里记每个 model 上次尝试的落卡,OOM 时据它精确驱逐。
-        self._last_attempt_gpu: dict[str, int] = {}
+        # model_id → 上次尝试落的卡(整组)。OOM 重试据此精确驱逐这些卡上的 LRU。
+        self._last_attempt_gpus: dict[str, list[int]] = {}
         # 组件级 L1 缓存(spec 2026-06-02):同一组件(file|load_device|dtype|loras = 一个 id)
         # 被多个 combo 共享时只加载一份、跨 combo 复用。key = L1 component key(见
         # `_l1_component_key`,用真实 load_device 而非 spec.device);value = LoadedComponent dict
@@ -197,7 +219,180 @@ class ModelManager:
     def _lock_for(self, model_id: str) -> asyncio.Lock:
         return self._locks.setdefault(model_id, asyncio.Lock())
 
-    def _instantiate_adapter(self, spec: ModelSpec) -> InferenceAdapter:
+    # ------------------------------------------------------------------
+    # 放置决策(2026-09-03 审查):**只在这里**
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _adapter_class(spec: ModelSpec):
+        """spec.adapter_class 的类对象(导入失败 → None)。"""
+        dotted = spec.adapter_class or ""
+        module_path, _, class_name = dotted.rpartition(".")
+        if not module_path:
+            return None
+        try:
+            return getattr(importlib.import_module(module_path), class_name, None)
+        except Exception:  # noqa: BLE001 — 依赖没装的适配器不该在这里炸
+            return None
+
+    def _supports_gpu_group(self, spec: ModelSpec) -> bool:
+        """这个模型的适配器接不接受 GPU 组(张量并行)。
+
+        不接受的(image/tts/SeedVR2…)即便配了 `gpus` 也按单卡处理 —— 否则 manager 按
+        两张卡各预留一半、`loaded_gpus` 显示 0+2,而适配器实际单卡跑,卡 2 的预留是
+        幻影、UI 在撒谎(审查 #15/#21)。
+        """
+        cls = self._adapter_class(spec)
+        return bool(getattr(cls, "supports_gpu_group", False)) if cls is not None else False
+
+    def _model_size_gb(self, spec: ModelSpec) -> float:
+        """模型体积(GB):优先 spec.vram_mb,没有就量权重目录 —— 与适配器同一把尺子。"""
+        if spec.vram_mb and spec.vram_mb > 0:
+            return spec.vram_mb / 1024
+        main = (spec.paths or {}).get("main")
+        if not main:
+            return 0.0
+        from src.config import get_settings  # noqa: PLC0415
+        from src.services.inference._placement import estimate_model_size_gb  # noqa: PLC0415
+
+        path = Path(get_settings().LOCAL_MODELS_PATH) / main
+        if not path.exists():
+            path = Path(main)
+        return estimate_model_size_gb(path)
+
+    def _resolve_placement(self, model_id: str, spec: ModelSpec) -> _Placement:
+        """决定这个模型落哪几张卡 —— **放置决策的唯一入口**。
+
+        优先级(前两条是**硬约束**,放不下就报错,绝不自动搬到别的卡):
+          1. 显式 `gpus`(GPU 组,张量并行)—— 适配器必须 supports_gpu_group,否则降级单卡 + warning;
+          2. 显式 `gpu`(单卡);
+          3. 没有显式放置 → 自动:
+             a. 配了 `tensor_parallel_size > 1` → 在 hardware.yaml 声明过的同型号组里挑一个;
+             b. 单卡装不下 → 同上挑组;挑不到就退单卡(并说清原因);
+             c. `vram_mb > 0` → allocator 按实时空闲挑一张(带在途预留);
+             d. 其余(外部 vLLM,体积未知)→ 加载后探测。
+
+        适配器拿到的是这里的结论(device + gpus),自己不再选卡:此前适配器会在
+        "放不下"时自作主张换到别的卡对,而 manager 记的还是原来那张 —— 预算按 A 卡算、
+        CVD 钉 B 卡,启动即 OOM 且日志误导(审查 #13/#22/#24)。
+        """
+        from src.gpu.topology import resolve_gpus, select_tp_group  # noqa: PLC0415
+
+        explicit = resolve_gpus(spec)
+        supports_group = self._supports_gpu_group(spec)
+
+        if len(explicit) > 1 and not supports_group:
+            logger.warning(
+                "模型 %r 配了 GPU 组 %s,但适配器 %s 不支持组(supports_gpu_group=False)"
+                " —— 按单卡 cuda:%d 处理,不做组预留。",
+                model_id, explicit, spec.adapter_class, explicit[0],
+            )
+            explicit = explicit[:1]
+
+        if explicit:
+            self._assert_explicit_fits(model_id, spec, explicit, supports_group)
+            reserved_group = None
+            if len(explicit) > 1 and spec.vram_mb > 0:
+                # 组内每张卡各登记「均分后的一份」在途预留 —— 否则并发的 auto 选卡
+                # 看不到这组卡即将被占,会撞上来(C1 只覆盖了单卡路径)。
+                per_card = max(1, int(spec.vram_mb / len(explicit)))
+                self._allocator.reserve_gpus(explicit, per_card)
+                reserved_group = (explicit, per_card)
+            return _Placement(gpu_indices=explicit, reserved_group=reserved_group)
+
+        # ---- 无显式放置:自动 ----
+        try:
+            want_tp = int((spec.params or {}).get("tensor_parallel_size") or 0)
+        except (TypeError, ValueError):
+            want_tp = 0
+        size_gb = self._model_size_gb(spec)
+
+        if supports_group and (want_tp > 1 or self._needs_more_than_one_card(size_gb)):
+            group = select_tp_group(size_gb, exact_size=want_tp if want_tp > 1 else None)
+            if group:
+                per_card = max(1, int(size_gb * 1024 / len(group)))
+                self._allocator.reserve_gpus(group, per_card)
+                logger.info("模型 %r(%.1fG)自动选组 %s 做张量并行 tp=%d",
+                            model_id, size_gb, group, len(group))
+                return _Placement(gpu_indices=group, reserved_group=(group, per_card))
+            logger.error(
+                "模型 %r(%.1fG)需要多卡(tensor_parallel_size=%s / 单卡装不下),但 "
+                "hardware.yaml 里没有「声明过 + 同型号 + 都装得下分片」的组可用 → 退回单卡。"
+                "如确实想跨卡,请在 configs/hardware.yaml 声明该组并给模型配 gpus:[...]",
+                model_id, size_gb, want_tp or "-",
+            )
+
+        if spec.vram_mb > 0:
+            gpu_index = self._allocator.get_best_gpu(spec.vram_mb)
+            # C1:选中卡上已原子登记 spec.vram_mb 的在途预留,必须在 load 完成/失败后释放。
+            reserved_single = (gpu_index, spec.vram_mb) if gpu_index >= 0 else (-1, 0)
+            if gpu_index < 0 and spec.model_type == "image":
+                # Image adapters use diffusers `enable_model_cpu_offload` — weights live
+                # in CPU RAM and only the active block enters GPU during inference.
+                # "no GPU has 24GB free" doesn't mean we can't run; it means we share.
+                # Fall back to GPU 0 so /api/v1/engines doesn't surface "running · GPU -1".
+                logger.warning(
+                    "Image model %r: allocator found no GPU with %dMB free; "
+                    "falling back to GPU 0 (cpu_offload mode shares it).",
+                    model_id, spec.vram_mb,
+                )
+                return _Placement(gpu_indices=[0])
+            return _Placement(
+                gpu_indices=[gpu_index] if gpu_index >= 0 else [],
+                reserved_single=reserved_single,
+            )
+
+        # External service (e.g. vLLM) — detect GPUs AFTER the process has actually
+        # claimed them (pre-load nvidia-smi returns nothing).
+        return _Placement(detect_after_load=True)
+
+    def _needs_more_than_one_card(self, size_gb: float) -> bool:
+        """没有任何一张卡装得下(按实时空闲 × 0.85 的余量算)。体积未知 → False。"""
+        if size_gb <= 0:
+            return False
+        try:
+            from src.services.gpu_monitor import poll_gpu_stats  # noqa: PLC0415
+
+            stats = poll_gpu_stats()
+        except Exception:  # noqa: BLE001
+            return False
+        if not stats:
+            return False
+        return all(float(s.get("free_mb") or 0) / 1024 * 0.85 < size_gb for s in stats)
+
+    def _assert_explicit_fits(
+        self, model_id: str, spec: ModelSpec, cards: list[int], supports_group: bool
+    ) -> None:
+        """显式钉卡/钉组是**硬约束**:装不下就 raise,绝不自动搬到别的卡(审查 #24)。
+
+        只对子进程型 LLM 适配器(supports_gpu_group)判定 —— image 走 cpu_offload,
+        "装不下"不等于跑不了,那条路保持原样。
+        """
+        if not supports_group:
+            return
+        size_gb = self._model_size_gb(spec)
+        if size_gb <= 0:
+            return
+        from src.gpu.topology import group_budget_gb, select_tp_group  # noqa: PLC0415
+
+        _total, free = group_budget_gb(cards)
+        if free <= 0:  # 查不到实时显存 → 不拦(别因为 nvidia-smi 抽风就拒绝加载)
+            return
+        if free * len(cards) >= size_gb:
+            return
+        suggestion = ""
+        alt = select_tp_group(size_gb)
+        if alt and alt != cards:
+            suggestion = f";可用的同型号组 {alt} 能装下,请改 GPU 分配"
+        raise ModelLoadError(
+            model_id,
+            f"显式分配的 GPU {cards} 装不下该模型(约 {size_gb:.1f}G,组内每卡可用 "
+            f"{free:.1f}G × {len(cards)} 张){suggestion}。显式钉卡是硬约束,不会自动换卡。",
+        )
+
+    def _instantiate_adapter(
+        self, spec: ModelSpec, gpu_group: list[int] | None = None
+    ) -> InferenceAdapter:
         """Dynamically import and instantiate adapter from spec.adapter_class dotted path.
 
         v2: passes `paths: dict[str, str]` to the adapter __init__. Single-component
@@ -253,15 +448,19 @@ class ModelManager:
             params["vram_budget"] = vb
 
         # GPU 组(张量并行)→ 适配器。落卡不能只靠 load(device)(那只带主卡),
-        # vLLM 要拿全组来钉 CUDA_VISIBLE_DEVICES + --tensor-parallel-size。
-        # 同 vram_budget:只给签名里接受 `gpus` 的适配器传,image/tts 不受影响。
-        _group = [int(i) for i in (getattr(spec, "gpus", None) or [])]
+        # vLLM/SGLang 要拿全组来钉 CUDA_VISIBLE_DEVICES + --tensor-parallel-size。
+        # 组优先用 manager 这次真正决定的那组(gpu_group),其次 spec 上的显式配置;
+        # 只给 supports_gpu_group 的适配器传(其它适配器不接受,传了会 unexpected-kwarg,
+        # 而且给它们分组本身就是幻影预留 —— 审查 #15/#21)。
+        from src.gpu.topology import resolve_gpus  # noqa: PLC0415
+        _group = list(gpu_group or []) or resolve_gpus(spec)
         if (
             len(_group) > 1
+            and getattr(cls, "supports_gpu_group", False)
             and "gpus" not in params
             and "gpus" in inspect.signature(cls.__init__).parameters
         ):
-            params["gpus"] = _group
+            params["gpus"] = list(_group)
 
         return cls(paths=spec.paths, **params)
 
@@ -476,16 +675,15 @@ class ModelManager:
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 if self._is_oom(e) and attempt == 0:
-                    # 配置固定卡用 spec.gpu;自动分配用 load_model 记下的实际落卡
-                    # (round3 #2)—— 否则 evict_lru(None) 驱全局、放跑了真正 OOM 的卡。
-                    if isinstance(spec.gpu, int):
-                        gpu = spec.gpu
-                    else:
-                        gpu = self._last_attempt_gpu.get(model_id)
-                    evicted = await self.evict_lru(gpu_index=gpu)
+                    # 显式钉卡/钉组用 resolve_gpus(spec);自动分配用 load_model 记下的
+                    # 实际落卡(round3 #2)—— 否则 evict_lru(None) 驱全局、放跑了真正
+                    # OOM 的卡。TP 模型占多张卡,**逐张**驱逐(只驱主卡会漏掉副卡)。
+                    from src.gpu.topology import resolve_gpus  # noqa: PLC0415
+                    cards = resolve_gpus(spec) or self._last_attempt_gpus.get(model_id) or [None]
+                    evicted = [await self.evict_lru(gpu_index=c) for c in cards]
                     logger.warning(
-                        "get_or_load(%r): OOM on first load, evicted %r, retrying",
-                        model_id, evicted,
+                        "get_or_load(%r): OOM on first load, evicted %r on gpus %s, retrying",
+                        model_id, [e for e in evicted if e], cards,
                     )
                     continue
                 msg = (
@@ -538,68 +736,22 @@ class ModelManager:
                 self._models[model_id].touch()
                 return
 
-            # Determine device and GPU indices
-            detect_after_load = False
-            reserved_gpu, reserved_mb = -1, 0  # C1 在途预留,load 后在 finally 释放
-            reserved_group: tuple[list[int], int] | None = None  # 多卡组的在途预留
-            spec_group = [int(i) for i in (getattr(spec, "gpus", None) or [])]
-            if len(spec_group) > 1:
-                # GPU 组(张量并行):模型跨这组卡加载,tp=len(gpus)。主卡取组内第一张
-                # (device/日志/驱逐口径),gpu_indices 记全组。
-                gpu_indices = spec_group
-                gpu_index = spec_group[0]
-                if spec.vram_mb > 0:
-                    # 组内每张卡各登记「均分后的一份」在途预留 —— 否则并发的 auto 选卡
-                    # 看不到这组卡即将被占,会撞上来(C1 只覆盖了单卡路径)。
-                    per_card = max(1, int(spec.vram_mb / len(spec_group)))
-                    self._allocator.reserve_gpus(spec_group, per_card)
-                    reserved_group = (spec_group, per_card)
-            elif spec_group:
-                # gpus 只给了一张 = 等价于钉单卡
-                gpu_indices = spec_group
-                gpu_index = spec_group[0]
-            elif spec.gpu is not None:
-                # Use configured GPU(s)
-                if isinstance(spec.gpu, list):
-                    gpu_indices = spec.gpu
-                    gpu_index = spec.gpu[0]
-                else:
-                    gpu_indices = [spec.gpu]
-                    gpu_index = spec.gpu
-            elif spec.vram_mb > 0:
-                gpu_index = self._allocator.get_best_gpu(spec.vram_mb)
-                # C1:选中卡上已原子登记 spec.vram_mb 的在途预留,必须在 load 完成/失败后释放。
-                if gpu_index >= 0:
-                    reserved_gpu, reserved_mb = gpu_index, spec.vram_mb
-                gpu_indices = [gpu_index] if gpu_index >= 0 else []
-                # Image adapters use diffusers `enable_model_cpu_offload` —
-                # weights live in CPU RAM and only the active block enters
-                # GPU during inference. Allocator's "no GPU has 24GB free"
-                # check (`get_best_gpu` → -1) doesn't mean we can't run; it
-                # means we need to share an existing GPU. Fall back to GPU 0
-                # so /api/v1/engines doesn't surface the placeholder -1
-                # ("running · GPU -1" in the UI). This matches what
-                # `enable_model_cpu_offload(gpu_id=0)` will use anyway.
-                if gpu_index < 0 and spec.model_type == "image":
-                    logger.warning(
-                        "Image model %r: allocator found no GPU with %dMB free; "
-                        "falling back to GPU 0 (cpu_offload mode shares it).",
-                        model_id, spec.vram_mb,
-                    )
-                    gpu_index = 0
-                    gpu_indices = [0]
-            else:
-                # External service (e.g. vLLM) — detect GPUs AFTER the process
-                # has actually claimed them (pre-load nvidia-smi returns nothing).
-                gpu_index = 0
-                gpu_indices = []
-                detect_after_load = True
+            # 放置决策的**唯一入口**(2026-09-03 审查 #13/#24):显式 gpus/gpu 是硬约束,
+            # 没有显式放置才自动选组/选卡。适配器只执行这里的结论,不自行换卡。
+            pl = self._resolve_placement(model_id, spec)
+            gpu_indices, gpu_index = list(pl.gpu_indices), pl.gpu_index
+            detect_after_load = pl.detect_after_load
+            reserved_gpu, reserved_mb = pl.reserved_single
+            reserved_group = pl.reserved_group
 
             device = f"cuda:{gpu_index}" if gpu_index >= 0 else "cpu"
-            # round3 #2:记录本次实际落卡,供 get_or_load 在 OOM 时精确驱逐该卡
+            # round3 #2:记录本次实际落卡,供 get_or_load 在 OOM 时精确驱逐这些卡
             # (detect_after_load 的外部服务 gpu_index 是占位 0,记了也无害)。
-            if gpu_index >= 0:
-                self._last_attempt_gpu[model_id] = gpu_index
+            # 记**整组**:TP 模型 OOM 可能发生在任一张卡上,只记主卡会漏掉副卡。
+            if gpu_indices:
+                self._last_attempt_gpus[model_id] = list(gpu_indices)
+            elif gpu_index >= 0:
+                self._last_attempt_gpus[model_id] = [gpu_index]
 
             # Build adapter + load:统一 try/finally 保证在途预留一定释放。
             # 审查发现的真 bug:adapter 构建在 load 锁之前,若它抛异常,原来放在
@@ -610,7 +762,8 @@ class ModelManager:
                 if adapter_factory is not None:
                     adapter = adapter_factory(spec)
                 else:
-                    adapter = self._instantiate_adapter(spec)
+                    adapter = self._instantiate_adapter(
+                        spec, gpu_group=gpu_indices if len(gpu_indices) > 1 else None)
 
                 # 全局串行门:一次只加载一个模型。选卡已由 allocator 在途预留保证并发
                 # 安全,这里串行化真正的 adapter.load(),避免多个 vLLM 同一瞬间在同卡
@@ -625,9 +778,20 @@ class ModelManager:
                 if reserved_group is not None:
                     self._allocator.release_gpus(*reserved_group)
 
-            if detect_after_load:
-                # _detect_vllm_gpus_for_adapter 内含 nvidia-smi subprocess(同步阻塞)
-                # → 丢线程池,别在 load 后卡事件循环(性能二轮 P2-C)。
+            # 落卡回填(审查 #10):适配器把最终钉进 CUDA_VISIBLE_DEVICES 的卡记在
+            # `adapter.gpu_indices`。它是"真正占了哪些卡"的第一手来源 —— 比 nvidia-smi
+            # 探测便宜,也比 manager 的预期更准(适配器可能按 tp 收窄了组)。
+            adapter_cards = [int(i) for i in (getattr(adapter, "gpu_indices", None) or [])]
+            if adapter_cards and adapter_cards != gpu_indices:
+                logger.info("模型 %r 实际落卡 %s(manager 预期 %s)—— 以适配器为准",
+                            model_id, adapter_cards, gpu_indices or "自动")
+                gpu_indices = adapter_cards
+                gpu_index = adapter_cards[0]
+                self._last_attempt_gpus[model_id] = list(adapter_cards)
+            elif detect_after_load:
+                # 适配器没报(外部实例/重连)→ 退回 nvidia-smi 探测。
+                # _detect_vllm_gpus_for_adapter 内含 subprocess(同步阻塞)→ 丢线程池,
+                # 别在 load 后卡事件循环(性能二轮 P2-C)。
                 gpu_indices = await asyncio.to_thread(
                     self._detect_vllm_gpus_for_adapter, adapter
                 ) or [0]
@@ -930,13 +1094,10 @@ class ModelManager:
             # stashed 的不占卡 —— 选它销毁腾不出显存,守卫会误以为腾了 → 重试仍 OOM 空转。
             # 它的 RAM 回收出口 = 手动二次卸载 / stash 水位拒绝(spec 2026-06-12 PR-3)。
             and not getattr(entry, "stashed", False)
-            # 张量并行模型占多张卡(gpu_indices),某副卡 OOM 时也该能选中它驱逐 ——
-            # 早先只比主卡 entry.gpu_index,TP 模型的副卡 OOM 永远选不中它(审查发现)。
-            and (
-                gpu_index is None
-                or entry.gpu_index == gpu_index
-                or gpu_index in (getattr(entry, "gpu_indices", None) or [])
-            )
+            # 张量并行模型占多张卡,某副卡 OOM 时也该能选中它驱逐 —— 早先只比主卡
+            # entry.gpu_index,TP 模型的副卡 OOM 永远选不中它(审查发现)。cards() 是
+            # 「这个模型占哪些卡」的唯一实现。
+            and (gpu_index is None or gpu_index in entry.cards())
         ]
 
         if not candidates:
@@ -1131,10 +1292,10 @@ class ModelManager:
         infer),所以 auto 粘性命中(combo 已驻该卡)时该卡 effective free 仍判为「装得下」。"""
         total = 0
         for mid, e in self._models.items():
-            # 张量并行模型跨多张卡(gpu_indices),只比主卡 gpu_index 会把它在副卡上的
-            # 那份显存当成"腾不出来"→ 副卡被低估、守卫误判装不下。按全组算,且每张卡
-            # 只计**均分后的一份**(整份计到每张卡上是重复计数)。
-            cards = list(getattr(e, "gpu_indices", None) or [e.gpu_index])
+            # 张量并行模型跨多张卡,只比主卡会把它在副卡上的那份显存当成"腾不出来"
+            # → 副卡被低估、守卫误判装不下。按全组算,且每张卡只计**均分后的一份**
+            # (整份计到每张卡上是重复计数)。
+            cards = e.cards()
             if idx not in cards:
                 continue
             if e.spec.resident or self._references.get(mid) or mid in self._in_use:
@@ -1162,12 +1323,8 @@ class ModelManager:
             return idx
         # 没卡有真空闲装得下 → 看哪张卡「腾掉空闲 adapter 后」装得下,挑 free+evictable 最大的。
         best, best_eff = -1, -1
-        # 张量并行模型占多张卡 → 候选卡集合要并上 gpu_indices,否则副卡永远进不了候选。
-        _cards: set[int] = set()
-        for e in self._models.values():
-            for c in (getattr(e, "gpu_indices", None) or [e.gpu_index]):
-                if c is not None and c >= 0:
-                    _cards.add(c)
+        # 张量并行模型占多张卡 → 候选卡集合要并上整组,否则副卡永远进不了候选。
+        _cards = {c for e in self._models.values() for c in e.cards()}
         for i in _cards:
             eff = self._card_effective_free_mb(i)
             if eff is not None and eff >= need_mb and eff > best_eff:

@@ -20,9 +20,13 @@ export interface EngineInfo {
   display_name: string
   type: string
   status: 'loaded' | 'unloaded' | 'loading' | 'failed'
-  gpu: number | number[]
-  /** 配置层的 GPU 组（张量并行）：[0, 2] = 这俩卡当一个单元用。null = 单卡。 */
+  /** 主卡（GPU 组的第一张）。**永远是 int** —— 判"是不是组"只看 `gpus`。 */
+  gpu: number
+  /** GPU 组（张量并行）：[0, 2] = 这俩卡当一个单元用。null = 单卡。 */
   gpus?: number[] | null
+  /** 该引擎的适配器接不接受 GPU 组（只有 vLLM / SGLang 这类子进程型 LLM 为 true）。
+   *  false 时不显示「组合」子菜单项 —— 后端也会 400 拒绝。 */
+  supports_gpu_group?: boolean
   vram_gb: number
   resident: boolean
   /** 统一引擎库:目录条目种类。model=整模型/引擎(可独立加载) upscale=SeedVR2 等 by-key
@@ -468,12 +472,19 @@ export interface GpuDevice {
   vram_gb: number
 }
 
-/** 可做张量并行的 GPU 组候选(后端只列**同型号**卡的组合,NVLink 优先)。 */
+/**
+ * 可做张量并行的 GPU 组候选。**来源是后端 configs/hardware.yaml 里声明过的多卡 group**
+ * （不是前后端枚举卡的组合）—— 那份拓扑记着"哪张卡在驱动显示器"这类运维约束。
+ * yaml 没声明多卡组时返回空数组 + hint，菜单里就不出现「组合」项。
+ */
 export interface GpuGroup {
+  id?: string
   gpus: number[]
   name: string
   nvlink: boolean
   total_gb: number
+  /** 组里正在驱动显示服务的卡 —— 有值就在菜单里标记出来（重负载会挤崩桌面）。 */
+  display_gpus?: number[]
 }
 
 export function useGpus() {
@@ -488,7 +499,7 @@ export function useGpus() {
 export function useGpuGroups() {
   return useQuery({
     queryKey: ['gpu-groups'],
-    queryFn: () => apiFetch<{ groups: GpuGroup[] }>('/api/v1/gpu/groups'),
+    queryFn: () => apiFetch<{ groups: GpuGroup[]; hint?: string }>('/api/v1/gpu/groups'),
     staleTime: 5 * 60_000,  // 机器上的卡不会中途变
   })
 }

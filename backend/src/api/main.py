@@ -439,6 +439,12 @@ async def lifespan(app: FastAPI):
     await _connect_and_init_db()
     _install_log_handlers()
 
+    # GPU 拓扑预热(审查 #17):`nvidia-smi topo -m` / 卡信息各要几十毫秒的同步
+    # subprocess。启动时在线程池里跑一次,之后放置决策与 /api/v1/gpu/groups 全是
+    # 缓存命中,不会在请求路径或 load 路径上阻塞事件循环。失败不阻塞启动。
+    from src.gpu.topology import warm_caches as _warm_gpu_topology
+    await asyncio.to_thread(_warm_gpu_topology)
+
     # Auto-sync model metadata for any new engines
     from src.models.database import get_session_factory
     from src.services.model_metadata_service import sync_metadata
@@ -675,8 +681,10 @@ async def lifespan(app: FastAPI):
                         from src.services.inference.llm_vllm import VLLMAdapter
                         # gpus:重连的也可能是个跨卡(张量并行)实例 —— 带上组,
                         # 否则 adapter 眼里它是单卡的,后续任何重启都会落错卡。
+                        from src.gpu.topology import resolve_gpus as _rg
+                        _g = _rg(s)
                         return VLLMAdapter(paths=s.paths, vllm_port=port, adopt_pid=pid,
-                                           gpus=list(s.gpus) if s.gpus else None, **s.params)
+                                           gpus=_g if len(_g) > 1 else None, **s.params)
                     await model_mgr.load_model(spec.id, adapter_factory=_factory)
                     reconnected.add(spec.id)
                 except Exception as e:

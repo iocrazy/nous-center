@@ -241,8 +241,9 @@ export default function ModelsOverlay() {
           submenu: buildGpuAssignSubmenu({
             devices: gpuData?.devices ?? [],
             groups: gpuGroupData?.groups ?? [],
-            currentGpu: ctxMenu.model!.gpu,
+            currentGpu: typeof ctxMenu.model!.gpu === 'number' ? ctxMenu.model!.gpu : undefined,
             currentGroup: ctxMenu.model!.gpus,
+            supportsGroup: ctxMenu.model!.supports_gpu_group,
             onPickGpu: (gpu) => setGpu.mutate({ name: ctxMenu.model!.name, gpu }),
             onPickGroup: (gpus) => setGpu.mutate({ name: ctxMenu.model!.name, gpus }),
           }),

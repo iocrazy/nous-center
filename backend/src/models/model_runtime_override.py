@@ -6,7 +6,7 @@ runtime_overrides.json 文件迁到关系库 —— 拆成正经 typed 列(非 j
 
 列语义:NULL = 未覆盖(回退 models.yaml);非 NULL = 显式覆盖(含 resident=False、gpu=0
 这类有效值,故用 nullable 区分"没设"与"设成 False/0")。vram_budget 拆成 mode + value 两列
-(mode=auto 时 value 可 NULL)。
+(mode=auto 时 value 可 NULL)。gpus 是三态(NULL / [] / [0,2]),见该列注释。
 """
 from datetime import datetime, timezone
 
@@ -22,9 +22,14 @@ class ModelRuntimeOverride(Base):
     model_id = Column(String(200), primary_key=True)
     resident = Column(Boolean, nullable=True)
     gpu = Column(Integer, nullable=True)
-    # GPU 组(张量并行):`[0, 2]` = 这俩卡当一个单元用,tp=2。NULL = 未覆盖(走单卡 gpu /
-    # 自动)。与 gpu 并存且**优先**:给了 gpus 就以它为准,gpu 只当单卡钉卡用。
-    # 列而非 typed 多列:组大小可变(2/4 卡),JSONB 是唯一不用改 schema 就能扩的形状。
+    # GPU 组(张量并行):`[0, 2]` = 这俩卡当一个单元用,tp=2。与 gpu 并存且**优先**。
+    # 三态,别退化成两态:
+    #   NULL  = 未覆盖 → 回退 models.yaml 的 `gpus:`
+    #   []    = **显式清空组**(用户点了单卡)→ 覆盖掉 yaml 的组,按单卡 gpu 走
+    #   [0,2] = 覆盖成这个组
+    # 没有 `[]` 这个哨兵的话,YAML 里配了 gpus 的模型永远退不出组:PATCH ?gpu=N 只写
+    # gpu 列、gpus 仍是 NULL → 合并时回退 YAML 的组 → 单卡设置表面写了实际没生效。
+    # JSONB 而非 typed 多列:组大小可变(2/4/8 卡)。
     gpus = Column(JSONB, nullable=True)
     vram_budget_mode = Column(String(20), nullable=True)   # auto | percent | absolute
     vram_budget_value = Column(Float, nullable=True)
@@ -42,7 +47,8 @@ class ModelRuntimeOverride(Base):
             out["resident"] = self.resident
         if self.gpu is not None:
             out["gpu"] = self.gpu
-        if self.gpus:
+        if self.gpus is not None:
+            # 空列表照样要落进 overrides —— 它是"显式清空组"的哨兵,不是"没设"。
             out["gpus"] = [int(i) for i in self.gpus]
         if self.vram_budget_mode is not None:
             vb: dict = {"mode": self.vram_budget_mode}

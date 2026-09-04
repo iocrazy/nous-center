@@ -98,12 +98,14 @@ async def test_load_fails_if_no_vllm_and_bad_model(adapter):
 
     # 顺带钉住两个事实,免得以后有人把它改回真起进程还不自知:
     # 1) 起的确实是 vllm 的 OpenAI server 入口;
-    # 2) device="cpu" 会被映射成 CUDA_VISIBLE_DEVICES="0" —— 这正是 2026-09-02
-    #    事故里子进程真摸到 GPU 的原因(conftest 设的 "" 被它覆盖)。
+    # 2) device="cpu" **不再**被映射成 CUDA_VISIBLE_DEVICES="0"。老代码那句
+    #    `device.split(":")[-1] if ":" in device else "0"` 把 "cpu" 当成 GPU 0,
+    #    覆盖掉 conftest 设的 "" —— 正是 2026-09-02 事故里子进程真摸到 GPU 的原因。
+    #    现在 cpu / 无落卡结论一律钉空串(见 _placement.apply_visible_devices)。
     assert popen.call_count == 1
     argv = popen.call_args.args[0]
     assert "vllm.entrypoints.openai.api_server" in argv
-    assert popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"] == ""
 
 
 async def test_unload_kills_subprocess(adapter):

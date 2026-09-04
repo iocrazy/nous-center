@@ -97,14 +97,15 @@ async def test_runtime_override_db_roundtrip(pg_engine):
             await store.set_override(s, "m1", "gpu", 0)  # 同 model 不同列,合并不覆盖
             await store.set_override(s, "m3", "vram_budget", {"mode": "absolute", "value": 22.0})
         # write-through 缓存
-        assert store.get_overrides()["m1"] == {"resident": True, "gpu": 0}
-        assert store.get_overrides()["m2"] == {"gpu": 1}
+        # gpus: [] = 钉单卡时写的「显式清空组」哨兵(区分"没覆盖过"→ 回退 YAML)。
+        assert store.get_overrides()["m1"] == {"resident": True, "gpu": 0, "gpus": []}
+        assert store.get_overrides()["m2"] == {"gpu": 1, "gpus": []}
         assert store.get_overrides()["m3"] == {"vram_budget": {"mode": "absolute", "value": 22.0}}
         # 重新 hydrate(模拟重启)→ 从 DB 还原一致
         store.reset_cache()
         assert store.get_overrides() == {}
         await store.hydrate(sf)
-        assert store.get_overrides()["m1"] == {"resident": True, "gpu": 0}
+        assert store.get_overrides()["m1"] == {"resident": True, "gpu": 0, "gpus": []}
         assert store.get_overrides()["m3"]["vram_budget"]["value"] == 22.0
     finally:
         store.reset_cache()
