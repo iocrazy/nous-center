@@ -144,7 +144,9 @@ class ModelRegistry:
         paths = cfg.get("paths") or {}
         if not paths and cfg.get("local_path"):
             paths = {"main": cfg["local_path"]}
-        # scan_models() 不并 overlay → 同 _load 套用,保持运行时覆盖单一来源(2026-06-16 统一)。
+        # 覆盖仍在这里显式套一遍 —— scan_models() 自己也叠(2026-09-03 分层修复后),
+        # 但这里要的是 `gpus` 的三态语义(_ov_gpus:NULL=未覆盖 / []=显式清空组),
+        # 跟 _load 同一套。两处叠加同源同键,结果一致,不会互相打架。
         from src.config import load_runtime_overrides  # noqa: PLC0415
         from src.gpu.topology import sanitize_config_gpus  # noqa: PLC0415
         ov = load_runtime_overrides().get(model_id) or {}

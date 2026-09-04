@@ -19,7 +19,7 @@ def _stub_settings_to(tmp_path, monkeypatch):
     monkeypatch.setattr(scanner_mod, "get_settings", lambda: settings)
     _gs.cache_clear()
     # Empty yaml configs so we only see auto-detection in these tests.
-    monkeypatch.setattr(scanner_mod, "load_model_configs", lambda: {})
+    monkeypatch.setattr(scanner_mod, "load_model_configs", lambda **kw: {})
 
 
 def _make_diffusers_dir(base, rel: str, class_name: str = "Flux2Pipeline"):
