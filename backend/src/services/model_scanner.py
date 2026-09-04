@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from src.config import get_settings, load_model_configs
+from src.config import _apply_runtime_overrides, get_settings, load_model_configs
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 # open()+json.load + _estimate_vram rglob;/api/v1/engines 与 /api/v1/models 两个独立
 # @cached prefix 各 miss 各扫一遍(每 30s 最多 2 次全扫)。这层模块级缓存让实际走盘频率
 # 与响应缓存解耦。/scan 端点或重启会 invalidate。性能 P1-4。
+#
+# **缓存的是「磁盘 + yaml」的基础结果,不含运行时覆盖**(resident/gpu/gpus/vram_budget)。
+# 覆盖在 scan_models 返回前每次现叠(runtime_override_store 是进程内 write-through 缓存,
+# 零 I/O)。曾经把两者一起缓存 → PATCH /engines/{name}/resident 写完 DB + invalidate("engines")
+# 后,重算的列表 body 仍是 30s 前的旧覆盖值,字节一样 → ETag 一样 → 浏览器拿 304,
+# 常驻徽标不变,用户以为没生效(2026-09-03 线上复现)。
 _SCAN_CACHE: dict = {"data": None, "ts": 0.0, "base": None}
 _SCAN_TTL_SECONDS = 30
 
@@ -67,7 +73,7 @@ def scan_models() -> dict[str, dict[str, Any]]:
     - Image (diffusers): has model_index.json (under `media/diffusers/<X>/`)
     - TTS: matched by models.yaml only (no auto-detect)
 
-    Returns merged dict: models.yaml configs + auto-detected models.
+    Returns merged dict: models.yaml configs + auto-detected models,运行时覆盖已叠加。
     """
     # cache 按 models 根路径归属:路径变了(测试 tmp_path、搬盘)直接算 miss,避免返回
     # 上一路径的陈旧结果。
@@ -79,18 +85,31 @@ def scan_models() -> dict[str, dict[str, Any]]:
         and _SCAN_CACHE["base"] == base
         and now - _SCAN_CACHE["ts"] < _SCAN_TTL_SECONDS
     ):
-        return dict(cached)
+        return _with_runtime_overrides(cached)
     result = _scan_models_uncached()
     _SCAN_CACHE["data"] = result
     _SCAN_CACHE["ts"] = now
     _SCAN_CACHE["base"] = base
-    return dict(result)
+    return _with_runtime_overrides(result)
+
+
+def _with_runtime_overrides(scanned: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """基础扫描结果 + 当前运行时覆盖 → 新 dict(**不改 base**,缓存里永远是干净基础值)。
+
+    覆盖来自 runtime_override_store 的进程内 write-through 缓存,所以每次读都拿得到
+    最新值,不用指望每条写路径记得清扫描缓存。被覆盖到的条目做浅拷贝,免得叠加值
+    渗进 _SCAN_CACHE(渗进去 = 覆盖被 30s 地烘死,正是原 bug)。
+    """
+    merged = dict(scanned)
+    _apply_runtime_overrides(merged, copy_before_write=True)
+    return merged
 
 
 def _scan_models_uncached() -> dict[str, dict[str, Any]]:
     settings = get_settings()
     base = Path(settings.LOCAL_MODELS_PATH)
-    yaml_configs = load_model_configs()
+    # apply_overrides=False:覆盖由 scan_models 在**每次返回前**叠,绝不烘进 TTL 缓存。
+    yaml_configs = load_model_configs(apply_overrides=False)
 
     # Start with yaml configs
     result = dict(yaml_configs)

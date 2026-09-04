@@ -218,11 +218,16 @@ def collect_model_entries(yaml_path: Path) -> list[dict]:
     return entries
 
 
-def load_model_configs(path: str = "configs/models.yaml") -> dict:
+def load_model_configs(path: str = "configs/models.yaml",
+                      apply_overrides: bool = True) -> dict:
     """Load model configs and return dict keyed by model id/name.
 
     模型定义走 collect_model_entries(models.d/*.yaml + models.yaml,单一来源)。
     运行时覆盖(resident/gpu)叠加在最后,见 load_runtime_overrides。
+
+    `apply_overrides=False` = **只要静态定义**(yaml 原样),给需要把「磁盘/yaml 基础结果」
+    单独缓存、再在每次读时自己叠覆盖的调用方用(model_scanner.scan_models)——
+    覆盖值绝不能被烘进那层 TTL 缓存,否则改了常驻/落卡最长 30s 看不到(见 scan_models 注释)。
     """
     resolved = _resolve_path(path)
     models = collect_model_entries(resolved)
@@ -271,11 +276,13 @@ def load_model_configs(path: str = "configs/models.yaml") -> dict:
             # nodes consume it for dropdowns; the adapter still loads via paths.
             if entry.get("files"):
                 result[model_id]["files"] = entry["files"]
-        _apply_runtime_overrides(result)
+        if apply_overrides:
+            _apply_runtime_overrides(result)
         return result
 
     # Old dict-based format: return as-is
-    _apply_runtime_overrides(models)
+    if apply_overrides:
+        _apply_runtime_overrides(models)
     return models
 
 
@@ -316,14 +323,23 @@ def resolve_vram_utilization(
     return auto_util
 
 
-def _apply_runtime_overrides(cfgs: dict) -> None:
-    """把运行时覆盖(resident/gpu/gpus/vram_budget)叠加进 cfgs(原地改)。overlay 优先于 models.yaml。"""
+def _apply_runtime_overrides(cfgs: dict, copy_before_write: bool = False) -> None:
+    """把运行时覆盖(resident/gpu/gpus/vram_budget)叠加进 cfgs(原地改)。overlay 优先于 models.yaml。
+
+    `copy_before_write=True`:被覆盖到的那条 cfg 先浅拷贝再改,不写穿到原 dict —— 给
+    「cfgs 是某个缓存结构的浅拷贝」的调用方用(model_scanner._with_runtime_overrides),
+    否则覆盖值会渗进那层缓存、被 TTL 烘死。
+    """
     overrides = load_runtime_overrides()
     for mid, ov in overrides.items():
         if mid in cfgs and isinstance(ov, dict):
-            for k in _OVERRIDABLE_KEYS:
-                if k in ov:
-                    cfgs[mid][k] = ov[k]
+            applied = {k: ov[k] for k in _OVERRIDABLE_KEYS if k in ov}
+            if not applied:
+                continue
+            if copy_before_write:
+                cfgs[mid] = {**cfgs[mid], **applied}
+            else:
+                cfgs[mid].update(applied)
 
 
 @lru_cache
