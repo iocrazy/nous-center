@@ -696,6 +696,18 @@ async def lifespan(app: FastAPI):
                 orphan_published,
             )
 
+    # 上次进程遗留的在飞任务(queued/running)→ failed。执行器全是本进程内的 asyncio
+    # task,进程一死它们就没了,DB 行却永远停在 running(前端永远 processing 的孤儿)。
+    # 详见 startup_reconcile.reconcile_orphan_inflight_tasks 的 docstring。
+    from src.services.startup_reconcile import reconcile_orphan_inflight_tasks
+    async with sf() as session:
+        orphan_inflight = await reconcile_orphan_inflight_tasks(session)
+        if orphan_inflight:
+            logger.info(
+                "startup: %d orphan in-flight execution task(s) → failed",
+                orphan_inflight,
+            )
+
     # One-time + self-healing reconcile: re-derive category/meter_dim for
     # workflow-sourced services from their frozen snapshot. Historically the
     # image detector only recognized the flux2_vae_decode terminus, so services
