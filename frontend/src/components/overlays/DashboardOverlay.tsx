@@ -4,7 +4,10 @@ import {
   useSysGpus, useSysStats, useSysProcesses, useKillProcess,
   type SysGpuInfo, type GpuProcessInfo,
 } from '../../api/system'
-import { useEngines, useUnloadImageAdapters, useLoadedAdapters } from '../../api/engines'
+import {
+  useEngines, useUnloadImageAdapters, useLoadedAdapters, useGpuGroups,
+  type GpuGroup,
+} from '../../api/engines'
 import { useDashboardSummary, type AlertItem, type TopServiceRow } from '../../api/dashboard'
 import { useRuntimeMetrics, type RuntimeSnapshot } from '../../api/observability'
 import { useVLLMMetrics, useUpdateLaunchParams } from '../../api/vllm'
@@ -484,13 +487,35 @@ function CollapsibleSystem({
   // 已加载 (0)」而 GPU 卡明明有 Runner: Image 占显存(Bug 3 在 Dashboard 分支的残留;
   // ModelsOverlay 已用 useLoadedAdapters 聚合,本组件没跟上)。
   const { data: loadedAdaptersData } = useLoadedAdapters()
+  // GPU 组（configs/hardware.yaml 声明、经 /api/v1/gpu/groups 下发）。返回空 = 本机没有
+  // 声明过多卡组 → 下面的 layout 退化成「每张物理卡一张卡片」，与改造前逐字一致。
+  const { data: groupData } = useGpuGroups()
 
   const loadedModels = (engines ?? []).filter((e) => e.status === 'loaded')
   const loadedAdapters = loadedAdaptersData?.entries ?? []
   const totalLoaded = loadedModels.length + loadedAdapters.length
-  const subtitle = `${gpuData?.gpus.length ?? 0}× GPU · ${totalLoaded} 模型常驻`
+
+  const cards = layoutGpuCards(gpuData?.gpus ?? [], groupData?.groups ?? [])
+  const groupCount = cards.filter((c) => c.kind === 'group').length
+  const subtitle =
+    `${gpuData?.gpus.length ?? 0}× GPU` +
+    (groupCount > 0 ? `（${groupCount} 组）` : '') +
+    ` · ${totalLoaded} 模型常驻`
 
   const fmt = (n: number, d = 1) => n.toFixed(d)
+
+  const onKill = async (pid: number, mem: number) => {
+    if (
+      await confirmDialog({
+        message: `结束进程 PID ${pid}?将释放约 ${(mem / 1024).toFixed(1)}G 显存。`,
+        danger: true, confirmText: 'Kill',
+      })
+    ) {
+      killProcess.mutate(pid)
+    }
+  }
+  const runnerOf = (indices: number[]) =>
+    (runners ?? []).find((r) => r.gpus.some((g) => indices.includes(g))) ?? null
 
   return (
     <div
@@ -544,23 +569,24 @@ function CollapsibleSystem({
               marginBottom: 14,
             }}
           >
-            {(gpuData?.gpus ?? []).map((gpu) => (
-              <GpuCard
-                key={gpu.index}
-                gpu={gpu}
-                runner={(runners ?? []).find((r) => r.gpus.includes(gpu.index)) ?? null}
-                onKill={async (pid, mem) => {
-                  if (
-                    await confirmDialog({
-                      message: `结束进程 PID ${pid}?将释放约 ${(mem / 1024).toFixed(1)}G 显存。`,
-                      danger: true, confirmText: 'Kill',
-                    })
-                  ) {
-                    killProcess.mutate(pid)
-                  }
-                }}
-              />
-            ))}
+            {cards.map((card) =>
+              card.kind === 'group' ? (
+                <GpuGroupCard
+                  key={`grp-${card.group.id ?? card.gpus.map((g) => g.index).join('+')}`}
+                  group={card.group}
+                  gpus={card.gpus}
+                  runner={runnerOf(card.gpus.map((g) => g.index))}
+                  onKill={onKill}
+                />
+              ) : (
+                <GpuCard
+                  key={card.gpu.index}
+                  gpu={card.gpu}
+                  runner={runnerOf([card.gpu.index])}
+                  onKill={onKill}
+                />
+              ),
+            )}
             {!gpuData && (
               <div style={{ fontSize: 11, color: 'var(--muted)', padding: 16 }}>
                 等待 GPU 数据…
@@ -806,6 +832,331 @@ function MiniStat({
   )
 }
 
+// ---------- GPU 组合并视图 ----------
+
+type GpuCardItem =
+  | { kind: 'single'; gpu: SysGpuInfo }
+  | { kind: 'group'; group: GpuGroup; gpus: SysGpuInfo[] }
+
+/**
+ * 把「每卡一条实时指标」按 GPU 组折叠成卡片列表。
+ *
+ * 组的权威来源只有 `/api/v1/gpu/groups`（= configs/hardware.yaml），前端**绝不**自己
+ * 按型号/NVLink 拼组 —— 那份 yaml 里记着运维约束（GPU 0 驱动显示器等）。这里只做展示
+ * 折叠，不参与任何放置决策。
+ *
+ * 规则：① 只认 ≥2 张的组；② 组内的卡必须都在本次指标里（少一张就整组降级成单卡，
+ * 免得画一张缺卡的合并卡去误导容量）；③ 一张卡只能被一个组吃掉，先到先得（yaml 理论上
+ * 可以声明重叠的组）；④ 剩下的卡照旧单独一张。返回顺序按最小卡号排，跟物理序一致。
+ */
+function layoutGpuCards(gpus: SysGpuInfo[], groups: GpuGroup[]): GpuCardItem[] {
+  const byIndex = new Map(gpus.map((g) => [g.index, g]))
+  const claimed = new Set<number>()
+  const items: { sort: number; item: GpuCardItem }[] = []
+
+  for (const group of groups) {
+    const indices = [...new Set(group.gpus)].sort((a, b) => a - b)
+    if (indices.length < 2) continue
+    if (indices.some((i) => claimed.has(i) || !byIndex.has(i))) continue
+    indices.forEach((i) => claimed.add(i))
+    items.push({
+      sort: indices[0],
+      item: { kind: 'group', group, gpus: indices.map((i) => byIndex.get(i)!) },
+    })
+  }
+  for (const gpu of gpus) {
+    if (claimed.has(gpu.index)) continue
+    items.push({ sort: gpu.index, item: { kind: 'single', gpu } })
+  }
+  return items.sort((a, b) => a.sort - b.sort).map((e) => e.item)
+}
+
+interface MergedProc {
+  key: string
+  label: string
+  managed: boolean
+  /** 合计显存 MB。 */
+  totalMb: number
+  /** 每卡分解，按卡号排。 */
+  parts: { gpu: number; mb: number; pid: number }[]
+  /** 单条 orphan 用得上（kill 按钮要 pid）。 */
+  proc: GpuProcessInfo
+}
+
+/**
+ * 组内进程合并：同一个 managed 模型（tp>1 时是每卡各一个 pid）合成一行，显存合计 +
+ * 每卡分解；orphan（桌面程序之类）照旧逐条列，只额外标出它在哪张卡上。
+ *
+ * tp 不是后端字段，就用「同名 managed 进程落在组内几张卡上」推断 —— 这正是 tp 的定义，
+ * 不必为了显示再往 /monitor/stats 里加字段。
+ */
+function mergeGroupProcesses(gpus: SysGpuInfo[]): MergedProc[] {
+  const merged = new Map<string, MergedProc>()
+  const orphans: MergedProc[] = []
+  for (const gpu of gpus) {
+    for (const proc of gpu.processes ?? []) {
+      // proc.gpu 理论上就是 gpu.index，但以外层卡为准更稳（旧 payload 有过 gpu=0 兜底）。
+      const part = { gpu: gpu.index, mb: proc.used_gpu_memory_mb, pid: proc.pid }
+      if (!proc.managed) {
+        orphans.push({
+          key: `orphan-${proc.pid}`,
+          label: proc.command || proc.name,
+          managed: false,
+          totalMb: proc.used_gpu_memory_mb,
+          parts: [part],
+          proc,
+        })
+        continue
+      }
+      const key = proc.model_name || proc.name || String(proc.pid)
+      const hit = merged.get(key)
+      if (hit) {
+        hit.totalMb += proc.used_gpu_memory_mb
+        hit.parts.push(part)
+      } else {
+        merged.set(key, {
+          key: `managed-${key}`,
+          label: key,
+          managed: true,
+          totalMb: proc.used_gpu_memory_mb,
+          parts: [part],
+          proc,
+        })
+      }
+    }
+  }
+  const managed = [...merged.values()]
+  managed.forEach((m) => m.parts.sort((a, b) => a.gpu - b.gpu))
+  orphans.sort((a, b) => a.parts[0].gpu - b.parts[0].gpu || a.proc.pid - b.proc.pid)
+  return [...managed, ...orphans]
+}
+
+const g1 = (mb: number) => (mb / 1024).toFixed(1)
+
+/**
+ * 一个 GPU 组画成一张大卡 —— 用户对 NVLink 的 3090 对的心智模型就是「一张 48G 卡」。
+ * 显存合计、利用率取组内最大（tp 下各卡基本同步，最大值最接近「这组忙不忙」），
+ * 温度/风扇/功耗逐卡一行小字（合计没有物理意义，平均会藏掉一张卡过热）。
+ * 右上角「展开物理卡」把原来的单卡卡片原样铺在下面，默认折叠。
+ */
+function GpuGroupCard({
+  group,
+  gpus,
+  runner,
+  onKill,
+}: {
+  group: GpuGroup
+  gpus: SysGpuInfo[]
+  runner: RunnerInfo | null
+  onKill: (pid: number, mem: number) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const indices = gpus.map((g) => g.index)
+  const usedMb = gpus.reduce((s, g) => s + g.memory_used_mb, 0)
+  const totalMb = gpus.reduce((s, g) => s + g.memory_total_mb, 0)
+  const memPct = totalMb > 0 ? (usedMb / totalMb) * 100 : 0
+  const maxUtil = Math.max(...gpus.map((g) => g.utilization_gpu))
+  const lowMemory = gpus.some((g) => g.low_memory)
+  const procs = mergeGroupProcesses(gpus)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div
+        style={{
+          background: 'var(--bg)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: '12px 14px',
+        }}
+      >
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}
+        >
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: 'var(--accent-2, #22c55e)',
+              letterSpacing: 0.5,
+            }}
+          >
+            GPU {indices.join('+')}
+            {group.id ? ` · ${group.id}` : ''}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {group.nvlink && (
+              <span
+                style={{
+                  fontSize: 9,
+                  padding: '1px 5px',
+                  borderRadius: 3,
+                  background: 'rgba(99,102,241,0.15)',
+                  color: 'var(--accent, #6366f1)',
+                  letterSpacing: 0.5,
+                }}
+              >
+                NVLink
+              </span>
+            )}
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
+              {maxUtil}%
+            </span>
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-expanded={expanded}
+              style={{
+                fontSize: 10,
+                padding: '2px 8px',
+                borderRadius: 3,
+                background: 'transparent',
+                color: 'var(--muted)',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+              }}
+            >
+              {expanded ? '收起物理卡' : '展开物理卡'}
+            </button>
+          </div>
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text)', marginTop: 4 }}>
+          {group.name} ×{gpus.length}
+        </div>
+        {runner && (
+          <div style={{ fontSize: 11, color: 'var(--info, #3b82f6)', marginTop: 2 }}>
+            Runner: {runner.label} ({runner.role})
+          </div>
+        )}
+        <div style={{ marginTop: 4, marginBottom: 10 }}>
+          {gpus.map((g) => (
+            <div
+              key={g.index}
+              style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', gap: 12 }}
+            >
+              <span style={{ minWidth: 24 }}>#{g.index}</span>
+              <span style={{ color: 'var(--accent-2, #22c55e)' }}>{g.temperature}°C</span>
+              <span>FAN {g.fan_speed}%</span>
+              <span>
+                POW {g.power_draw_w.toFixed(0)}/{g.power_limit_w.toFixed(0)}W
+              </span>
+            </div>
+          ))}
+        </div>
+        <BarRow label="GPU" value={`${maxUtil}%`} pct={maxUtil} />
+        <div
+          style={{ fontSize: 10, color: 'var(--muted)', margin: '0 0 2px 42px' }}
+        >
+          {gpus.map((g) => `#${g.index} ${g.utilization_gpu}%`).join(' · ')}
+        </div>
+        <BarRow
+          label="MEM"
+          value={`${g1(usedMb)}G / ${g1(totalMb)}G`}
+          pct={memPct}
+          warn={lowMemory}
+        />
+        {procs.length > 0 && (
+          <div
+            style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--border)' }}
+          >
+            <div
+              style={{
+                fontSize: 9,
+                fontWeight: 600,
+                color: 'var(--muted)',
+                textTransform: 'uppercase',
+                letterSpacing: 0.5,
+                marginBottom: 6,
+              }}
+            >
+              GPU Processes
+            </div>
+            {procs.map((m) =>
+              m.managed ? (
+                <MergedProcRow key={m.key} merged={m} />
+              ) : (
+                <ProcRow
+                  key={m.key}
+                  proc={m.proc}
+                  gpuTag={`#${m.parts[0].gpu}`}
+                  onKill={onKill}
+                />
+              ),
+            )}
+          </div>
+        )}
+      </div>
+      {expanded &&
+        gpus.map((g) => (
+          <GpuCard key={g.index} gpu={g} runner={runner} onKill={onKill} />
+        ))}
+    </div>
+  )
+}
+
+/** 组内 managed 进程合并成的一行：合计显存 + 每卡分解 + tp 徽标。 */
+function MergedProcRow({ merged }: { merged: MergedProc }) {
+  const tp = new Set(merged.parts.map((p) => p.gpu)).size
+  const breakdown = merged.parts.map((p) => `#${p.gpu} ${g1(p.mb)}G`).join(' · ')
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '3px 0',
+        fontSize: 11,
+        fontFamily: 'var(--mono, monospace)',
+        color: 'var(--muted)',
+      }}
+    >
+      <span
+        title={merged.parts.map((p) => `#${p.gpu} PID ${p.pid}`).join('\n')}
+        style={{ minWidth: 92, cursor: 'help' }}
+      >
+        {g1(merged.totalMb)}G
+        <span style={{ marginLeft: 4 }}>({breakdown})</span>
+      </span>
+      <span
+        title={merged.proc.command_full || merged.proc.command || undefined}
+        style={{
+          flex: 1,
+          color: 'var(--text)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          cursor: 'help',
+        }}
+      >
+        {merged.label}
+      </span>
+      {tp > 1 && (
+        <span
+          style={{
+            fontSize: 9,
+            padding: '1px 5px',
+            borderRadius: 3,
+            background: 'rgba(99,102,241,0.15)',
+            color: 'var(--accent, #6366f1)',
+          }}
+        >
+          tp={tp}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 9,
+          padding: '1px 5px',
+          borderRadius: 3,
+          background: 'rgba(34,197,94,0.15)',
+          color: 'var(--accent-2, #22c55e)',
+        }}
+      >
+        managed
+      </span>
+    </div>
+  )
+}
+
 function GpuCard({
   gpu,
   runner,
@@ -990,9 +1341,12 @@ function UnloadImageAdaptersButton() {
 function ProcRow({
   proc,
   onKill,
+  /** 合并卡里标明这条进程在组内哪张卡上（`#0`）；单卡卡片不传，渲染与改造前一致。 */
+  gpuTag,
 }: {
   proc: GpuProcessInfo
   onKill: (pid: number, mem: number) => void
+  gpuTag?: string
 }) {
   const memG = (proc.used_gpu_memory_mb / 1024).toFixed(1)
   const isOrphan = !proc.managed
@@ -1008,6 +1362,7 @@ function ProcRow({
         color: isOrphan ? 'var(--warn, #f59e0b)' : 'var(--muted)',
       }}
     >
+      {gpuTag && <span style={{ minWidth: 22 }}>{gpuTag}</span>}
       <span style={{ minWidth: 48 }}>{proc.pid}</span>
       <span style={{ minWidth: 44 }}>{memG}G</span>
       <span
