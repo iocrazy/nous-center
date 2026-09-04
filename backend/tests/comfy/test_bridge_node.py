@@ -31,7 +31,7 @@ class FakeClient:
         self.submitted = graph
         return "p1"
 
-    async def wait(self, prompt_id, *, timeout_s, interval_s=2.0):
+    async def wait(self, prompt_id, *, timeout_s, interval_s=2.0, **_kw):
         return {"outputs": {"92": {"images": [
             {"filename": "out.mp4", "subfolder": "", "type": "output"}]}}}
 
@@ -123,7 +123,7 @@ async def test_random_param_generates_seed(monkeypatch, fake):
 async def test_empty_outputs_raises_instead_of_silent_success(monkeypatch, fake):
     """C1 fix:collect_outputs 找不到任何可识别产物(典型是渲染被中断在写产物之前)
     时,节点必须显式报错而不是返回一个「成功」的空信封。"""
-    async def _wait_no_outputs(prompt_id, *, timeout_s, interval_s=2.0):
+    async def _wait_no_outputs(prompt_id, *, timeout_s, interval_s=2.0, **_kw):
         return {"outputs": {}}
     monkeypatch.setattr(fake, "wait", _wait_no_outputs)
     node = get_node_class("comfyui_workflow")()
@@ -213,3 +213,23 @@ async def test_load_template_real_db_lookup(client):
 async def test_load_template_missing_raises(client):
     with pytest.raises(ValueError):
         await nb.load_template(999999999)
+
+
+@pytest.mark.asyncio
+async def test_invoke_without_task_id_passes_no_abort_probe(fake, monkeypatch):
+    """没有 `_task_id`(DB-less 的直调路径)时不给 wait 传取消探测 —— 探测的实现是
+    一次 DB 查询,没有任务 id 可查就不该装上去。有 task_id 的那半边由
+    `test_prediction_e2e.py::test_cancel_during_wait_exits_render_and_frees_semaphore`
+    覆盖(它断言 should_abort 必须非 None)。"""
+    captured: dict = {}
+
+    async def _wait(prompt_id, *, timeout_s, interval_s=2.0, should_abort=None, **_kw):
+        captured["should_abort"] = should_abort
+        return {"outputs": {"92": {"images": [
+            {"filename": "out.mp4", "subfolder": "", "type": "output"}]}}}
+
+    monkeypatch.setattr(fake, "wait", _wait)
+    node = get_node_class("comfyui_workflow")()
+    out = await node.invoke({"template_id": 1, "prompt": "hi"}, {})
+    assert out["video_url"] == "/files/x.mp4"
+    assert captured["should_abort"] is None

@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import tempfile
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -49,11 +50,23 @@ _SEM = asyncio.Semaphore(1)
 # 只有是,才转发 `/interrupt`;排在它后面等信号量的任务不该被这个 interrupt 误伤
 # (那是别的渲染,C1 fix)。用访问器读,不直接碰 module global(见 get_running_task_id)。
 _running_task_id: str | int | None = None
+# 上面那个 id 是什么时候拿到信号量的(time.monotonic()),空闲时 None。排障用:
+# `/api/v1/comfy/health` 把 (task_id, 已持有秒数) 一起吐出来 —— "所有 comfy 服务
+# 都不动了"时一眼看出是谁占着、占了多久(2026-09-03 事故里这两个数得翻日志猜)。
+_running_since: float | None = None
 
 
 def get_running_task_id() -> str | int | None:
     """当前占用渲染信号量的 ExecutionTask id,空闲时 None。"""
     return _running_task_id
+
+
+def get_running_render() -> dict | None:
+    """当前渲染的 `{task_id, held_seconds}`,空闲时 None(健康面板/排障用)。"""
+    if _running_task_id is None:
+        return None
+    held = 0.0 if _running_since is None else max(0.0, time.monotonic() - _running_since)
+    return {"task_id": _running_task_id, "held_seconds": round(held, 1)}
 
 
 async def _task_is_cancelled(task_id: str | int) -> bool:
@@ -168,9 +181,22 @@ class ComfyUIWorkflowNode:
                     template_id, key, node_id,
                 )
 
-        global _running_task_id
+        # 渲染期间的取消探测(2026-09-03 事故):`/interrupt` 只在 ComfyUI 的节点边界
+        # 生效,卡在某个节点内部(比如等一个连接已 CLOSE_WAIT 的 HF 下载)时救不回来,
+        # 于是 wait() 会一直等到 NOUS_COMFY_TIMEOUT(默认 4 小时)、全程占着 `_SEM`。
+        # 让 wait 自己按低频(默认每 10s)复查 DB 状态,cancelled 就立刻抛错退出、
+        # 释放信号量。抛出的 ComfyError 一路冒到 workflow_runner 的 except 分支,那里
+        # 先 `SELECT … FOR UPDATE` 重读状态,已是 cancelled 就不覆盖成 failed
+        # (honor-cancelled,见 workflow_runner.py)—— 终态仍是 canceled。
+        should_abort = None
+        if task_id is not None:
+            async def should_abort() -> bool:
+                return await _task_is_cancelled(task_id)
+
+        global _running_task_id, _running_since
         async with _SEM:
             _running_task_id = task_id
+            _running_since = time.monotonic()
             try:
                 # cancel-race 复查(C1):本任务可能在排队等信号量期间被取消
                 # ——真正 submit 给 ComfyUI 前再查一次 DB,取消了就不渲染。
@@ -178,9 +204,11 @@ class ComfyUIWorkflowNode:
                     raise ComfyError("任务已取消,渲染跳过")
                 prompt_id = await client.submit(graph)
                 timeout_s = float(os.getenv("NOUS_COMFY_TIMEOUT", "14400"))
-                history = await client.wait(prompt_id, timeout_s=timeout_s)
+                history = await client.wait(
+                    prompt_id, timeout_s=timeout_s, should_abort=should_abort)
             finally:
                 _running_task_id = None
+                _running_since = None
 
         outputs = collect_outputs(history, graph)
         items: list[dict] = []
