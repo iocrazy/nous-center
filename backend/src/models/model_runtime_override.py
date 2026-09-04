@@ -11,6 +11,7 @@ runtime_overrides.json 文件迁到关系库 —— 拆成正经 typed 列(非 j
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.models.database import Base
 
@@ -21,6 +22,10 @@ class ModelRuntimeOverride(Base):
     model_id = Column(String(200), primary_key=True)
     resident = Column(Boolean, nullable=True)
     gpu = Column(Integer, nullable=True)
+    # GPU 组(张量并行):`[0, 2]` = 这俩卡当一个单元用,tp=2。NULL = 未覆盖(走单卡 gpu /
+    # 自动)。与 gpu 并存且**优先**:给了 gpus 就以它为准,gpu 只当单卡钉卡用。
+    # 列而非 typed 多列:组大小可变(2/4 卡),JSONB 是唯一不用改 schema 就能扩的形状。
+    gpus = Column(JSONB, nullable=True)
     vram_budget_mode = Column(String(20), nullable=True)   # auto | percent | absolute
     vram_budget_value = Column(Float, nullable=True)
     updated_at = Column(
@@ -37,6 +42,8 @@ class ModelRuntimeOverride(Base):
             out["resident"] = self.resident
         if self.gpu is not None:
             out["gpu"] = self.gpu
+        if self.gpus:
+            out["gpus"] = [int(i) for i in self.gpus]
         if self.vram_budget_mode is not None:
             vb: dict = {"mode": self.vram_budget_mode}
             if self.vram_budget_value is not None:

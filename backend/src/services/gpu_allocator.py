@@ -193,6 +193,32 @@ class GPUAllocator:
             else:
                 self._pending.pop(gpu_index, None)
 
+    def reserve_gpus(self, gpu_indices: list[int], mb_per_gpu: float) -> None:
+        """给一个 **GPU 组**(张量并行)在组内每张卡上登记在途预留。
+
+        get_best_gpu 的 C1 预留只覆盖「allocator 自己选出来的单卡」;显式配了 `gpus`
+        的模型压根不经过它 → 并发的 auto 选卡看不到这组卡即将被占满,会撞上来。
+        每张卡登记 `mb_per_gpu`(= 模型总显存 / 卡数,TP 是均分)。
+        必须与 release_gpus 成对调用。
+        """
+        with self._pending_lock:
+            for idx in gpu_indices:
+                if idx is None or idx < 0:
+                    continue
+                self._pending[idx] = self._pending.get(idx, 0) + int(mb_per_gpu)
+
+    def release_gpus(self, gpu_indices: list[int], mb_per_gpu: float) -> None:
+        """释放 reserve_gpus 登记的组预留(load 完成或失败后调用)。"""
+        with self._pending_lock:
+            for idx in gpu_indices:
+                if idx is None or idx < 0:
+                    continue
+                remaining = self._pending.get(idx, 0) - int(mb_per_gpu)
+                if remaining > 0:
+                    self._pending[idx] = remaining
+                else:
+                    self._pending.pop(idx, None)
+
     def get_free_mb(self, gpu_index: int) -> int:
         stats = self._poll()
         for s in stats:

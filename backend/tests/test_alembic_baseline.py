@@ -119,3 +119,25 @@ def test_upgrade_head_creates_memory_fts_gin_index(fresh_pg_db):
     indexdef = rows[0]["indexdef"]
     assert "USING gin" in indexdef, indexdef
     assert "to_tsvector('simple'" in indexdef, indexdef
+
+
+def test_upgrade_head_creates_model_runtime_overrides_gpus(fresh_pg_db):
+    """`upgrade head` 必须在全新库上给 model_runtime_overrides 建出 gpus JSONB 列。
+
+    模型级 GPU 组(张量并行)的落盘位置。`alembic check` 只保证「models 与库零 diff」——
+    这里另外把**类型**钉死:退成 JSON(非 JSONB)虽然读写都通,却丢掉 GIN/包含查询能力,
+    且与 main.py 那条微迁移(`ADD COLUMN ... JSONB`)不一致,生产/CI 会漂移。
+    """
+    db = fresh_pg_db
+
+    up = _run_alembic(["upgrade", "head"], db)
+    assert up.returncode == 0, f"upgrade head failed:\n{up.stdout}\n{up.stderr}"
+
+    rows = _pg_fetch(
+        db.replace("postgresql+asyncpg://", "postgresql://"),
+        "SELECT data_type, is_nullable FROM information_schema.columns "
+        "WHERE table_name = 'model_runtime_overrides' AND column_name = 'gpus'",
+    )
+    assert rows, "upgrade head 后 model_runtime_overrides 没有 gpus 列"
+    assert rows[0]["data_type"] == "jsonb", rows[0]["data_type"]
+    assert rows[0]["is_nullable"] == "YES"

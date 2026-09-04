@@ -252,6 +252,17 @@ class ModelManager:
         ):
             params["vram_budget"] = vb
 
+        # GPU 组(张量并行)→ 适配器。落卡不能只靠 load(device)(那只带主卡),
+        # vLLM 要拿全组来钉 CUDA_VISIBLE_DEVICES + --tensor-parallel-size。
+        # 同 vram_budget:只给签名里接受 `gpus` 的适配器传,image/tts 不受影响。
+        _group = [int(i) for i in (getattr(spec, "gpus", None) or [])]
+        if (
+            len(_group) > 1
+            and "gpus" not in params
+            and "gpus" in inspect.signature(cls.__init__).parameters
+        ):
+            params["gpus"] = _group
+
         return cls(paths=spec.paths, **params)
 
     def _detect_vllm_gpus_for_adapter(self, adapter) -> list[int]:
@@ -530,7 +541,24 @@ class ModelManager:
             # Determine device and GPU indices
             detect_after_load = False
             reserved_gpu, reserved_mb = -1, 0  # C1 在途预留,load 后在 finally 释放
-            if spec.gpu is not None:
+            reserved_group: tuple[list[int], int] | None = None  # 多卡组的在途预留
+            spec_group = [int(i) for i in (getattr(spec, "gpus", None) or [])]
+            if len(spec_group) > 1:
+                # GPU 组(张量并行):模型跨这组卡加载,tp=len(gpus)。主卡取组内第一张
+                # (device/日志/驱逐口径),gpu_indices 记全组。
+                gpu_indices = spec_group
+                gpu_index = spec_group[0]
+                if spec.vram_mb > 0:
+                    # 组内每张卡各登记「均分后的一份」在途预留 —— 否则并发的 auto 选卡
+                    # 看不到这组卡即将被占,会撞上来(C1 只覆盖了单卡路径)。
+                    per_card = max(1, int(spec.vram_mb / len(spec_group)))
+                    self._allocator.reserve_gpus(spec_group, per_card)
+                    reserved_group = (spec_group, per_card)
+            elif spec_group:
+                # gpus 只给了一张 = 等价于钉单卡
+                gpu_indices = spec_group
+                gpu_index = spec_group[0]
+            elif spec.gpu is not None:
                 # Use configured GPU(s)
                 if isinstance(spec.gpu, list):
                     gpu_indices = spec.gpu
@@ -594,6 +622,8 @@ class ModelManager:
                 # 权重已落卡(或构建/load 失败)→ 释放在途预留;nvidia-smi 之后能反映真实占用。
                 if reserved_gpu >= 0:
                     self._allocator.release_reservation(reserved_gpu, reserved_mb)
+                if reserved_group is not None:
+                    self._allocator.release_gpus(*reserved_group)
 
             if detect_after_load:
                 # _detect_vllm_gpus_for_adapter 内含 nvidia-smi subprocess(同步阻塞)
@@ -1101,13 +1131,17 @@ class ModelManager:
         infer),所以 auto 粘性命中(combo 已驻该卡)时该卡 effective free 仍判为「装得下」。"""
         total = 0
         for mid, e in self._models.items():
-            if e.gpu_index != idx:
+            # 张量并行模型跨多张卡(gpu_indices),只比主卡 gpu_index 会把它在副卡上的
+            # 那份显存当成"腾不出来"→ 副卡被低估、守卫误判装不下。按全组算,且每张卡
+            # 只计**均分后的一份**(整份计到每张卡上是重复计数)。
+            cards = list(getattr(e, "gpu_indices", None) or [e.gpu_index])
+            if idx not in cards:
                 continue
             if e.spec.resident or self._references.get(mid) or mid in self._in_use:
                 continue
             if getattr(e, "stashed", False):
                 continue  # RAM stash:权重已挪 CPU,该卡 free 已含这部分,计入=双计
-            total += max(0, int(getattr(e.spec, "vram_mb", 0) or 0))
+            total += max(0, int((getattr(e.spec, "vram_mb", 0) or 0) / max(1, len(cards))))
         return total
 
     def _card_effective_free_mb(self, idx: int) -> int | None:
@@ -1128,8 +1162,13 @@ class ModelManager:
             return idx
         # 没卡有真空闲装得下 → 看哪张卡「腾掉空闲 adapter 后」装得下,挑 free+evictable 最大的。
         best, best_eff = -1, -1
-        for i in {e.gpu_index for e in self._models.values()
-                  if e.gpu_index is not None and e.gpu_index >= 0}:
+        # 张量并行模型占多张卡 → 候选卡集合要并上 gpu_indices,否则副卡永远进不了候选。
+        _cards: set[int] = set()
+        for e in self._models.values():
+            for c in (getattr(e, "gpu_indices", None) or [e.gpu_index]):
+                if c is not None and c >= 0:
+                    _cards.add(c)
+        for i in _cards:
             eff = self._card_effective_free_mb(i)
             if eff is not None and eff >= need_mb and eff > best_eff:
                 best, best_eff = i, eff

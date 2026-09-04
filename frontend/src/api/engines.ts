@@ -21,6 +21,8 @@ export interface EngineInfo {
   type: string
   status: 'loaded' | 'unloaded' | 'loading' | 'failed'
   gpu: number | number[]
+  /** 配置层的 GPU 组（张量并行）：[0, 2] = 这俩卡当一个单元用。null = 单卡。 */
+  gpus?: number[] | null
   vram_gb: number
   resident: boolean
   /** 统一引擎库:目录条目种类。model=整模型/引擎(可独立加载) upscale=SeedVR2 等 by-key
@@ -466,6 +468,14 @@ export interface GpuDevice {
   vram_gb: number
 }
 
+/** 可做张量并行的 GPU 组候选(后端只列**同型号**卡的组合,NVLink 优先)。 */
+export interface GpuGroup {
+  gpus: number[]
+  name: string
+  nvlink: boolean
+  total_gb: number
+}
+
 export function useGpus() {
   return useQuery({
     queryKey: ['gpus'],
@@ -474,11 +484,31 @@ export function useGpus() {
   })
 }
 
+/** GPU 组候选。异构组合永远不会出现在这里 —— 后端按型号分组后才枚举。 */
+export function useGpuGroups() {
+  return useQuery({
+    queryKey: ['gpu-groups'],
+    queryFn: () => apiFetch<{ groups: GpuGroup[] }>('/api/v1/gpu/groups'),
+    staleTime: 5 * 60_000,  // 机器上的卡不会中途变
+  })
+}
+
+/**
+ * 分配 GPU：单卡 `{gpu}` 或 GPU 组 `{gpus}`（张量并行）。
+ * 后端两条路都走 PATCH /api/v1/engines/{name}/gpu —— 单卡用查询参数（老路径不变），
+ * 组走请求体。设单卡会显式清掉已有的组。
+ */
 export function useSetGpu() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ name, gpu }: { name: string; gpu: number }) =>
-      apiFetch(`/api/v1/engines/${name}/gpu?gpu=${gpu}`, { method: 'PATCH' }),
+    mutationFn: ({ name, gpu, gpus }: { name: string; gpu?: number; gpus?: number[] }) =>
+      gpus && gpus.length > 1
+        ? apiFetch(`/api/v1/engines/${name}/gpu`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ gpus }),
+          })
+        : apiFetch(`/api/v1/engines/${name}/gpu?gpu=${gpu ?? 0}`, { method: 'PATCH' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['engines'] }),
     onError: (error: Error) => {
       useToastStore.getState().add(`GPU 分配失败: ${error.message}`, 'error')

@@ -83,6 +83,9 @@ class EngineInfo(BaseModel):
     type: str
     status: Literal["loaded", "unloaded", "loading", "failed"]
     gpu: int | list[int]
+    # 配置层的 GPU 组(张量并行):[0, 2] = 这俩卡当一个单元用。None = 未配组(单卡)。
+    # `gpu` 在配了组时也会是同一个 list(向后兼容旧前端),这个字段是明确信号。
+    gpus: list[int] | None = None
     vram_gb: float
     resident: bool
     # 统一引擎库(2026-06-02):区分目录条目种类供前端分组。

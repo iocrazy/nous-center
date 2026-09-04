@@ -71,6 +71,29 @@ def clamp_util_to_free(utilization: float, gpu_free_gb: float, gpu_total_gb: flo
     return utilization
 
 
+def _select_group(
+    gpu_stats: list[dict], model_size_gb: float, *, exact_size: int | None = None
+) -> list[int]:
+    """自动选一组**同型号**卡做张量并行(NVLink 优先)。拓扑查询失败 → 视为无 NVLink。
+
+    薄包装:真正的选组规则在 ``src.gpu.topology.select_tp_group``(纯函数,好测)。
+    这里只负责「查不到拓扑也别炸」。
+    """
+    try:
+        from src.gpu.topology import gpu_names, nvlink_pairs, select_tp_group  # noqa: PLC0415
+
+        return select_tp_group(
+            gpu_stats,
+            model_size_gb,
+            names=gpu_names(),
+            pairs=nvlink_pairs(),
+            exact_size=exact_size,
+        )
+    except Exception as e:  # noqa: BLE001 — 选组失败退回单卡,不阻塞 load
+        logger.warning("自动选 GPU 组失败(%s)—— 按单卡处理", e)
+        return []
+
+
 class VLLMAdapter(InferenceAdapter):
     """Adapter that spawns vLLM as a subprocess and manages its lifecycle.
 
@@ -99,6 +122,7 @@ class VLLMAdapter(InferenceAdapter):
         vllm_runner: str | None = None,
         vram_budget: dict | None = None,
         adopt_pid: int | None = None,
+        gpus: list[int] | None = None,
         **kwargs: Any,
     ):
         super().__init__(paths=paths, device=device)
@@ -106,6 +130,12 @@ class VLLMAdapter(InferenceAdapter):
         self.model_path = Path(paths.get("main", ""))
         self._port = vllm_port or (int(vllm_base_url.split(":")[-1]) if vllm_base_url else 0)
         self._tp = tensor_parallel_size
+        # 显式 GPU 组(模型级 `gpus: [0, 2]`)。给了就以它为准:
+        # CUDA_VISIBLE_DEVICES=组内物理 index + --tensor-parallel-size=组内卡数
+        # (除非显式 tensor_parallel_size 更小)。None = 走单卡 / 自动选组。
+        self._gpus = [int(i) for i in gpus] if gpus else None
+        # load() 时真正落地的组(含自动选出来的);观测/测试读它,None=单卡。
+        self.gpu_indices: list[int] | None = None
         self._max_model_len = max_model_len
         self._gpu_mem_util = gpu_memory_utilization
         self._quantization = quantization
@@ -183,28 +213,87 @@ class VLLMAdapter(InferenceAdapter):
 
         # 5. Get GPU info
         gpu_stats = poll_gpu_stats()
+        by_index = {int(s["index"]): s for s in gpu_stats}
 
-        # 6. Determine GPU index
-        if device and ":" in device:
+        def _budget_for(idxs: list[int]) -> tuple[float, float]:
+            """一组卡的 (total_gb, free_gb) —— 取组内**最小**。
+
+            TP 均分权重,组内最小的卡先见底;按 sum 或按主卡算都会高估预算 → 启动期 OOM。
+            """
+            cards = [by_index[i] for i in idxs if i in by_index]
+            if not cards:
+                return 24.0, 24.0
+            return (
+                min(c["total_mb"] for c in cards) / 1024,
+                min(c["free_mb"] for c in cards) / 1024,
+            )
+
+        # 6. Determine GPU index / group
+        group: list[int] | None = list(self._gpus) if self._gpus else None
+        if group:
+            gpu_idx = group[0]
+        elif device and ":" in device:
             gpu_idx = int(device.split(":")[-1])
         else:
             gpu_idx = (
-                max(range(len(gpu_stats)), key=lambda i: gpu_stats[i]["free_mb"])
+                max((int(s["index"]) for s in gpu_stats), key=lambda i: by_index[i]["free_mb"])
                 if gpu_stats
                 else 0
             )
 
-        gpu_total_gb = gpu_stats[gpu_idx]["total_mb"] / 1024 if gpu_idx < len(gpu_stats) else 24.0
-        gpu_free_gb = gpu_stats[gpu_idx]["free_mb"] / 1024 if gpu_idx < len(gpu_stats) else 24.0
+        if group:
+            gpu_total_gb, gpu_free_gb = _budget_for(group)
+        else:
+            gpu_total_gb, gpu_free_gb = _budget_for([gpu_idx])
 
         # 7. Determine tensor_parallel_size
+        #
+        # 关键不变式:**tp > 1 必须伴随一个显式 GPU 组**,且组内卡同型号。老逻辑
+        # `tp = len(gpu_stats)` 把机器上全部卡(异构!)拉进张量并行,在 3090+PRO6000
+        # 混插的机器上必炸 —— 现在改成只在同型号卡之间选组(topology.select_tp_group)。
         tp = self._tp or 1
-        if tp <= 1 and model_size_gb > gpu_free_gb * 0.85:
-            total_free = sum(g["free_mb"] for g in gpu_stats) / 1024
-            if total_free > model_size_gb * 1.2:
-                tp = len(gpu_stats)
+        if group:
+            tp = min(self._tp, len(group)) if self._tp else len(group)
+            group = group[:tp]
+            gpu_total_gb, gpu_free_gb = _budget_for(group)
+        elif tp > 1:
+            # 显式配了 tensor_parallel_size 却没配 gpus:自己挑一组同型号卡,别让子进程
+            # 继承父进程环境看到全部卡(那正是异构混跑的来源)。
+            group = _select_group(gpu_stats, model_size_gb, exact_size=tp)
+            if group:
+                gpu_idx = group[0]
+                gpu_total_gb, gpu_free_gb = _budget_for(group)
+            else:
+                logger.warning(
+                    "tensor_parallel_size=%d 但找不到 %d 张同型号且装得下的卡 —— "
+                    "不设 CUDA_VISIBLE_DEVICES,vLLM 会看到全部卡(可能混异构)。"
+                    "建议给该模型显式配 gpus:[...]", tp, tp,
+                )
+        elif model_size_gb > gpu_free_gb * 0.85:
+            group = _select_group(gpu_stats, model_size_gb)
+            if group:
+                tp = len(group)
+                gpu_idx = group[0]
+                gpu_total_gb, gpu_free_gb = _budget_for(group)
+                logger.info(
+                    "模型 %.1fG 装不下 cuda:%d(free %.1fG)→ 自动选同型号卡组 %s 做 TP=%d",
+                    model_size_gb, gpu_idx, gpu_free_gb, group, tp,
+                )
             else:
                 tp = 1
+                # 退回单卡最大者 —— 并把原因说清楚,别让用户对着 OOM 猜。
+                if gpu_stats:
+                    gpu_idx = max(
+                        (int(s["index"]) for s in gpu_stats),
+                        key=lambda i: by_index[i]["free_mb"],
+                    )
+                    gpu_total_gb, gpu_free_gb = _budget_for([gpu_idx])
+                logger.error(
+                    "模型 %.1fG 装不下单卡,且没有「同型号 + 都装得下分片」的卡组可用"
+                    "(异构卡绝不混做张量并行)→ 退回单卡最大者 cuda:%d(free %.1fG,很可能 OOM)。"
+                    "如确有可用卡组,请给该模型配 gpus:[...]",
+                    model_size_gb, gpu_idx, gpu_free_gb,
+                )
 
         # 8. Calculate gpu_memory_utilization
         if tp > 1:
@@ -264,6 +353,8 @@ class VLLMAdapter(InferenceAdapter):
         return {
             "port": port,
             "tp": tp,
+            # 落地的 GPU 组(显式 gpus / 自动选出的同型号组);None = 单卡。
+            "gpus": list(group) if group else None,
             "max_model_len": max_model_len,
             "utilization": round(utilization, 2),
             "quantization": quantization,
@@ -301,6 +392,15 @@ class VLLMAdapter(InferenceAdapter):
         auto = self._auto_configure(device)
         port = self._port or auto["port"]
         tp = self._tp or auto["tp"]
+        # GPU 组(显式 `gpus` 或自动选出的同型号组)决定 tp 与 CUDA_VISIBLE_DEVICES。
+        # 显式 tensor_parallel_size 只能**收窄**(用组里前 tp 张),不能超过组内卡数。
+        gpu_group: list[int] | None = auto.get("gpus") or None
+        if gpu_group:
+            tp = min(tp, len(gpu_group)) if self._tp else len(gpu_group)
+            gpu_group = gpu_group[:tp]
+            if tp <= 1:
+                gpu_group = None  # 收窄到 1 张 = 退化成单卡,走下面的单卡分支
+        self.gpu_indices = list(gpu_group) if gpu_group else None
         max_model_len = self._max_model_len or auto["max_model_len"]
         self.max_model_len = max_model_len  # expose for clamp logic
         # 显存预算优先级:overlay vram_budget(percent/absolute) > yaml gpu_memory_utilization > auto 公式
@@ -325,8 +425,9 @@ class VLLMAdapter(InferenceAdapter):
         self.base_url = self._base_url
 
         logger.info(
-            "Auto-config: model=%.1fGB, tp=%d, max_len=%d, util=%.2f, seqs=%d, quant=%s",
-            auto["model_size_gb"], tp, max_model_len, utilization, max_num_seqs, quantization,
+            "Auto-config: model=%.1fGB, tp=%d, gpus=%s, max_len=%d, util=%.2f, seqs=%d, quant=%s",
+            auto["model_size_gb"], tp, gpu_group or auto.get("gpu_idx"),
+            max_model_len, utilization, max_num_seqs, quantization,
         )
 
         # Resolve model path
@@ -409,14 +510,32 @@ class VLLMAdapter(InferenceAdapter):
         env.setdefault("VLLM_ATTENTION_BACKEND", "TORCH_SDPA")
         env.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
-        # Set CUDA_VISIBLE_DEVICES for single-GPU mode
-        if tp <= 1 and device:
+        # 落卡:**永远显式钉 CUDA_VISIBLE_DEVICES**。
+        # 老代码只在 tp<=1 时钉,tp>1 时什么都不设 → 子进程继承父进程环境看到全部卡,
+        # vLLM 自己按 index 顺序抓前 tp 张(在 3090/PRO6000 混插机上就是异构混跑)。
+        if gpu_group:
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_group)
+            logger.info(
+                "Starting vLLM on GPU group %s (TP=%d): %s",
+                gpu_group, tp, " ".join(cmd),
+            )
+        elif tp <= 1:
             # Extract GPU index from device string like "cuda:0"
-            gpu_idx = device.split(":")[-1] if ":" in device else "0"
-            env["CUDA_VISIBLE_DEVICES"] = gpu_idx
-            logger.info("Starting vLLM on GPU %s: %s", gpu_idx, " ".join(cmd))
+            single = None
+            if device and ":" in device:
+                single = device.split(":")[-1]
+            elif auto.get("gpu_idx") is not None:
+                single = str(auto["gpu_idx"])
+            if single is not None:
+                env["CUDA_VISIBLE_DEVICES"] = single
+                logger.info("Starting vLLM on GPU %s: %s", single, " ".join(cmd))
+            else:
+                logger.info("Starting vLLM: %s", " ".join(cmd))
         else:
-            logger.info("Starting vLLM (TP=%d): %s", tp, " ".join(cmd))
+            logger.warning(
+                "Starting vLLM (TP=%d) 未能确定 GPU 组 —— 未钉 CUDA_VISIBLE_DEVICES,"
+                "子进程会看到全部可见 GPU(可能混异构):%s", tp, " ".join(cmd),
+            )
 
         self._process = subprocess.Popen(
             cmd,

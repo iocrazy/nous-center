@@ -6,6 +6,8 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pydantic import BaseModel
+
 from src.api.deps_admin import require_admin
 from src.api.response_cache import cached, invalidate
 from src.services.model_scanner import scan_models, _VLLM_ADAPTER
@@ -33,6 +35,9 @@ def _spawn_bg(coro) -> asyncio.Task:
     return t
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])
+# GPU 拓扑(卡组)另起一个前缀:它讲的是**机器的卡**,不是某个引擎 —— 挂在
+# /api/v1/engines 下会读成"引擎的组"。main.py 一并 include。
+gpu_router = APIRouter(prefix="/api/v1/gpu", tags=["gpu"])
 logger = logging.getLogger(__name__)
 
 # In-memory loading state tracker: model_id -> {"status": "loading"|"failed", "detail": str}
@@ -106,7 +111,15 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
 
     # `gpu` can be None when the YAML leaves the slot to the detector. For
     # display, resolve via the detector so the UI shows the real assignment.
-    gpu_field = cfg.get("gpu")
+    # `gpus`(GPU 组 / 张量并行)优先:配了组就把整组当 `gpu` 报给前端(schema 允许
+    # int | list[int]),卡片显示 "GPU 0+2"。
+    gpu_group_cfg = cfg.get("gpus")
+    gpu_group = (
+        [int(i) for i in gpu_group_cfg]
+        if isinstance(gpu_group_cfg, (list, tuple)) and gpu_group_cfg
+        else None
+    )
+    gpu_field = gpu_group if gpu_group else cfg.get("gpu")
     if gpu_field is None:
         from src.gpu.detector import get_device_for_engine
         device = get_device_for_engine(cfg)
@@ -138,6 +151,7 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         type=cfg["type"],
         status=status,
         gpu=gpu_field,
+        gpus=gpu_group,
         vram_gb=cfg.get("vram_gb", 0),
         resident=cfg.get("resident", False),
         local_path=local_path,
@@ -833,6 +847,16 @@ def _card_total_gb_for_engine(cfg: dict, loaded_gpu: int | None = None) -> float
     if loaded_gpu is not None and loaded_gpu in by_index:
         return float(by_index[loaded_gpu] or 24.0)
 
+    # GPU 组(张量并行):gpu_memory_utilization 是**每张卡**的比例,组内卡同型号,
+    # 按组内**最小** total 算 —— 与 llm_vllm._auto_configure 的 _budget_for 同口径
+    # (按 sum 算会让 absolute 预算被放行成单卡装不下的值 → 启动期 OOM)。
+    group = cfg.get("gpus")
+    if isinstance(group, (list, tuple)) and group:
+        totals = [float(by_index.get(int(i)) or 0.0) for i in group]
+        totals = [t for t in totals if t > 0]
+        if totals:
+            return min(totals)
+
     gpu_field = cfg.get("gpu")
     if gpu_field is None:
         try:
@@ -920,15 +944,30 @@ async def set_vram_budget(name: str, request: Request, body: dict = Body(...),
             "hint": "需重新加载模型生效(unload + load)"}
 
 
+class GpuAssignment(BaseModel):
+    """PATCH /engines/{name}/gpu 的请求体(可选;不带 body 时走 `?gpu=N` 查询参数)。
+
+    二选一:`gpu` 钉单卡,`gpus` 钉一个 GPU 组(张量并行,≥2 张同型号卡)。
+    `gpus: []` / `null` + `gpu` 给值 = 清除组、回到单卡。
+    """
+
+    gpu: int | None = None
+    gpus: list[int] | None = None
+
+
 @router.patch("/{name}/gpu", dependencies=[Depends(require_admin)])
-async def set_gpu(name: str, request: Request, gpu: int = 0,
+async def set_gpu(name: str, request: Request, gpu: int | None = None,
+                  body: GpuAssignment | None = Body(None),
                   session: AsyncSession = Depends(get_async_session)):
-    """Change GPU assignment for an engine.
+    """Change GPU assignment for an engine —— 单卡或 GPU 组(张量并行)。
 
     写 DB 表 model_runtime_overrides(与 resident/vram_budget 一致;数据加载统一 2026-06-16)
     —— 不再写 git 跟踪的 models.yaml(旧行为污染 git 树、且 registry 读 yaml/overlay 口径分裂
-    导致落卡设置不生效)。registry 套用覆盖 → spec.gpu 驱动 vLLM 落卡。写后 reload registry 让
-    spec.gpu 立即刷新,随后 unload + load 即落新卡。
+    导致落卡设置不生效)。registry 套用覆盖 → spec.gpu / spec.gpus 驱动 vLLM 落卡。写后 reload
+    registry 让 spec 立即刷新,随后 unload + load 即落新卡。
+
+    组的合法性在这里就卡死(而不是等到 load 时炸):≥2 张、去重、卡存在、**同型号**。
+    异构组队(3090 + PRO 6000)做张量并行要么白扔大卡显存要么直接 OOM,一律 400。
     """
     from src.config import load_model_configs
     from src.services import runtime_override_store
@@ -936,14 +975,70 @@ async def set_gpu(name: str, request: Request, gpu: int = 0,
     if name not in load_model_configs():
         raise HTTPException(404, detail=f"Unknown engine: {name}")
 
-    await runtime_override_store.set_override(session, name, "gpu", gpu)
-    # reload registry → spec.gpu 从覆盖刷新(否则停在旧值,unload+load 仍落旧卡)。
+    group = list(body.gpus) if (body is not None and body.gpus) else None
+    if group is not None:
+        group = _validate_gpu_group(group)
+        await runtime_override_store.set_override(session, name, "gpus", group)
+        result = {"name": name, "gpu": group[0], "gpus": group}
+    else:
+        single = gpu if gpu is not None else (body.gpu if body is not None else None)
+        if single is None:
+            single = 0
+        # set_override("gpu") 会顺手把 gpus 清空 —— 用户点单卡就是要退出组。
+        await runtime_override_store.set_override(session, name, "gpu", int(single))
+        result = {"name": name, "gpu": int(single), "gpus": None}
+
+    # reload registry → spec.gpu/spec.gpus 从覆盖刷新(否则停在旧值,unload+load 仍落旧卡)。
     mgr = getattr(request.app.state, "model_manager", None)
     if mgr is not None and getattr(mgr, "_registry", None) is not None:
         mgr._registry.reload()
     invalidate("engines")
-    return {"name": name, "gpu": gpu, "applied": False,
-            "hint": "需重新加载模型生效(unload + load)"}
+    return {**result, "applied": False, "hint": "需重新加载模型生效(unload + load)"}
+
+
+def _validate_gpu_group(raw: list[int]) -> list[int]:
+    """校验 GPU 组:≥2 张、去重、卡存在、同型号。不合法直接 400。"""
+    from src.gpu.topology import gpu_names, group_is_nvlinked
+
+    try:
+        gpus = [int(i) for i in raw]
+    except (TypeError, ValueError):
+        raise HTTPException(400, detail="gpus must be a list of integers") from None
+    if len(set(gpus)) != len(gpus):
+        raise HTTPException(400, detail="gpus contains duplicate indices")
+    if len(gpus) < 2:
+        raise HTTPException(400, detail="a GPU group needs at least 2 cards")
+
+    names = gpu_names()
+    if names:
+        missing = [i for i in gpus if i not in names]
+        if missing:
+            raise HTTPException(400, detail=f"unknown GPU index: {missing}")
+        distinct = {names[i] for i in gpus}
+        if len(distinct) > 1:
+            raise HTTPException(
+                400,
+                detail=(
+                    "GPU 组必须同型号(异构卡做张量并行会按最小卡算或直接 OOM):"
+                    f"{sorted(distinct)}"
+                ),
+            )
+    gpus = sorted(gpus)
+    if not group_is_nvlinked(gpus):
+        logger.warning("GPU group %s has no NVLink between all members — TP 会走 PCIe,较慢", gpus)
+    return gpus
+
+
+@gpu_router.get("/groups")
+async def list_gpu_groups():
+    """可用于张量并行的 GPU 组候选(**同型号**卡的组合,NVLink 优先)。
+
+    `[{"gpus": [0, 2], "name": "NVIDIA GeForce RTX 3090", "nvlink": true, "total_gb": 48.0}]`
+    —— 前端「GPU 分配 → 组合」子菜单直接渲染这个。异构组合永远不出现在这里。
+    """
+    from src.gpu.topology import candidate_groups
+
+    return {"groups": await asyncio.to_thread(candidate_groups)}
 
 
 @router.get("/scheduler/status")

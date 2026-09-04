@@ -69,6 +69,27 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 - ETag is computed on the serialized body bytes, not the dict — keeps it stable
   across non-deterministic dict/set iteration order.
 
+## GPU 放置 / 张量并行 (GPU groups)
+
+- 本机三张卡(PCI 序):`cuda:0` = RTX 3090 24G、`cuda:1` = RTX PRO 6000 96G、
+  `cuda:2` = RTX 3090 24G。**0 与 2 之间有 NVLink**(`nvidia-smi topo -m` 显示 NV4),
+  Pro 6000 无 NVLink。生产经 `src/api/main.py` setdefault 了 `CUDA_DEVICE_ORDER=PCI_BUS_ID`。
+- **模型级 `gpus: [0, 2]`**(与单卡 `gpu: int` 并存,**给了 gpus 就以它为准**)=
+  以张量并行跨这组卡加载,`tp = len(gpus)`(显式 `tensor_parallel_size` 只能收窄)。
+  三处落点:models.yaml 的 `gpus:`、运行时覆盖表 `model_runtime_overrides.gpus`(JSONB)、
+  `PATCH /api/v1/engines/{name}/gpu` 的 body `{"gpus":[0,2]}`(单卡仍是 `?gpu=N`,
+  设单卡会显式清空组)。前端「GPU 分配」右键子菜单从 `GET /api/v1/gpu/groups` 拉候选。
+- **异构卡绝不混做张量并行**。自动选组(`src/gpu/topology.py::select_tp_group`)按
+  `name` 分同型号组 → 组内每卡都要装得下分片(按**最小** free 算,不是 sum)→ NVLink
+  全连通的组优先。选不出来就退单卡最大者并 `logger.error` 说明,**不再**像老代码那样
+  `tp = len(gpu_stats)` 把三张异构卡一起拉进 TP。
+- **tp > 1 必须伴随显式 `CUDA_VISIBLE_DEVICES`**。老代码只在 tp<=1 时钉,tp>1 时什么都
+  不设 → 子进程继承父进程环境看到全部卡。改这块时别把 `llm_vllm.py` 里那段 CVD 逻辑
+  简化回去。显存预算(`clamp_util_to_free` / `_card_total_gb_for_engine`)一律按组内
+  **最小** total/free 算 —— `gpu_memory_utilization` 是每卡比例,按 sum 算会启动即 OOM。
+- `hardware.yaml` 的 `groups[]` 是**另一回事**(runner 子进程的调度分组,`GPUAllocator`
+  用),语义没变;模型级 GPU 放置是按模型灵活配的,不写死在 hardware.yaml。
+
 ## 图像引擎 (image engine)
 
 - 引擎只剩一套 = `ModularImageBackend`(`image_modular.py`,Modular Diffusers)。

@@ -24,6 +24,10 @@ class ModelSpec(BaseModel):
     resident: bool = False
     ttl_seconds: int = 300
     gpu: int | list[int] | None = None
+    # GPU 组(张量并行):`[0, 2]` = 把这组卡当一个单元用,tp=len(gpus)。**优先于 `gpu`**。
+    # 来源:models.yaml 的 `gpus:` 或运行时覆盖 model_runtime_overrides.gpus。
+    # None = 未配 → 单卡 `gpu` / 自动选卡。
+    gpus: list[int] | None = None
     preload_order: int | None = None
 
     model_config = ConfigDict(frozen=True)
@@ -74,6 +78,7 @@ class ModelRegistry:
                 resident=ov.get("resident", entry.get("resident", False)),
                 ttl_seconds=entry.get("ttl_seconds", 3600 if entry["type"] == "llm" else 300),
                 gpu=ov.get("gpu", entry.get("gpu")),
+                gpus=ov.get("gpus", entry.get("gpus")),
                 preload_order=entry.get("preload_order"),
             )
             self._specs[spec.id] = spec
@@ -142,6 +147,7 @@ class ModelRegistry:
             resident=ov.get("resident", cfg.get("resident", False)),
             ttl_seconds=cfg.get("ttl_seconds", 3600 if cfg.get("type") == "llm" else 300),
             gpu=ov.get("gpu", cfg.get("gpu")),
+            gpus=ov.get("gpus", cfg.get("gpus")),
             preload_order=cfg.get("preload_order"),
         )
         self._specs[spec.id] = spec

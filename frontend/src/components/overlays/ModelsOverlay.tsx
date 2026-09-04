@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { Copy, Check, X, Search, Pin, PinOff } from 'lucide-react'
 import {
   useEngines, useLoadEngine, useUnloadEngine, useSyncMetadata,
-  useScanModels, useSetResident, useRefreshMetadata, useGpus, useSetGpu,
+  useScanModels, useSetResident, useRefreshMetadata, useGpus, useGpuGroups, useSetGpu,
   useLoadedAdapters, usePreloadSeedvr2, useUnloadSeedvr2, useUnloadAdapter,
   useSetSeedvr2Resident, usePreloadComponent, useSetComponentResident, useUnloadComponent,
   useVramBudget, useSetVramBudget,
@@ -12,6 +12,7 @@ import { apiFetch } from '../../api/client'
 import { useToastStore } from '../../stores/toast'
 import ContextMenu, { type MenuItem } from '../ui/ContextMenu'
 import DeleteModelDialog from '../models/DeleteModelDialog'
+import { buildGpuAssignSubmenu } from '../models/gpuAssignMenu'
 
 const TYPE_LABELS: Record<string, string> = {
   llm: '语言模型 LLM',
@@ -77,6 +78,7 @@ export default function ModelsOverlay() {
   const refreshMeta = useRefreshMetadata()
   const { data: gpuData } = useGpus()
   const setGpu = useSetGpu()
+  const { data: gpuGroupData } = useGpuGroups()
 
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState>({
     visible: false,
@@ -235,16 +237,14 @@ export default function ModelsOverlay() {
         {
           label: 'GPU 分配',
           disabled: false,
-          submenu: (gpuData?.devices ?? []).map((g) => {
-            const currentGpu = ctxMenu.model!.gpu
-            const isCurrentGpu = Array.isArray(currentGpu)
-              ? currentGpu.includes(g.index)
-              : currentGpu === g.index
-            return {
-              label: `GPU ${g.index}: ${g.name}`,
-              onClick: () => setGpu.mutate({ name: ctxMenu.model!.name, gpu: g.index }),
-              disabled: isCurrentGpu,
-            }
+          // 单卡 + 组合（张量并行）。组合项来自 /api/v1/gpu/groups（只列同型号组合）。
+          submenu: buildGpuAssignSubmenu({
+            devices: gpuData?.devices ?? [],
+            groups: gpuGroupData?.groups ?? [],
+            currentGpu: ctxMenu.model!.gpu,
+            currentGroup: ctxMenu.model!.gpus,
+            onPickGpu: (gpu) => setGpu.mutate({ name: ctxMenu.model!.name, gpu }),
+            onPickGroup: (gpus) => setGpu.mutate({ name: ctxMenu.model!.name, gpus }),
           }),
         },
         { label: '', divider: true },
@@ -978,11 +978,11 @@ function ModelCard({
          未加载 → 显示配置槽位并标注「配置」,避免与 Dashboard 的实际卡名读成矛盾。 */}
         {model.loaded_gpus && model.loaded_gpus.length > 0 ? (
           <span title="实际加载所在 GPU(物理编号,与 Dashboard 一致)">
-            GPU {model.loaded_gpus.join(',')}
+            GPU {model.loaded_gpus.join('+')}
           </span>
         ) : (
           <span title="配置的 GPU 槽位(未加载时的预定落卡,实际以加载时分配为准)">
-            GPU {Array.isArray(model.gpu) ? model.gpu.join(',') : model.gpu}(配置)
+            GPU {Array.isArray(model.gpu) ? model.gpu.join('+') : model.gpu}(配置)
           </span>
         )}
         <button
@@ -1094,7 +1094,7 @@ function StatusBadge({
   }, [status, modelName])
 
   const gpuLabel = loadedGpus && loadedGpus.length > 0
-    ? ` · GPU ${loadedGpus.join(',')}`
+    ? ` · GPU ${loadedGpus.join('+')}`
     : ''
 
   let elapsedLabel = 'loading...'

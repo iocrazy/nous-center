@@ -15,9 +15,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 # 允许的覆盖键(与旧 config._OVERRIDABLE_KEYS 一致)。
-VALID_KEYS = ("resident", "gpu", "vram_budget")
+VALID_KEYS = ("resident", "gpu", "gpus", "vram_budget")
 
-# 进程内缓存:{model_id: {resident?, gpu?, vram_budget?}}。DB 的同步可读镜像。
+# 进程内缓存:{model_id: {resident?, gpu?, gpus?, vram_budget?}}。DB 的同步可读镜像。
 _CACHE: dict[str, dict] = {}
 
 
@@ -68,7 +68,12 @@ async def set_override(session, model_id: str, key: str, value) -> None:
     if key == "resident":
         row.resident = bool(value)
     elif key == "gpu":
+        # 钉单卡 = 显式取消 GPU 组(否则组仍优先,用户点「GPU 1」却还落在 0+2 上)。
         row.gpu = int(value)
+        row.gpus = None
+    elif key == "gpus":
+        # value = [0, 2] / None(清除组,回退单卡 gpu)
+        row.gpus = [int(i) for i in value] if value else None
     elif key == "vram_budget":
         # value = {"mode": auto|percent|absolute, "value": float?}
         row.vram_budget_mode = (value or {}).get("mode")
@@ -112,6 +117,8 @@ async def migrate_json_if_empty(session_factory, json_path) -> int:
                 row.resident = bool(ov["resident"])
             if "gpu" in ov:
                 row.gpu = int(ov["gpu"])
+            if isinstance(ov.get("gpus"), list) and ov["gpus"]:
+                row.gpus = [int(i) for i in ov["gpus"]]
             vb = ov.get("vram_budget")
             if isinstance(vb, dict):
                 row.vram_budget_mode = vb.get("mode")

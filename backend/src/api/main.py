@@ -84,6 +84,10 @@ _MICRO_MIGRATIONS: tuple[str, ...] = (
     # (c5d2e9b74a10),但生产启动仍走 create_all —— create_all 不给**已存在**的表加列,
     # 没这条的话线上重启后 service_instances 查询全炸 UndefinedColumn。幂等,可共存。
     "ALTER TABLE service_instances ADD COLUMN IF NOT EXISTS autostart BOOLEAN NOT NULL DEFAULT false",
+    # 模型级 GPU 组 / 张量并行(2026-09-03)。alembic 有对应迁移(d7a4b1e6c093),
+    # 但生产启动仍走 create_all —— create_all 不给**已存在**的表加列,没这条的话
+    # 线上重启后 model_runtime_overrides 查询全炸 UndefinedColumn。幂等,可共存。
+    "ALTER TABLE model_runtime_overrides ADD COLUMN IF NOT EXISTS gpus JSONB",
 )
 
 
@@ -669,7 +673,10 @@ async def lifespan(app: FastAPI):
                 try:
                     def _factory(s, port=vllm_info["port"], pid=vllm_info["pid"]):
                         from src.services.inference.llm_vllm import VLLMAdapter
-                        return VLLMAdapter(paths=s.paths, vllm_port=port, adopt_pid=pid, **s.params)
+                        # gpus:重连的也可能是个跨卡(张量并行)实例 —— 带上组,
+                        # 否则 adapter 眼里它是单卡的,后续任何重启都会落错卡。
+                        return VLLMAdapter(paths=s.paths, vllm_port=port, adopt_pid=pid,
+                                           gpus=list(s.gpus) if s.gpus else None, **s.params)
                     await model_mgr.load_model(spec.id, adapter_factory=_factory)
                     reconnected.add(spec.id)
                 except Exception as e:
@@ -936,6 +943,7 @@ def create_app() -> FastAPI:
     app.include_router(generate.router)
     app.include_router(tts.router)
     app.include_router(engines.router)
+    app.include_router(engines.gpu_router)
     app.include_router(models_routes.router)
     app.include_router(loras_routes.router)
     app.include_router(image_files_routes.router)

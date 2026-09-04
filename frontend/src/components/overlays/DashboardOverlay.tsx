@@ -652,7 +652,7 @@ function CollapsibleSystem({
               </span>
               {m.loaded_gpus && m.loaded_gpus.length > 0 && (
                 <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11 }}>
-                  GPU {m.loaded_gpus.join(',')} · {m.vram_gb}GB
+                  GPU {m.loaded_gpus.join('+')} · {m.vram_gb}GB
                 </span>
               )}
             </div>
