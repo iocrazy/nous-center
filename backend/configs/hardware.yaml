@@ -28,8 +28,12 @@
 #
 # image group 的偏好原本是 GPU 0（崩桌面，见上），2026-06-22 改到 GPU 2。注意这
 # 只挡住 auto 选卡：给某个模型显式设 gpu:0 覆盖，仍会装到显示卡上。
-# 两张 3090（GPU 0 / GPU 2）之间有 NVLink，但 GPU 0 是显示卡，不能用于 llm tp；
-# 若要 NVLink tp，需先把显示器接到别的卡、腾空 GPU 0 再用 [0,2] + nvlink:true。
+# 两张 3090（GPU 0 / GPU 2）之间有 NVLink（nvidia-smi topo -m: NV4，4 链路各 14 GB/s）。
+# 2026-09-04 起声明为 llm-tp 组（见下），供 vLLM 张量并行当 ~47GB 用（GPU 0 桌面常驻
+# 约 1GB）。显示器仍接在 GPU 0：代码层对显示卡只 warning 不拒绝；LLM 显存是预分配的，
+# 不像出图那样突涨，风险比当年 image 崩桌面小。若实测桌面卡顿/掉登录，把显示器线换到
+# Pro 6000 即可，软件侧不用改。role 用 llm-tp 而不是 llm：Lane K 只给 role:llm 的组起
+# LLMRunner，第二个 llm 组会和 Pro 6000 那组抢同一个代表模型。
 #
 # 字段语义：
 #   id      group 唯一标识，runner / scheduler 用它寻址
@@ -58,3 +62,9 @@ groups:
     nvlink: false
     role: tts
     vram_gb: 24
+
+  - id: llm-tp
+    gpus: [0, 2]           # 两张 3090 NVLink 对,vLLM tensor-parallel=2 当 ~47GB 用
+    nvlink: true
+    role: llm-tp           # 不是 llm:避免 Lane K 多起一个 LLMRunner(见文件头说明)
+    vram_gb: 48
