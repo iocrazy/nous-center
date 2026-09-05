@@ -794,7 +794,7 @@ def test_resolve_punct_base_url_uses_readonly_never_autoloads(monkeypatch):
     import src.api.routes.openai_compat as oc
 
     def _fake_get(mm, name):
-        assert name == "qwen3_6_35b_a3b_fp8"  # 默认引擎
+        assert name == "qwen3_8_27b_abliterated_awq"  # 默认引擎(2026-09-05 3.6 退役)
         return "http://127.0.0.1:8000/"
 
     monkeypatch.delenv("NOUS_PUNCT_LLM_ENGINE", raising=False)

@@ -28,7 +28,9 @@ adapter: src.services.inference.llm_vllm.VLLMAdapter
 id: qwen3_8_27b_abliterated_awq
 paths:
   main: llm/Qwen3.8-27B-abliterated-AWQ
-resident: false
+# 2026-09-05 spec engine-app-boundary §10:目录唯一 LLM,常驻。数据面不再懒加载,
+# 不常驻 = 下游(ComfyUI 反推 / nous-app)一律 503 model_not_ready。
+resident: true
 type: llm
 # 19.6GB 权重跨两卡 ≈ 每卡 9.8GB;这里填整模型占用,manager 按组内均分预留。
 vram_mb: 20070

@@ -833,7 +833,7 @@ _PUNCT_CHARS = frozenset("，。？！、；,.?!;")  # 中英:逗/句/问/叹/�
 _PUNCT_MIN_CHARS = 80              # 全文 < 此长度不触发(短文本密度不稳,兜底无意义)
 _PUNCT_DENSITY_THRESHOLD = 0.005  # 标点数/字符数 < 此值判「异常低」→ 触发恢复
 # 标点 LLM(env 可覆盖)= 本机常驻 qwen3。**只读选址、绝不按需拉起**(见 _resolve_punct_base_url)。
-_PUNCT_LLM_ENGINE_DEFAULT = "qwen3_6_35b_a3b_fp8"
+_PUNCT_LLM_ENGINE_DEFAULT = "qwen3_8_27b_abliterated_awq"
 
 
 def _punctuation_density(text: str) -> float:
@@ -851,7 +851,7 @@ def _strip_punct(s: str) -> str:
 
 
 def _resolve_punct_base_url(model_mgr) -> str | None:
-    """标点 LLM 选址:`NOUS_PUNCT_LLM_ENGINE`(默认 `qwen3_6_35b_a3b_fp8`)。
+    """标点 LLM 选址:`NOUS_PUNCT_LLM_ENGINE`(默认 `qwen3_8_27b_abliterated_awq`)。
 
     用只读的 `get_vllm_base_url`:只查 `is_loaded`、取 `base_url`,**不触发任何加载**
     (2026-09-05 spec §4 起全数据面都只有这一条路,懒加载变体已删)。标点恢复只是纯增强,
