@@ -113,7 +113,6 @@ async def unpublish_workflow(
     request: Request,
     session: AsyncSession = Depends(get_async_session),
 ):
-    model_mgr = request.app.state.model_manager
     wf = await session.get(Workflow, workflow_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -126,14 +125,6 @@ async def unpublish_workflow(
     instance = result.scalar_one_or_none()
     if instance:
         instance.status = "inactive"
-
-    # Remove model references and attempt unload
-    deps = model_mgr.get_model_dependencies(
-        {"nodes": wf.nodes, "edges": wf.edges}
-    )
-    for dep in deps:
-        model_mgr.remove_reference(dep["key"], str(wf.id))
-        await model_mgr.unload_model(dep["key"])
 
     wf.status = "draft"
     await session.commit()

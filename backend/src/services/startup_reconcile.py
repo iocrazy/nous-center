@@ -13,14 +13,13 @@ from src.models.workflow import Workflow
 
 async def reconcile_orphan_published_workflows(session: AsyncSession, model_mgr) -> int:
     """published 但已无关联服务的 workflow → 退回 draft(清存量孤儿:历史「删服务」
-    没回退 workflow status);有关联的重登记模型引用(防常驻模型被 idle/LRU 卸)。
-    返回 orphan_count。
+    没回退 workflow status)。返回 orphan_count。
 
-    **登记引用 ≠ 加载模型**:`add_reference` 只是挡 idle checker / LRU 驱逐,绝不触发
-    load。历史上 lifespan 拿本函数返回的 deps 列表在后台 `load_model` 全量预热
-    (`_load_wf_deps`),不看 resident 标记 —— 用户没开「自动加载」的模型开机照样被
-    拉满显存。2026-09-03 删掉那条预热,返回值只剩 orphan_count。工作流执行时
-    runner 走 `get_or_load` 按需加载。
+    2026-09-05(spec engine-app-boundary §7):不再给已发布工作流的模型依赖登记进程级
+    引用。那条引用只在下架/删除时移除,效果是 resident:false 的模型一旦被加载就永不
+    TTL 回收(真机:「新工作流」把 qwen3_6 钉死在 3090 对上),且 /api/v1/engines 看不出
+    原因。想让工作流依赖的模型常热,写 resident: true;请求期保护仍由 proxy_ref 与
+    _in_use 负责。参数 model_mgr 保留以免改所有调用点签名,本函数已不使用它。
 
     E-D(性能二轮):有无关联服务的判定用**一次** DISTINCT workflow_id 查询取集合,
     替代每 wf 一次 svc_exists 查询(N+1,阻塞启动 readiness)。P+1 查询 → 2 查询。
@@ -39,9 +38,6 @@ async def reconcile_orphan_published_workflows(session: AsyncSession, model_mgr)
         if wf.id not in linked_wf_ids:
             wf.status = "draft"
             orphan += 1
-            continue
-        for dep in model_mgr.get_model_dependencies({"nodes": wf.nodes, "edges": wf.edges}):
-            model_mgr.add_reference(dep["key"], str(wf.id))
     if orphan:
         await session.commit()
     return orphan
