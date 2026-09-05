@@ -1,9 +1,15 @@
 # nous-moss-asr 生产 pipeline config —— sgl-omni serve --config 读它。
 # 基线 = 默认 MossTranscribeDiarizePipelineConfig,只改两处(SPIKE.md 真机验证):
 #
-#   1. mem_fraction_static: 0.5
-#      共享 3090(index0,与桌面/ComfyUI 同卡),不能抢整卡。spike 实测:0.25 起得来但
-#      KV 挤占后单请求都不够;0.5 跑 7.7min 双人播客稳,KV 余量覆盖长音频 max_new_tokens。
+#   1. mem_fraction_static: 0.15
+#      语义(sglang server_args.py):(模型权重 + KV cache 池) / **整卡容量** 的比例,
+#      不是绝对值 —— 换卡不改这个数,占用就跟着卡容量走。
+#      2026-09-05 起本模型在 Pro 6000(96GB):0.15 × 96 ≈ 14.4GB,比它当年在 24GB 卡上
+#      跑稳的 12GB 还宽裕一点。别低于 0.13(≈12.5GB,已到当年的稳态线)。
+#      【历史依据】当时在 24GB 的 3090(与桌面/ComfyUI 同卡,不能抢整卡),值是 0.5:
+#      spike 实测 0.25(=6GB)起得来但 KV 挤占后单请求都不够;0.5(=12GB)跑 7.7min
+#      双人播客稳,KV 余量覆盖长音频 max_new_tokens。
+#      PR #709 搬到 Pro 6000 时漏改这个比例 → 0.5 × 96 = 48GB,面板实测 48.8GB。
 #   2. attention/CUDA graph 走默认 = **flashinfer 通路**(2026-07-21 切换,SPIKE §8):
 #      venv 已五钉 13.3 工具链(setup.sh),sm_86 JIT 现编可过;实测 7.7min 播客 11s
 #      (torch_native 是 31.5s)。冷启(空 JIT 缓存)首次要数分钟现编;warm ~36s。
@@ -18,11 +24,11 @@ stages:
     process: asr
     factory: sglang_omni.models.moss_transcribe_diarize.stages.create_sglang_moss_transcribe_diarize_executor
     factory_args:
-      device: "cuda:0"          # 进程内唯一可见卡(start_serve.sh 用 UUID 钉 3090)= cuda:0
+      device: "cuda:0"          # 进程内唯一可见卡(adapter 用 gpu_uuid 钉 Pro 6000)= cuda:0
       max_running_requests: 16
       encoder_cache_size_bytes: 4294967296
       request_build_max_workers: 8
       request_build_max_pending: 16
-      mem_fraction_static: 0.5
+      mem_fraction_static: 0.15
     gpu: 0
     terminal: true
