@@ -1227,7 +1227,10 @@ async def audio_transcriptions(
     try:
         moss_base_url = _resolve_moss_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
-        raise HTTPException(503, detail=f"MOSS ASR 引擎不可用: {e}") from e
+        # 2026-09-05 spec §5:与 chat/embeddings 同一信封 —— 「已授权但未加载」在整个
+        # 数据面都是 503 model_not_ready(裸 HTTPException(503) 会落 type=api_error
+        # code=null,下游拿不到 code 也拿不到指向 /v1/models 的 fix)。
+        raise ModelNotReadyError(engine_name) from e
     except VLLMNoEndpoint as e:
         raise HTTPException(500, detail=str(e)) from e
 

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import inspect
+import io
+import wave
 from unittest.mock import MagicMock
 
 import bcrypt
@@ -125,3 +127,45 @@ async def test_v1_models_lists_only_ready_model_services(db_client, db_session):
     assert one.status_code == 503 and one.json()["error"]["code"] == "model_not_ready"
     missing = await db_client.get("/v1/models/nope", headers={"Authorization": f"Bearer {raw}"})
     assert missing.status_code == 404
+
+
+def _wav16k(seconds: float = 0.5) -> bytes:
+    """最小合法 16k/mono/s16le WAV —— multipart 需要个文件体,内容不重要
+    (拒绝发生在 `file.read()` 之前)。"""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * int(16000 * seconds))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_transcriptions_on_cold_moss_is_503_model_not_ready(
+    db_client, db_session, monkeypatch,
+):
+    """/v1/audio/transcriptions 的冷 MOSS 拒绝与 chat/embeddings 同一信封。
+
+    修前是裸 `HTTPException(503, detail=...)` → main.py 的 503 没有映射条目,落
+    `type=api_error` / `code=null`,下游既拿不到 code 也拿不到指向 /v1/models 的 fix。
+    """
+    moss = await _model_svc(db_session, "moss-asr", "moss_transcribe_diarize", category="asr")
+    raw = await _grant_key(db_session, moss)
+    # env override 会短路选址(直接返回 URL,根本不问 ModelManager)——必须清掉。
+    monkeypatch.delenv("NOUS_MOSS_ASR_URL", raising=False)
+    mgr = db_client._transport.app.state.model_manager
+    mgr.get_adapter = MagicMock(return_value=None)          # 冷:没有 adapter
+
+    r = await db_client.post(
+        "/v1/audio/transcriptions",
+        headers={"Authorization": f"Bearer {raw}"},
+        files={"file": ("a.wav", _wav16k(), "audio/wav")},
+        data={"model": "moss-asr"},
+    )
+    assert r.status_code == 503, r.text
+    err = r.json()["error"]
+    assert err["type"] == "model_not_ready" and err["code"] == "model_not_ready"
+    assert err["param"] == "model"
+    assert "/v1/models" in err["fix"]
+    mgr.load_model.assert_not_called()
