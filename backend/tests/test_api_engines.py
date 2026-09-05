@@ -1,5 +1,7 @@
 from unittest.mock import patch, MagicMock, AsyncMock
 
+from src.api.response_cache import invalidate
+
 
 async def test_list_engines(db_client):
     with patch("src.api.routes.engines.scan_local_models", return_value={"speech/cosyvoice2-0.5b", "speech/indextts-2", "speech/moss-tts"}):
@@ -396,6 +398,13 @@ async def test_engines_list_exposes_held_by(db_client):
     注:`_build_engine_info` 的 `loaded` 判据是 `_is_engine_loaded` → `mgr.is_loaded(key)`
     (不是 `loaded_model_ids`),所以这里按 `is_loaded` 打桩;`_models` 置空 dict 让
     loaded_gpu/loaded_gpus 走 None 分支(否则 MagicMock 过不了 pydantic)。"""
+    # `GET /api/v1/engines` 带 `@cached("engines", ttl=30)`,`_store` 是模块级(不随
+    # db_client 重建),所以同一进程里前面用例留下的 body 会被原样回给这里 —— 本文件
+    # 开头几条 GET 就把 `scan_local_models` patch 成三个 speech 目录,缓存体里压根没有
+    # qwen3_tts_base。串行时中间的 load/unload 用例顺手 invalidate 掩盖了这点,xdist 下
+    # 用例分到不同 worker 就露馅(2026-09-05 #713 CI 实测 KeyError: 'qwen3_tts_base')。
+    # 写法抄 test_engines_list_runtime_override_freshness.py 的 _fresh_caches。
+    invalidate("engines")
     mgr = db_client._transport.app.state.model_manager
     mgr.is_loaded = MagicMock(side_effect=lambda mid: mid == "qwen3_tts_base")
     mgr._models = {}
