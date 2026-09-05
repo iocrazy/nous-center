@@ -397,23 +397,35 @@ async def test_engines_list_exposes_held_by(db_client):
 
     注:`_build_engine_info` 的 `loaded` 判据是 `_is_engine_loaded` → `mgr.is_loaded(key)`
     (不是 `loaded_model_ids`),所以这里按 `is_loaded` 打桩;`_models` 置空 dict 让
-    loaded_gpu/loaded_gpus 走 None 分支(否则 MagicMock 过不了 pydantic)。"""
-    # `GET /api/v1/engines` 带 `@cached("engines", ttl=30)`,`_store` 是模块级(不随
-    # db_client 重建),所以同一进程里前面用例留下的 body 会被原样回给这里 —— 本文件
-    # 开头几条 GET 就把 `scan_local_models` patch 成三个 speech 目录,缓存体里压根没有
-    # qwen3_tts_base。串行时中间的 load/unload 用例顺手 invalidate 掩盖了这点,xdist 下
-    # 用例分到不同 worker 就露馅(2026-09-05 #713 CI 实测 KeyError: 'qwen3_tts_base')。
-    # 写法抄 test_engines_list_runtime_override_freshness.py 的 _fresh_caches。
+    loaded_gpu/loaded_gpus 走 None 分支(否则 MagicMock 过不了 pydantic)。
+
+    要在 CI 上稳,这条用例得同时躲开两层与"本机盘上有什么"耦合的东西:
+
+    ① **本地存在过滤**:`list_all_engines` 对每个引擎 `if not local_path or local_path
+       not in local_dirs: continue`(`local_dirs = scan_local_models()`)。CI 机器没有
+       模型目录 → 扫出空集 → **任何引擎都不进响应**,断言直接 KeyError。所以照本文件
+       开头三条 GET 用例的写法 patch 掉 `scan_local_models`,只放行两个 configs 里确实
+       声明了的路径(cosyvoice2 / indextts2,见 configs/models.d/*.yaml 的 paths.main),
+       让"被持有"和"没被持有"两侧都有样本。2026-09-05 #713 CI 两次实测。
+    ② **响应缓存**:`GET /api/v1/engines` 带 `@cached("engines", ttl=30)`,`_store` 是
+       模块级(不随 db_client 重建),同进程里前面用例留下的 body 会被原样回给这里。
+       串行时中间的 load/unload 用例走写路径顺手 invalidate 掩盖了这点,xdist 下用例
+       分到不同 worker 就露馅。写法抄 test_engines_list_runtime_override_freshness.py
+       的 _fresh_caches。
+    """
     invalidate("engines")
     mgr = db_client._transport.app.state.model_manager
-    mgr.is_loaded = MagicMock(side_effect=lambda mid: mid == "qwen3_tts_base")
+    mgr.is_loaded = MagicMock(side_effect=lambda mid: mid == "cosyvoice2")
     mgr._models = {}
     mgr.get_references = MagicMock(
-        side_effect=lambda mid: {"proxy-abc"} if mid == "qwen3_tts_base" else set())
+        side_effect=lambda mid: {"proxy-abc"} if mid == "cosyvoice2" else set())
 
-    resp = await db_client.get("/api/v1/engines")
+    local = {"speech/cosyvoice2-0.5b", "speech/indextts-2"}
+    with patch("src.api.routes.engines.scan_local_models", return_value=local):
+        resp = await db_client.get("/api/v1/engines")
     assert resp.status_code == 200
     by_name = {e["name"]: e for e in resp.json()}
-    assert by_name["qwen3_tts_base"]["held_by"] == ["proxy-abc"]
-    others = [e for n, e in by_name.items() if n != "qwen3_tts_base"]
+    assert by_name["cosyvoice2"]["held_by"] == ["proxy-abc"]
+    others = [e for n, e in by_name.items() if n != "cosyvoice2"]
+    assert others, "没有对照组的话 held_by == [] 那条断言是空真"
     assert all(e["held_by"] == [] for e in others)
