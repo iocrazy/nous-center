@@ -851,13 +851,16 @@ class ModelManager:
                     "Skipping unload of in-use model %r(正在 infer,卸载会 segfault)", model_id)
                 return False
 
+            # 2026-09-05:这两条拒绝以前是 debug,生产 log level 下等于静默 —— 排查
+            # 「unload 报成功但显存不退」时 journal 里一个字都没有。拒绝是运维要看见的
+            # 结论(路由现在也据此回 409),升到 info。
             if not force:
                 if entry.spec.resident:
-                    logger.debug("Skipping unload of resident model %r", model_id)
+                    logger.info("Skipping unload of resident model %r", model_id)
                     return False
                 refs = self._references.get(model_id, set())
                 if refs:
-                    logger.debug(
+                    logger.info(
                         "Skipping unload of referenced model %r (refs=%s)",
                         model_id,
                         refs,

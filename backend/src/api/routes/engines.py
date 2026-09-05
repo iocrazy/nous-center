@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from src.api.deps_admin import require_admin
 from src.api.response_cache import cached, invalidate
+from src.errors import ConflictError
 from src.services.model_scanner import scan_models, _VLLM_ADAPTER
 from src.gpu.detector import gpu_summary
 from src.models.database import get_async_session
@@ -94,6 +95,18 @@ def _get_loaded_gpus(name: str, request: Request | None = None) -> list[int] | N
     return None
 
 
+def _get_held_by(name: str, request: Request | None = None) -> list[str]:
+    """spec 2026-09-05 §9:当前持有该模型的活跃引用(排序后的 owner 串)。
+
+    未加载 / 拿不到 manager → 空列表(老 registry 回退路径没有引用计数这回事)。
+    """
+    if request is not None:
+        mgr = _get_model_manager(request)
+        if mgr is not None:
+            return sorted(mgr.get_references(name))
+    return []
+
+
 def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request: Request | None = None) -> EngineInfo:
     local_path = cfg.get("local_path")
     local_exists = local_path in local_dirs if local_path else False
@@ -160,6 +173,7 @@ def _build_engine_info(key: str, cfg: dict, meta, local_dirs: set[str], request:
         has_adapter=bool(cfg.get("adapter")),
         loaded_gpu=_get_loaded_gpu(key, request) if loaded else None,
         loaded_gpus=_get_loaded_gpus(key, request) if loaded else None,
+        held_by=_get_held_by(key, request) if loaded else [],
         status_detail=status_detail,
         lora_count=lora_count,
     )
@@ -419,7 +433,25 @@ async def unload_engine(name: str, request: Request, force: bool = False):
         raise HTTPException(409, detail=f"Engine {name} is resident. Use force=true to unload.")
 
     model_mgr = request.app.state.model_manager
-    await model_mgr.unload_model(name, force=force)
+    ok = await model_mgr.unload_model(name, force=force)
+    # spec 2026-09-05 §8:接住返回值。此前这里无条件报 "unloaded",而 unload_model 在
+    # 有引用 / in_use 时 return False 且只打 debug —— 真机表现是 200 + 进程活着 + 显存不退。
+    # 「没加载」的 False 仍是 no-op 200(与 test_unload_non_loaded_engine 一致)。
+    if ok is False and model_mgr.is_loaded(name):
+        refs = sorted(model_mgr.get_references(name))
+        if refs:
+            raise ConflictError(
+                f"Engine {name} is referenced by {refs}; not unloaded.",
+                code="engine_referenced",
+                fix=f"POST /api/v1/engines/{name}/unload?force=true",
+            )
+        # in-use 是**强于 force** 的硬守卫(卸载正在 infer 的 adapter → segfault),
+        # 所以这里的 fix 不能建议 force。
+        raise ConflictError(
+            f"Engine {name} is in use (inference in flight); not unloaded.",
+            code="engine_in_use",
+            fix="wait for in-flight requests to finish, then retry; force=true does not override in_use",
+        )
 
     # round9 BUG4:清掉残留的 loading/failed 状态。_build_engine_info 里
     # _loading_states 优先级高于 loaded/unloaded —— load 失败写了 {"status":"failed"}
