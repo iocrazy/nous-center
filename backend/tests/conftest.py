@@ -322,6 +322,7 @@ def _mock_model_manager():
     # 也返回一个非空 mock。默认「没加载、没引用」才是干净起点。
     mgr.is_loaded = MagicMock(return_value=False)
     mgr.get_references = MagicMock(return_value=set())
+    mgr.is_in_use = MagicMock(return_value=False)
     return mgr
 
 

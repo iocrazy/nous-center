@@ -438,6 +438,16 @@ async def unload_engine(name: str, request: Request, force: bool = False):
     # 有引用 / in_use 时 return False 且只打 debug —— 真机表现是 200 + 进程活着 + 显存不退。
     # 「没加载」的 False 仍是 no-op 200(与 test_unload_non_loaded_engine 一致)。
     if ok is False and model_mgr.is_loaded(name):
+        # 判定顺序必须与 unload_model 内部一致:**先 in_use、后引用**。in-use 是
+        # 无条件的第一道硬守卫(卸载正在 infer 的 adapter → segfault),**强于 force**;
+        # 一个模型可以既被引用又正在 infer,先看 refs 就会误报 engine_referenced +
+        # 建议 force,调用方照做仍是 409 —— 死循环(2026-09-05 审查)。
+        if model_mgr.is_in_use(name):
+            raise ConflictError(
+                f"Engine {name} is in use (inference in flight); not unloaded.",
+                code="engine_in_use",
+                fix="wait for in-flight requests to finish, then retry; force=true does not override in_use",
+            )
         refs = sorted(model_mgr.get_references(name))
         if refs:
             raise ConflictError(
@@ -445,12 +455,13 @@ async def unload_engine(name: str, request: Request, force: bool = False):
                 code="engine_referenced",
                 fix=f"POST /api/v1/engines/{name}/unload?force=true",
             )
-        # in-use 是**强于 force** 的硬守卫(卸载正在 infer 的 adapter → segfault),
-        # 所以这里的 fix 不能建议 force。
+        # 理论上到不了:unload_model 的拒绝分支只有 in_use / resident / refs 三条,
+        # resident 在本函数开头已挡(force 过来的 resident 不会被拒)。真到了说明
+        # manager 侧新增了一条路由不认识的拒绝理由 —— 别再猜原因,如实说不知道。
         raise ConflictError(
-            f"Engine {name} is in use (inference in flight); not unloaded.",
-            code="engine_in_use",
-            fix="wait for in-flight requests to finish, then retry; force=true does not override in_use",
+            f"Engine {name} was refused unload by the model manager for an unknown reason.",
+            code="engine_unload_refused",
+            fix="check backend logs (journalctl -u nous-engine-backend) for the 'Skipping unload' line",
         )
 
     # round9 BUG4:清掉残留的 loading/failed 状态。_build_engine_info 里

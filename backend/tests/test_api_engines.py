@@ -370,15 +370,23 @@ async def test_unload_referenced_engine_returns_409_with_reason(client):
 
 async def test_unload_in_use_engine_returns_409_and_force_does_not_help(client):
     """in-use 是**强于 force** 的硬守卫(卸载正在 infer 的 adapter 会 segfault),
-    所以带了 force 也照样 409 —— 但要给出与「有引用」不同的 code 和 fix。"""
+    所以带了 force 也照样 409 —— 但要给出与「有引用」不同的 code 和 fix。
+
+    这里刻意让「既被引用、又正在 infer」同时成立(2026-09-05 审查指出的重叠场景):
+    unload_model 内部先查 in_use,路由必须同序,否则会误报 engine_referenced +
+    建议 force,调用方照做仍 409 → 死循环。"""
     mgr = client._transport.app.state.model_manager
     mgr.unload_model = AsyncMock(return_value=False)
     mgr.is_loaded = MagicMock(return_value=True)
-    mgr.get_references = MagicMock(return_value=set())   # 没引用、非常驻 → 只能是 in_use
+    mgr.is_in_use = MagicMock(return_value=True)
+    mgr.get_references = MagicMock(return_value={"308084173191516160"})
 
     resp = await client.post("/api/v1/engines/qwen3_tts_base/unload?force=true")
     assert resp.status_code == 409, resp.text
-    assert resp.json()["error"]["code"] == "engine_in_use"
+    err = resp.json()["error"]
+    assert err["code"] == "engine_in_use"
+    # fix 不能建议重试 force —— force 不覆盖 in_use,照做只会再吃一个 409。
+    assert "force=true does not override" in err["fix"]
     mgr.unload_model.assert_awaited_once_with("qwen3_tts_base", force=True)
 
 
