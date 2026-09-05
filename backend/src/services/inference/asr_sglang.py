@@ -64,8 +64,9 @@ class SGLangOmniAdapter(InferenceAdapter):
     """
 
     modality = MediaModality.AUDIO
-    # SPIKE 实测 mem_fraction_static 0.5 稳态 ≈13.4GB;供 UI/预算展示(落卡钉 gpu:0)。
-    estimated_vram_mb = 13000
+    # mem_fraction_static 0.15 × 96GB(Pro 6000)≈14.4GB;供 UI/预算展示(落卡钉 gpu:1)。
+    # 该比例按整卡容量算,换卡要同步改 moss_config.yaml,否则这里的预算账也跟着失真。
+    estimated_vram_mb = 15000
 
     def __init__(
         self,

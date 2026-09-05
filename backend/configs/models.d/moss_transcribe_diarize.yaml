@@ -8,8 +8,10 @@ type: asr
 paths:
   main: speech/MOSS-Transcribe-Diarize
 resident: true
-# ~13GB @ mem_fraction_static 0.5(SPIKE 实测稳态 13.4GB);仅展示/预算,落卡由 gpu 钉。
-vram_mb: 13000
+# ~14.4GB @ mem_fraction_static 0.15 × 96GB(Pro 6000);仅展示/预算,落卡由 gpu 钉。
+# 该比例是「占整卡容量的比例」,换卡必须同步改 —— 见 infra/moss-asr/moss_config.yaml。
+# (历史:在 24GB 3090 上是 0.5 × 24 = 12GB,SPIKE 实测稳态 13.4GB,故当时记 13000。)
+vram_mb: 15000
 # index1 = Pro 6000(nvidia-smi PCI 序,= 下面 gpu_uuid)。设 gpu 走「配置固定卡」路径:
 # 不经 allocator(否则按 free 显存可能选到别的卡),ModelManager 记账落这张卡。
 # 真正的钉卡防线是子进程 env 的 gpu_uuid(见下)—— 即便 index 漂移,UUID 仍保子进程只见这张卡。

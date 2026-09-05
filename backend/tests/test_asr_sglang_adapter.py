@@ -33,7 +33,7 @@ def test_adapter_is_inference_adapter(tmp_path):
     a = _make(tmp_path)
     assert isinstance(a, InferenceAdapter)
     assert a.modality == MediaModality.AUDIO
-    assert a.estimated_vram_mb == 13000
+    assert a.estimated_vram_mb == 15000   # Pro 6000 上 mem_fraction_static 0.15 的稳态,见 moss_config.yaml
 
 
 def test_build_env_pins_uuid_not_index(tmp_path):
