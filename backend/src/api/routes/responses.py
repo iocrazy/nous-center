@@ -31,7 +31,7 @@ from src.api.deps_auth import (
 )
 from src.config import get_settings
 from src.errors import (
-    APIError, InvalidRequestError, NotFoundError,
+    APIError, InvalidRequestError, ModelNotReadyError, NotFoundError,
     NousError, PermissionError as NousPermissionError,
 )
 from src.models.database import get_async_session
@@ -45,7 +45,7 @@ from src.services.model_resolver import ModelNotFound, resolve_target_service
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
-    ensure_vllm_base_url,
+    get_vllm_base_url,
 )
 from src.services.prompt_composer import (
     AgentLoadFailed,
@@ -374,9 +374,10 @@ async def create_response(
     # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
+        base_url = get_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
-        raise APIError(str(e), code="model_not_loaded") from e
+        # 2026-09-05 spec §5:数据面对放置只读 —— 未就绪即刻 503,绝不在请求路径上加载。
+        raise ModelNotReadyError(engine_name) from e
     except VLLMNoEndpoint as e:
         raise APIError(str(e), code="no_inference_endpoint") from e
     # Adapter handle still needed downstream for max_model_len clamp.

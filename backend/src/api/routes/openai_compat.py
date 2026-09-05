@@ -29,14 +29,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_auth import verify_bearer_token_any
 from src.config import get_settings
-from src.errors import APIError, InvalidRequestError, NotFoundError, NousError
+from src.errors import (
+    APIError,
+    InvalidRequestError,
+    ModelNotReadyError,
+    NotFoundError,
+    NousError,
+)
 from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
-    ensure_vllm_base_url,
     get_vllm_base_url,
 )
 from src.services.model_resolver import ModelNotFound, resolve_target_service
@@ -245,9 +250,14 @@ async def chat_completions(
     # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
+        base_url = get_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
-        raise HTTPException(503, detail=str(e)) from e
+        # 2026-09-05 spec §5:数据面对放置只读 —— 未就绪即刻 503,绝不在请求路径上加载。
+        from src.api.routes._readiness import ready_model_names  # noqa: PLC0415
+        raise ModelNotReadyError(
+            body.get("model") or engine_name,
+            ready_models=ready_model_names(model_mgr, await _granted_services(session, api_key)),
+        ) from e
     except VLLMNoEndpoint as e:
         raise HTTPException(500, detail=str(e)) from e
 
@@ -584,9 +594,14 @@ async def embeddings(
     engine_name = instance.source_name or str(instance.source_id)
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
+        base_url = get_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
-        raise HTTPException(503, detail=str(e)) from e
+        # 2026-09-05 spec §5:同 chat —— 只读解析,未就绪即刻 503。
+        from src.api.routes._readiness import ready_model_names  # noqa: PLC0415
+        raise ModelNotReadyError(
+            body.get("model") or engine_name,
+            ready_models=ready_model_names(model_mgr, await _granted_services(session, api_key)),
+        ) from e
     except VLLMNoEndpoint as e:
         raise HTTPException(500, detail=str(e)) from e
 
@@ -719,20 +734,20 @@ _MOSS_DEFAULT_PROMPT = (
 )
 
 
-async def _resolve_moss_base_url(model_mgr, engine_name: str) -> str:
+def _resolve_moss_base_url(model_mgr, engine_name: str) -> str:
     """MOSS 引擎 base_url 选址(spec 2026-07-20 Arc 2)。优先级 **env > ModelManager**:
 
     - `NOUS_MOSS_ASR_URL` 显式设了 → 用它(测试/应急 override,如指向手工起的实例)。
     - 否则 → 经 ModelManager 取 `moss_transcribe_diarize` resident 引擎的 base_url
-      (`ensure_vllm_base_url`:未加载则按需拉起再解析,镜像 embedding/chat 的选址模式;
+      (只读:MOSS 是 resident,未加载即 VLLMNotLoaded(调用方映射 503),不在请求路径上拉起;
       SGLangOmniAdapter 暴露 `base_url`/`is_loaded`,与该 helper 契约一致直接复用)。
 
-    未加载/拉起失败 → VLLMNotLoaded(调用方映射 503);已加载但无端点 → VLLMNoEndpoint(500)。
+    未加载 → VLLMNotLoaded(调用方映射 503);已加载但无端点 → VLLMNoEndpoint(500)。
     """
     override = os.environ.get("NOUS_MOSS_ASR_URL")
     if override:
         return override.rstrip("/")
-    return (await ensure_vllm_base_url(model_mgr, engine_name)).rstrip("/")
+    return get_vllm_base_url(model_mgr, engine_name).rstrip("/")
 
 
 async def _asr_moss_transcribe(
@@ -838,10 +853,9 @@ def _strip_punct(s: str) -> str:
 def _resolve_punct_base_url(model_mgr) -> str | None:
     """标点 LLM 选址:`NOUS_PUNCT_LLM_ENGINE`(默认 `qwen3_6_35b_a3b_fp8`)。
 
-    **刻意用只读的 `get_vllm_base_url`(而非 chat/embeddings 用的 `ensure_vllm_base_url`)**
-    —— `ensure_*` 的按需懒加载语义会在未加载时 `await load_model` 拉起一个几十 G 的 LLM,
-    标点恢复只是纯增强,绝不能为它把主转写路径拖成几十秒冷启动。`get_vllm_base_url` 是纯
-    只读:只查 `is_loaded`、取 `base_url`,**不触发任何加载**。engine 未加载 / 无端点 /
+    用只读的 `get_vllm_base_url`:只查 `is_loaded`、取 `base_url`,**不触发任何加载**
+    (2026-09-05 spec §4 起全数据面都只有这一条路,懒加载变体已删)。标点恢复只是纯增强,
+    绝不能为它把主转写路径拖成几十秒冷启动。engine 未加载 / 无端点 /
     model_manager 不可用 → 返回 None(调用方静默降级用原文)。
     """
     engine = os.environ.get("NOUS_PUNCT_LLM_ENGINE") or _PUNCT_LLM_ENGINE_DEFAULT
@@ -1207,12 +1221,16 @@ async def audio_transcriptions(
 
     # —— 选址 + 读入 + ffmpeg 归一化(纯输入校验,失败早于 running task 建立 → 直接抛、
     #    不噪 failed task,同 response_format 400 的口径)——
-    # MOSS 引擎选址(Arc 2):env override > ModelManager(resident,未加载则按需拉起)。
+    # MOSS 引擎选址(Arc 2):env override > ModelManager(resident;2026-09-05 起只读,
+    # 未加载即 503,不在请求路径上拉起)。
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        moss_base_url = await _resolve_moss_base_url(model_mgr, engine_name)
+        moss_base_url = _resolve_moss_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
-        raise HTTPException(503, detail=f"MOSS ASR 引擎不可用: {e}") from e
+        # 2026-09-05 spec §5:与 chat/embeddings 同一信封 —— 「已授权但未加载」在整个
+        # 数据面都是 503 model_not_ready(裸 HTTPException(503) 会落 type=api_error
+        # code=null,下游拿不到 code 也拿不到指向 /v1/models 的 fix)。
+        raise ModelNotReadyError(engine_name) from e
     except VLLMNoEndpoint as e:
         raise HTTPException(500, detail=str(e)) from e
 
@@ -1534,7 +1552,7 @@ class ModelObject(BaseModel):
     id: str
     object: str = "model"
     created: int = 1700000000
-    owned_by: str = "nous-center"
+    owned_by: str = "nous-engine"
     type: str = "model"   # 服务类目:llm / embedding / image / app / tts / vl ...
 
 
@@ -1564,6 +1582,7 @@ async def _granted_services(session: AsyncSession, api_key: InstanceApiKey):
 
 @router.get("/v1/models", response_model=ModelListResponse)
 async def list_models(
+    request: Request,
     type: str | None = None,
     auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
@@ -1574,15 +1593,21 @@ async def list_models(
     `id` = **服务名**(与 /v1/chat·/v1/embeddings·/v1/images 的 `model` 字段完全一致),
     `type` = 类目(客户端据此选端点)。即「发现到的 == 能调的」—— 对齐 Doubao 式
     一链多服务自选。可选 `?type=llm` 过滤类目。
+
+    2026-09-05 起 model 类服务只在其模型已加载时出现(`/v1/models` = 现在就能调的);
+    comfy_template / workflow / app 照旧按授权列。
     """
     _instance, api_key = auth
     if api_key is None:
         raise NotFoundError("request requires an API key", code="model_not_found")
+    from src.api.routes._readiness import service_is_ready  # noqa: PLC0415
+    model_mgr = getattr(request.app.state, "model_manager", None)
     services = await _granted_services(session, api_key)
     data = [
         ModelObject(id=s.name, type=(s.category or "model"))
         for s in services
-        if not type or (s.category or "model") == type
+        if (not type or (s.category or "model") == type)
+        and service_is_ready(model_mgr, s)      # spec 2026-09-05 §6:只列现在就能调的
     ]
     return ModelListResponse(data=data)
 
@@ -1590,6 +1615,7 @@ async def list_models(
 @router.get("/v1/models/{model_id}")
 async def get_model(
     model_id: str,
+    request: Request,
     auth: tuple[ServiceInstance | None, InstanceApiKey] = Depends(verify_bearer_token_any),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -1602,4 +1628,7 @@ async def get_model(
         raise NotFoundError(
             f"model '{model_id}' not found or no active grant on this key",
             code="model_not_found")
+    from src.api.routes._readiness import service_is_ready  # noqa: PLC0415
+    if not service_is_ready(getattr(request.app.state, "model_manager", None), svc):
+        raise ModelNotReadyError(model_id)      # 「没就绪」(503)与「没授权」(404)分开
     return ModelObject(id=svc.name, type=svc.category or "model")

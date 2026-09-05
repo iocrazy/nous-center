@@ -33,10 +33,12 @@ def test_get_vllm_base_url_wired_into_all_four_routes():
     for mod in (openai_mod, anthropic_mod, ollama_mod, responses_mod):
         with open(mod.__file__) as f:
             content = f.read()
-        # 2026-06-21:base-url 查找统一升级为按需懒加载变体 ensure_vllm_base_url
-        # (未加载自动 load_model 再解析,见 vllm_endpoint.py)。收敛意图不变。
-        assert "ensure_vllm_base_url" in content, (
-            f"{mod.__name__} 应已收敛到 ensure_vllm_base_url(按需懒加载)"
+        # 2026-09-05 spec §4:数据面只读,懒加载变体已删除 —— 只剩 get_vllm_base_url。
+        assert "get_vllm_base_url" in content, (
+            f"{mod.__name__} 应已收敛到只读的 get_vllm_base_url"
+        )
+        assert "ensure_vllm_base_url" not in content, (
+            f"{mod.__name__} 仍引用懒加载变体 —— 数据面不得改变模型放置"
         )
         # 收敛后不应再有裸的 getattr(adapter, "base_url" ...) 查找逻辑。
         assert 'getattr(adapter, "base_url"' not in content, (

@@ -556,32 +556,30 @@ async def test_endpoint_unknown_response_format_400(
 # --- Arc 2:base_url 选址(env override > ModelManager) --------------------
 
 
-@pytest.mark.asyncio
-async def test_resolve_moss_base_url_env_overrides_modelmanager(monkeypatch):
+def test_resolve_moss_base_url_env_overrides_modelmanager(monkeypatch):
     # env 显式设 → 用它,**不**碰 ModelManager(应急/测试 override 优先)。
     import src.api.routes.openai_compat as oc
 
-    async def _boom(mm, name):  # 若被调到就说明没走 override 分支
+    def _boom(mm, name):  # 若被调到就说明没走 override 分支
         raise AssertionError("ModelManager 不该在 env override 时被调用")
 
     monkeypatch.setenv("NOUS_MOSS_ASR_URL", "http://127.0.0.1:9911/")
-    monkeypatch.setattr(oc, "ensure_vllm_base_url", _boom)
-    url = await _resolve_moss_base_url(object(), "moss_transcribe_diarize")
+    monkeypatch.setattr(oc, "get_vllm_base_url", _boom)
+    url = _resolve_moss_base_url(object(), "moss_transcribe_diarize")
     assert url == "http://127.0.0.1:9911"  # 末尾 / 已剥
 
 
-@pytest.mark.asyncio
-async def test_resolve_moss_base_url_falls_back_to_modelmanager(monkeypatch):
-    # env 未设 → 经 ModelManager 选址(ensure_vllm_base_url,resident 未加载则拉起)。
+def test_resolve_moss_base_url_falls_back_to_modelmanager(monkeypatch):
+    # env 未设 → 经 ModelManager 只读选址(2026-09-05 spec §4:未加载即抛,不拉起)。
     import src.api.routes.openai_compat as oc
 
-    async def _mm(mm, name):
+    def _mm(mm, name):
         assert name == "moss_transcribe_diarize"
         return "http://127.0.0.1:8123/"
 
     monkeypatch.delenv("NOUS_MOSS_ASR_URL", raising=False)
-    monkeypatch.setattr(oc, "ensure_vllm_base_url", _mm)
-    url = await _resolve_moss_base_url(object(), "moss_transcribe_diarize")
+    monkeypatch.setattr(oc, "get_vllm_base_url", _mm)
+    url = _resolve_moss_base_url(object(), "moss_transcribe_diarize")
     assert url == "http://127.0.0.1:8123"
 
 
@@ -792,18 +790,14 @@ def test_punctuation_density():
 
 
 def test_resolve_punct_base_url_uses_readonly_never_autoloads(monkeypatch):
-    # **只读**:用 get_vllm_base_url(非 ensure_vllm_base_url)—— 绝不按需拉起 LLM。
+    # **只读**:用 get_vllm_base_url —— 绝不按需拉起 LLM(2026-09-05 起懒加载变体已删)。
     import src.api.routes.openai_compat as oc
-
-    async def _boom_ensure(mm, name):  # 若被调 = 走了按需拉起路径
-        raise AssertionError("标点恢复绝不能按需拉起 LLM(应走只读 get_vllm_base_url)")
 
     def _fake_get(mm, name):
         assert name == "qwen3_6_35b_a3b_fp8"  # 默认引擎
         return "http://127.0.0.1:8000/"
 
     monkeypatch.delenv("NOUS_PUNCT_LLM_ENGINE", raising=False)
-    monkeypatch.setattr(oc, "ensure_vllm_base_url", _boom_ensure)
     monkeypatch.setattr(oc, "get_vllm_base_url", _fake_get)
     assert oc._resolve_punct_base_url(object()) == "http://127.0.0.1:8000"  # 末尾 / 已剥
 
