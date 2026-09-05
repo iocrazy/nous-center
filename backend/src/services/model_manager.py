@@ -699,6 +699,15 @@ class ModelManager:
     def get_references(self, model_id: str) -> set[str]:
         return set(self._references.get(model_id, set()))
 
+    def is_in_use(self, model_id: str) -> bool:
+        """正在推理中(卸载会 segfault,force 也不覆盖)。供 unload 路由判定 409 的真实原因。
+
+        2026-09-05 审查:没有这个访问器时,路由只能拿 `get_references` 反推原因 ——
+        既被引用又正在 infer 时会误报 engine_referenced + 建议 force,调用方照做仍是
+        409,死循环。`unload_model` 内部先查 in_use 再查 refs,路由必须同序。
+        """
+        return model_id in self._in_use
+
     def add_reference(self, model_id: str, ref_id: str) -> None:
         self._references.setdefault(model_id, set()).add(ref_id)
 
@@ -851,13 +860,16 @@ class ModelManager:
                     "Skipping unload of in-use model %r(正在 infer,卸载会 segfault)", model_id)
                 return False
 
+            # 2026-09-05:这两条拒绝以前是 debug,生产 log level 下等于静默 —— 排查
+            # 「unload 报成功但显存不退」时 journal 里一个字都没有。拒绝是运维要看见的
+            # 结论(路由现在也据此回 409),升到 info。
             if not force:
                 if entry.spec.resident:
-                    logger.debug("Skipping unload of resident model %r", model_id)
+                    logger.info("Skipping unload of resident model %r", model_id)
                     return False
                 refs = self._references.get(model_id, set())
                 if refs:
-                    logger.debug(
+                    logger.info(
                         "Skipping unload of referenced model %r (refs=%s)",
                         model_id,
                         refs,

@@ -317,6 +317,12 @@ def _mock_model_manager():
     mgr.loaded_model_ids = []
     mgr.get_status = MagicMock(return_value={"loaded": [], "references": {}, "last_used": {}})
     mgr.check_idle_models = MagicMock(side_effect=lambda: _async_noop())
+    # 2026-09-05:这两个默认必须显式给,否则 MagicMock 自动造的子 mock 是**真值** ——
+    # `is_loaded(x)` 恒真会让 /api/v1/engines 把所有引擎报成 loaded,`get_references(x)`
+    # 也返回一个非空 mock。默认「没加载、没引用」才是干净起点。
+    mgr.is_loaded = MagicMock(return_value=False)
+    mgr.get_references = MagicMock(return_value=set())
+    mgr.is_in_use = MagicMock(return_value=False)
     return mgr
 
 

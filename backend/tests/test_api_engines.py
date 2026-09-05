@@ -350,3 +350,61 @@ async def test_scan_endpoint_no_missing_when_all_local(client, monkeypatch):
     assert data["count"] == 1
     assert data["local_available"] == 1
     assert data["not_local"] == 0
+
+
+async def test_unload_referenced_engine_returns_409_with_reason(client):
+    """spec §8:unload_model 返回 False 且模型仍 loaded → 409 engine_referenced,不再假报 unloaded。
+    2026-09-05 实测:有引用时路由返回 200 'unloaded',进程活着、20.5G 显存不退。"""
+    mgr = client._transport.app.state.model_manager
+    mgr.unload_model = AsyncMock(return_value=False)
+    mgr.is_loaded = MagicMock(return_value=True)
+    mgr.get_references = MagicMock(return_value={"308084173191516160"})
+
+    resp = await client.post("/api/v1/engines/qwen3_tts_base/unload")
+    assert resp.status_code == 409, resp.text
+    err = resp.json()["error"]
+    assert err["code"] == "engine_referenced"
+    assert "308084173191516160" in err["message"]
+    assert "force=true" in err["fix"]
+
+
+async def test_unload_in_use_engine_returns_409_and_force_does_not_help(client):
+    """in-use 是**强于 force** 的硬守卫(卸载正在 infer 的 adapter 会 segfault),
+    所以带了 force 也照样 409 —— 但要给出与「有引用」不同的 code 和 fix。
+
+    这里刻意让「既被引用、又正在 infer」同时成立(2026-09-05 审查指出的重叠场景):
+    unload_model 内部先查 in_use,路由必须同序,否则会误报 engine_referenced +
+    建议 force,调用方照做仍 409 → 死循环。"""
+    mgr = client._transport.app.state.model_manager
+    mgr.unload_model = AsyncMock(return_value=False)
+    mgr.is_loaded = MagicMock(return_value=True)
+    mgr.is_in_use = MagicMock(return_value=True)
+    mgr.get_references = MagicMock(return_value={"308084173191516160"})
+
+    resp = await client.post("/api/v1/engines/qwen3_tts_base/unload?force=true")
+    assert resp.status_code == 409, resp.text
+    err = resp.json()["error"]
+    assert err["code"] == "engine_in_use"
+    # fix 不能建议重试 force —— force 不覆盖 in_use,照做只会再吃一个 409。
+    assert "force=true does not override" in err["fix"]
+    mgr.unload_model.assert_awaited_once_with("qwen3_tts_base", force=True)
+
+
+async def test_engines_list_exposes_held_by(db_client):
+    """spec §9:为什么它还在显存里,要能从 /api/v1/engines 一眼看出来。
+
+    注:`_build_engine_info` 的 `loaded` 判据是 `_is_engine_loaded` → `mgr.is_loaded(key)`
+    (不是 `loaded_model_ids`),所以这里按 `is_loaded` 打桩;`_models` 置空 dict 让
+    loaded_gpu/loaded_gpus 走 None 分支(否则 MagicMock 过不了 pydantic)。"""
+    mgr = db_client._transport.app.state.model_manager
+    mgr.is_loaded = MagicMock(side_effect=lambda mid: mid == "qwen3_tts_base")
+    mgr._models = {}
+    mgr.get_references = MagicMock(
+        side_effect=lambda mid: {"proxy-abc"} if mid == "qwen3_tts_base" else set())
+
+    resp = await db_client.get("/api/v1/engines")
+    assert resp.status_code == 200
+    by_name = {e["name"]: e for e in resp.json()}
+    assert by_name["qwen3_tts_base"]["held_by"] == ["proxy-abc"]
+    others = [e for n, e in by_name.items() if n != "qwen3_tts_base"]
+    assert all(e["held_by"] == [] for e in others)
