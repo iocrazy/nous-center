@@ -102,6 +102,25 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
 - `gpu`/`gpus` 优先级的唯一实现是 `topology.resolve_gpus(cfg_or_spec)`;
   API 响应里 **`gpu` 永远是主卡 int、`gpus` 是唯一的列表字段**(单卡为 None)。
 
+## vLLM 参数透传 (`params.vllm_args`)
+
+- 模型 yaml 的 `params.vllm_args` 是一个 dict,把**任意** vLLM 长参数透传到子进程命令行
+  (适配器只自己拼固定的那几个:tp/max_model_len/quantization/dtype/max_num_seqs/
+  prefix-caching/runner)。键名不带 `--`,下划线连字符都认(统一归一成连字符)。
+  渲染规则(`llm_vllm.render_vllm_args`,**唯一实现**):bool True → 只加 `--flag`;
+  bool False / None → 不加;dict/list → `json.dumps` 成**一个**参数值
+  (`--speculative-config` 就吃 JSON 串);其余 → `--flag value`。
+- **同名以 vllm_args 为准**:`merge_vllm_args` 把适配器自己拼的那份(flag + 它的值)
+  从 argv 里摘掉再追加 + `logger.warning`。同一个 flag 出现两次 vLLM 行为不确定。
+- **安全边界,写了直接 ValueError(构造期,不是 load 期)**:`--model`(路径由 manager
+  按 `LOCAL_MODELS_PATH` 解析)、`--port`(manager 分配)、`--device` 与
+  `--tensor-parallel-size`(落卡与 tp 只由 `_placement` 决定,见上一节三条不变式 ——
+  **tp 是放置结论的一部分,不是调优旋钮**;要收窄用 `params.tensor_parallel_size`,
+  要换组改 `gpus`)。`vllm_args` 影响不到 `CUDA_VISIBLE_DEVICES`,也改不了 tp。
+- 落地示例:`configs/models.d/qwen3_8_27b_abliterated_awq.yaml`
+  (MTP 投机解码 `speculative-config` 实测 83 → 111 tok/s;`reasoning-parser: qwen3`
+  把思考分离到 `reasoning_content`,**不是关思考**)。
+
 ## 图像引擎 (image engine)
 
 - 引擎只剩一套 = `ModularImageBackend`(`image_modular.py`,Modular Diffusers)。

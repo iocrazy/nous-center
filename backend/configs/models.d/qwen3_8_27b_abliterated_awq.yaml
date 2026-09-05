@@ -1,0 +1,43 @@
+# qwen3_8_27b_abliterated_awq — LLM(视觉语言,破限版)
+# 一模型一文件(configs/models.d/);改此模型只动本文件。
+#
+# 模型:twolven/Qwen3.8-27B-abliterated-AWQ-MTP
+#   - 基座 Qwen3.8-27B(Qwen3_5ForConditionalGeneration,混合注意力:16 层全注意力
+#     + 48 层 Gated DeltaNet 线性注意力;原生视觉塔;MTP 投机解码头)。
+#   - 破限来自 JonathanColetti 的 Heretic abliteration(bf16 上做,再量化),
+#     不是从 GGUF 反算(twolven 另一个 HauhauCS 版才是)。
+#   - 量化:compressed-tensors pack-quantized,W4A16 非对称 group=128。
+#     只量化 256 个 Linear(16 层注意力 × 4 + 64 层 MLP × 3);DeltaNet 投影、
+#     视觉塔、MTP 头保持 BF16 —— 这几处对量化极敏感。
+#
+# 放置:gpus [0, 2] = 两张 3090 经 NVLink 做 tp=2(hardware.yaml 的 llm-tp 组)。
+#   作者实测同款配置每卡约 9.4GB 权重;剩余显存给 KV cache。
+#   **不要开 --kv-cache-dtype fp8**:3090 是 Ampere,没有 fp8 张量核。
+adapter: src.services.inference.llm_vllm.VLLMAdapter
+id: qwen3_8_27b_abliterated_awq
+paths:
+  main: llm/Qwen3.8-27B-abliterated-AWQ
+resident: false
+type: llm
+# 19.6GB 权重跨两卡 ≈ 每卡 9.8GB;这里填整模型占用,manager 按组内均分预留。
+vram_mb: 20070
+gpus: [0, 2]
+params:
+  # 262144 是模型上限,但两张 24G 卡装不下那么大的 KV;32k 是保守起点,
+  # 跑顺了可按实际剩余显存往上调。
+  max_model_len: 32768
+  tensor_parallel_size: 2
+  # 适配器没自己拼的 vLLM 参数从这里透传(键名下划线/连字符都认,dict/list 会被
+  # json.dumps 成一个参数值)。--model/--port/--device/--tensor-parallel-size 是
+  # 安全边界(路径/端口/落卡/tp 都由 manager + _placement 决定),写了直接报错 ——
+  # tp 走上面的 params.tensor_parallel_size,组走 gpus。
+  vllm_args:
+    # MTP 投机解码。MTP 头是模型自带的 model-mtp.safetensors(849MB,BF16 未量化),
+    # 不用外挂 draft 模型。实测 83 → 111 tok/s(+40%)。
+    # num_speculative_tokens 取 3:实测 3 和 5 吞吐持平,取小的省显存(每多一个
+    # 投机 token 就多一份草稿 KV + 验证批次)。
+    speculative-config: {"method": "mtp", "num_speculative_tokens": 3}
+    # 思考内容分离到响应的 `reasoning_content` 字段,不再混进 content 正文。
+    # **保留思考能力**(这个模型要用来做图文解读,推理是要的),只是不混在正文里,
+    # 前端/下游可以自己决定折叠还是展示。
+    reasoning-parser: qwen3
