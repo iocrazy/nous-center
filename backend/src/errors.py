@@ -132,3 +132,29 @@ class ModelLoadError(ServiceUnavailableError):
             fix="Check backend logs; admin must call load_model explicitly to retry",
             **kwargs,
         )
+
+
+class ModelNotReadyError(ServiceUnavailableError):
+    """503 — 模型已授权给该 key 但当前未加载(含 loading 中)。
+
+    spec 2026-09-05 §5:数据面对放置只读,未就绪即刻拒绝,绝不在请求路径上加载。
+    `ready_models` = 该 key 已授权 ∩ 当前已加载 的服务名(调用方能拿到时才带)。
+    """
+
+    type = "model_not_ready"
+
+    def __init__(self, model: str, *, ready_models: list[str] | None = None, **kw):
+        super().__init__(
+            f"model '{model}' is not loaded; see GET /v1/models for ready models",
+            code="model_not_ready",
+            param="model",
+            fix="GET /v1/models lists the models that are ready right now; loading is a control-plane action",
+            **kw,
+        )
+        self.ready_models = ready_models
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        if self.ready_models is not None:
+            d["error"]["ready_models"] = list(self.ready_models)
+        return d

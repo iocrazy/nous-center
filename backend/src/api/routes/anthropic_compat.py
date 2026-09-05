@@ -47,14 +47,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps_auth import verify_bearer_token_any
-from src.errors import APIError, InvalidRequestError, NotFoundError
+from src.errors import APIError, InvalidRequestError, ModelNotReadyError, NotFoundError
 from src.models.database import get_async_session
 from src.models.instance_api_key import InstanceApiKey
 from src.models.service_instance import ServiceInstance
 from src.services.inference.vllm_endpoint import (
     VLLMNoEndpoint,
     VLLMNotLoaded,
-    ensure_vllm_base_url,
+    get_vllm_base_url,
 )
 from src.services.model_resolver import ModelNotFound, resolve_target_service
 
@@ -169,9 +169,10 @@ async def anthropic_messages(
     # spec §4.5 D6/D8: direct-to-vLLM HTTP. base-URL lookup via single source of truth.
     model_mgr = getattr(request.app.state, "model_manager", None)
     try:
-        base_url = await ensure_vllm_base_url(model_mgr, engine_name)
+        base_url = get_vllm_base_url(model_mgr, engine_name)
     except VLLMNotLoaded as e:
-        raise HTTPException(503, detail=str(e)) from e
+        # 2026-09-05 spec §5:数据面对放置只读 —— 未就绪即刻 503,绝不在请求路径上加载。
+        raise ModelNotReadyError(engine_name) from e
     except VLLMNoEndpoint as e:
         raise HTTPException(500, detail=str(e)) from e
 
