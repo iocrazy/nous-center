@@ -101,6 +101,12 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   MB),别一边用 torch 的 `gpu_summary()` 一边用 nvidia-smi。
 - `gpu`/`gpus` 优先级的唯一实现是 `topology.resolve_gpus(cfg_or_spec)`;
   API 响应里 **`gpu` 永远是主卡 int、`gpus` 是唯一的列表字段**(单卡为 None)。
+- **模型放置只能由控制面改变;数据面(`/v1/*` 全部兼容路由)对放置只读**(spec 2026-09-05
+  engine-app-boundary)。未加载的模型一律即刻 503 `model_not_ready`,不在请求路径上
+  加载;`/v1/models` 只列已加载的 model 类服务;`resident: true` 是**唯一**的常驻手段,
+  已发布工作流不再钉住模型。`tests/test_data_plane_readonly.py` 静态锁住五个路由模块。
+  常驻集合按落卡汇总必须放得进 `configs/hardware.yaml` 的容量减 `DEFAULT_RESERVED_GB`,
+  由 `tests/test_resident_capacity.py` 在 CI 兜住(常驻不自洽合 PR 前就红,不等上线)。
 
 ## vLLM 参数透传 (`params.vllm_args`)
 
@@ -158,7 +164,10 @@ The UI route `/api-keys` is the React Router path users see; the backend endpoin
   `/api/v1/*` 管理端点是两套:`/v1/*` 带了 `Authorization` header 优先走 M:N
   `InstanceApiKey` 校验,校验失败(含 `ADMIN_TOKEN` 这种压根不是 InstanceApiKey 的
   bearer)会退回 admin-session 校验(cookie 或 `Authorization: Bearer $ADMIN_TOKEN`
-  都认)——脚本化调用(无浏览器 cookie)可以直接用 `ADMIN_TOKEN` 当 bearer,也可以
+  都认)——脚本化调用(无浏览器 cookie)可以直接用 `ADMIN_TOKEN` 当 bearer(**`/v1/audio/
+  transcriptions` 例外**:`_auth_transcriptions` 带了 Authorization 就直连
+  `verify_bearer_token_any`、不回落 admin-session,`ADMIN_TOKEN` 会被拒为 Invalid API
+  key,脚本化调用要铸 InstanceApiKey —— 2026-09-05 实测),也可以
   先用它经 `POST /api/v1/keys {label, service_ids:[<service 数字 id>]}` 铸一把授权给该
   service 的 M:N key,再拿它的 `secret` 调 predictions(两条路都通)。
 - **选项可依赖另一个参数**:`exposed_params` 项上写
