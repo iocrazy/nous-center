@@ -6,8 +6,9 @@
 resident 标记。工作流执行时 runner 本来就走 `get_or_load` 按需加载,预热非必需。
 
 本文件锁两条不变式:
-  1. lifespan 跑完后,published 工作流引用的非常驻模型**没有**被 load_model;
-     引用登记(add_reference,防 idle/LRU 卸)照常发生。
+  1. lifespan 跑完后,published 工作流依赖的非常驻模型**没有**被 load_model;
+     2026-09-05(spec engine-app-boundary §7)起也**不再** add_reference —— 那条
+     进程级引用会让 resident:false 的模型一旦加载就永不 TTL 回收。
   2. resident 模型仍旧走 preload_residents 预加载。
 
 起 lifespan 的姿势抄 test_lane_k_lifespan_wiring.py(直接进 @asynccontextmanager)。
@@ -104,9 +105,8 @@ async def test_lifespan_does_not_load_models_of_published_workflows(
         for _ in range(5):
             await asyncio.sleep(0)
 
-    # 引用登记照常(挡 idle checker / LRU 卸载)……
-    assert (("qwen3_6_35b_a3b_fp8", str(wf.id))) in refs, \
-        "published 工作流的模型引用仍应被登记(防 idle/LRU 卸载)"
+    # 引用不再登记……
+    assert refs == [], "spec 2026-09-05 §7:已发布工作流不再登记模型引用,resident 是唯一钉住手段"
     # ……但绝不因此加载模型。
     assert "qwen3_6_35b_a3b_fp8" not in loaded, \
         "非常驻模型不该因为被 published 工作流引用就开机加载(UI 只承诺常驻自动加载)"

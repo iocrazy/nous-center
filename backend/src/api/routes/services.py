@@ -621,7 +621,7 @@ async def delete_service(
 
     # 删服务后:若源工作流已无任何关联服务,把 status 退回 "draft"(镜像 /unpublish)。
     # 之前漏了这步 → 工作流卡在 status="published" 但无关联服务,卡片头部"已发布"绿徽章
-    # 与底部"未关联服务"+发布按钮语义冲突(用户反馈)。顺带卸掉该工作流的模型引用。
+    # 与底部"未关联服务"+发布按钮语义冲突(用户反馈)。
     if wf_id is not None:
         still = await session.execute(
             select(ServiceInstance.id).where(ServiceInstance.workflow_id == wf_id).limit(1)
@@ -630,18 +630,6 @@ async def delete_service(
             wf = await session.get(Workflow, wf_id)
             if wf is not None and wf.status == "published":
                 wf.status = "draft"
-                model_mgr = getattr(request.app.state, "model_manager", None)
-                if model_mgr is not None:
-                    try:
-                        for dep in model_mgr.get_model_dependencies(
-                            {"nodes": wf.nodes, "edges": wf.edges}
-                        ):
-                            model_mgr.remove_reference(dep["key"], str(wf.id))
-                            await model_mgr.unload_model(dep["key"])
-                    except Exception as e:  # 模型清理失败不应阻断删除
-                        logger.warning(
-                            "delete_service: model deref failed for workflow %s: %s", wf_id, e
-                        )
 
     await session.commit()
     # 工作流 status 可能翻回 draft → workflows 列表缓存也要失效。

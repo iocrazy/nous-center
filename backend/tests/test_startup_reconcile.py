@@ -1,5 +1,5 @@
-"""启动对账 helper(E-D:N+1 → 单 DISTINCT 查询)。孤儿 published→draft、有关联登记引用;
-以及上次进程遗留的在飞 execution_task → failed。"""
+"""启动对账 helper(E-D:N+1 → 单 DISTINCT 查询)。孤儿 published→draft、有关联的原样保留
+(2026-09-05 起不再登记模型引用);以及上次进程遗留的在飞 execution_task → failed。"""
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,7 +14,7 @@ from src.services.startup_reconcile import (
 
 
 @pytest.mark.asyncio
-async def test_orphan_published_reverts_to_draft_and_linked_registers_deps(db_session):
+async def test_orphan_published_reverts_to_draft_and_linked_keeps_status(db_session):
     # 有关联服务的 wf
     wf_linked = Workflow(name="linked", status="published", nodes=[], edges=[])
     # 无关联服务的 wf(孤儿)
@@ -40,8 +40,9 @@ async def test_orphan_published_reverts_to_draft_and_linked_registers_deps(db_se
     await db_session.refresh(wf_linked)
     assert wf_orphan.status == "draft"       # 孤儿退回
     assert wf_linked.status == "published"   # 有关联的保持
-    mm.add_reference.assert_called_once_with("qwen3_8b", str(wf_linked.id))
-    # 登记引用只挡 idle/LRU 卸载,绝不触发加载(2026-09-03 删 _load_wf_deps 预热)。
+    # spec 2026-09-05 §7:已发布工作流不再登记进程级引用 —— 那等于把 resident:false
+    # 的模型变成事实常驻且从 /api/v1/engines 看不出来(2026-09-05「新工作流」钉死 qwen3_6)。
+    mm.add_reference.assert_not_called()
     mm.load_model.assert_not_called()
 
 
