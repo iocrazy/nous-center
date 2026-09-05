@@ -28,7 +28,9 @@ params:
   max_model_len: 32768
   tensor_parallel_size: 2
   # 适配器没自己拼的 vLLM 参数从这里透传(键名下划线/连字符都认,dict/list 会被
-  # json.dumps 成一个参数值)。--model/--port/--device 是安全边界,写了直接报错。
+  # json.dumps 成一个参数值)。--model/--port/--device/--tensor-parallel-size 是
+  # 安全边界(路径/端口/落卡/tp 都由 manager + _placement 决定),写了直接报错 ——
+  # tp 走上面的 params.tensor_parallel_size,组走 gpus。
   vllm_args:
     # MTP 投机解码。MTP 头是模型自带的 model-mtp.safetensors(849MB,BF16 未量化),
     # 不用外挂 draft 模型。实测 83 → 111 tok/s(+40%)。

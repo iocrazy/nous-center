@@ -73,10 +73,13 @@ def test_render_rejects_non_dict():
 
 
 # ---------------------------------------------------------------------------
-# 安全边界:--model / --port / --device 一律拒绝(不是覆盖)
+# 安全边界:--model / --port / --device / --tensor-parallel-size 一律拒绝(不是覆盖)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("key", ["model", "--model", "port", "device", "--device"])
+@pytest.mark.parametrize("key", [
+    "model", "--model", "port", "device", "--device",
+    "tensor-parallel-size", "tensor_parallel_size", "--tensor-parallel-size",
+])
 def test_forbidden_keys_raise(key):
     with pytest.raises(ValueError, match="vllm_args 不接受"):
         render_vllm_args({key: "whatever"})
@@ -93,6 +96,29 @@ def test_forbidden_device_message_names_placement(tmp_path):
     with pytest.raises(ValueError, match="_placement"):
         VLLMAdapter(paths={"main": str(tmp_path)}, vllm_port=19999,
                     vllm_args={"device": "cpu"})
+
+
+def test_tp_is_forbidden_not_overridable(tmp_path):
+    """tp 是**放置结论**的一部分(唯一决策点 ModelManager._resolve_placement),
+    不是调优旋钮 —— 在 vllm_args 里覆盖会与 _placement 钉的卡数不一致导致启动失败。
+    要收窄用 params.tensor_parallel_size,要换组改 gpus。"""
+    with pytest.raises(ValueError) as ei:
+        VLLMAdapter(paths={"main": str(tmp_path)}, vllm_port=19999,
+                    vllm_args={"tensor-parallel-size": 4})
+    msg = str(ei.value)
+    assert "GPU 组" in msg and "hardware.yaml" in msg
+    assert "_resolve_placement" in msg
+
+
+def test_tp_not_in_overridable_set():
+    """钉死集合本身:tp 只在 forbidden,不在 owned(否则又变回可覆盖)。"""
+    from src.services.inference.llm_vllm import (
+        VLLM_ADAPTER_OWNED_FLAGS,
+        VLLM_ARGS_FORBIDDEN,
+    )
+    assert "--tensor-parallel-size" in VLLM_ARGS_FORBIDDEN
+    assert "--tensor-parallel-size" not in VLLM_ADAPTER_OWNED_FLAGS
+    assert not (set(VLLM_ARGS_FORBIDDEN) & VLLM_ADAPTER_OWNED_FLAGS)
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +148,13 @@ def test_merge_appends_non_colliding_args_untouched():
     assert merged == ["python", "--max-model-len", "32768", "--reasoning-parser", "qwen3"]
 
 
-def test_merge_tp_override_warns_about_placement(caplog):
-    with caplog.at_level("WARNING"):
-        merge_vllm_args(["--tensor-parallel-size", "2"], ["--tensor-parallel-size", "4"])
-    assert "_placement" in caplog.text
+def test_merge_never_strips_adapter_tensor_parallel_size():
+    """tp 根本进不了 vllm_args(render 阶段就 raise),merge 这层也不再把它当可覆盖项 ——
+    真有人绕过 render 直接塞 extra,`_placement` 定的那份 tp 也必须原样留在 argv 里。"""
+    cmd = ["--tensor-parallel-size", "2", "--dtype", "auto"]
+    merged = merge_vllm_args(cmd, ["--tensor-parallel-size", "4"])
+    assert merged[:2] == ["--tensor-parallel-size", "2"]   # 适配器那份没被摘掉
+    assert merged[2:4] == ["--dtype", "auto"]
 
 
 def test_merge_no_extra_is_identity():

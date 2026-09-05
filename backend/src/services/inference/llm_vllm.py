@@ -89,7 +89,6 @@ def clamp_util_to_free(utilization: float, gpu_free_gb: float, gpu_total_gb: flo
 #: 从 argv 里摘掉(同一个 flag 出现两次 vLLM 会报错/静默取一个,都不是确定行为),
 #: 并 warning 说明谁盖了谁。
 VLLM_ADAPTER_OWNED_FLAGS = frozenset({
-    "--tensor-parallel-size",
     "--quantization",
     "--max-model-len",
     "--gpu-memory-utilization",
@@ -104,12 +103,18 @@ VLLM_ADAPTER_OWNED_FLAGS = frozenset({
 
 #: 安全边界:这几个**不许**出现在 vllm_args 里,给了直接 ValueError(不是覆盖)。
 #: 模型路径 / 端口由 manager 决定(yaml 改掉 = 绕过 LOCAL_MODELS_PATH 加载任意目录、
-#: 或占掉别人的端口);落卡由 `_placement` 统一决定(见 CLAUDE.md 的三条不变式),
-#: `--device` 会让子进程的设备结论跟 CUDA_VISIBLE_DEVICES 脱钩。
+#: 或占掉别人的端口);落卡与 tp 由 `_placement` 统一决定(见 CLAUDE.md 的三条不变式),
+#: `--device` / `--tensor-parallel-size` 会让子进程的结论跟 CUDA_VISIBLE_DEVICES 脱钩。
 VLLM_ARGS_FORBIDDEN: dict[str, str] = {
     "--model": "模型路径由 manager 按 LOCAL_MODELS_PATH 解析,yaml 不得改写",
     "--port": "端口由 manager 分配,yaml 不得改写",
     "--device": "落卡由 _placement 统一决定(CUDA_VISIBLE_DEVICES),yaml 不得干预",
+    "--tensor-parallel-size": (
+        "tp 由 GPU 组决定(hardware.yaml 的组 + 模型的 gpus 字段),不能在 vllm_args 里"
+        "覆盖,否则会与 _placement 钉的卡数不一致导致启动失败。"
+        "放置决策只在 ModelManager._resolve_placement 一处 —— tp 是放置结论的一部分,"
+        "不是调优旋钮。要收窄 tp 请用 params.tensor_parallel_size,要换组请改 gpus"
+    ),
 }
 
 
@@ -174,12 +179,6 @@ def merge_vllm_args(cmd: list[str], extra: list[str], *, label: str = "vLLM") ->
             "%s: vllm_args 覆盖了适配器自己拼的 %s —— 以 yaml 的 vllm_args 为准",
             label, flag,
         )
-        if flag == "--tensor-parallel-size":
-            # tp 与落卡(CUDA_VISIBLE_DEVICES)必须一致,这条覆盖会让两者脱钩。
-            logger.warning(
-                "%s: vllm_args 覆盖 --tensor-parallel-size 会与 _placement 钉的卡数脱钩,"
-                "务必自己确认 tp 与 gpus 组大小一致", label,
-            )
     if not collide:
         return list(cmd) + extra
     out: list[str] = []
