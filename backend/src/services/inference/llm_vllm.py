@@ -77,6 +77,126 @@ def clamp_util_to_free(utilization: float, gpu_free_gb: float, gpu_total_gb: flo
     return utilization
 
 
+# ---------------------------------------------------------------------------
+# vllm_args:模型 yaml 的 `params.vllm_args` 透传任意 vLLM 长参数
+# ---------------------------------------------------------------------------
+# 动机:适配器只自己拼固定的那几个参数(tp / max_model_len / quantization / dtype /
+# max_num_seqs / prefix-caching / runner)。vLLM 还有几十个有用的开关(MTP 投机解码的
+# --speculative-config、把思考分离到 reasoning_content 的 --reasoning-parser……),
+# 以前只能手起进程,经 nous 加载的实例享受不到。`params.vllm_args` 就是那个口子。
+
+#: 适配器自己会拼的参数。vllm_args 里出现同名 → **以 vllm_args 为准**,把适配器那份
+#: 从 argv 里摘掉(同一个 flag 出现两次 vLLM 会报错/静默取一个,都不是确定行为),
+#: 并 warning 说明谁盖了谁。
+VLLM_ADAPTER_OWNED_FLAGS = frozenset({
+    "--tensor-parallel-size",
+    "--quantization",
+    "--max-model-len",
+    "--gpu-memory-utilization",
+    "--max-num-seqs",
+    "--limit-mm-per-prompt",
+    "--enable-auto-tool-choice",
+    "--tool-call-parser",
+    "--runner",
+    "--dtype",
+    "--enable-prefix-caching",
+})
+
+#: 安全边界:这几个**不许**出现在 vllm_args 里,给了直接 ValueError(不是覆盖)。
+#: 模型路径 / 端口由 manager 决定(yaml 改掉 = 绕过 LOCAL_MODELS_PATH 加载任意目录、
+#: 或占掉别人的端口);落卡由 `_placement` 统一决定(见 CLAUDE.md 的三条不变式),
+#: `--device` 会让子进程的设备结论跟 CUDA_VISIBLE_DEVICES 脱钩。
+VLLM_ARGS_FORBIDDEN: dict[str, str] = {
+    "--model": "模型路径由 manager 按 LOCAL_MODELS_PATH 解析,yaml 不得改写",
+    "--port": "端口由 manager 分配,yaml 不得改写",
+    "--device": "落卡由 _placement 统一决定(CUDA_VISIBLE_DEVICES),yaml 不得干预",
+}
+
+
+def normalize_vllm_flag(key: str) -> str:
+    """`speculative_config` / `speculative-config` / `--speculative-config`
+    统一成 `--speculative-config`(下划线一律换连字符)。"""
+    return "--" + str(key).strip().lstrip("-").replace("_", "-")
+
+
+def render_vllm_args(vllm_args: dict | None) -> list[str]:
+    """把 `params.vllm_args` 渲染成 argv 片段。
+
+    - bool True  → 只加 `--flag`(**不是** `--flag true`,vLLM 的 store_true 不吃值)
+    - bool False → 完全不加(等于没配这个开关)
+    - dict/list  → `json.dumps` 成**一个**参数值(`--speculative-config` 就吃 JSON 串)
+    - None       → 跳过(等于没配)
+    - 其余       → `--flag value`
+
+    安全边界内的键(`VLLM_ARGS_FORBIDDEN`)直接 ValueError。纯函数,好在 __init__ 里
+    早失败,而不是等 load() 已经预留了显存才炸。
+    """
+    if not vllm_args:
+        return []
+    if not isinstance(vllm_args, dict):
+        raise ValueError(f"vllm_args 必须是 dict,收到 {type(vllm_args).__name__}")
+    out: list[str] = []
+    for raw_key, value in vllm_args.items():
+        flag = normalize_vllm_flag(raw_key)
+        if flag in VLLM_ARGS_FORBIDDEN:
+            raise ValueError(f"vllm_args 不接受 {flag}:{VLLM_ARGS_FORBIDDEN[flag]}")
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            if value:
+                out.append(flag)
+            continue
+        if isinstance(value, (dict, list)):
+            out += [flag, _json.dumps(value, ensure_ascii=False, separators=(",", ":"))]
+            continue
+        if isinstance(value, (str, int, float)):
+            out += [flag, str(value)]
+            continue
+        raise ValueError(
+            f"vllm_args[{raw_key}] 的类型 {type(value).__name__} 不支持"
+            "(只接受 str/int/float/bool/dict/list)"
+        )
+    return out
+
+
+def merge_vllm_args(cmd: list[str], extra: list[str], *, label: str = "vLLM") -> list[str]:
+    """把 vllm_args 渲染出的 `extra` 并进适配器拼好的 `cmd`。
+
+    同名 flag 以 extra 为准:先把 cmd 里那一份(flag + 它的值)摘掉再追加,
+    保证同一个参数只出现一次。
+    """
+    if not extra:
+        return cmd
+    incoming = {tok for tok in extra if tok.startswith("--")}
+    collide = incoming & VLLM_ADAPTER_OWNED_FLAGS & set(cmd)
+    for flag in sorted(collide):
+        logger.warning(
+            "%s: vllm_args 覆盖了适配器自己拼的 %s —— 以 yaml 的 vllm_args 为准",
+            label, flag,
+        )
+        if flag == "--tensor-parallel-size":
+            # tp 与落卡(CUDA_VISIBLE_DEVICES)必须一致,这条覆盖会让两者脱钩。
+            logger.warning(
+                "%s: vllm_args 覆盖 --tensor-parallel-size 会与 _placement 钉的卡数脱钩,"
+                "务必自己确认 tp 与 gpus 组大小一致", label,
+            )
+    if not collide:
+        return list(cmd) + extra
+    out: list[str] = []
+    i = 0
+    while i < len(cmd):
+        tok = cmd[i]
+        if tok in collide:
+            i += 1
+            # 顺带吃掉它的值(下一个不以 `--` 开头的 token);store_true 类没有值
+            if i < len(cmd) and not cmd[i].startswith("--"):
+                i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out + extra
+
+
 class VLLMAdapter(InferenceAdapter):
     """Adapter that spawns vLLM as a subprocess and manages its lifecycle.
 
@@ -108,6 +228,7 @@ class VLLMAdapter(InferenceAdapter):
         vram_budget: dict | None = None,
         adopt_pid: int | None = None,
         gpus: list[int] | None = None,
+        vllm_args: dict | None = None,
         **kwargs: Any,
     ):
         super().__init__(paths=paths, device=device)
@@ -133,6 +254,11 @@ class VLLMAdapter(InferenceAdapter):
         # 起的还是同一个 openai api_server,只是暴露 /v1/embeddings 而非 chat。
         # None/缺省 = 不传(vLLM auto,生成模型零回归)。models.yaml params 块透传。
         self._vllm_runner = vllm_runner
+        # 任意 vLLM 长参数透传(models.d/<id>.yaml 的 `params.vllm_args`)。
+        # **在这里就渲染**:yaml 写了安全边界内的键(--model/--port/--device)或不支持的
+        # 值类型,在构造期就 ValueError,而不是等 load() 预留完显存、起了子进程才炸。
+        self._vllm_args = dict(vllm_args) if vllm_args else {}
+        self._vllm_extra_argv: list[str] = render_vllm_args(self._vllm_args)
         # 每模型显存预算({mode,value};spec 2026-06-13)—— runtime overlay 注入,加载时
         # 解析成 gpu_memory_utilization。优先级高于 models.yaml 的 gpu_memory_utilization。
         self._vram_budget = vram_budget
@@ -403,6 +529,11 @@ class VLLMAdapter(InferenceAdapter):
         if not auto.get("is_audio") and not _is_pooling:
             cmd += ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_xml"]
             logger.info("Enabling tool calling — --enable-auto-tool-choice --tool-call-parser qwen3_xml")
+
+        # yaml 的 `params.vllm_args` 最后并进来:同名 flag 以它为准(把适配器那份摘掉),
+        # 其余追加。放在 apply_visible_devices 之前,好让启动日志打的是最终 argv。
+        # 落卡不受影响 —— --model/--port/--device 在 __init__ 的 render 阶段就被拒了。
+        cmd = merge_vllm_args(cmd, self._vllm_extra_argv, label="vLLM")
 
         # Set cache directories to persistent storage (avoid re-compilation)
         env = dict(os.environ)
