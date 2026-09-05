@@ -13,6 +13,17 @@
 # 放置:gpus [0, 2] = 两张 3090 经 NVLink 做 tp=2(hardware.yaml 的 llm-tp 组)。
 #   作者实测同款配置每卡约 9.4GB 权重;剩余显存给 KV cache。
 #   **不要开 --kv-cache-dtype fp8**:3090 是 Ampere,没有 fp8 张量核。
+#
+# ⚠ 权重目录里改过一处(不在本仓库,重新下载模型会丢):tokenizer.json 的顶层
+#   `truncation` 被上传者烤进了 {"max_length": 1024}(应该是量化标定脚本调过
+#   tokenizer 后顺手 save 出来的残留;本机其它 11 个 Qwen tokenizer 全是 null)。
+#   后果:纯文本请求短于 1024 token 看不出问题,一旦带图就崩 —— 一张 1440x832 图
+#   要展开成 1170 个 <|image_pad|>,被截到 1024,transformers 的
+#   `_check_special_mm_tokens` 报 "Mismatch in `image` token count between text and
+#   `input_ids`",HTTP 400。修法是把该字段改回 null:
+#     python3 -c "import json;p='<模型目录>/tokenizer.json';d=json.load(open(p));\
+#       d['truncation']=None;json.dump(d,open(p,'w'),ensure_ascii=False,indent=2)"
+#   原文件备份在同目录 tokenizer.json.orig-truncation1024.bak(2026-09-05)。
 adapter: src.services.inference.llm_vllm.VLLMAdapter
 id: qwen3_8_27b_abliterated_awq
 paths:
@@ -27,6 +38,14 @@ params:
   # 跑顺了可按实际剩余显存往上调。
   max_model_len: 32768
   tensor_parallel_size: 2
+  # 显存预算(每卡比例)。上下两个夹逼,0.70 是唯一的安全区间:
+  #   下界:自动预算算出 0.55 → 每卡只剩 1.18GB 给 KV,而 32k 上下文 + MTP 的草稿 KV
+  #        需要 1.45GB → 启动即 ValueError(2026-09-05 实测)。
+  #   上界:0.85 → vLLM 每卡预留 20.4GB,只剩 3.5GB 空闲,低于 gpu_monitor 的
+  #        DEFAULT_RESERVED_GB=4.0 → 显存看门狗判定吃紧,加载完 4 秒就 LRU 驱逐
+  #        (实测:vLLM ready 后 4s 被 Auto-evicted)。**别再往上调**。
+  # 0.70 = 每卡 16.8GB(模型 ~9GB + KV 充裕),留 7.2GB 空闲,看门狗满意。
+  gpu_memory_utilization: 0.70
   # 适配器没自己拼的 vLLM 参数从这里透传(键名下划线/连字符都认,dict/list 会被
   # json.dumps 成一个参数值)。--model/--port/--device/--tensor-parallel-size 是
   # 安全边界(路径/端口/落卡/tp 都由 manager + _placement 决定),写了直接报错 ——
