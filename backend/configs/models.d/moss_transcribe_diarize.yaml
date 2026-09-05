@@ -10,12 +10,20 @@ paths:
 resident: true
 # ~13GB @ mem_fraction_static 0.5(SPIKE 实测稳态 13.4GB);仅展示/预算,落卡由 gpu 钉。
 vram_mb: 13000
-# index0 = 那张 3090(nvidia-smi PCI 序,= 下面 gpu_uuid)。设 gpu 走「配置固定卡」路径:
-# 不经 allocator(否则按 free 显存可能选到 Pro 6000/别的 3090),ModelManager 记账落这张卡。
+# index1 = Pro 6000(nvidia-smi PCI 序,= 下面 gpu_uuid)。设 gpu 走「配置固定卡」路径:
+# 不经 allocator(否则按 free 显存可能选到别的卡),ModelManager 记账落这张卡。
 # 真正的钉卡防线是子进程 env 的 gpu_uuid(见下)—— 即便 index 漂移,UUID 仍保子进程只见这张卡。
-gpu: 0
+#
+# 2026-09-05 从 3090(index 0)搬到 Pro 6000:两张 3090 让给 LLM 做 tp=2(hardware.yaml 的
+# llm-tp 组)。MOSS 自己不能跨卡 —— 上游 sglang-omni 的 tp 只认 thinker/image-encoder 这类
+# stage 名,MOSS-TD 的 stage 叫 asr,且它的 stage factory 不接 tp_rank/tp_size/nccl_port,
+# 硬配 tp 会在拉 rank 进程时 TypeError(2026-09-05 实测)。所以三个模型挤两张 3090 做不到,
+# MOSS 整个搬去 96GB 的 Pro 6000。
+gpu: 1
 params:
-  # 子进程 CUDA_VISIBLE_DEVICES 钉这张 3090 的 UUID —— **绝不 Pro 6000**(GSP 固件负载崩卡
-  # 拖黑整机,见 infra/gpu/README.md)。UUID 不随槽位/torch FASTEST_FIRST 枚举变;adapter 用它
-  # 而非 device index 设 CUDA_VISIBLE_DEVICES(见 asr_sglang.py docstring 差异点 2)。
-  gpu_uuid: GPU-2fd7c91c-af39-7b02-66b9-988331ce3bd7
+  # 子进程 CUDA_VISIBLE_DEVICES 钉 Pro 6000 的 UUID。UUID 不随槽位/torch FASTEST_FIRST
+  # 枚举变;adapter 用它而非 device index 设 CUDA_VISIBLE_DEVICES(见 asr_sglang.py
+  # docstring 差异点 2)。
+  # 原注释写「绝不 Pro 6000」(GSP 固件负载崩卡)—— 该固件问题 2026-08-11 已确认解决,
+  # ComfyUI 长期在这张卡上跑满载出图/视频无异常,故解除该禁忌。
+  gpu_uuid: GPU-d24ed424-5712-55e9-9b95-77d997ac80dc
